@@ -1,0 +1,11 @@
+{
+  "chunks": [
+    {
+      "chunk_index": 1,
+      "chunk_file": "sample_chunk.jpg",
+      "chunk_path": "sample_chunk.jpg",
+      "chunk_w": 400,
+      "chunk_h": 5425
+    }
+  ]
+}
