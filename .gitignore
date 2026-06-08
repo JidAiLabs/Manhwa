@@ -9,3 +9,5 @@ ongoing/*/
 keys/
 *.mp3
 *.blend
+
+.DS_Store
