@@ -98,8 +98,10 @@ def index_beats(beats_obj: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
     return out
 
 
-def index_script(script_obj: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
-    out: Dict[int, Dict[str, Any]] = {}
+def index_script(script_obj: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Key by segment_id (string).  Falls back to g{gid:04d}_p{i:02d} when
+    segment_id is absent on the shot, matching script_expander's formula."""
+    out: Dict[str, Dict[str, Any]] = {}
     sections = script_obj.get("sections") or []
     if not isinstance(sections, list):
         return out
@@ -119,6 +121,7 @@ def index_script(script_obj: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
             gid = int(s.get("group_id") or 0)
             if gid <= 0:
                 continue
+            sid = _safe_str(s.get("segment_id")) or f"g{gid:04d}_p{i:02d}"
 
             p = paras[i]
             if isinstance(p, dict):
@@ -128,7 +131,8 @@ def index_script(script_obj: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
                 paragraph_text = _safe_str(p)
                 delivery_tag = ""
 
-            out[gid] = {
+            out[sid] = {
+                "segment_id": sid,
                 "group_id": gid,
                 "section_index": sec_idx,
                 "beat_id": int(s.get("beat_id") or i),
@@ -143,8 +147,10 @@ def index_script(script_obj: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
 # -----------------------------
 # TTS index
 # -----------------------------
-def _index_tts(tts_obj: Dict[str, Any], tts_index_path: str) -> Dict[int, Dict[str, Any]]:
-    out: Dict[int, Dict[str, Any]] = {}
+def _index_tts(tts_obj: Dict[str, Any], tts_index_path: str) -> Dict[str, Dict[str, Any]]:
+    """Key by segment_id (string).  Falls back to group_id-based key when
+    segment_id is absent on the clip item (legacy TTS outputs)."""
+    out: Dict[str, Dict[str, Any]] = {}
 
     items = tts_obj.get("clips") or tts_obj.get("items") or tts_obj.get("sections") or []
     if not isinstance(items, list):
@@ -155,7 +161,8 @@ def _index_tts(tts_obj: Dict[str, Any], tts_index_path: str) -> Dict[int, Dict[s
         if not isinstance(it, dict):
             continue
         gid = int(it.get("group_id") or 0)
-        if gid <= 0:
+        sid = _safe_str(it.get("segment_id")) or (f"g{gid:04d}" if gid > 0 else "")
+        if not sid:
             continue
 
         audio_path = _safe_str(it.get("audio_file") or it.get("audio_path") or it.get("path") or "")
@@ -168,7 +175,8 @@ def _index_tts(tts_obj: Dict[str, Any], tts_index_path: str) -> Dict[int, Dict[s
         except Exception:
             dur_f = 0.0
 
-        out[gid] = {
+        out[sid] = {
+            "segment_id": sid,
             "group_id": gid,
             "audio_path": audio_path,
             "duration_sec": dur_f,
@@ -631,14 +639,25 @@ def main() -> int:
     if args.beats:
         beats_by_gid = index_beats(load_json(args.beats))
 
-    script_by_gid: Dict[int, Dict[str, Any]] = {}
+    script_by_gid: Dict[str, Dict[str, Any]] = {}
     if args.script:
         script_by_gid = index_script(load_json(args.script))
 
-    tts_by_gid: Dict[int, Dict[str, Any]] = {}
+    tts_by_gid: Dict[str, Dict[str, Any]] = {}
     if args.tts_index:
         tts_obj = load_json(args.tts_index)
         tts_by_gid = _index_tts(tts_obj, args.tts_index)
+
+    # B2: group the per-paragraph script rows (keyed by segment_id g####_p##) by
+    # group_id, in paragraph order, so the timeline emits ONE item per paragraph.
+    # Without this, a group with multiple narration paragraphs collapses to a
+    # single item and every paragraph's audio but the last is silently dropped.
+    segments_by_group: Dict[int, List[Any]] = {}
+    for _sid, _srow in script_by_gid.items():
+        _gid = int(_srow.get("group_id") or 0)
+        segments_by_group.setdefault(_gid, []).append((_sid, _srow))
+    for _gid in segments_by_group:
+        segments_by_group[_gid].sort(key=lambda t: t[0])  # g0001_p00 < g0001_p01
 
     timeline: List[Dict[str, Any]] = []
     time_cursor = 0.0
@@ -673,105 +692,115 @@ def main() -> int:
             scene_files = kept  # basenames only now
 
         beat = beats_by_gid.get(group_id, {"group_id": group_id})
-        srow = script_by_gid.get(group_id)
-
-        paragraph = _safe_str(srow.get("paragraph")) if srow else ""
-        delivery_tag = _safe_str(srow.get("delivery_tag")) if srow else ""
-
-        tts_text = paragraph if args.mode == "narrated" else ""
-        if delivery_tag and tts_text:
-            tts_text = f"[{delivery_tag}] {tts_text}"
-
-        overlays: List[Dict[str, Any]] = []
-
-        audio_duration = 0.0
-        tts_audio_path = ""
-        if args.mode == "narrated":
-            tts_row = tts_by_gid.get(group_id)
-            if tts_row:
-                audio_duration = float(tts_row.get("duration_sec") or 0.0)
-                tts_audio_path = _safe_str(tts_row.get("audio_path") or "")
-                if (audio_duration <= 0.0) and tts_audio_path.lower().endswith(".wav") and os.path.exists(tts_audio_path):
-                    try:
-                        audio_duration = _wav_duration_sec(tts_audio_path)
-                    except Exception:
-                        audio_duration = 0.0
-
-        dur = compute_duration_sec(
-            mode=args.mode,
-            tts_text=tts_text,
-            overlays=overlays,
-            base_min=args.base_min_sec,
-            max_sec=args.max_sec,
-            chars_per_sec=args.chars_per_sec,
-            audio_duration_sec=audio_duration,
-            audio_pad_sec=args.audio_pad_sec,
-        )
-
         mood_words = _norm_words(beat.get("mood_words") or [])
         rh = beat.get("rendering_hints") or {}
         avoid_text_zoom = bool(rh.get("avoid_text_zoom", False))
 
-        motion_mode = _choose_motion_mode(beat)
-        motion = _motion_params_for_mode(motion_mode, dur, mood_words)
-        camera = _camera_compat_from_motion(motion, avoid_text_zoom=avoid_text_zoom)
+        # B2: a group may have several narration paragraphs (segment_id g####_p##).
+        # Emit ONE timeline item per paragraph so each paragraph keeps its own
+        # audio + timing. Fall back to a single group-level item when no
+        # per-paragraph script rows exist (back-compat with old manifests).
+        segments = segments_by_group.get(group_id) or []
+        if not segments:
+            fallback_sid = _safe_str(gobj.get("segment_id")) or f"g{group_id:04d}"
+            fallback_srow = script_by_gid.get(fallback_sid) or script_by_gid.get(f"g{group_id:04d}")
+            segments = [(fallback_sid, fallback_srow)]
 
-        # display strategy
-        if args.default_display == "single_hold":
-            display_strategy = "single_hold"
-        elif args.default_display == "multi_cut":
-            display_strategy = "multi_cut"
-        else:
-            display_strategy = "multi_cut"
+        for segment_id, srow in segments:
+            paragraph = _safe_str(srow.get("paragraph")) if srow else ""
+            delivery_tag = _safe_str(srow.get("delivery_tag")) if srow else ""
 
-        # If no usable files: keep shot (audio still plays) but no cuts
-        primary_scene_file = scene_files[0] if scene_files else ""
+            tts_text = paragraph if args.mode == "narrated" else ""
+            if delivery_tag and tts_text:
+                tts_text = f"[{delivery_tag}] {tts_text}"
 
-        # Cuts drive montage in Blender
-        cuts: List[Dict[str, Any]] = []
-        if scene_files:
-            if display_strategy == "single_hold":
-                cuts = build_cuts([primary_scene_file], dur, min_cut_sec=float(args.min_cut_sec))
+            overlays: List[Dict[str, Any]] = []
+
+            audio_duration = 0.0
+            tts_audio_path = ""
+            if args.mode == "narrated":
+                tts_row = tts_by_gid.get(segment_id) or tts_by_gid.get(f"g{group_id:04d}")
+                if tts_row:
+                    audio_duration = float(tts_row.get("duration_sec") or 0.0)
+                    tts_audio_path = _safe_str(tts_row.get("audio_path") or "")
+                    if (audio_duration <= 0.0) and tts_audio_path.lower().endswith(".wav") and os.path.exists(tts_audio_path):
+                        try:
+                            audio_duration = _wav_duration_sec(tts_audio_path)
+                        except Exception:
+                            audio_duration = 0.0
+
+            dur = compute_duration_sec(
+                mode=args.mode,
+                tts_text=tts_text,
+                overlays=overlays,
+                base_min=args.base_min_sec,
+                max_sec=args.max_sec,
+                chars_per_sec=args.chars_per_sec,
+                audio_duration_sec=audio_duration,
+                audio_pad_sec=args.audio_pad_sec,
+            )
+
+            motion_mode = _choose_motion_mode(beat)
+            motion = _motion_params_for_mode(motion_mode, dur, mood_words)
+            camera = _camera_compat_from_motion(motion, avoid_text_zoom=avoid_text_zoom)
+
+            # display strategy
+            if args.default_display == "single_hold":
+                display_strategy = "single_hold"
+            elif args.default_display == "multi_cut":
+                display_strategy = "multi_cut"
             else:
-                cuts = build_cuts(scene_files, dur, min_cut_sec=float(args.min_cut_sec))
+                display_strategy = "multi_cut"
 
-        item: Dict[str, Any] = {
-            "group_id": group_id,
-            "shot_id": shot_id,
-            "display_strategy": display_strategy,
-            "primary_scene_file": primary_scene_file,
-            "group_scene_files": scene_files,
-            "scene_files": scene_files if display_strategy == "multi_cut" else ([primary_scene_file] if primary_scene_file else []),
+            # If no usable files: keep shot (audio still plays) but no cuts
+            primary_scene_file = scene_files[0] if scene_files else ""
 
-            # NEW: montage plan for Blender
-            "cuts": cuts,
+            # Cuts drive montage in Blender
+            cuts: List[Dict[str, Any]] = []
+            if scene_files:
+                if display_strategy == "single_hold":
+                    cuts = build_cuts([primary_scene_file], dur, min_cut_sec=float(args.min_cut_sec))
+                else:
+                    cuts = build_cuts(scene_files, dur, min_cut_sec=float(args.min_cut_sec))
 
-            "start_sec": round(time_cursor, 3),
-            "duration_sec": round(float(dur), 3),
-            "end_sec": round(time_cursor + float(dur), 3),
+            item: Dict[str, Any] = {
+                "segment_id": segment_id,
+                "group_id": group_id,
+                "shot_id": shot_id,
+                "display_strategy": display_strategy,
+                "primary_scene_file": primary_scene_file,
+                "group_scene_files": scene_files,
+                "scene_files": scene_files if display_strategy == "multi_cut" else ([primary_scene_file] if primary_scene_file else []),
 
-            "camera": camera,
-            "motion": motion,
-            "overlays": overlays,
-            "tts_text": tts_text.strip(),
-            "tts_audio": tts_audio_path,
-            "tts_audio_duration_sec": round(float(audio_duration), 3) if audio_duration else 0.0,
-            "rendering_hints": {
-                "avoid_text_zoom": avoid_text_zoom,
-                "preferred_focus": rh.get("preferred_focus") or "",
-                "camera_motion": rh.get("camera_motion") or "",
-                "target_phrases": rh.get("target_phrases") if isinstance(rh.get("target_phrases"), list) else [],
-            },
-            "tags": {
-                "mood_words": beat.get("mood_words") or [],
-                "emotional_turn": beat.get("emotional_turn") or "",
-                "duration_source": "audio" if (args.mode == "narrated" and audio_duration > 0.0) else "estimate",
-                "filtered_blank_panels": True if args.prefer_clean else False,
-            },
-        }
+                # NEW: montage plan for Blender
+                "cuts": cuts,
 
-        timeline.append(item)
-        time_cursor += float(dur)
+                "start_sec": round(time_cursor, 3),
+                "duration_sec": round(float(dur), 3),
+                "end_sec": round(time_cursor + float(dur), 3),
+
+                "camera": camera,
+                "motion": motion,
+                "overlays": overlays,
+                "tts_text": tts_text.strip(),
+                "tts_audio": tts_audio_path,
+                "tts_audio_duration_sec": round(float(audio_duration), 3) if audio_duration else 0.0,
+                "rendering_hints": {
+                    "avoid_text_zoom": avoid_text_zoom,
+                    "preferred_focus": rh.get("preferred_focus") or "",
+                    "camera_motion": rh.get("camera_motion") or "",
+                    "target_phrases": rh.get("target_phrases") if isinstance(rh.get("target_phrases"), list) else [],
+                },
+                "tags": {
+                    "mood_words": beat.get("mood_words") or [],
+                    "emotional_turn": beat.get("emotional_turn") or "",
+                    "duration_source": "audio" if (args.mode == "narrated" and audio_duration > 0.0) else "estimate",
+                    "filtered_blank_panels": True if args.prefer_clean else False,
+                },
+            }
+
+            timeline.append(item)
+            time_cursor += float(dur)
 
     out_obj = {
         "source_groups": os.path.abspath(args.groups),
