@@ -1,0 +1,39 @@
+# Sub-Project 2 — Scene & Bubble Quality
+
+**Date:** 2026-06-09
+**Status:** Draft (captures QA findings from the first real ORV + Nano Machine runs)
+**Depends on:** SP1 (working pipeline) — already shipped.
+
+## Purpose
+
+The SP1 pipeline produces a working recap (fetch → YOLO → scenes → OCR → Gemini beats → OpenAI script), and the narrative-quality overhaul (R2/R3/R4 + flashback + continuity) is in. But QA on real chapters surfaced **visual/scene defects** that separate "runs" from "looks professional." This sub-project fixes them, verified against the actual ORV/Nano examples.
+
+## Findings & Tasks (each verified against real crops)
+
+| # | Defect (real example) | Status | Fix |
+|---|----------------------|--------|-----|
+| 1 | Duplicate/overlapping crops (sub-region of same tall panel) | ✅ **done** | Geometric IoU/containment dedup (`--dedupe-overlap`), merged to main |
+| 2 | **Over-segmentation** — 24 pages → ~116 scenes (~5/page); choppy, too many micro-crops | ⏳ | Tune panels_to_scenes gutter-split aggressiveness + min panel height; target ~1–3 meaningful panels/page. Acceptance: Nano ch1 yields a sane scene count (~40–60, not 116). |
+| 3 | **Text-only bubble as its own scene** (p20 "PEASANT BLOOD…") | ⏳ | Detect bubble-only / text-dominated crops (high bubble-area fraction, low non-bubble content) and merge into the neighboring story panel rather than emitting standalone. |
+| 4 | **Bubbles not removed** from displayed images (white **and black** backgrounds) | ⏳ | Wire `clean_panels_inpaint.py` as a `cleaned` stage → `clean_scenes/`; FIX its dark-bubble handling (audit: current bubble test requires bright bg, so dark/narration bubbles survive); timeline uses `--prefer-clean --clean-scene-dir`. OCR/vision still runs on raw (with bubbles) so narration keeps the text. |
+| 5 | **Bubble TYPE → narration mode** (smooth=spoken, jagged=internal monologue e.g. p20, rectangle=narration) | ⏳ | YOLO can't subclassify by outline; the Gemini beats pass CAN. Enhance `gemini_narrative_pass` prompt to tag each line's mode (spoken / inner-thought / narration / shout) from the visual bubble style; pass mode to script so it narrates "he thinks…" vs "he says…". |
+| 6 | **Split / diptych action panels** (Image #6: two images, opposing motion lines = one clash moment) split into 2 scenes | ⏳ | Detect adjacent crops that form one visual moment (side-by-side, motion-line cues, or Gemini判定) and keep them as one shot (fast intercut), not two unrelated scenes. |
+| 7 | **Emotion-aware pacing** — narration/timing should track scene intensity (intense fight = punchy + fast cuts; quiet = longer holds). Currently even split. | ⏳ | Use beats' `mood_words`/intensity to modulate per-shot duration and `min_cut_sec` (intense → shorter holds/faster cuts within a min; emotional → longer). The narration-length-per-image should reflect emotion, not be uniform. |
+
+## Architecture notes
+
+- **Raw vs clean scenes:** keep `scenes/` (raw, with bubbles) for OCR/vision so narration knows the dialogue; produce `clean_scenes/` (bubble-inpainted) for the *video*. `timeline_planner` already supports `--prefer-clean --clean-scene-dir`.
+- **Bubble understanding belongs in the Gemini pass**, not regex/YOLO — same lesson as the OCR-vs-Gemini discussion. Items #3, #5, #6 are best driven by enhancing the multimodal beats prompt to emit structured per-panel metadata (bubble type, is-text-only, is-split-pair, intensity).
+- **Min-time-per-picture** (≥3.5s) is already enforced via `--min-cut-sec 3.5` (SP1 fix); #7 makes it emotion-adaptive rather than fixed.
+
+## Build order (highest impact first)
+
+1. **#2 over-segmentation** (biggest visual win — fewer, better crops; also shortens the choppy montage)
+2. **#3 text-only bubble merge** (kills p20-type standalone bubbles)
+3. **#4 bubble inpaint** (white+black) + `--prefer-clean` wiring
+4. **#5 bubble-type → narration mode** (Gemini prompt; quality of narration)
+5. **#6 split-panel grouping** + **#7 emotion-aware pacing** (polish)
+
+## Acceptance
+
+Re-run Nano Machine ch1 and ORV ch1 end-to-end; verify: scene count is sane (#2), no standalone text bubbles (#3), displayed images have bubbles cleaned on both bg colors (#4), narration distinguishes thought vs speech (#5), split-action panels stay paired (#6), and intense scenes pace faster than quiet ones (#7). Full test suite stays green.
