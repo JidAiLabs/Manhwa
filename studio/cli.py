@@ -231,6 +231,38 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: qa
+# ---------------------------------------------------------------------------
+
+def cmd_qa(args: argparse.Namespace) -> int:
+    from studio.qa import build_qa_report
+
+    con = _open_db()
+    chapters = repo.list_chapters(con, args.series_id)
+    selected = parse_chapter_selector(args.chapters, chapters)
+
+    if not selected:
+        print("No chapters match the selector.")
+        return 0
+
+    for ch in selected:
+        if not ch.ep_dir:
+            print(f"  ch{ch.number}: no ep_dir recorded — run fetch first.")
+            continue
+
+        ep_dir = Path(ch.ep_dir)
+        if args.out:
+            out_html = Path(args.out)
+        else:
+            out_html = ep_dir / "qa_report.html"
+
+        result = build_qa_report(ep_dir, out_html)
+        print(str(result))
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: status
 # ---------------------------------------------------------------------------
 
@@ -297,6 +329,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="Show chapter status table")
     p_status.add_argument("series_id", type=int, nargs="?", default=None)
 
+    # qa
+    p_qa = sub.add_parser("qa", help="Generate scene↔narration QA report")
+    p_qa.add_argument("series_id", type=int)
+    p_qa.add_argument("--chapters", required=True,
+                      help="Chapter selector: N, N-M, or 'new'")
+    p_qa.add_argument("--out", default=None, metavar="PATH",
+                      help="Output HTML path (default: <ep_dir>/qa_report.html)")
+
     return p
 
 
@@ -320,6 +360,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "fetch":      cmd_fetch,
         "run":        cmd_run,
         "status":     cmd_status,
+        "qa":         cmd_qa,
     }
 
     fn = dispatch.get(args.command)
