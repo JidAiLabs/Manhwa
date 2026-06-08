@@ -16,9 +16,13 @@ class Config:
     gallerydl_sleep: float
 
 def load_creds_env(path: Path | None = None) -> None:
-    """Load KEY=VALUE lines from keys/creds.env into os.environ (without
-    overwriting variables already set). Secrets live in this gitignored file so
-    the CLI works without the user manually exporting them."""
+    """Load KEY=VALUE lines from keys/creds.env into os.environ.
+
+    creds.env is AUTHORITATIVE: it overwrites any pre-existing environment
+    value, so a stale key left in the user's shell (e.g. an old
+    OPENAI_API_KEY) can't shadow the project's intended secret. Secrets live in
+    this gitignored file so the CLI works without manual `export`.
+    """
     import os
     p = path or (REPO_ROOT / "keys" / "creds.env")
     if not p.exists():
@@ -29,7 +33,7 @@ def load_creds_env(path: Path | None = None) -> None:
             continue
         k, v = line.split("=", 1)
         k, v = k.strip(), v.strip()
-        if k and k not in os.environ:
+        if k:
             os.environ[k] = v
 
 
