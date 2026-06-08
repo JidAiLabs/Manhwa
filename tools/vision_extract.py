@@ -369,7 +369,7 @@ def classify_text_only(ocr_clean: str, text_cov: float, labels: List[str], objec
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenes-dir", required=True, help="Directory containing scene_*.jpg")
-    ap.add_argument("--glob", default="scene_*.jpg")
+    ap.add_argument("--glob", default="*.jpg")
     ap.add_argument("--out", default="manifest.vision.json")
 
     ap.add_argument("--max-text-chars", type=int, default=1200)
