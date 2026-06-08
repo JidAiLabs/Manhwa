@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Tuple
 from google.cloud import vision  # pip install google-cloud-vision
 from PIL import Image, ImageFile
 
+from ocr_chrome import strip_ui_chrome
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
@@ -145,6 +147,9 @@ def clean_ocr_text(raw: str, cfg: VisionConfig) -> str:
 
     text = " ".join(lines)
     text = re.sub(r"\s+", " ", text).strip()
+    # Second pass: strip webtoon reader UI chrome (view/comment/like counters,
+    # episode nav, etc.) conservatively — preserves narrative text.
+    text = strip_ui_chrome(text)
     return text
 
 
