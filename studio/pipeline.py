@@ -90,66 +90,123 @@ def _check_elevenlabs() -> None:
 # Stages are keyed by the status that means "this stage has been done".
 
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _ep_paths(ep_dir: Path) -> dict:
+    """Canonical manifest/dir paths within an episode directory."""
+    return {
+        "stitch": ep_dir / "manifest.stitch.json",
+        "chunks": ep_dir / "stitch_chunks",
+        "panels": ep_dir / "manifest.panels.json",
+        "panels_expanded": ep_dir / "manifest.panels.expanded.json",
+        "scenes": ep_dir / "scenes",
+        "scenes_manifest": ep_dir / "manifest.scenes.json",
+        "vision": ep_dir / "manifest.vision.json",
+        "groups": ep_dir / "manifest.groups.json",
+        "beats": ep_dir / "manifest.beats.json",
+        "script": ep_dir / "manifest.script.json",
+        "tts_dir": ep_dir / "tts",
+        "tts_index": ep_dir / "tts" / "tts_index.json",
+        "plan": ep_dir / "render.plan.json",
+    }
+
+
 def _stage_stitch(ep_dir: Path, cfg: Config) -> None:
-    _run_tool("chunk_stitch_adaptive.py", [str(ep_dir)])
+    p = _ep_paths(ep_dir)
+    _run_tool("chunk_stitch_adaptive.py",
+              ["--episode-dir", str(ep_dir), "--glob", "*.jpg", "--out-dir", str(p["chunks"])])
 
 
 def _stage_detect(ep_dir: Path, cfg: Config) -> None:
-    stitch_manifest = ep_dir / "manifest.stitch.json"
-    panels_manifest = ep_dir / "manifest.panels.json"
+    p = _ep_paths(ep_dir)
     if cfg.detect_backend == "yolo":
         from studio.detect.yolo_panels import detect_panels
-        detect_panels(
-            str(stitch_manifest),
-            str(panels_manifest),
-            str(cfg.yolo_weights),
-        )
-    _run_tool("expand_boxes_to_gutters.py", [str(ep_dir)])
+        detect_panels(str(p["stitch"]), str(p["panels"]), str(cfg.yolo_weights))
+    else:
+        raise RuntimeError(
+            f"detect_backend '{cfg.detect_backend}' needs Vertex auth; SP1 supports 'yolo'")
+    _run_tool("expand_boxes_to_gutters.py",
+              ["--stitch-manifest", str(p["stitch"]),
+               "--panels-manifest", str(p["panels"]),
+               "--out-panels-manifest", str(p["panels_expanded"])])
 
 
 def _stage_scened(ep_dir: Path, cfg: Config) -> None:
-    _run_tool("panels_to_scenes.py", [str(ep_dir)])
+    p = _ep_paths(ep_dir)
+    _run_tool("panels_to_scenes.py",
+              ["--stitch-manifest", str(p["stitch"]),
+               "--panels-manifest", str(p["panels_expanded"]),
+               "--out-dir", str(p["scenes"]),
+               "--out-manifest", str(p["scenes_manifest"])])
 
 
 def _stage_visioned(ep_dir: Path, cfg: Config) -> None:
-    _run_tool("vision_extract.py", [str(ep_dir), "--glob", "*.jpg"])
+    # Google Vision needs a service-account key; use the repo's if present.
+    keys = _REPO_ROOT / "keys" / "gcp-vision.json"
+    if keys.exists() and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
+    p = _ep_paths(ep_dir)
+    _run_tool("vision_extract.py",
+              ["--scenes-dir", str(p["scenes"]), "--glob", "*.jpg", "--out", str(p["vision"])])
 
 
 def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
-    _run_tool("scene_group_builder.py", [str(ep_dir)])
+    p = _ep_paths(ep_dir)
+    _run_tool("scene_group_builder.py",
+              ["--vision-manifest", str(p["vision"]), "--out", str(p["groups"])])
 
 
 def _stage_beated(ep_dir: Path, cfg: Config) -> None:
     _check_vertex_adc()
-    _run_tool("timeline_planner.py", [str(ep_dir)])
+    p = _ep_paths(ep_dir)
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+    _run_tool("gemini_narrative_pass.py",
+              ["--groups-manifest", str(p["groups"]),
+               "--vision-manifest", str(p["vision"]),
+               "--out", str(p["beats"]),
+               "--project", project, "--location", location])
 
 
 def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
     _check_openai()
-    _run_tool("script_expander.py", [str(ep_dir)])
+    p = _ep_paths(ep_dir)
+    _run_tool("script_expander.py",
+              ["--beats", str(p["beats"]), "--vision", str(p["vision"]), "--out", str(p["script"])])
 
 
 def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
     _check_elevenlabs()
-    _run_tool("elevenlabs_tts_from_manifest.py", [str(ep_dir)])
+    p = _ep_paths(ep_dir)
+    voice = os.environ.get("ELEVENLABS_VOICE_ID", "")
+    _run_tool("elevenlabs_tts_from_manifest.py",
+              ["--script", str(p["script"]), "--out-dir", str(p["tts_dir"]), "--voice-id", voice])
 
 
 def _stage_planned(ep_dir: Path, cfg: Config) -> None:
-    _run_tool("blender_vse_from_plan.py", [str(ep_dir)])
+    # Blender render is a manual follow step; the terminal pipeline output is
+    # render.plan.json (produced by timeline_planner, needs no API creds).
+    p = _ep_paths(ep_dir)
+    _run_tool("timeline_planner.py",
+              ["--groups", str(p["groups"]), "--beats", str(p["beats"]),
+               "--script", str(p["script"]), "--vision", str(p["vision"]),
+               "--tts-index", str(p["tts_index"]),
+               "--out", str(p["plan"]), "--mode", "narrated"])
 
 
 # Ordered list of (result_status, runner_fn, output_marker_relpath)
 # "result_status" = status after this stage completes successfully
 _STAGE_TABLE: list[tuple[str, Callable[[Path, Config], None], str]] = [
     ("stitched",  _stage_stitch,   "manifest.stitch.json"),
-    ("detected",  _stage_detect,   "manifest.panels.json"),
+    ("detected",  _stage_detect,   "manifest.panels.expanded.json"),
     ("scened",    _stage_scened,   "manifest.scenes.json"),
     ("visioned",  _stage_visioned, "manifest.vision.json"),
     ("grouped",   _stage_grouped,  "manifest.groups.json"),
-    ("beated",    _stage_beated,   "manifest.beat.json"),
+    ("beated",    _stage_beated,   "manifest.beats.json"),
     ("scripted",  _stage_scripted, "manifest.script.json"),
-    ("voiced",    _stage_voiced,   "manifest.voiced.json"),
-    ("planned",   _stage_planned,  "manifest.plan.json"),
+    ("voiced",    _stage_voiced,   "tts/tts_index.json"),
+    ("planned",   _stage_planned,  "render.plan.json"),
 ]
 
 
