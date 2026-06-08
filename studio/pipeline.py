@@ -144,7 +144,10 @@ def _stage_scened(ep_dir: Path, cfg: Config) -> None:
               ["--stitch-manifest", str(p["stitch"]),
                "--panels-manifest", str(p["panels_expanded"]),
                "--out-dir", str(p["scenes"]),
-               "--out-manifest", str(p["scenes_manifest"])])
+               "--out-manifest", str(p["scenes_manifest"]),
+               # Quality: drop near-duplicate crops, skip blank/text-only panels,
+               # and trim white OR black margins (keeps content + bubbles).
+               "--dedupe", "--skip-blank", "--trim-margins"])
 
 
 def _stage_visioned(ep_dir: Path, cfg: Config) -> None:
@@ -209,7 +212,9 @@ def _stage_planned(ep_dir: Path, cfg: Config) -> None:
               ["--groups", str(p["groups"]), "--beats", str(p["beats"]),
                "--script", str(p["script"]), "--vision", str(p["vision"]),
                "--tts-index", str(p["tts_index"]),
-               "--out", str(p["plan"]), "--mode", "narrated"])
+               "--out", str(p["plan"]), "--mode", "narrated",
+               # Each shown picture gets >= 3.5s; excess panels in a shot are dropped.
+               "--min-cut-sec", "3.5"])
 
 
 # Ordered list of (result_status, runner_fn, output_marker_relpath)
