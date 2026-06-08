@@ -11,10 +11,10 @@ Series page structure:
     React hydration artifact stripped during HTML parse)
 
 Chapter page structure:
-  - Image URLs are embedded in a <script> block as window.__ASTRO_DATA__
-    (HTML-entity-encoded JSON). The JSON has the shape:
-    {"pages": [1, [[0, {"url": [0, "https://..."], ...}], ...]]}
-    i.e. pages[1] is the list; each element is [0, {url: [0, url_str], ...}]
+  - Per-page images are served from a stable CDN path embedded in the page:
+    cdn.asurascans.com/asura-images/chapters[-restored]/<slug>/<ch>/NNN.webp
+    We extract them by pattern and order by the numeric filename. (The page
+    has no window.__ASTRO_DATA__ block despite the Astro frontend.)
 """
 
 from __future__ import annotations
@@ -124,11 +124,8 @@ def _parse_series(tree: HTMLParser, series_url: str) -> tuple[str, list[ChapterR
 
 def _extract_image_urls(page_html: str) -> list[str]:
     """
-    Extract ordered image URLs from the Asura chapter page.
-
-    The page embeds window.__ASTRO_DATA__ as an HTML-entity-encoded JSON
-    object inside a <script> tag.  The pages array has the shape:
-      [tag, [[tag, {url: [tag, url_str], ...}], ...]]
+    Extract ordered chapter image URLs from the Asura chapter page by matching
+    the CDN per-page pattern and ordering by numeric filename.
     """
     # Decode entities + un-escape slashes (the URLs may appear inside an
     # entity-encoded JSON blob), then pull every per-page chapter image and
