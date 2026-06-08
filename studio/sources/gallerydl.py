@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -27,6 +28,10 @@ from studio.sources.base import UnsupportedSource
 # ---------------------------------------------------------------------------
 # Internal constants
 # ---------------------------------------------------------------------------
+
+# Invoke gallery-dl via the current interpreter so it works regardless of
+# whether the venv's bin/ is on PATH (it usually isn't outside `activate`).
+_GDL_CMD = [sys.executable, "-m", "gallery_dl"]
 
 _EXTRACTOR_ERROR_PHRASES = ("no suitable extractor", "unsupported url")
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -45,7 +50,7 @@ def gallerydl_supports(url: str) -> bool:
     We use ``--simulate`` so no files are written during the probe.
     """
     result = subprocess.run(
-        ["gallery-dl", "--simulate", url],
+        [*_GDL_CMD, "--simulate", url],
         capture_output=True,
         text=True,
         timeout=60,
@@ -78,7 +83,7 @@ def run_download(url: str, tmp_dir: Path, sleep: float = 2.0) -> None:
     """
     result = subprocess.run(
         [
-            "gallery-dl",
+            *_GDL_CMD,
             "--dest", str(tmp_dir),
             "--sleep", str(sleep),
             "--write-metadata",

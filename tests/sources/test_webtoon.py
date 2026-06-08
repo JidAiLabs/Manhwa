@@ -99,7 +99,8 @@ def test_list_chapters_calls_gallery_dl_with_minus_j():
             "https://www.webtoons.com/en/action/omniscient-reader/list?title_no=2154"
         )
         cmd = mock_run.call_args[0][0]
-        assert "gallery-dl" in cmd[0] or "gallery-dl" in " ".join(cmd)
+        # Invoked as `python -m gallery_dl -j <url>` (module form, PATH-independent)
+        assert "gallery_dl" in " ".join(cmd)
         assert "-j" in cmd
 
 

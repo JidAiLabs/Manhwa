@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from studio.sources.base import (
@@ -44,7 +45,7 @@ _BROWSER_UA = (
 def _run_gallery_dl_j(url: str) -> list:
     """Run ``gallery-dl -j <url>`` and return the parsed JSON list."""
     result = subprocess.run(
-        ["gallery-dl", "-j", url],
+        [sys.executable, "-m", "gallery_dl", "-j", url],
         capture_output=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

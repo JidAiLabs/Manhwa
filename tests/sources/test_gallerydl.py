@@ -138,7 +138,8 @@ def test_run_download_calls_gallery_dl(tmp_path):
     with patch("subprocess.run", return_value=mock_result) as mock_run:
         run_download("https://example.com/ch1", tmp_path)
         cmd = mock_run.call_args[0][0]
-        assert "gallery-dl" in cmd
+        # Invoked as `python -m gallery_dl ...` (module form, PATH-independent)
+        assert "gallery_dl" in cmd
         assert str(tmp_path) in cmd
 
 
