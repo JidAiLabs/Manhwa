@@ -1,0 +1,47 @@
+[
+  [
+    6,
+    "https://www.webtoons.com/en/action/omniscient-reader/episode-0-prologue/viewer?title_no=2154&episode_no=1",
+    {
+      "category": "webtoons",
+      "comic": "omniscient-reader",
+      "date": "2020-08-18 00:00:00",
+      "episode_no": 1,
+      "genre": "action",
+      "lang": "en",
+      "page": 31,
+      "subcategory": "comic",
+      "title_no": 2154
+    }
+  ],
+  [
+    6,
+    "https://www.webtoons.com/en/action/omniscient-reader/episode-1/viewer?title_no=2154&episode_no=2",
+    {
+      "category": "webtoons",
+      "comic": "omniscient-reader",
+      "date": "2020-08-18 00:00:00",
+      "episode_no": 2,
+      "genre": "action",
+      "lang": "en",
+      "page": 31,
+      "subcategory": "comic",
+      "title_no": 2154
+    }
+  ],
+  [
+    6,
+    "https://www.webtoons.com/en/action/omniscient-reader/episode-2/viewer?title_no=2154&episode_no=3",
+    {
+      "category": "webtoons",
+      "comic": "omniscient-reader",
+      "date": "2020-08-18 00:00:00",
+      "episode_no": 3,
+      "genre": "action",
+      "lang": "en",
+      "page": 31,
+      "subcategory": "comic",
+      "title_no": 2154
+    }
+  ]
+]
