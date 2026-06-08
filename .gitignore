@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.eval_venv/
+studio.db
+runs/
+out/
+ongoing/*/
+keys/
+*.mp3
+*.blend

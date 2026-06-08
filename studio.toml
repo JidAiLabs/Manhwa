@@ -1,0 +1,13 @@
+[sources.asura]
+base_url = "https://asurascans.com"
+[sources.webtoon]
+base_url = "https://www.webtoons.com"
+[sources.elftoon]
+base_url = "https://elftoon.com"
+
+[detect]
+backend = "yolo"
+yolo_weights = "/Users/anka/webtoon-ai/runs/detect/webtoon/yolo26_musgd_run/weights/best.pt"
+
+[gallerydl]
+sleep = 2.0

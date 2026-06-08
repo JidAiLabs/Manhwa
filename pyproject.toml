@@ -1,0 +1,12 @@
+[project]
+name = "manhwa-studio"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["gallery-dl", "ultralytics", "httpx", "selectolax", "Pillow"]
+
+[project.scripts]
+studio = "studio.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["requires_ultralytics: needs torch/ultralytics", "live: hits network (manual only)"]
