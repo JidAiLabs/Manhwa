@@ -50,7 +50,13 @@ def _run_tool(script_name: str, args_list: list[str]) -> None:
     repo_root = Path(__file__).resolve().parent.parent
     script_path = repo_root / "tools" / script_name
     cmd = [sys.executable, str(script_path)] + args_list
-    result = subprocess.run(cmd, check=True)
+    # The break-fixed tools `import studio.paths`, but they run as standalone
+    # scripts here, so the repo root must be on PYTHONPATH for the subprocess.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(repo_root), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    subprocess.run(cmd, check=True, env=env)
     # check=True raises CalledProcessError on non-zero exit
 
 
