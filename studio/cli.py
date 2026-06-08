@@ -351,6 +351,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     None, meaning real CLI invocation).  When called with an explicit argv list
     (e.g. from tests) it returns normally so callers can inspect results.
     """
+    # Load secrets from keys/creds.env into the environment so the cred-gated
+    # pipeline stages (script/tts) can read them without manual `export`.
+    studio_config.load_creds_env()
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 

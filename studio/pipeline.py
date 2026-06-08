@@ -166,10 +166,19 @@ def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
 
 
 def _stage_beated(ep_dir: Path, cfg: Config) -> None:
-    _check_vertex_adc()
-    p = _ep_paths(ep_dir)
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+    # Prefer the repo's gcp service-account key for Vertex Gemini auth (no gcloud
+    # needed). A service account can only authenticate its OWN project, so use
+    # the project_id baked into the key, not whatever GOOGLE_CLOUD_PROJECT says.
+    import json
+    keys = _REPO_ROOT / "keys" / "gcp-vision.json"
+    if keys.exists():
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
+        project = json.loads(keys.read_text()).get("project_id", "")
+    else:
+        _check_vertex_adc()
+        project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+    p = _ep_paths(ep_dir)
     _run_tool("gemini_narrative_pass.py",
               ["--groups-manifest", str(p["groups"]),
                "--vision-manifest", str(p["vision"]),
