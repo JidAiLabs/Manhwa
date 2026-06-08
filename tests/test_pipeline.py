@@ -114,6 +114,8 @@ def _block_cred_gated_stages(monkeypatch, pipeline_mod) -> None:
 
     This keeps SP1-only tests hermetic regardless of local gcloud/env state.
     """
+    from pathlib import Path as _Path
+
     def _raise_beated():
         raise pipeline_mod.MissingCredential("beated", "GOOGLE_APPLICATION_CREDENTIALS")
 
@@ -123,6 +125,10 @@ def _block_cred_gated_stages(monkeypatch, pipeline_mod) -> None:
     def _raise_voiced():
         raise pipeline_mod.MissingCredential("voiced", "ELEVENLABS_API_KEY")
 
+    # Point _REPO_ROOT at a key-less path so _stage_beated takes the
+    # _check_vertex_adc() branch (otherwise it would auth via the real repo's
+    # keys/gcp-vision.json and the cred-gate would never fire).
+    monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", _Path("/nonexistent-studio-test-root"))
     monkeypatch.setattr(pipeline_mod, "_check_vertex_adc", _raise_beated)
     monkeypatch.setattr(pipeline_mod, "_check_openai", _raise_scripted)
     monkeypatch.setattr(pipeline_mod, "_check_elevenlabs", _raise_voiced)
