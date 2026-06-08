@@ -94,6 +94,86 @@ def area_px(box: List[int]) -> int:
 
 
 # -----------------------------
+# Geometric overlap / containment dedup
+# (complements perceptual-hash dedupe: catches overlapping sub-regions of the
+#  same tall panel, where crops share content but have non-identical hashes)
+# -----------------------------
+def _intersection_area(a: List[float], b: List[float]) -> float:
+    """Area of the intersection of two xyxy boxes [x0, y0, x1, y1]."""
+    ix0 = max(a[0], b[0])
+    iy0 = max(a[1], b[1])
+    ix1 = min(a[2], b[2])
+    iy1 = min(a[3], b[3])
+    iw = ix1 - ix0
+    ih = iy1 - iy0
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    return float(iw) * float(ih)
+
+
+def box_iou(a: List[float], b: List[float]) -> float:
+    """Intersection-over-union of two xyxy boxes. 0.0 if no overlap."""
+    inter = _intersection_area(a, b)
+    if inter <= 0.0:
+        return 0.0
+    area_a = float(max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1]))
+    area_b = float(max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1]))
+    union = area_a + area_b - inter
+    if union <= 0.0:
+        return 0.0
+    return inter / union
+
+
+def box_containment(inner: List[float], outer: List[float]) -> float:
+    """Fraction of `inner` that lies inside `outer`: area(inner ∩ outer) / area(inner)."""
+    area_inner = float(max(0.0, inner[2] - inner[0]) * max(0.0, inner[3] - inner[1]))
+    if area_inner <= 0.0:
+        return 0.0
+    return _intersection_area(inner, outer) / area_inner
+
+
+def dedupe_overlapping_boxes(
+    boxes: List[List[float]],
+    iou_thr: float = 0.6,
+    contain_thr: float = 0.8,
+) -> List[int]:
+    """Drop boxes that are largely redundant with another box in the same set.
+
+    For each pair (A, B), if IoU(A, B) >= iou_thr OR containment(smaller in
+    larger) >= contain_thr, the SMALLER box is dropped (keep the larger/
+    more-complete crop). Returns the sorted list of kept indices, preserving
+    original order.
+    """
+    n = len(boxes)
+    areas = [
+        float(max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])) for b in boxes
+    ]
+    dropped = [False] * n
+    for i in range(n):
+        if dropped[i]:
+            continue
+        for j in range(i + 1, n):
+            if dropped[j]:
+                continue
+            a, b = boxes[i], boxes[j]
+            # identify smaller / larger (ties: drop the later index j)
+            if areas[i] >= areas[j]:
+                larger, smaller = i, j
+            else:
+                larger, smaller = j, i
+            redundant = False
+            if box_iou(a, b) >= iou_thr:
+                redundant = True
+            elif box_containment(boxes[smaller], boxes[larger]) >= contain_thr:
+                redundant = True
+            if redundant:
+                dropped[smaller] = True
+                if smaller == i:
+                    break  # i itself is gone; move to next i
+    return [k for k in range(n) if not dropped[k]]
+
+
+# -----------------------------
 # DHash for dedupe
 # -----------------------------
 def dhash64(im: Image.Image) -> int:
@@ -531,6 +611,10 @@ def main() -> int:
     ap.add_argument("--min-w-px", type=int, default=240)
 
     ap.add_argument("--dedupe", action="store_true")
+    ap.add_argument("--dedupe-overlap", action="store_true",
+                    help="geometric overlap/containment dedup of panel boxes within a chunk (pre-crop)")
+    ap.add_argument("--overlap-iou", type=float, default=0.6)
+    ap.add_argument("--overlap-contain", type=float, default=0.8)
     ap.add_argument("--dedupe-threshold", type=int, default=8)  # hamming
     ap.add_argument("--dedupe-ratio-tol", type=float, default=0.08)
     ap.add_argument("--dedupe-area-tol", type=float, default=0.10)
@@ -614,6 +698,7 @@ def main() -> int:
     skipped_blank = 0
     skipped_small = 0
     skipped_dedupe = 0
+    skipped_overlap = 0
 
     seq_id = 0
 
@@ -644,13 +729,42 @@ def main() -> int:
                     )
                 chunk_spans = protected_cache.get(cf, [])
 
+            # Pre-compute the padded crop rectangle for every panel box so the
+            # geometric overlap dedup can run on the actual crop rectangles
+            # (gutter-expansion happens in normalized coords, so overlaps only
+            # become apparent at pixel scale).
+            padded_boxes: Dict[int, List[int]] = {}
+            for pidx, b in enumerate(boxes_norm):
+                if not (isinstance(b, list) and len(b) == 4):
+                    continue
+                pb = norm_to_px_xyxy(b, cw, chh)
+                pb = pad_box_xyxy(pb, cw, chh, int(args.pad_px))
+                padded_boxes[pidx] = pb
+
+            kept_pidx: Optional[set] = None
+            if args.dedupe_overlap and padded_boxes:
+                order = sorted(padded_boxes.keys())
+                box_list = [padded_boxes[k] for k in order]
+                kept_local = dedupe_overlapping_boxes(
+                    box_list,
+                    iou_thr=float(args.overlap_iou),
+                    contain_thr=float(args.overlap_contain),
+                )
+                kept_pidx = {order[i] for i in kept_local}
+                dropped_n = len(box_list) - len(kept_local)
+                if dropped_n:
+                    skipped_overlap += dropped_n
+
             for pidx, b in enumerate(boxes_norm):
                 if not (isinstance(b, list) and len(b) == 4):
                     continue
                 total_panels_in += 1
 
-                box_xyxy = norm_to_px_xyxy(b, cw, chh)
-                box_xyxy = pad_box_xyxy(box_xyxy, cw, chh, int(args.pad_px))
+                if kept_pidx is not None and pidx not in kept_pidx:
+                    # already counted in skipped_overlap above
+                    continue
+
+                box_xyxy = padded_boxes[pidx]
 
                 # size guards
                 if (box_xyxy[3] - box_xyxy[1]) < int(args.min_h_px) or (box_xyxy[2] - box_xyxy[0]) < int(args.min_w_px):
@@ -784,6 +898,7 @@ def main() -> int:
             "skipped_blank": int(skipped_blank),
             "skipped_small": int(skipped_small),
             "skipped_dedupe": int(skipped_dedupe),
+            "skipped_overlap": int(skipped_overlap),
         },
         "params": {
             "jpeg_quality": int(args.jpeg_quality),
@@ -792,6 +907,9 @@ def main() -> int:
             "min_h_px": int(args.min_h_px),
             "min_w_px": int(args.min_w_px),
             "dedupe": bool(args.dedupe),
+            "dedupe_overlap": bool(args.dedupe_overlap),
+            "overlap_iou": float(args.overlap_iou),
+            "overlap_contain": float(args.overlap_contain),
             "dedupe_threshold": int(args.dedupe_threshold),
             "dedupe_ratio_tol": float(args.dedupe_ratio_tol),
             "dedupe_area_tol": float(args.dedupe_area_tol),

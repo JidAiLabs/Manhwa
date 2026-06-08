@@ -147,7 +147,9 @@ def _stage_scened(ep_dir: Path, cfg: Config) -> None:
                "--out-manifest", str(p["scenes_manifest"]),
                # Quality: drop near-duplicate crops, skip blank/text-only panels,
                # and trim white OR black margins (keeps content + bubbles).
-               "--dedupe", "--skip-blank", "--trim-margins"])
+               # --dedupe-overlap additionally removes overlapping sub-region
+               # crops of the same tall panel that perceptual-hash dedupe misses.
+               "--dedupe", "--skip-blank", "--trim-margins", "--dedupe-overlap"])
 
 
 def _stage_visioned(ep_dir: Path, cfg: Config) -> None:
