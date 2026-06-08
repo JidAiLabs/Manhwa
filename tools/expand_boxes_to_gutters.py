@@ -17,6 +17,8 @@ import json
 import os
 from typing import Any, Dict, List, Tuple
 
+from studio.paths import resolve_rel
+
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -226,7 +228,7 @@ def main() -> int:
             continue
 
         st = stitch_by_file.get(cf)
-        chunk_path = (st or {}).get("chunk_path") or ch.get("chunk_path")
+        chunk_path = str(resolve_rel(args.stitch_manifest, (st or {}).get("chunk_path") or ch.get("chunk_path") or "")) if ((st or {}).get("chunk_path") or ch.get("chunk_path")) else ""
         if not chunk_path or not os.path.exists(chunk_path):
             out_chunks.append(ch)
             continue

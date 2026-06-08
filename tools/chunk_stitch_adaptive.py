@@ -415,7 +415,7 @@ def main() -> int:
             {
                 "chunk_index": chunk_index,
                 "chunk_file": chunk_name,
-                "chunk_path": chunk_path,
+                "chunk_path": os.path.relpath(chunk_path, episode_dir),
                 "chunk_w": w,
                 "chunk_h": cut_y,
                 "sources": head_sources,
@@ -523,7 +523,7 @@ def main() -> int:
             {
                 "chunk_index": chunk_index,
                 "chunk_file": chunk_name,
-                "chunk_path": chunk_path,
+                "chunk_path": os.path.relpath(chunk_path, episode_dir),
                 "chunk_w": w,
                 "chunk_h": h,
                 "sources": cur_sources,
@@ -532,7 +532,7 @@ def main() -> int:
         )
 
     out_manifest = {
-        "episode_dir": episode_dir,
+        "episode_dir": ".",
         "out_dir": out_dir,
         "glob": args.glob,
         "target_width": target_w,

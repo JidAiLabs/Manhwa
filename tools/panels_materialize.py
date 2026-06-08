@@ -27,6 +27,8 @@ import json
 import os
 from typing import Any, Dict, List, Tuple, Optional
 
+from studio.paths import resolve_rel
+
 from PIL import Image, ImageFile
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -208,7 +210,7 @@ def main() -> int:
     stitch = load_json(args.stitch_manifest)
     panels = load_json(args.panels_manifest)
 
-    episode_dir = os.path.abspath(stitch.get("episode_dir") or os.path.dirname(os.path.abspath(args.stitch_manifest)))
+    episode_dir = str(resolve_rel(args.stitch_manifest, stitch.get("episode_dir") or ".").resolve())
     chunk_map = build_chunk_map(stitch)
 
     out_dir = args.out_dir.strip() or os.path.join(episode_dir, "panels")
@@ -231,7 +233,8 @@ def main() -> int:
             # still allow if chunk_path exists in panels manifest
             chunk_info = {"chunk_file": chunk_file, "chunk_path": ch.get("chunk_path"), "sources": []}
 
-        chunk_path = ch.get("chunk_path") or chunk_info.get("chunk_path")
+        chunk_path_stored = ch.get("chunk_path") or chunk_info.get("chunk_path")
+        chunk_path = str(resolve_rel(args.stitch_manifest, chunk_path_stored)) if chunk_path_stored else ""
         if not chunk_path or not os.path.exists(chunk_path):
             continue
 

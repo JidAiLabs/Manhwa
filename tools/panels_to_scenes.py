@@ -25,6 +25,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from studio.paths import resolve_rel
+
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -589,7 +591,8 @@ def main() -> int:
     # compute global y offsets by stitch order (fallback: manifest order)
     for ch in stitch_chunks:
         cf = ch.get("chunk_file")
-        cp = ch.get("chunk_path")
+        cp_stored = ch.get("chunk_path")
+        cp = str(resolve_rel(args.stitch_manifest, cp_stored)) if cp_stored else ""
         if not cf or not cp or not os.path.exists(cp):
             continue
         with Image.open(cp) as im:
@@ -619,7 +622,8 @@ def main() -> int:
         if not cf:
             continue
         st = stitch_by_file.get(cf) or {}
-        chunk_path = st.get("chunk_path") or ch.get("chunk_path")
+        chunk_path_stored = st.get("chunk_path") or ch.get("chunk_path")
+        chunk_path = str(resolve_rel(args.stitch_manifest, chunk_path_stored)) if chunk_path_stored else ""
         if not chunk_path or not os.path.exists(chunk_path):
             continue
 

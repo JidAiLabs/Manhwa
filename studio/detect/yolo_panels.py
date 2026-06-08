@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from studio.paths import resolve_rel
+
 
 # ---------------------------------------------------------------------------
 # Pure conversion helper
@@ -93,7 +95,6 @@ def detect_panels(
     with open(manifest_path, "r", encoding="utf-8") as f:
         stitch = json.load(f)
 
-    manifest_dir = manifest_path.parent
     chunks = stitch.get("chunks") or []
 
     # Load model once
@@ -105,11 +106,8 @@ def detect_panels(
         chunk_file: str = ch.get("chunk_file") or ""
         chunk_path_stored: str = ch.get("chunk_path") or chunk_file
 
-        # Resolve image path: use stored path if absolute, else relative to manifest dir
-        if os.path.isabs(chunk_path_stored):
-            img_path = chunk_path_stored
-        else:
-            img_path = str(manifest_dir / chunk_path_stored)
+        # Resolve image path via resolve_rel (absolute paths pass through unchanged)
+        img_path = str(resolve_rel(manifest_path, chunk_path_stored))
 
         basename = os.path.basename(img_path) if not chunk_file else chunk_file
 
