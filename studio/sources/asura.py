@@ -20,7 +20,6 @@ Chapter page structure:
 from __future__ import annotations
 
 import html
-import json
 import re
 import tempfile
 from pathlib import Path
@@ -55,8 +54,12 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# Matches the window.__ASTRO_DATA__ = {...} script block
-_ASTRO_DATA_RE = re.compile(r"window\.__ASTRO_DATA__\s*=\s*(\{.*?\})\s*\n", re.DOTALL)
+# Asura serves chapter pages from a stable CDN path:
+#   https://cdn.asurascans.com/asura-images/chapters[-restored]/<slug>/<ch>/NNN.webp
+# (covers live under /covers/, so matching /chapters excludes them).
+_CHAPTER_IMG_RE = re.compile(
+    r"https://cdn\.asurascans\.com/asura-images/chapters[^\s\"'\\<>]+?/(\d+)\.webp"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -127,42 +130,15 @@ def _extract_image_urls(page_html: str) -> list[str]:
     object inside a <script> tag.  The pages array has the shape:
       [tag, [[tag, {url: [tag, url_str], ...}], ...]]
     """
-    # Find the script that sets window.__ASTRO_DATA__
-    m = _ASTRO_DATA_RE.search(page_html)
-    if not m:
-        return []
-
-    raw = m.group(1)
-    # Decode HTML entities (the page uses &quot; etc.)
-    decoded = html.unescape(raw)
-    try:
-        data = json.loads(decoded)
-    except json.JSONDecodeError:
-        return []
-
-    pages_field = data.get("pages")
-    if not isinstance(pages_field, list) or len(pages_field) < 2:
-        return []
-
-    # pages_field = [1, [[0, {...}], [0, {...}], ...]]
-    items = pages_field[1]
-    if not isinstance(items, list):
-        return []
-
-    urls: list[str] = []
-    for item in items:
-        # item = [0, {"url": [0, "https://..."], "width": [0, N], ...}]
-        if not isinstance(item, list) or len(item) < 2:
-            continue
-        meta = item[1]
-        if not isinstance(meta, dict):
-            continue
-        url_field = meta.get("url")
-        if isinstance(url_field, list) and len(url_field) >= 2:
-            urls.append(url_field[1])
-        elif isinstance(url_field, str):
-            urls.append(url_field)
-    return urls
+    # Decode entities + un-escape slashes (the URLs may appear inside an
+    # entity-encoded JSON blob), then pull every per-page chapter image and
+    # order by its numeric filename. Dedupe (same image can appear twice).
+    text = html.unescape(page_html).replace("\\/", "/")
+    by_num: dict[int, str] = {}
+    for m in _CHAPTER_IMG_RE.finditer(text):
+        n = int(m.group(1))
+        by_num.setdefault(n, m.group(0))
+    return [by_num[k] for k in sorted(by_num)]
 
 
 def _download_images(image_urls: list[str], dest_dir: Path) -> list[Path]:
