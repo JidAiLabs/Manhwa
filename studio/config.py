@@ -20,6 +20,7 @@ class Config:
     tts_voice_ref: str = ""                 # optional reference wav for voice cloning
     tts_python: str = ""                     # python for the local-TTS venv (deps
                                              # conflict with YOLO's torch); "" = pipeline python
+    tts_kokoro_voice: str = "af_heart"      # kokoro voice pack (e.g. am_puck male)
 
 def load_creds_env(path: Path | None = None) -> None:
     """Load KEY=VALUE lines from keys/creds.env into os.environ.
@@ -61,4 +62,5 @@ def load(path: Path | None = None) -> Config:
         tts_backend=t.get("backend", "elevenlabs"),
         tts_voice_ref=t.get("voice_ref", ""),
         tts_python=t.get("python", ""),
+        tts_kokoro_voice=t.get("kokoro_voice", "af_heart"),
     )

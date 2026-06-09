@@ -217,6 +217,8 @@ def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
                 "--backend", backend]
         if cfg.tts_voice_ref:
             args += ["--voice-ref", cfg.tts_voice_ref]
+        if backend == "kokoro" and cfg.tts_kokoro_voice:
+            args += ["--kokoro-voice", cfg.tts_kokoro_voice]
         # Local TTS deps (torch 2.6) conflict with YOLO's torch, so run it in its
         # own venv when configured (config.tts_python); falls back to ours.
         _run_tool("local_tts_from_manifest.py", args, python_exe=cfg.tts_python)

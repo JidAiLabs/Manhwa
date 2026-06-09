@@ -23,5 +23,7 @@ script_model = "gpt-5-nano"
 [tts]
 # voiced backend: "elevenlabs" (cloud, paid) | "chatterbox" (local, free, MIT) |
 # "kokoro" (local, free, fast, flatter).
-backend = "chatterbox"
+backend = "kokoro"   # fast, free, viable at scale (~3 min/chapter); chatterbox/qwen are slow on MPS
 voice_ref = ""   # optional path to a 5-10s reference wav for Chatterbox voice cloning
+python = "/Users/anka/repos/Manhwa/.kokoro_venv/bin/python"   # isolated venv per backend (deps conflict)
+kokoro_voice = "am_puck"   # American male narrator
