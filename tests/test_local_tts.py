@@ -43,6 +43,13 @@ def test_exaggeration_to_instruction_scales():
         assert lt.exaggeration_to_instruction(e).strip()
 
 
+def test_exaggeration_to_speed_scales():
+    # calmer -> slower; more intense -> faster
+    assert lt.exaggeration_to_speed(0.2) < lt.exaggeration_to_speed(0.5) < lt.exaggeration_to_speed(0.95)
+    assert lt.exaggeration_to_speed(0.2) < 1.0       # somber slows down
+    assert lt.exaggeration_to_speed(0.95) > 1.0      # explosive speeds up
+
+
 def test_mood_to_exaggeration_scale():
     calm = lt.mood_to_exaggeration("calm")
     tense = lt.mood_to_exaggeration("tense")

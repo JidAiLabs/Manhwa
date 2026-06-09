@@ -90,6 +90,22 @@ def exaggeration_to_instruction(exaggeration: float) -> str:
     return "Speak forcefully and urgently, with explosive intensity."
 
 
+def exaggeration_to_speed(exaggeration: float) -> float:
+    """Map per-clip intensity (0..1) to a Kokoro speaking rate. Kokoro has no
+    emotion control, so pace is the main expressive lever: slow + weighty for
+    calm/somber beats, brisk + urgent for intense/explosive ones."""
+    e = float(exaggeration)
+    if e < 0.35:
+        return 0.90    # calm/somber — slow, contemplative
+    if e < 0.55:
+        return 0.96    # serious narrator
+    if e < 0.70:
+        return 1.00    # tense
+    if e < 0.85:
+        return 1.06    # intense
+    return 1.12        # explosive — fast, urgent
+
+
 def wav_duration_sec(path: str) -> float:
     """Duration in seconds of a WAV file.
 
@@ -345,9 +361,11 @@ def _make_kokoro_synth(voice: str = "af_heart") -> SynthFn:
     print("[kokoro] loaded")
 
     def synth(text: str, out_path: str, exaggeration: float) -> None:
-        # Kokoro has no emotion control; exaggeration is ignored.
+        # No emotion conditioning in Kokoro; use speaking-rate as the expressive
+        # lever (intensity -> pace), its only real control besides punctuation.
+        spd = exaggeration_to_speed(exaggeration)
         audio = None
-        for _, _, audio in pipe(text, voice=voice):
+        for _, _, audio in pipe(text, voice=voice, speed=spd):
             break
         sf.write(out_path, audio, 24000)
 
