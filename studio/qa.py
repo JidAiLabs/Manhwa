@@ -38,6 +38,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from studio import qa_flags
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -82,6 +84,7 @@ def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
     beats_data: dict[str, Any] | None = _load_optional(ep_dir / "manifest.beats.json")
     script_data: dict[str, Any] | None = _load_optional(ep_dir / "manifest.script.json")
     vision_data: dict[str, Any] | None = _load_optional(ep_dir / "manifest.vision.json")
+    scenes_data: dict[str, Any] | None = _load_optional(ep_dir / "manifest.scenes.json")
 
     found_manifests = ["groups"]
     if beats_data is not None:
@@ -90,6 +93,33 @@ def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
         found_manifests.append("script")
     if vision_data is not None:
         found_manifests.append("vision")
+    if scenes_data is not None:
+        found_manifests.append("scenes")
+
+    # Resolve the canonical scene image directory from the scenes manifest's
+    # out_dir (its basename), defaulting to "scenes". This keeps the report
+    # pointed at whichever scene set the pipeline actually produced rather than
+    # a hardcoded path.
+    scene_dir_name = "scenes"
+    if scenes_data:
+        out_dir = scenes_data.get("out_dir")
+        if out_dir:
+            scene_dir_name = Path(str(out_dir)).name
+
+    # Compute the automated QA scorecard + per-scene/per-group flags. Source page
+    # count = top-level page JPGs in the episode dir (the scraped/downloaded
+    # pages), used for the over-segmentation density metric.
+    source_pages = len(list(ep_dir.glob("*.jpg")))
+    qa = qa_flags.compute_flags(
+        scenes=scenes_data or {},
+        vision_items=vision_data or {},
+        groups=groups_data or {},
+        script=script_data,
+        source_page_count=source_pages,
+    )
+    scorecard = qa["scorecard"]
+    scene_flags = qa["scene_flags"]
+    group_flags = qa["group_flags"]
 
     # ------------------------------------------------------------------
     # 2. Build indexes
@@ -142,6 +172,9 @@ def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
     # Summary bar
     html_parts.append(_render_summary(ep_dir, len(shots), total_scenes, found_manifests))
 
+    # Automated confidence scorecard
+    html_parts.append(_render_scorecard(scorecard))
+
     # One card per group
     for shot in shots:
         group_id = int(shot.get("shot_id") or shot.get("group_id") or 0)
@@ -156,6 +189,9 @@ def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
                 beat=beat,
                 narrations=narrations,
                 ocr_by_file=ocr_by_file,
+                scene_dir_name=scene_dir_name,
+                scene_flags=scene_flags,
+                group_flags=group_flags.get(group_id) or [],
             )
         )
 
@@ -203,6 +239,69 @@ def _render_summary(
 """
 
 
+def _flag_badges(flags: list[dict[str, Any]]) -> str:
+    """Render a list of {"kind","detail"} flags as colored badge spans."""
+    if not flags:
+        return ""
+    spans = []
+    for f in flags:
+        kind = str(f.get("kind") or "")
+        detail = str(f.get("detail") or "")
+        spans.append(
+            f'<span class="flag flag-{_e(kind)}" title="{_e(detail)}">'
+            f'{_e(kind.replace("_", " "))}</span>'
+        )
+    return '<div class="flags">' + "".join(spans) + "</div>"
+
+
+def _render_scorecard(sc: dict[str, Any]) -> str:
+    """Render the automated confidence scorecard: counts + pass/fail chips."""
+    def chip(label: str, ok: bool, value: Any) -> str:
+        cls = "ok" if ok else "bad"
+        return (
+            f'<div class="metric metric-{cls}">'
+            f'<div class="metric-value">{_e(value)}</div>'
+            f'<div class="metric-label">{_e(label)}</div></div>'
+        )
+
+    overall = "ok" if sc.get("all_ok") else "bad"
+    overall_txt = "CONFIDENT" if sc.get("all_ok") else "NEEDS WORK"
+
+    chips = [
+        chip(f"scenes / page (≤3)", sc.get("density_ok", False),
+             f'{sc.get("scenes_per_page")}'),
+        chip("near-dup pairs (0)", sc.get("dup_ok", False), sc.get("near_dup_pairs")),
+        chip("OCR-echoes (0)", sc.get("echo_ok", False), sc.get("ocr_echo")),
+        chip("short <3.5s pics (0)", sc.get("pacing_ok", False), sc.get("short_pictures")),
+        chip("text-only bubbles", sc.get("text_dominated", 0) == 0, sc.get("text_dominated")),
+        chip("groups w/o narration (0)", sc.get("narration_ok", False),
+             sc.get("missing_narration_groups")),
+        chip("scene-set in sync", sc.get("sync_ok", False),
+             "yes" if sc.get("sync_ok") else "DRIFT"),
+    ]
+
+    drift_note = ""
+    if sc.get("scene_set_drift"):
+        miss = ", ".join(sc.get("drift_missing_files") or [])
+        drift_note = (
+            f'<p class="drift-note">⚠ groups reference scenes not in the current set: '
+            f'<code>{_e(miss)}</code> — the report below may be stale. Re-run '
+            f'<code>grouped→scripted</code> after re-scening.</p>'
+        )
+
+    return f"""\
+<div class="scorecard scorecard-{overall}">
+  <div class="scorecard-head">
+    <span class="scorecard-verdict">{overall_txt}</span>
+    <span class="scorecard-sub">{sc.get("total_scenes")} scenes ·
+      {sc.get("source_pages")} pages · {sc.get("groups")} groups</span>
+  </div>
+  <div class="metrics">{''.join(chips)}</div>
+  {drift_note}
+</div>
+"""
+
+
 def _render_group_card(
     *,
     group_id: int,
@@ -210,7 +309,12 @@ def _render_group_card(
     beat: dict[str, Any] | None,
     narrations: list[dict[str, str]],
     ocr_by_file: dict[str, str],
+    scene_dir_name: str = "scenes",
+    scene_flags: dict[str, list] | None = None,
+    group_flags: list[dict[str, Any]] | None = None,
 ) -> str:
+    scene_flags = scene_flags or {}
+    group_flags = group_flags or []
     parts: list[str] = []
     parts.append(f'<div class="group-card" id="group-{group_id}">')
 
@@ -221,9 +325,10 @@ def _render_group_card(
         ocr = ocr_by_file.get(sf, "")
         parts.append('<div class="scene-block">')
         parts.append(
-            f'<img src="scenes/{_e(sf)}" alt="{_e(sf)}" loading="lazy">'
+            f'<img src="{_e(scene_dir_name)}/{_e(sf)}" alt="{_e(sf)}" loading="lazy">'
         )
         parts.append(f'<div class="scene-name"><code>{_e(sf)}</code></div>')
+        parts.append(_flag_badges(scene_flags.get(sf) or []))
         if ocr:
             parts.append(
                 f'<details class="ocr-details"><summary>OCR</summary>'
@@ -234,6 +339,7 @@ def _render_group_card(
 
     # ---- Right column: beat + narration ----
     parts.append('<div class="col-text">')
+    parts.append(_flag_badges(group_flags))
 
     # Beat info
     if beat:
@@ -317,6 +423,45 @@ a    { color: #0057b7; }
 .summary-table { border-collapse: collapse; margin-top: .5rem; }
 .summary-table th, .summary-table td { padding: .2rem .8rem .2rem 0; text-align: left; }
 .summary-table th { color: #555; font-weight: 600; }
+
+/* ── Scorecard ── */
+.scorecard {
+  margin: 1rem 1.5rem 0;
+  padding: 1rem 1.2rem;
+  border-radius: 8px;
+  border: 2px solid;
+}
+.scorecard-ok  { background: #eefbf1; border-color: #34c759; }
+.scorecard-bad { background: #fff4f3; border-color: #e0463a; }
+.scorecard-head { display: flex; align-items: baseline; gap: .8rem; margin-bottom: .7rem; }
+.scorecard-verdict { font-size: 1.05rem; font-weight: 800; letter-spacing: .04em; }
+.scorecard-ok  .scorecard-verdict { color: #1a7f37; }
+.scorecard-bad .scorecard-verdict { color: #b3261e; }
+.scorecard-sub { color: #555; font-size: .85rem; }
+.metrics { display: flex; flex-wrap: wrap; gap: .6rem; }
+.metric {
+  min-width: 84px; flex: 0 0 auto;
+  padding: .45rem .7rem; border-radius: 6px; text-align: center;
+  border: 1px solid #d8d8e8; background: #fff;
+}
+.metric-value { font-size: 1.15rem; font-weight: 700; line-height: 1.1; }
+.metric-label { font-size: .68rem; color: #666; text-transform: uppercase; letter-spacing: .03em; }
+.metric-ok  .metric-value { color: #1a7f37; }
+.metric-bad { border-color: #e0463a; background: #fff4f3; }
+.metric-bad .metric-value { color: #b3261e; }
+.drift-note { margin-top: .7rem; color: #b3261e; font-size: .85rem; }
+
+/* ── Flag badges ── */
+.flags { display: flex; flex-wrap: wrap; gap: .25rem; margin: .2rem 0; }
+.flag {
+  font-size: .68rem; font-weight: 600; padding: 1px 6px; border-radius: 10px;
+  background: #ffe8b3; color: #7a4f00; white-space: nowrap; cursor: help;
+}
+.flag-near_duplicate { background: #ffd6d6; color: #9a1b1b; }
+.flag-text_dominated { background: #d9e4ff; color: #1f3d8a; }
+.flag-short_on_screen { background: #ffe0b3; color: #8a4b00; }
+.flag-ocr_echo { background: #f3d6ff; color: #6a1b8a; }
+.flag-no_narration { background: #e0e0e0; color: #444; }
 
 /* ── Group card ── */
 .group-card {
