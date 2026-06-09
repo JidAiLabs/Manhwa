@@ -11,3 +11,17 @@ yolo_weights = "/Users/anka/webtoon-ai/runs/detect/webtoon/yolo26_musgd_run/weig
 
 [gallerydl]
 sleep = 2.0
+
+[models]
+# LLM models per stage (cost-tunable). Swap to cheaper tiers freely; the
+# usage_cost logger reports exact tokens + $ per run so quality/cost is A/B-able.
+# beats: Gemini multimodal (sends panel images). flash-lite is ~5x cheaper than flash.
+beats_model = "gemini-2.5-flash"
+# script: OpenAI. gpt-4.1-mini is API-deprecating 2026-10-14; gpt-5-nano is ~5x cheaper.
+script_model = "gpt-5-nano"
+
+[tts]
+# voiced backend: "elevenlabs" (cloud, paid) | "chatterbox" (local, free, MIT) |
+# "kokoro" (local, free, fast, flatter).
+backend = "chatterbox"
+voice_ref = ""   # optional path to a 5-10s reference wav for Chatterbox voice cloning

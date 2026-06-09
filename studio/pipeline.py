@@ -189,6 +189,7 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                "--vision-manifest", str(p["vision"]),
                "--out", str(p["beats"]),
                "--project", project, "--location", location,
+               "--model", cfg.beats_model,
                # Send enough panels per group that the scene_selection
                # (keep/redundant) judgment can see every candidate — otherwise an
                # unseen panel defaults to 'keep' and same-moment dups survive.
@@ -200,7 +201,8 @@ def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
     _check_openai()
     p = _ep_paths(ep_dir)
     _run_tool("script_expander.py",
-              ["--beats", str(p["beats"]), "--vision", str(p["vision"]), "--out", str(p["script"])])
+              ["--beats", str(p["beats"]), "--vision", str(p["vision"]), "--out", str(p["script"]),
+               "--model", cfg.script_model])
 
 
 def _stage_voiced(ep_dir: Path, cfg: Config) -> None:

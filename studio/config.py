@@ -14,6 +14,10 @@ class Config:
     yolo_weights: Path
     detect_backend: str          # "yolo" | "gemini"
     gallerydl_sleep: float
+    beats_model: str = "gemini-2.5-flash"   # Gemini model for the beats stage
+    script_model: str = "gpt-4.1-mini"      # OpenAI model for the script stage
+    tts_backend: str = "elevenlabs"         # "elevenlabs" | "chatterbox" | "kokoro"
+    tts_voice_ref: str = ""                 # optional reference wav for voice cloning
 
 def load_creds_env(path: Path | None = None) -> None:
     """Load KEY=VALUE lines from keys/creds.env into os.environ.
@@ -43,9 +47,15 @@ def load(path: Path | None = None) -> Config:
     sites = {k: SiteCfg(**v) for k, v in data.get("sources", {}).items()}
     d = data.get("detect", {})
     g = data.get("gallerydl", {})
+    m = data.get("models", {})
+    t = data.get("tts", {})
     return Config(
         sites=sites,
         yolo_weights=Path(d.get("yolo_weights", "")).expanduser(),
         detect_backend=d.get("backend", "yolo"),
         gallerydl_sleep=float(g.get("sleep", 2.0)),
+        beats_model=m.get("beats_model", "gemini-2.5-flash"),
+        script_model=m.get("script_model", "gpt-4.1-mini"),
+        tts_backend=t.get("backend", "elevenlabs"),
+        tts_voice_ref=t.get("voice_ref", ""),
     )
