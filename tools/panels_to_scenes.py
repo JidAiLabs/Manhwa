@@ -132,6 +132,72 @@ def box_containment(inner: List[float], outer: List[float]) -> float:
     return _intersection_area(inner, outer) / area_inner
 
 
+def median_page_height(stitch_manifest: Dict[str, Any]) -> float:
+    """Median source-page height (px) for the chapter, from the stitch manifest.
+
+    This is the **series-agnostic** normalizer for the over-segmentation merge:
+    the sliver threshold is a fraction of this height, so it adapts to any
+    manhwa's resolution and panel density instead of using a hardcoded pixel
+    value. Reads each chunk's ``sources[].resized_h`` (falling back to
+    ``orig_h``). Returns 0.0 when no page heights are available (merge disabled).
+    """
+    heights: List[float] = []
+    for ch in stitch_manifest.get("chunks") or []:
+        for src in ch.get("sources") or []:
+            h = src.get("resized_h") or src.get("orig_h")
+            if h:
+                heights.append(float(h))
+    if not heights:
+        return 0.0
+    heights.sort()
+    n = len(heights)
+    mid = n // 2
+    if n % 2 == 1:
+        return heights[mid]
+    return (heights[mid - 1] + heights[mid]) / 2.0
+
+
+def merge_small_bands(
+    boxes_norm: List[List[float]],
+    chunk_h: int,
+    min_px: float,
+) -> List[List[float]]:
+    """Fold sliver bands (height < *min_px*) into their contiguous neighbor.
+
+    Webtoon panels are full-width horizontal bands stacked vertically. YOLO emits
+    one per visual band, which over-segments tiny reaction/text strips. This
+    merges any band shorter than *min_px* into an adjacent band (previous if it
+    exists, else the next), unioning their bounding boxes. *min_px* is computed
+    upstream from a page-height fraction (see :func:`median_page_height`), keeping
+    the behavior series-agnostic. ``min_px <= 0`` disables merging (returns input
+    order unchanged).
+
+    Boxes are ``[ymin, xmin, ymax, xmax]`` normalized to the chunk.
+    """
+    valid = [b for b in boxes_norm if isinstance(b, list) and len(b) == 4]
+    if min_px <= 0 or chunk_h <= 0 or len(valid) <= 1:
+        return [list(b) for b in valid]
+
+    def band_px(b: List[float]) -> float:
+        return (b[2] - b[0]) * chunk_h
+
+    def union(a: List[float], b: List[float]) -> List[float]:
+        return [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+
+    ordered = sorted(valid, key=lambda b: b[0])
+    merged: List[List[float]] = []
+    for b in ordered:
+        if band_px(b) < min_px and merged:
+            merged[-1] = union(merged[-1], b)
+        else:
+            merged.append(list(b))
+    # A leading sliver could not fold backward above; fold it into the next band.
+    if len(merged) >= 2 and band_px(merged[0]) < min_px:
+        merged[1] = union(merged[0], merged[1])
+        merged.pop(0)
+    return merged
+
+
 def dedupe_overlapping_boxes(
     boxes: List[List[float]],
     iou_thr: float = 0.6,
@@ -609,6 +675,11 @@ def main() -> int:
     ap.add_argument("--min-area-frac", type=float, default=0.002)
     ap.add_argument("--min-h-px", type=int, default=180)
     ap.add_argument("--min-w-px", type=int, default=240)
+    # SP2 #2 over-segmentation: fold sliver bands shorter than this fraction of
+    # the chapter's median SOURCE-PAGE height into their contiguous neighbor.
+    # Series-agnostic (a page fraction, not pixels) so it adapts to any manhwa's
+    # resolution/density. 0.0 disables (default; the studio pipeline sets it).
+    ap.add_argument("--min-panel-page-frac", type=float, default=0.0)
 
     ap.add_argument("--dedupe", action="store_true")
     ap.add_argument("--dedupe-overlap", action="store_true",
@@ -665,6 +736,11 @@ def main() -> int:
     stitch_by_file = {c.get("chunk_file"): c for c in stitch_chunks if c.get("chunk_file")}
     protected_cache: Dict[str, List[List[int]]] = {}
 
+    # SP2 #2: agnostic sliver-merge threshold = page-fraction * median page height.
+    page_h = median_page_height(stitch)
+    min_panel_px = float(args.min_panel_page_frac) * page_h
+    merged_bands_total = 0
+
     # dedupe memory
     recent: List[Dict[str, Any]] = []
 
@@ -719,6 +795,15 @@ def main() -> int:
         with Image.open(chunk_path) as chunk_im:
             chunk_im = chunk_im.convert("RGB")
             cw, chh = chunk_im.size
+
+            # SP2 #2: fold sliver bands into neighbors before cropping. Done here
+            # (vs. earlier) because the px threshold needs the chunk height. Runs
+            # ahead of the overlap dedup / crop loop so all downstream indexing
+            # operates on the merged band list.
+            if min_panel_px > 0 and isinstance(boxes_norm, list) and len(boxes_norm) > 1:
+                before = len(boxes_norm)
+                boxes_norm = merge_small_bands(boxes_norm, chh, min_panel_px)
+                merged_bands_total += before - len(boxes_norm)
 
             # load protected spans once per chunk
             chunk_spans: List[List[int]] = []
@@ -899,6 +984,7 @@ def main() -> int:
             "skipped_small": int(skipped_small),
             "skipped_dedupe": int(skipped_dedupe),
             "skipped_overlap": int(skipped_overlap),
+            "merged_sliver_bands": int(merged_bands_total),
         },
         "params": {
             "jpeg_quality": int(args.jpeg_quality),
@@ -906,6 +992,8 @@ def main() -> int:
             "min_area_frac": float(args.min_area_frac),
             "min_h_px": int(args.min_h_px),
             "min_w_px": int(args.min_w_px),
+            "min_panel_page_frac": float(args.min_panel_page_frac),
+            "median_page_h": float(page_h),
             "dedupe": bool(args.dedupe),
             "dedupe_overlap": bool(args.dedupe_overlap),
             "overlap_iou": float(args.overlap_iou),
