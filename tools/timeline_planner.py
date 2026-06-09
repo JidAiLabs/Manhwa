@@ -11,10 +11,15 @@ Fixes:
 import argparse
 import json
 import os
+import sys
 import re
 import math
 import wave
 from typing import Any, Dict, List, Tuple, Optional
+
+# Shared keep/redundant selection logic (sibling tool module).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from scene_selection import choose_kept_scenes  # noqa: E402
 
 try:
     from PIL import Image, ImageStat, ImageFilter
@@ -559,11 +564,20 @@ def filter_scene_files(
 # -----------------------------
 # Cuts generation (NEW)
 # -----------------------------
-def build_cuts(scene_files: List[str], shot_dur: float, *, min_cut_sec: float) -> List[Dict[str, Any]]:
+def build_cuts(
+    scene_files: List[str],
+    shot_dur: float,
+    *,
+    min_cut_sec: float,
+    selection: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """
     Create deterministic montage plan across scene_files:
       - Use up to K panels where K <= floor(shot_dur / min_cut_sec)
-      - Split duration evenly across selected panels
+      - When *selection* (beat.scene_selection) is given, drop 'redundant' panels
+        FIRST so the panels that remain get their >=min_cut_sec (instead of an
+        arbitrary files[:k] truncation).
+      - Split duration evenly across the kept panels
       - Emit floats (start/dur)
     """
     files = [os.path.basename(str(x)) for x in (scene_files or []) if x]
@@ -578,8 +592,14 @@ def build_cuts(scene_files: List[str], shot_dur: float, *, min_cut_sec: float) -
         return [{"file": files[0], "start": 0.0, "dur": shot_dur}]
 
     kmax = max(1, int(math.floor(shot_dur / float(min_cut_sec))))
-    k = min(len(files), kmax)
-    files = files[:k]
+    if selection:
+        # selection scene_file values are basenames (from beats); match in kind.
+        sel = [{**e, "scene_file": os.path.basename(str(e.get("scene_file") or ""))}
+               for e in selection]
+        files = choose_kept_scenes(files, sel, kmax)
+    else:
+        files = files[: min(len(files), kmax)]
+    k = len(files)
 
     per = shot_dur / float(k)
     cuts: List[Dict[str, Any]] = []
@@ -761,7 +781,11 @@ def main() -> int:
                 if display_strategy == "single_hold":
                     cuts = build_cuts([primary_scene_file], dur, min_cut_sec=float(args.min_cut_sec))
                 else:
-                    cuts = build_cuts(scene_files, dur, min_cut_sec=float(args.min_cut_sec))
+                    cuts = build_cuts(
+                        scene_files, dur,
+                        min_cut_sec=float(args.min_cut_sec),
+                        selection=beat.get("scene_selection"),
+                    )
 
             item: Dict[str, Any] = {
                 "segment_id": segment_id,

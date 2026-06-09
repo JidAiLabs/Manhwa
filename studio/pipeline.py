@@ -188,7 +188,12 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
               ["--groups-manifest", str(p["groups"]),
                "--vision-manifest", str(p["vision"]),
                "--out", str(p["beats"]),
-               "--project", project, "--location", location])
+               "--project", project, "--location", location,
+               # Send enough panels per group that the scene_selection
+               # (keep/redundant) judgment can see every candidate — otherwise an
+               # unseen panel defaults to 'keep' and same-moment dups survive.
+               # Cheap (a few extra images/chapter); groups average ~3 scenes.
+               "--max-images-per-group", "6"])
 
 
 def _stage_scripted(ep_dir: Path, cfg: Config) -> None:

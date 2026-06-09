@@ -22,12 +22,17 @@ import argparse
 import json
 import os
 import random
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
+
+# Shared keep/redundant + bubble/intensity normalization (sibling tool module).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from scene_selection import normalize_scene_selection  # noqa: E402
 
 
 def load_json(path: str) -> Dict[str, Any]:
@@ -263,6 +268,16 @@ def main() -> int:
         "Avoid excessive poetic language.\n"
         "End with a strong hook line.\n"
         "Rendering hints: avoid zooming into text bubbles; focus faces/hands/key objects/wide.\n"
+        "\n"
+        "ALSO judge each panel for the recap video (scene_selection, one entry per scene_file):\n"
+        "  role: 'keep' if it advances the story or shows a distinct moment; 'redundant' if it\n"
+        "    is a near-repeat, a minor reaction, or shows the SAME moment as another panel in\n"
+        "    this group (a recap should not show the same beat twice). Be willing to mark\n"
+        "    repeats 'redundant' — but when unsure, 'keep'.\n"
+        "  bubble_mode: the dominant speech-bubble style — 'spoken' (smooth oval, said aloud),\n"
+        "    'inner_thought' (jagged/cloud, thinking), 'narration' (rectangular caption box),\n"
+        "    'shout' (spiky), or 'none' if no bubble.\n"
+        "  intensity: the emotional energy — 'calm', 'tense', 'intense', or 'explosive'.\n"
         "Return ONLY valid JSON matching the provided schema. No extra text.\n"
     )
 
@@ -287,6 +302,20 @@ def main() -> int:
                 },
                 "required": ["avoid_text_zoom", "preferred_focus", "camera_motion"],
             },
+            "scene_selection": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "scene_file": {"type": "STRING"},
+                        "role": {"type": "STRING"},          # keep | redundant
+                        "bubble_mode": {"type": "STRING"},   # spoken|inner_thought|narration|shout|none
+                        "intensity": {"type": "STRING"},     # calm|tense|intense|explosive
+                        "reason": {"type": "STRING"},
+                    },
+                    "required": ["scene_file", "role", "bubble_mode", "intensity"],
+                },
+            },
         },
         "required": [
             "group_id",
@@ -299,6 +328,7 @@ def main() -> int:
             "hook",
             "mood_words",
             "rendering_hints",
+            "scene_selection",
         ],
     }
 
@@ -402,9 +432,15 @@ def main() -> int:
                     "preferred_focus": "wide",
                     "camera_motion": "slow_pan",
                 },
+                "scene_selection": [],
                 "error": "parse_failed_after_retries",
             }
 
+        # Guarantee exactly one sanitized selection entry per scene (defaults to
+        # 'keep' so a parse gap never silently drops a panel).
+        beat["scene_selection"] = normalize_scene_selection(
+            beat.get("scene_selection"), payload["scene_files"]
+        )
         beats_out.append(beat)
 
         # Throttle between groups (burst prevention)
