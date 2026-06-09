@@ -870,6 +870,33 @@ def _shots_count_matches_paras(obj: Dict[str, Any]) -> bool:
     shots = obj.get("shots") or []
     return isinstance(paras, list) and isinstance(shots, list) and len(paras) == len(shots)
 
+def _align_tts_to_script(
+    script_paras: List[str],
+    model_tts: List[str],
+    beats: List[Dict[str, Any]],
+) -> List[str]:
+    """Force the TTS text to be the SAME words as the displayed narration.
+
+    The model tends to emit ``tts_paragraphs_v3`` as a condensed/reworded version
+    of ``script_paragraphs`` — which (a) makes the voiced audio mismatch the text
+    shown in the QA report and (b) shortens the video. Rebuild each TTS paragraph
+    as ``[mood] <script paragraph verbatim>``: keep the model's chosen mood tag
+    (from its tts_v3) when present, else derive one from the beat's mood_words.
+    """
+    out: List[str] = []
+    for i, para in enumerate(script_paras):
+        tag: Optional[str] = None
+        if i < len(model_tts or []):
+            lead, _rest = _split_leading_bracket_tag(str(model_tts[i] or ""))
+            tag = lead
+        if not tag:
+            b = beats[i] if (beats and i < len(beats)) else {}
+            mw = b.get("mood_words") or []
+            tag = str(mw[0]) if mw else "serious"
+        out.append(f"[{tag}] {para}".strip())
+    return out
+
+
 def _bubble_modes_for_beat(beat: Dict[str, Any]) -> List[str]:
     """Distinct narration-relevant bubble modes for a beat (SP2 #5).
 
@@ -1542,6 +1569,14 @@ def main() -> int:
                 if not _all_tts_have_valid_tags(o1.get("tts_paragraphs_v3") or []):
                     o1["tts_paragraphs_v3"] = _ensure_tts_tags_from_beats(payload_beats, o1.get("tts_paragraphs_v3") or [])
                 o1["tts_paragraphs_v3"] = [_sanitize_single_leading_tts_tag(p) for p in (o1.get("tts_paragraphs_v3") or [])]
+
+                # Force the VOICED text to equal the DISPLAYED narration (keeping
+                # the chosen mood tag) so audio never diverges from the report and
+                # the full script length gets voiced (the model otherwise condenses
+                # tts_paragraphs_v3, mismatching + shortening the video).
+                o1["tts_paragraphs_v3"] = _align_tts_to_script(
+                    script_paras, o1.get("tts_paragraphs_v3") or [], chunk
+                )
 
                 # shots repair if needed
                 ok_files, _ = _shots_scene_files_valid(o1, payload)

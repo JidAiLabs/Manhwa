@@ -86,3 +86,24 @@ def test_bubble_modes_distinct_sorted():
 
 def test_bubble_modes_empty_when_no_selection():
     assert se._bubble_modes_for_beat({}) == []
+
+
+# ---- TTS text must equal displayed narration (mismatch + length fix) ------
+
+def test_align_tts_keeps_tag_uses_full_script_text():
+    script = ["The full, longer narration paragraph one.", "Full paragraph two here."]
+    model_tts = ["[tense] condensed v1.", "[calm] short v2."]
+    out = se._align_tts_to_script(script, model_tts, [{}, {}])
+    assert out == ["[tense] The full, longer narration paragraph one.",
+                   "[calm] Full paragraph two here."]
+
+
+def test_align_tts_derives_tag_from_beat_when_missing():
+    script = ["Para one."]
+    out = se._align_tts_to_script(script, [], [{"mood_words": ["awe", "tense"]}])
+    assert out == ["[awe] Para one."]
+
+
+def test_align_tts_defaults_tag_serious():
+    out = se._align_tts_to_script(["Para."], [], [{}])
+    assert out == ["[serious] Para."]
