@@ -11,3 +11,4 @@ keys/
 *.blend
 
 .DS_Store
+.tts_venv/

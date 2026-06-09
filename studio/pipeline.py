@@ -41,15 +41,18 @@ class MissingCredential(Exception):
 # Tool runner (single monkeypatch point for tests)
 # ---------------------------------------------------------------------------
 
-def _run_tool(script_name: str, args_list: list[str]) -> None:
-    """Run a tool script via the current Python interpreter.
+def _run_tool(script_name: str, args_list: list[str], *, python_exe: str = "") -> None:
+    """Run a tool script via a Python interpreter.
 
     ``script_name`` is the bare filename (e.g. ``chunk_stitch_adaptive.py``).
     The script is looked up relative to the ``tools/`` directory at repo root.
+    ``python_exe`` overrides the interpreter (used for the local-TTS venv, whose
+    torch pin conflicts with YOLO's); empty = the pipeline's own interpreter.
     """
     repo_root = Path(__file__).resolve().parent.parent
     script_path = repo_root / "tools" / script_name
-    cmd = [sys.executable, str(script_path)] + args_list
+    exe = python_exe or sys.executable
+    cmd = [exe, str(script_path)] + args_list
     # The break-fixed tools `import studio.paths`, but they run as standalone
     # scripts here, so the repo root must be on PYTHONPATH for the subprocess.
     env = dict(os.environ)
@@ -214,7 +217,9 @@ def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
                 "--backend", backend]
         if cfg.tts_voice_ref:
             args += ["--voice-ref", cfg.tts_voice_ref]
-        _run_tool("local_tts_from_manifest.py", args)
+        # Local TTS deps (torch 2.6) conflict with YOLO's torch, so run it in its
+        # own venv when configured (config.tts_python); falls back to ours.
+        _run_tool("local_tts_from_manifest.py", args, python_exe=cfg.tts_python)
     else:
         _check_elevenlabs()
         voice = os.environ.get("ELEVENLABS_VOICE_ID", "")

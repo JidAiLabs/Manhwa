@@ -18,6 +18,8 @@ class Config:
     script_model: str = "gpt-4.1-mini"      # OpenAI model for the script stage
     tts_backend: str = "elevenlabs"         # "elevenlabs" | "chatterbox" | "kokoro"
     tts_voice_ref: str = ""                 # optional reference wav for voice cloning
+    tts_python: str = ""                     # python for the local-TTS venv (deps
+                                             # conflict with YOLO's torch); "" = pipeline python
 
 def load_creds_env(path: Path | None = None) -> None:
     """Load KEY=VALUE lines from keys/creds.env into os.environ.
@@ -58,4 +60,5 @@ def load(path: Path | None = None) -> Config:
         script_model=m.get("script_model", "gpt-4.1-mini"),
         tts_backend=t.get("backend", "elevenlabs"),
         tts_voice_ref=t.get("voice_ref", ""),
+        tts_python=t.get("python", ""),
     )

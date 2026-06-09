@@ -870,6 +870,28 @@ def _shots_count_matches_paras(obj: Dict[str, Any]) -> bool:
     shots = obj.get("shots") or []
     return isinstance(paras, list) and isinstance(shots, list) and len(paras) == len(shots)
 
+def _bubble_modes_for_beat(beat: Dict[str, Any]) -> List[str]:
+    """Distinct narration-relevant bubble modes for a beat (SP2 #5).
+
+    Reads the Gemini scene-selection's per-scene ``bubble_mode`` so the script can
+    narrate inner-thought panels as thoughts vs spoken lines as speech. Prefers
+    the modes of the panels that will actually be shown (role=keep); ignores
+    'unknown'/'none'. Returns a sorted distinct list (possibly empty).
+    """
+    sel = beat.get("scene_selection") or []
+    def modes(filter_keep: bool) -> List[str]:
+        out = []
+        for e in sel:
+            if filter_keep and str(e.get("role") or "keep") != "keep":
+                continue
+            bm = str(e.get("bubble_mode") or "").strip().lower()
+            if bm and bm not in ("unknown", "none"):
+                out.append(bm)
+        return out
+    use = modes(True) or modes(False)
+    return sorted(set(use))
+
+
 def _ensure_paragraph_coverage(
     beats: List[Dict[str, Any]], paragraphs: List[str]
 ) -> List[str]:
@@ -1132,7 +1154,16 @@ Turn beats + OCR + scene data into a recap that feels like a movie trailer, not 
 - Treat OCR text as a NOISY hint, not ground truth — OCR misreads are common
   (e.g. 'I' for '1'); never build narration around garbled or counter-like fragments.
 
-=== TRUTHFULNESS (NON-NEGOTIABLE) ===
+=== NARRATION MODE (per-beat bubble_modes) ===
+Each beat may carry "bubble_modes" describing the panel's speech-bubble style.
+Match the narration voice to it:
+- inner_thought : render as the character's INTERNAL thought — "in his mind…",
+  "he tells himself…", "a cold realization sets in…". Never as spoken aloud.
+- spoken        : a line said aloud — "he says/declares/warns…" (still rephrased).
+- shout         : urgent/loud — short, punchy, high-energy phrasing.
+- narration     : an external caption/narrator box — matter-of-fact scene-setting.
+- none/unknown  : default cinematic narration.
+When a beat mixes modes (e.g. inner_thought + spoken), reflect the dominant one.
 - ONLY use info from provided beats and OCR snippets
 - If unclear, narrate ambiguity briefly instead of inventing
 - Never invent names/relationships/plot points not present
@@ -1426,6 +1457,9 @@ def main() -> int:
                     "ocr_snippets_by_scene_file": ocr_by_scene,
                     "ocr_preview": ocr_preview,
                     "weak_scene_files": weak_scenes,
+                    # SP2 #5: per-beat speech-bubble modes (from the Gemini pass)
+                    # so narration distinguishes inner thought vs spoken vs shout.
+                    "bubble_modes": _bubble_modes_for_beat(b),
                 }
             )
 

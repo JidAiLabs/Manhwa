@@ -55,3 +55,34 @@ def test_coverage_fallback_when_beat_has_no_what_happens():
     out = se._ensure_paragraph_coverage(beats, [])
     assert len(out) == 2
     assert all(p.strip() for p in out)            # never an empty paragraph
+
+
+# ---- SP2 #5: bubble_mode -> narration mode -------------------------------
+
+def test_bubble_modes_prefers_kept_panels():
+    beat = {"scene_selection": [
+        {"scene_file": "a", "role": "keep", "bubble_mode": "inner_thought"},
+        {"scene_file": "b", "role": "redundant", "bubble_mode": "spoken"},
+    ]}
+    assert se._bubble_modes_for_beat(beat) == ["inner_thought"]
+
+
+def test_bubble_modes_ignores_unknown_and_none():
+    beat = {"scene_selection": [
+        {"scene_file": "a", "role": "keep", "bubble_mode": "unknown"},
+        {"scene_file": "b", "role": "keep", "bubble_mode": "none"},
+    ]}
+    assert se._bubble_modes_for_beat(beat) == []
+
+
+def test_bubble_modes_distinct_sorted():
+    beat = {"scene_selection": [
+        {"scene_file": "a", "role": "keep", "bubble_mode": "spoken"},
+        {"scene_file": "b", "role": "keep", "bubble_mode": "shout"},
+        {"scene_file": "c", "role": "keep", "bubble_mode": "spoken"},
+    ]}
+    assert se._bubble_modes_for_beat(beat) == ["shout", "spoken"]
+
+
+def test_bubble_modes_empty_when_no_selection():
+    assert se._bubble_modes_for_beat({}) == []
