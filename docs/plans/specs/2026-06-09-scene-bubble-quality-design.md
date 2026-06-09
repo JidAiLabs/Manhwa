@@ -81,3 +81,31 @@ defect classes. **Baseline after the deduped re-derive of Nano ch1** (116 scenes
 **Sequencing lesson:** #2 (over-segmentation) changes the scene set and forces a
 downstream re-derive, so it MUST land before #3/#4 (which operate on the final
 scenes) — otherwise inpaint/merge work is thrown away on re-scene.
+
+### #2 update — geometry is the wrong lever for dense-real-panel manhwa (proven)
+
+Implemented the agnostic geometric merge (`merge_small_bands` +
+`median_page_height`, `--min-panel-page-frac`, page-fraction so it's
+series-agnostic). **Real-data sweep on Nano ch1 disproved the geometric
+hypothesis:**
+
+| min-panel-page-frac | slivers merged | scenes | /page |
+|---|---|---|---|
+| 0.00 | 0 | 116 | 4.83 |
+| 0.08 | 15 | 117 | 4.88 |
+| 0.10 | 28 | 119 | 4.96 |
+| 0.12 | 39 | 118 | 4.92 |
+
+Merging up to 39 slivers leaves the count at ~116 — the scener runs
+**merge → gutter-split**, and `split_crop_on_gutters` re-separates any merge that
+crosses a real gutter. So Nano's 116 panels are **genuinely distinct,
+gutter-separated panels**, not an over-detection artifact. Forcing the count down
+geometrically would override real gutters = fuse distinct story panels (quality
+damage). 
+
+**Reframe:** over-segmentation on a dense manhwa is a **selection** problem, not a
+geometry one. The agnostic fix = the **Gemini shot-selector** (`gemini_shot_selector.py`,
+keep-vs-redundant) wired into studio — which also resolves the p74/p75 semantic
+duplicates. The geometric merge stays (off by default) for series where YOLO
+over-detects *contiguous* fragments (bands with no gutter between them); there it
+sticks. **Next: wire the Gemini selector as the real #2 + semantic-dedup fix.**
