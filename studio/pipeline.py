@@ -206,11 +206,20 @@ def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
 
 
 def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
-    _check_elevenlabs()
     p = _ep_paths(ep_dir)
-    voice = os.environ.get("ELEVENLABS_VOICE_ID", "")
-    _run_tool("elevenlabs_tts_from_manifest.py",
-              ["--script", str(p["script"]), "--out-dir", str(p["tts_dir"]), "--voice-id", voice])
+    backend = (cfg.tts_backend or "elevenlabs").lower()
+    if backend in ("chatterbox", "kokoro"):
+        # Free local TTS — no credential needed. Same tts_index.json contract.
+        args = ["--script", str(p["script"]), "--out-dir", str(p["tts_dir"]),
+                "--backend", backend]
+        if cfg.tts_voice_ref:
+            args += ["--voice-ref", cfg.tts_voice_ref]
+        _run_tool("local_tts_from_manifest.py", args)
+    else:
+        _check_elevenlabs()
+        voice = os.environ.get("ELEVENLABS_VOICE_ID", "")
+        _run_tool("elevenlabs_tts_from_manifest.py",
+                  ["--script", str(p["script"]), "--out-dir", str(p["tts_dir"]), "--voice-id", voice])
 
 
 def _stage_planned(ep_dir: Path, cfg: Config) -> None:
