@@ -212,12 +212,24 @@ def synthesize_manifest(
 # ---------------------------------------------------------------------------
 
 def _make_chatterbox_synth(voice_ref: str) -> SynthFn:
-    import torch  # noqa
-    import torchaudio  # noqa
+    import torch
+    import torchaudio as ta
+
+    # Chatterbox's real Perth watermarker needs pkg_resources (setuptools); when
+    # that's absent it imports as None and model init crashes. Narration doesn't
+    # need watermarking, so fall back to perth's no-op DummyWatermarker.
+    import perth
+    if getattr(perth, "PerthImplicitWatermarker", None) is None:
+        perth.PerthImplicitWatermarker = perth.DummyWatermarker
+
     from chatterbox.tts import ChatterboxTTS
 
-    device = "mps" if getattr(__import__("torch").backends, "mps", None) and __import__("torch").backends.mps.is_available() \
-        else ("cuda" if __import__("torch").cuda.is_available() else "cpu")
+    if torch.backends.mps.is_available():
+        device = "mps"
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
     model = ChatterboxTTS.from_pretrained(device=device)
     print(f"[chatterbox] loaded on {device}")
 
@@ -226,7 +238,6 @@ def _make_chatterbox_synth(voice_ref: str) -> SynthFn:
         if voice_ref and os.path.exists(voice_ref):
             kwargs["audio_prompt_path"] = voice_ref
         wav = model.generate(text, **kwargs)
-        import torchaudio as ta
         ta.save(out_path, wav, model.sr)
 
     return synth
