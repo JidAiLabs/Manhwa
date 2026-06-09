@@ -269,12 +269,12 @@ def _render_scorecard(sc: dict[str, Any]) -> str:
     overall_txt = "CONFIDENT" if sc.get("all_ok") else "NEEDS WORK"
 
     chips = [
-        chip(f"scenes / page (≤3)", sc.get("density_ok", False),
-             f'{sc.get("scenes_per_page")}'),
-        chip("near-dup pairs (0)", sc.get("dup_ok", False), sc.get("near_dup_pairs")),
-        chip("OCR-echoes (0)", sc.get("echo_ok", False), sc.get("ocr_echo")),
+        chip("shown / page (≤3)", sc.get("density_ok", False),
+             f'{sc.get("shown_per_page")}'),
         chip("shown panels", True, sc.get("shown_panels", 0)),
         chip("dropped (budget)", True, sc.get("dropped_panels", 0)),
+        chip("visible dups (0)", sc.get("dup_ok", False), sc.get("visible_dup_pairs", 0)),
+        chip("OCR-echoes (0)", sc.get("echo_ok", False), sc.get("ocr_echo")),
         chip("shown <3.5s (0)", sc.get("pacing_ok", False), sc.get("shown_under_min", 0)),
         chip("text-only bubbles", sc.get("text_dominated", 0) == 0, sc.get("text_dominated")),
         chip("groups w/o narration (0)", sc.get("narration_ok", False),

@@ -248,6 +248,7 @@ def compute_flags(
     dropped_panels = 0
     shown_under_min = 0
     panels_in_groups = 0
+    shown_set: set[str] = set()
     for shot in shots:
         gid = int(shot.get("shot_id") or shot.get("group_id") or 0)
         sfiles = [str(x) for x in (shot.get("scene_files") or [])]
@@ -258,11 +259,12 @@ def compute_flags(
         kmax = max(1, int(dur // min_sec_per_pic)) if dur > 0 else len(sfiles)
         keepers = [sf for sf in sfiles if role_by_file.get(sf, "keep") == "keep"]
         shown = (keepers or sfiles)[:kmax]
-        shown_set = set(shown)
+        shown_here = set(shown)
+        shown_set |= shown_here
         shown_panels += len(shown)
         dropped_panels += len(sfiles) - len(shown)
         for sf in sfiles:
-            if sf not in shown_set:
+            if sf not in shown_here:
                 _add(scene_flags, sf, {"kind": "dropped",
                                        "detail": "cut from the video (over time budget / redundant)"})
         # genuinely too short: even after cutting, each shown panel is < min_sec
@@ -316,15 +318,24 @@ def compute_flags(
     scene_set_drift = bool(drift_missing)
 
     # --- scorecard ------------------------------------------------------
+    # Pass/fail judges the RENDERED video (the shown panels), not the raw
+    # generated scene set — the viewer never sees the dropped panels, so density
+    # and visible duplicates are measured on what actually ships.
     total_scenes = len(scene_list)
     scenes_per_page = (total_scenes / source_page_count) if source_page_count else 0.0
+    shown_per_page = (shown_panels / source_page_count) if source_page_count else 0.0
+    # near-dup pairs where BOTH panels survive into the shown montage = a dup the
+    # viewer would actually see (selection should have dropped one).
+    visible_dups = [p for p in dup_pairs if p["a"] in shown_set and p["b"] in shown_set]
 
     scorecard = {
         "total_scenes": total_scenes,
         "source_pages": source_page_count,
         "scenes_per_page": round(scenes_per_page, 2),
+        "shown_per_page": round(shown_per_page, 2),
         "groups": len(shots),
         "near_dup_pairs": len(dup_pairs),
+        "visible_dup_pairs": len(visible_dups),
         "text_dominated": text_dominated,
         "shown_panels": shown_panels,
         "dropped_panels": dropped_panels,
@@ -334,9 +345,9 @@ def compute_flags(
         "redundant_marked": redundant_marked,
         "scene_set_drift": scene_set_drift,
         "drift_missing_files": drift_missing,
-        # pass/fail vs SP2 acceptance
-        "density_ok": scenes_per_page <= density_per_page_max,
-        "dup_ok": len(dup_pairs) == 0,
+        # pass/fail vs SP2 acceptance — judged on the rendered (shown) montage
+        "density_ok": shown_per_page <= density_per_page_max,
+        "dup_ok": len(visible_dups) == 0,
         "echo_ok": ocr_echo == 0,
         "pacing_ok": shown_under_min == 0,
         "narration_ok": missing_narration == 0,
