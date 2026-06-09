@@ -20,6 +20,24 @@ The SP1 pipeline produces a working recap (fetch → YOLO → scenes → OCR →
 | 6 | **Split / diptych action panels** (Image #6: two images, opposing motion lines = one clash moment) split into 2 scenes | ⏳ | Detect adjacent crops that form one visual moment (side-by-side, motion-line cues, or Gemini判定) and keep them as one shot (fast intercut), not two unrelated scenes. |
 | 7 | **Emotion-aware pacing** — narration/timing should track scene intensity (intense fight = punchy + fast cuts; quiet = longer holds). Currently even split. | ⏳ | Use beats' `mood_words`/intensity to modulate per-shot duration and `min_cut_sec` (intense → shorter holds/faster cuts within a min; emotional → longer). The narration-length-per-image should reflect emotion, not be uniform. |
 
+## Open defect — cross-chunk SEAM duplicates (found 2026-06-09)
+
+Real example: Nano ch1 **p15 (bottom of chunk_0002, y 0.887–1.0)** and **p16
+(top of chunk_0003, y 0.0–0.065)** are the SAME panel bisected by the chunk-stitch
+seam — p16 has the face cut off. Neither the within-chunk overlap dedup
+(`--dedupe-overlap`, same-chunk only) nor dHash (hamming 29, not identical) catches
+it, and the Gemini selection kept the cut-off one (p16 keep / p15 redundant).
+
+**Fix (focused pass, needs re-scene + re-derive):**
+1. **Cross-chunk seam dedup in panels_to_scenes**: when a panel sits at the very
+   bottom of chunk N and a similar panel at the very top of chunk N+1, treat them
+   as one bisected panel — keep the more complete (taller / fuller-content) one,
+   drop the other. Deterministic positional check at every chunk boundary.
+2. Nudge the Gemini scene-selection prompt to prefer COMPLETE framing (no cut-off
+   faces) when choosing which of two near-dups to keep.
+3. Ideally `chunk_stitch_adaptive` should avoid cutting through panels at all
+   (cut only at safe gutters) — investigate why this seam bisected a panel.
+
 ## Architecture notes
 
 - **Raw vs clean scenes:** keep `scenes/` (raw, with bubbles) for OCR/vision so narration knows the dialogue; produce `clean_scenes/` (bubble-inpainted) for the *video*. `timeline_planner` already supports `--prefer-clean --clean-scene-dir`.
