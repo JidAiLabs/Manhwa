@@ -45,7 +45,7 @@ from studio import qa_flags
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
+def build_qa_report(ep_dir: Path, out_html: Path, tts_subdir: str = "tts") -> Path:
     """Build a self-contained HTML QA report for *ep_dir* and write it to *out_html*.
 
     Parameters
@@ -99,14 +99,14 @@ def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
     # Optional TTS clips: map segment_id -> audio path (relative to the report,
     # which sits at ep_dir, so prefix the tts/ dir). Lets the report embed a
     # playable clip next to each narration paragraph.
-    tts_data = _load_optional(ep_dir / "tts" / "tts_index.json")
+    tts_data = _load_optional(ep_dir / tts_subdir / "tts_index.json")
     audio_by_seg: dict[str, str] = {}
     if tts_data:
         for clip in tts_data.get("clips") or []:
             sid = str(clip.get("segment_id") or "")
             af = str(clip.get("audio_file") or "")
             if sid and af:
-                audio_by_seg[sid] = f"tts/{af}"
+                audio_by_seg[sid] = f"{tts_subdir}/{af}"
         if audio_by_seg:
             found_manifests.append(f"tts({tts_data.get('backend', '?')})")
 
