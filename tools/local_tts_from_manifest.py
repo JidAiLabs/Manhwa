@@ -299,32 +299,38 @@ def _make_chatterbox_turbo_synth(voice_ref: str) -> SynthFn:
     return synth
 
 
-def _make_qwen_synth(voice_ref: str, language: str = "English") -> SynthFn:
-    """Qwen3-TTS (Apache-2.0) — instruction-driven emotion. We map the per-clip
-    intensity to a natural-language instruction. Apple-Silicon adapted: device=mps,
-    eager attention (flash-attention is CUDA-only), float32 (bf16 is unreliable on MPS).
+# Voice persona prepended to every Qwen instruction (VoiceDesign builds the voice
+# from the instruction, so this is how we get a consistent MALE narrator).
+QWEN_VOICE_PERSONA = "A deep, resonant male narrator voice, clear and dramatic."
+
+
+def _make_qwen_synth(voice_ref: str, language: str = "English",
+                     persona: str = QWEN_VOICE_PERSONA) -> SynthFn:
+    """Qwen3-TTS (Apache-2.0) — instruction-driven emotion + voice design. We
+    prepend a male-narrator *persona* and append the per-clip emotion instruction.
+    Apple-Silicon adapted: device=mps, fp16 (~1.7x faster than fp32 on MPS), and
+    `sdpa` attention (flash-attention_2 is CUDA-only; sdpa has an MPS path and
+    beats `eager`). On CUDA it uses flash-attention + bf16 and is far faster.
     """
     import torch
     import soundfile as sf
     from qwen_tts import Qwen3TTSModel
 
-    if torch.backends.mps.is_available():
-        device, dtype = "mps", torch.float32
-    elif torch.cuda.is_available():
-        device, dtype = "cuda", torch.bfloat16
+    if torch.cuda.is_available():
+        device, dtype, attn = "cuda", torch.bfloat16, "flash_attention_2"
+    elif torch.backends.mps.is_available():
+        device, dtype, attn = "mps", torch.float16, "sdpa"
     else:
-        device, dtype = "cpu", torch.float32
+        device, dtype, attn = "cpu", torch.float32, "sdpa"
 
     model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-        device_map=device,
-        dtype=dtype,
-        attn_implementation="eager",   # flash_attention_2 is CUDA-only
+        device_map=device, dtype=dtype, attn_implementation=attn,
     )
-    print(f"[qwen3-tts] loaded on {device}")
+    print(f"[qwen3-tts] loaded on {device} ({attn}, {dtype})")
 
     def synth(text: str, out_path: str, exaggeration: float) -> None:
-        instruct = exaggeration_to_instruction(exaggeration)
+        instruct = f"{persona} {exaggeration_to_instruction(exaggeration)}".strip()
         wavs, sr = model.generate_voice_design(text=text, language=language, instruct=instruct)
         sf.write(out_path, wavs[0], sr, subtype="PCM_16")
 
