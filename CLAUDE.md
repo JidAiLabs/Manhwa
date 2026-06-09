@@ -38,7 +38,11 @@ $V -m studio status [series_id]                                # chapter status 
 
 ### Models & cost (configurable in `studio.toml`)
 - `[models].beats_model` (Gemini, default `gemini-2.5-flash`; `gemini-2.5-flash-lite` ~5× cheaper) and `[models].script_model` (OpenAI, default **`gpt-5-nano`** — note `gpt-4.1-mini` API-retires **2026-10-14**).
-- `[tts].backend` = `chatterbox` (local, MIT, expressive, maps mood tags→emotion; optional `voice_ref` for cloning) | `kokoro` (local, fast, flatter) | `elevenlabs` (cloud, paid). Adapter `tools/local_tts_from_manifest.py` emits the same `clips/{segment_id}.wav` + `tts_index.json` contract. **Chatterbox VERIFIED WORKING** on MPS via an **isolated `.tts_venv`** (`[tts].python` points to it) — it pins torch 2.6 which conflicts with YOLO's torch 2.12, so it MUST stay in its own venv. Setup: `python3.12 -m venv .tts_venv && .tts_venv/bin/pip install chatterbox-tts`. Caveat: **slow on MPS (~1–2 min/clip)** → ~30–60 min/chapter; use `backend=kokoro` for fast throughput. Proof clip: `out/tts_smoke/g0001_p00.wav`.
+- `[tts].backend` = `chatterbox` | `chatterbox-turbo` | `qwen` | `kokoro` | `elevenlabs`. Adapter `tools/local_tts_from_manifest.py` emits the same `clips/{segment_id}.wav` + `tts_index.json` contract for all. **Each local backend needs its OWN venv** (conflicting deps) — set `[tts].python` to the right one per backend:
+  - **chatterbox** (MIT, expressive emotion dial) + **chatterbox-turbo** (fast, flat) → `.tts_venv` (torch 2.6). `python3.12 -m venv .tts_venv && .tts_venv/bin/pip install chatterbox-tts`.
+  - **qwen** (Apache-2.0, instruction-driven emotion, 1.7B-VoiceDesign) → `.qwen_venv` (transformers 4.57). `python3.12 -m venv .qwen_venv && .qwen_venv/bin/pip install qwen-tts soundfile`. `brew install sox` silences a soft warning.
+  - **ALL THREE VERIFIED WORKING on MPS** (eager attention; flash-attn is CUDA-only). YOLO's `.eval_venv` torch 2.12 stays untouched. A/B clips: `out/tts_smoke/{chatterbox,chatterbox_turbo,qwen}.wav`.
+  - Speed on MPS is modest (no flash-attn) — fine for offline batch; `kokoro` is the fast-throughput option if needed.
 - **Every paid run prints exact tokens + $** (`[cost]` line, also in manifest `stats.usage`) via `tools/usage_cost.py`; cached tokens billed at the lower rate (OpenAI auto-caches the static prompt). Measured Nano ch1: beats ~$0.085, script(gpt-4.1-mini) ~$0.065; gpt-5-nano+flash-lite+batch target ~$0.02/chapter. **Batch API (50% off, offline bulk mode) = TODO**, see SP2 spec.
 
 ### Test titles (live-verified)
