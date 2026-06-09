@@ -230,6 +230,29 @@ def test_compute_flags_detects_scene_set_drift():
     assert "GHOST.jpg" in out["scorecard"]["drift_missing_files"]
 
 
+def test_compute_flags_counts_redundant_from_beats():
+    scenes, vision, groups, script = _fixture_manifests()
+    beats = {
+        "beats": [
+            {"group_id": 1, "scene_selection": [
+                {"scene_file": "p0.jpg", "role": "keep"},
+                {"scene_file": "p1.jpg", "role": "redundant"},
+            ]},
+            {"group_id": 2, "scene_selection": [
+                {"scene_file": "p2.jpg", "role": "keep"},
+                {"scene_file": "p3.jpg", "role": "keep"},
+            ]},
+        ]
+    }
+    out = qa_flags.compute_flags(
+        scenes=scenes, vision_items=vision, groups=groups, script=script,
+        beats=beats, source_page_count=2,
+    )
+    assert out["scorecard"]["redundant_marked"] == 1
+    # p1 carries a 'redundant' scene flag
+    assert any(f["kind"] == "redundant" for f in out["scene_flags"].get("p1.jpg", []))
+
+
 def test_compute_flags_missing_narration_group():
     scenes, vision, groups, script = _fixture_manifests()
     # remove narration for group 2

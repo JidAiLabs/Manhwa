@@ -115,6 +115,7 @@ def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
         vision_items=vision_data or {},
         groups=groups_data or {},
         script=script_data,
+        beats=beats_data,
         source_page_count=source_pages,
     )
     scorecard = qa["scorecard"]
@@ -276,6 +277,7 @@ def _render_scorecard(sc: dict[str, Any]) -> str:
         chip("text-only bubbles", sc.get("text_dominated", 0) == 0, sc.get("text_dominated")),
         chip("groups w/o narration (0)", sc.get("narration_ok", False),
              sc.get("missing_narration_groups")),
+        chip("redundant dropped", True, sc.get("redundant_marked", 0)),
         chip("scene-set in sync", sc.get("sync_ok", False),
              "yes" if sc.get("sync_ok") else "DRIFT"),
     ]
@@ -462,6 +464,7 @@ a    { color: #0057b7; }
 .flag-short_on_screen { background: #ffe0b3; color: #8a4b00; }
 .flag-ocr_echo { background: #f3d6ff; color: #6a1b8a; }
 .flag-no_narration { background: #e0e0e0; color: #444; }
+.flag-redundant { background: #d8d8d8; color: #555; text-decoration: line-through; }
 
 /* ── Group card ── */
 .group-card {

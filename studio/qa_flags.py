@@ -158,6 +158,7 @@ def compute_flags(
     groups: dict[str, Any],
     script: dict[str, Any] | None,
     source_page_count: int,
+    beats: dict[str, Any] | None = None,
     min_sec_per_pic: float = 3.5,
     dup_hamming: int = 8,
     text_frac: float = 0.20,
@@ -266,6 +267,16 @@ def compute_flags(
             missing_narration += 1
             _add(group_flags, gid, {"kind": "no_narration", "detail": "group has no narration paragraph"})
 
+    # --- 6b. redundant panels marked by the Gemini scene-selection pass ------
+    redundant_marked = 0
+    for beat in (beats or {}).get("beats") or []:
+        for ent in beat.get("scene_selection") or []:
+            if str(ent.get("role") or "keep") == "redundant":
+                redundant_marked += 1
+                _add(scene_flags, str(ent.get("scene_file") or ""),
+                     {"kind": "redundant",
+                      "detail": str(ent.get("reason") or "marked redundant by selector")})
+
     # --- 6. scene-set drift (groups reference files not in scenes set) --
     on_disk = {str(s.get("out_file") or s.get("scene_file") or "") for s in scene_list}
     referenced = {str(sf) for s in shots for sf in (s.get("scene_files") or [])}
@@ -286,6 +297,7 @@ def compute_flags(
         "short_pictures": short_pictures,
         "ocr_echo": ocr_echo,
         "missing_narration_groups": missing_narration,
+        "redundant_marked": redundant_marked,
         "scene_set_drift": scene_set_drift,
         "drift_missing_files": drift_missing,
         # pass/fail vs SP2 acceptance
