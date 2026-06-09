@@ -74,6 +74,22 @@ def mood_to_exaggeration(tag: Optional[str]) -> float:
     return _DEFAULT_EXAGGERATION
 
 
+def exaggeration_to_instruction(exaggeration: float) -> str:
+    """Map the per-clip intensity (0..1) to a natural-language emotion instruction
+    for instruction-driven backends like Qwen3-TTS. Keeps the adapter's synth_fn
+    interface unchanged (intensity already encodes the mood)."""
+    e = float(exaggeration)
+    if e < 0.35:
+        return "Speak in a calm, somber, restrained tone."
+    if e < 0.55:
+        return "Speak in a serious, measured cinematic narrator voice."
+    if e < 0.70:
+        return "Speak with rising tension and unease."
+    if e < 0.85:
+        return "Speak with intense, dramatic energy."
+    return "Speak forcefully and urgently, with explosive intensity."
+
+
 def wav_duration_sec(path: str) -> float:
     """Duration in seconds of a WAV file.
 
@@ -283,6 +299,38 @@ def _make_chatterbox_turbo_synth(voice_ref: str) -> SynthFn:
     return synth
 
 
+def _make_qwen_synth(voice_ref: str, language: str = "English") -> SynthFn:
+    """Qwen3-TTS (Apache-2.0) — instruction-driven emotion. We map the per-clip
+    intensity to a natural-language instruction. Apple-Silicon adapted: device=mps,
+    eager attention (flash-attention is CUDA-only), float32 (bf16 is unreliable on MPS).
+    """
+    import torch
+    import soundfile as sf
+    from qwen_tts import Qwen3TTSModel
+
+    if torch.backends.mps.is_available():
+        device, dtype = "mps", torch.float32
+    elif torch.cuda.is_available():
+        device, dtype = "cuda", torch.bfloat16
+    else:
+        device, dtype = "cpu", torch.float32
+
+    model = Qwen3TTSModel.from_pretrained(
+        "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        device_map=device,
+        dtype=dtype,
+        attn_implementation="eager",   # flash_attention_2 is CUDA-only
+    )
+    print(f"[qwen3-tts] loaded on {device}")
+
+    def synth(text: str, out_path: str, exaggeration: float) -> None:
+        instruct = exaggeration_to_instruction(exaggeration)
+        wavs, sr = model.generate_voice_design(text=text, language=language, instruct=instruct)
+        sf.write(out_path, wavs[0], sr, subtype="PCM_16")
+
+    return synth
+
+
 def _make_kokoro_synth(voice: str = "af_heart") -> SynthFn:
     import soundfile as sf
     from kokoro import KPipeline
@@ -304,7 +352,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True, help="manifest.script.json")
     ap.add_argument("--out-dir", required=True, help="creates clips/ + tts_index.json")
-    ap.add_argument("--backend", choices=["chatterbox", "chatterbox-turbo", "kokoro"], default="chatterbox")
+    ap.add_argument("--backend", choices=["chatterbox", "chatterbox-turbo", "qwen", "kokoro"], default="chatterbox")
     ap.add_argument("--voice-ref", default="", help="chatterbox: 5-10s reference wav to clone")
     ap.add_argument("--kokoro-voice", default="af_heart")
     ap.add_argument("--text-source", choices=["tts_v3", "script", "tts_ssml"], default="tts_v3")
@@ -319,6 +367,8 @@ def main() -> int:
         synth_fn = _make_chatterbox_synth(args.voice_ref)
     elif args.backend == "chatterbox-turbo":
         synth_fn = _make_chatterbox_turbo_synth(args.voice_ref)
+    elif args.backend == "qwen":
+        synth_fn = _make_qwen_synth(args.voice_ref)
     else:
         synth_fn = _make_kokoro_synth(args.kokoro_voice)
 

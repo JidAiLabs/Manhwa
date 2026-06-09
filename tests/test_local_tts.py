@@ -31,6 +31,18 @@ def test_leading_tag_and_strip():
     assert lt.strip_bracket_tags("[tense] He runs [beat] now.") == "He runs now."
 
 
+def test_exaggeration_to_instruction_scales():
+    calm = lt.exaggeration_to_instruction(0.30)
+    intense = lt.exaggeration_to_instruction(0.78)
+    boom = lt.exaggeration_to_instruction(0.92)
+    assert "calm" in calm.lower()
+    assert "intense" in intense.lower() or "dramatic" in intense.lower()
+    assert "explosive" in boom.lower() or "forcefully" in boom.lower()
+    # every bucket returns a non-empty instruction
+    for e in (0.1, 0.4, 0.6, 0.8, 0.95):
+        assert lt.exaggeration_to_instruction(e).strip()
+
+
 def test_mood_to_exaggeration_scale():
     calm = lt.mood_to_exaggeration("calm")
     tense = lt.mood_to_exaggeration("tense")
