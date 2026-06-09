@@ -37,3 +37,47 @@ The SP1 pipeline produces a working recap (fetch → YOLO → scenes → OCR →
 ## Acceptance
 
 Re-run Nano Machine ch1 and ORV ch1 end-to-end; verify: scene count is sane (#2), no standalone text bubbles (#3), displayed images have bubbles cleaned on both bg colors (#4), narration distinguishes thought vs speech (#5), split-action panels stay paired (#6), and intense scenes pace faster than quiet ones (#7). Full test suite stays green.
+
+## QA confidence instrument (added 2026-06-09, before SP2 fixes)
+
+`studio/qa_flags.py` + the `qa.py` scorecard turn the eyeball-only report into a
+measuring instrument so each SP2 fix is verifiable, not a judgment call. It
+renders the **canonical, in-sync** scene set (warns on drift) and scores the
+defect classes. **Baseline after the deduped re-derive of Nano ch1** (116 scenes,
+24 pages, 36 groups) — the numbers SP2 must move:
+
+| Metric | Baseline | Target |
+|---|---|---|
+| scenes / page | 4.83 | ≤3 |
+| near-dup pairs (dHash ≤8) | 2 | 0 |
+| short <3.5s pictures | 86 | ~0 |
+| OCR-echoes | 4 | 0 |
+| text-only bubbles | 3 | 0 |
+| groups w/o narration | 3 (groups 4–6, p12–p16) | 0 |
+
+## Review findings that refine the build (Nano ch1, 2026-06-09)
+
+- **"short on screen" is a density symptom, not a per-image defect.** = a picture
+  whose share (`shot narration_s ÷ #pictures`) is <3.5s. At render,
+  `timeline_planner --min-cut-sec 3.5` keeps `floor(shot_s/3.5)` pictures and
+  **drops the rest** (narration untouched). 86/116 flagged ⇒ ~half the montage
+  would be discarded arbitrarily by the renderer. #2 fixes this at the source by
+  not over-generating, so kept panels are chosen deliberately.
+- **dHash dedup catches PIXEL near-dups only.** p63/p64 (h5), p84/p85 (h7) caught
+  correctly; but **p74/p75 are a SEMANTIC duplicate (same moment) at hamming 20**
+  — dHash can't see it, and raising the threshold adds false positives (coincidental
+  dark panels at h11) without catching it. **Semantic redundancy must come from the
+  Gemini shot-selector** (`tools/gemini_shot_selector.py` already exists — "keep vs
+  redundant" — but is NOT wired into the studio pipeline). Wiring it is the real fix
+  for the user's notion of "duplicate." → add to #1/#5 scope.
+- **Tall "long shots" need render-side handling.** p79 aspect 2.64, p5 3.0 — too
+  tall for 16:9 full-frame. The scener's gutter-`split` didn't fire (gutters not
+  "safe"). Fix: tall-scene (aspect > ~1.8) → auto **vertical pan** via the
+  `motion`/`camera_path` the timeline already emits, OR gutter-split. → fold into #6/#7.
+- **Bubble inpaint (#4) confirmed NOT done** — `clean_scenes/` absent. Note: current
+  `clean_panels_inpaint.py` bubble test assumes BRIGHT bubbles; p79 has black-outline
+  bubbles over art, so dark/edge cases must be handled.
+
+**Sequencing lesson:** #2 (over-segmentation) changes the scene set and forces a
+downstream re-derive, so it MUST land before #3/#4 (which operate on the final
+scenes) — otherwise inpaint/merge work is thrown away on re-scene.
