@@ -58,6 +58,23 @@ def test_accumulator_summary_mentions_tokens_and_model():
     assert "$" in s
 
 
+def test_cached_tokens_bill_at_lower_rate():
+    # 1M input, all cached -> should cost less than 1M fresh input
+    fresh = uc.estimate_cost("gpt-5-nano", 1_000_000, 0, cached_tokens=0)
+    cached = uc.estimate_cost("gpt-5-nano", 1_000_000, 0, cached_tokens=1_000_000)
+    assert cached < fresh
+    # cached billed at 0.25x by default
+    assert cached == pytest.approx(fresh * 0.25)
+
+
+def test_accumulator_reports_cache_savings():
+    acc = uc.UsageAccumulator("gpt-5-nano")
+    acc.add(input_tokens=1000, output_tokens=100, cached_tokens=800)
+    assert acc.cached_tokens == 800
+    assert acc.cache_savings() > 0
+    assert "cached_in=800" in acc.summary()
+
+
 def test_accumulator_unknown_pricing_flagged():
     acc = uc.UsageAccumulator("mystery-model")
     acc.add(input_tokens=10, output_tokens=10)

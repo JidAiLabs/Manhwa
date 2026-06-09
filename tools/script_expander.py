@@ -38,14 +38,22 @@ def _openai_usage(resp: Any) -> Dict[str, int]:
     """
     u = getattr(resp, "usage", None)
     if u is None:
-        return {"input": 0, "output": 0}
+        return {"input": 0, "output": 0, "cached": 0}
     inp = getattr(u, "input_tokens", None)
     if inp is None:
         inp = getattr(u, "prompt_tokens", 0)
     out = getattr(u, "output_tokens", None)
     if out is None:
         out = getattr(u, "completion_tokens", 0)
-    return {"input": int(inp or 0), "output": int(out or 0)}
+    # cached input tokens: Responses API -> input_tokens_details.cached_tokens;
+    # Chat Completions -> prompt_tokens_details.cached_tokens.
+    cached = 0
+    for attr in ("input_tokens_details", "prompt_tokens_details"):
+        d = getattr(u, attr, None)
+        if d is not None:
+            cached = int(getattr(d, "cached_tokens", 0) or 0)
+            break
+    return {"input": int(inp or 0), "output": int(out or 0), "cached": cached}
 
 # =============================================================================
 # ElevenLabs v3 tags (leading tag must be one of these)
@@ -752,7 +760,7 @@ def _call_chat_json(
     resp = client.chat.completions.create(**kwargs)
     if usage_acc is not None:
         u = _openai_usage(resp)
-        usage_acc.add(input_tokens=u["input"], output_tokens=u["output"])
+        usage_acc.add(input_tokens=u["input"], output_tokens=u["output"], cached_tokens=u.get("cached", 0))
     raw = _resp_to_text(resp).strip()
     try:
         return (json.loads(raw) if raw else None), raw
@@ -788,7 +796,7 @@ def _call_openai_json(
 
         if usage_acc is not None:
             u = _openai_usage(resp)
-            usage_acc.add(input_tokens=u["input"], output_tokens=u["output"])
+            usage_acc.add(input_tokens=u["input"], output_tokens=u["output"], cached_tokens=u.get("cached", 0))
 
         parsed, raw = _resp_to_json_or_text(resp)
         if isinstance(parsed, dict):

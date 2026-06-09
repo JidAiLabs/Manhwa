@@ -37,11 +37,12 @@ from usage_cost import UsageAccumulator  # noqa: E402
 
 
 def _usage_from_resp(resp: Any) -> Dict[str, int]:
-    """Extract exact (input, output) token counts from a Gemini response."""
+    """Extract exact (input, output, cached) token counts from a Gemini response."""
     um = getattr(resp, "usage_metadata", None)
     return {
         "input": int(getattr(um, "prompt_token_count", 0) or 0),
         "output": int(getattr(um, "candidates_token_count", 0) or 0),
+        "cached": int(getattr(um, "cached_content_token_count", 0) or 0),
     }
 
 
@@ -403,7 +404,7 @@ def main() -> int:
                 temperature=0.2,
                 backoff_max=args.backoff_max,
             )
-            usage.add(input_tokens=u["input"], output_tokens=u["output"])
+            usage.add(input_tokens=u["input"], output_tokens=u["output"], cached_tokens=u.get("cached", 0))
             raw_text = raw
 
             # Accept any content-bearing dict; we KNOW the group_id (loop var) and
@@ -433,7 +434,7 @@ def main() -> int:
                 temperature=0.0,
                 backoff_max=args.backoff_max,
             )
-            usage.add(input_tokens=u2["input"], output_tokens=u2["output"])
+            usage.add(input_tokens=u2["input"], output_tokens=u2["output"], cached_tokens=u2.get("cached", 0))
             raw_text = raw2
             if isinstance(obj2, dict) and (obj2.get("what_happens") or obj2.get("beat_title")):
                 obj2["group_id"] = gid

@@ -45,13 +45,29 @@ def _match_pricing(model: str) -> dict[str, float] | None:
     return None
 
 
-def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """USD estimate for the given token counts. 0.0 when pricing is unknown."""
+# Cached input tokens are billed at a fraction of the normal input rate.
+# Providers vary (~0.1-0.5x); 0.25 is a reasonable default used unless a model
+# entry supplies an explicit "cached" rate.
+_CACHED_FRACTION = 0.25
+
+
+def _cached_rate(rates: dict[str, float]) -> float:
+    return rates.get("cached", rates["input"] * _CACHED_FRACTION)
+
+
+def estimate_cost(
+    model: str, input_tokens: int, output_tokens: int, cached_tokens: int = 0
+) -> float:
+    """USD estimate. *cached_tokens* (a subset of input) bill at the lower cached
+    rate. 0.0 when pricing is unknown."""
     rates = _match_pricing(model)
     if rates is None:
         return 0.0
+    cached = max(0, min(int(cached_tokens), int(input_tokens)))
+    fresh_input = input_tokens - cached
     return (
-        input_tokens / 1_000_000.0 * rates["input"]
+        fresh_input / 1_000_000.0 * rates["input"]
+        + cached / 1_000_000.0 * _cached_rate(rates)
         + output_tokens / 1_000_000.0 * rates["output"]
     )
 
@@ -68,26 +84,35 @@ class UsageAccumulator:
         self.calls = 0
         self.input_tokens = 0
         self.output_tokens = 0
+        self.cached_tokens = 0
 
-    def add(self, *, input_tokens: int, output_tokens: int) -> None:
+    def add(self, *, input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> None:
         self.calls += 1
         self.input_tokens += int(input_tokens or 0)
         self.output_tokens += int(output_tokens or 0)
+        self.cached_tokens += int(cached_tokens or 0)
 
     def cost(self) -> float:
-        return estimate_cost(self.model, self.input_tokens, self.output_tokens)
+        return estimate_cost(self.model, self.input_tokens, self.output_tokens, self.cached_tokens)
+
+    def cache_savings(self) -> float:
+        """USD saved by cached tokens vs paying full input rate on them."""
+        rates = _match_pricing(self.model)
+        if rates is None or not self.cached_tokens:
+            return 0.0
+        return self.cached_tokens / 1_000_000.0 * (rates["input"] - _cached_rate(rates))
 
     def has_pricing(self) -> bool:
         return _match_pricing(self.model) is not None
 
     def summary(self) -> str:
         tot = self.input_tokens + self.output_tokens
-        if self.has_pricing():
-            cost_str = format_cost(self.cost())
-        else:
-            cost_str = "unknown (no rate for model)"
+        cost_str = format_cost(self.cost()) if self.has_pricing() else "unknown (no rate for model)"
+        cached_str = ""
+        if self.cached_tokens:
+            cached_str = f" cached_in={self.cached_tokens} (saved ~{format_cost(self.cache_savings())})"
         return (
             f"[cost] model={self.model} calls={self.calls} "
-            f"tokens: in={self.input_tokens} out={self.output_tokens} total={tot} "
+            f"tokens: in={self.input_tokens} out={self.output_tokens} total={tot}{cached_str} "
             f"est_cost={cost_str}"
         )
