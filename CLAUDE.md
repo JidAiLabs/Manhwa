@@ -34,16 +34,21 @@ $V -m studio status [series_id]                                # chapter status 
 | `visioned` (OCR) | `keys/gcp-vision.json` | repo key; auto-set |
 | `beated` (Gemini beats) | same `keys/gcp-vision.json` SA key | **no gcloud needed** — pipeline uses the SA's OWN project (`gen-lang-client-…`), not `GOOGLE_CLOUD_PROJECT` |
 | `scripted` (recap script) | `OPENAI_API_KEY` | in creds.env |
-| `voiced` (TTS) | `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` | NOT YET ADDED — `voiced` fails until set |
+| `voiced` (TTS) | depends on `[tts].backend` | **`chatterbox`/`kokoro` = local, FREE, no key** (default chatterbox). `elevenlabs` needs `ELEVENLABS_API_KEY`+`ELEVENLABS_VOICE_ID` |
+
+### Models & cost (configurable in `studio.toml`)
+- `[models].beats_model` (Gemini, default `gemini-2.5-flash`; `gemini-2.5-flash-lite` ~5× cheaper) and `[models].script_model` (OpenAI, default **`gpt-5-nano`** — note `gpt-4.1-mini` API-retires **2026-10-14**).
+- `[tts].backend` = `chatterbox` (local, MIT, expressive, maps mood tags→emotion; optional `voice_ref` for cloning) | `kokoro` (local, fast, flatter) | `elevenlabs` (cloud, paid). Install local: `pip install chatterbox-tts torchaudio`. Adapter `tools/local_tts_from_manifest.py` emits the same `clips/{segment_id}.wav` + `tts_index.json` contract.
+- **Every paid run prints exact tokens + $** (`[cost]` line, also in manifest `stats.usage`) via `tools/usage_cost.py`; cached tokens billed at the lower rate (OpenAI auto-caches the static prompt). Measured Nano ch1: beats ~$0.085, script(gpt-4.1-mini) ~$0.065; gpt-5-nano+flash-lite+batch target ~$0.02/chapter. **Batch API (50% off, offline bulk mode) = TODO**, see SP2 spec.
 
 ### Test titles (live-verified)
 Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), Elftoon→**Infinite Evolution From Zero**.
 
 ### Current state / next work
-- Both **ORV ch1** and **Nano Machine ch1** processed through `scripted` (real narration; `voiced_failed` only because no ElevenLabs key). QA reports at `ongoing/<slug>/<label>/qa_report.html`.
-- **Plan:** `docs/plans/2026-06-09-acquisition-catalog-spine.md` (SP1, done).
-- **NEXT: `docs/plans/specs/2026-06-09-scene-bubble-quality-design.md` (SP2)** — over-segmentation, text-only-bubble merge, bubble inpaint (white+black), bubble-type→narration-mode, split-panel grouping, emotion-aware pacing. The lesson threading SP2: **bubble/scene *understanding* belongs in the Gemini multimodal pass, not regex/YOLO.**
-- Narrative quality overhaul (R2 no-OCR-echo/no-repeat, R3 continuity, R4 manhwa jargon, flashback) is DONE in `tools/script_expander.py`.
+- **Nano Machine ch1 QA scorecard is CONFIDENT** (all green): 56 shown panels (2.33/page), 0 under 3.5s, 0 visible dups, 0 OCR-echoes, 0 silent groups. QA is an automated instrument now (`studio/qa_flags.py` — scores the *rendered* montage, not raw scenes; `studio/qa.py` renders scorecard + flag badges).
+- **DONE this session (SP2 + cost):** QA confidence instrument; geometric sliver-merge (proved over-seg on dense manhwa is a *selection* problem, not geometry); **Gemini scene-selection** folded into the beats call (keep/redundant + bubble_mode + intensity, ~$0 extra) → timeline drops redundant-first; beats retry overhead cut (1.67→1.17 calls/group); script per-beat narration coverage (fixes silent groups) + type-aware anti-echo (keep short direct lines/titles, rephrase dialogue/monologue); exact token+$ cost logging w/ cache visibility; per-stage model config; **free local TTS adapter (chatterbox/kokoro)**.
+- **Plans:** `docs/plans/2026-06-09-acquisition-catalog-spine.md` (SP1). **SP2: `docs/plans/specs/2026-06-09-scene-bubble-quality-design.md`** — montage/over-seg + dedup + pacing DONE; **remaining: #4 bubble inpaint (white+black), #5 bubble-mode→narration (data already in beats.scene_selection), Batch API bulk mode.** Lesson: **bubble/scene *understanding* belongs in the Gemini multimodal pass, not regex/YOLO.**
+- To reach a rendered video: set `[tts].backend=chatterbox` (default), `pip install chatterbox-tts torchaudio`, run `studio run <id> --chapters N` → `render.plan.json` → Blender.
 
 ---
 

@@ -109,3 +109,38 @@ keep-vs-redundant) wired into studio — which also resolves the p74/p75 semanti
 duplicates. The geometric merge stays (off by default) for series where YOLO
 over-detects *contiguous* fragments (bands with no gutter between them); there it
 sticks. **Next: wire the Gemini selector as the real #2 + semantic-dedup fix.**
+
+### #2/dedup/pacing — DONE (2026-06-09)
+
+Folded scene-understanding into the EXISTING beats Gemini call (no new API
+stage, ~$0 extra): per-scene `keep`/`redundant` + `bubble_mode` + `intensity`.
+`timeline_planner` drops `redundant` panels FIRST. Result on Nano ch1: shown 56
+panels (2.33/page), 0 under 3.5s, 0 visible dups (all 3 incl. p74/p75 caught),
+25 redundant marked. QA scorecard now judges the *rendered* montage and is GREEN.
+
+## Cost reduction (2026-06-09) — partly done, batch is TODO
+
+Measured per-chapter LLM cost (Nano ch1, exact via `tools/usage_cost.py`):
+beats(Gemini Flash) ~$0.085, script(gpt-4.1-mini) ~$0.065. At 300 chapters ≈ $45/manhwa.
+
+DONE: per-stage model config (`studio.toml [models]`), default `script_model=gpt-5-nano`
+(~5× cheaper; gpt-4.1-mini API-retires 2026-10-14); exact token+$ logging with
+cached-token visibility (OpenAI auto-caches the static system prompt). Free local
+TTS (`chatterbox`/`kokoro`) eliminates the ElevenLabs per-character bill — the
+dominant cost at scale.
+
+**TODO — Batch API (50% off, the bulk-backlog mode):** This is NOT a flag; it
+reshapes execution. The current pipeline runs one chapter synchronously
+(submit→wait→advance status). Batch is async: build a JSONL of all requests
+(beats: one line per group; script: one per section), submit to the provider's
+batch endpoint, poll (up to 24h), retrieve, then map results back by
+`custom_id`=segment/group key. Design:
+- New `studio batch` subcommand operating over MANY discovered-but-unprocessed
+  chapters (where batch pays off), separate from the interactive single-chapter run.
+- Per-tool `--emit-batch <jsonl>` (build requests, no calls) and `--apply-batch
+  <results>` (parse results into the manifest) modes, reusing the existing
+  prompt/schema builders. Keep `custom_id` = `{chapter}:{group_id}` so results
+  rejoin deterministically.
+- Catalog: add `batch_submitted`/`batch_pending` substates so polling is resumable.
+- Tradeoff: ≤24h latency, so batch is for overnight bulk runs, not previewing one
+  chapter. Stacks with gpt-5-nano + flash-lite + caching → ~$0.02/chapter target.
