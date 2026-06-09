@@ -211,7 +211,7 @@ def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
 def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
     p = _ep_paths(ep_dir)
     backend = (cfg.tts_backend or "elevenlabs").lower()
-    if backend in ("chatterbox", "kokoro"):
+    if backend != "elevenlabs":   # any local backend (chatterbox[-turbo]/kokoro)
         # Free local TTS — no credential needed. Same tts_index.json contract.
         args = ["--script", str(p["script"]), "--out-dir", str(p["tts_dir"]),
                 "--backend", backend]

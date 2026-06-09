@@ -254,6 +254,35 @@ def _make_chatterbox_synth(voice_ref: str) -> SynthFn:
     return synth
 
 
+def _make_chatterbox_turbo_synth(voice_ref: str) -> SynthFn:
+    """Chatterbox TURBO — much faster than standard Chatterbox, but it IGNORES
+    emotion exaggeration (flatter delivery). Still supports voice cloning."""
+    import torch
+    import torchaudio as ta
+    import perth
+    if getattr(perth, "PerthImplicitWatermarker", None) is None:
+        perth.PerthImplicitWatermarker = perth.DummyWatermarker
+    from chatterbox.tts_turbo import ChatterboxTurboTTS
+
+    if torch.backends.mps.is_available():
+        device = "mps"
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
+    model = ChatterboxTurboTTS.from_pretrained(device=device)
+    print(f"[chatterbox-turbo] loaded on {device}")
+
+    def synth(text: str, out_path: str, exaggeration: float) -> None:
+        kwargs: Dict[str, Any] = {}
+        if voice_ref and os.path.exists(voice_ref):
+            kwargs["audio_prompt_path"] = voice_ref
+        wav = model.generate(text, **kwargs)   # exaggeration ignored by Turbo
+        ta.save(out_path, wav, model.sr, encoding="PCM_S", bits_per_sample=16)
+
+    return synth
+
+
 def _make_kokoro_synth(voice: str = "af_heart") -> SynthFn:
     import soundfile as sf
     from kokoro import KPipeline
@@ -275,7 +304,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True, help="manifest.script.json")
     ap.add_argument("--out-dir", required=True, help="creates clips/ + tts_index.json")
-    ap.add_argument("--backend", choices=["chatterbox", "kokoro"], default="chatterbox")
+    ap.add_argument("--backend", choices=["chatterbox", "chatterbox-turbo", "kokoro"], default="chatterbox")
     ap.add_argument("--voice-ref", default="", help="chatterbox: 5-10s reference wav to clone")
     ap.add_argument("--kokoro-voice", default="af_heart")
     ap.add_argument("--text-source", choices=["tts_v3", "script", "tts_ssml"], default="tts_v3")
@@ -288,6 +317,8 @@ def main() -> int:
 
     if args.backend == "chatterbox":
         synth_fn = _make_chatterbox_synth(args.voice_ref)
+    elif args.backend == "chatterbox-turbo":
+        synth_fn = _make_chatterbox_turbo_synth(args.voice_ref)
     else:
         synth_fn = _make_kokoro_synth(args.kokoro_voice)
 
