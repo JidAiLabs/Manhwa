@@ -1111,11 +1111,14 @@ Turn beats + OCR + scene data into a recap that feels like a movie trailer, not 
 - NEVER quote UI/interface text. NEVER narrate view counts, comment counts, likes,
   episode/chapter numbers, site names, or watermarks — these are app chrome, not story.
 - PARAPHRASE dialogue into narration in your own words; do not transcribe it.
-- HARD CONSTRAINT: do NOT reuse any run of 4 or more consecutive words that
-  appears in the panel's OCR/dialogue text. Restate the meaning in completely
-  different wording. (e.g. OCR "IT IS NOT OVER YET" -> narrate "he refuses to
-  fall — the fight is far from finished", NOT "it is not over yet".) Quote a
-  short phrase only if it is a truly iconic line AND you frame it as a quote.
+- DIALOGUE & INTERNAL MONOLOGUE: rephrase into narration in your own words —
+  do NOT transcribe. Do not reuse any run of 5+ consecutive words from the
+  panel's OCR/dialogue. (e.g. OCR "IT IS NOT OVER YET, I WILL DESTROY YOU" ->
+  "he refuses to fall, swearing to tear his enemy apart", NOT a copy of the line.)
+- KEEP AS-IS (do NOT paraphrase): short, punchy DIRECT lines (e.g. "Come here.",
+  "You're dead.", "It's him!") and proper nouns/titles (character names,
+  "Sky Corporation", "7th Generation Nano Machine"). Name or quote these
+  directly — only longer dialogue/monologue must be reworded.
 - NEVER repeat the same phrase, sentence, or fact across paragraphs — if a beat
   echoes an earlier one, advance it or rephrase with new emphasis.
 - Treat OCR text as a NOISY hint, not ground truth — OCR misreads are common

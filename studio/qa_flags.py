@@ -163,6 +163,7 @@ def compute_flags(
     dup_hamming: int = 8,
     text_frac: float = 0.20,
     density_per_page_max: float = 3.0,
+    echo_min_words: int = 5,
 ) -> dict[str, Any]:
     """Compute per-scene / per-group QA flags and a summary scorecard.
 
@@ -287,7 +288,10 @@ def compute_flags(
         if not ocr_blob.strip():
             continue
         for ent in entries:
-            run = longest_common_run(ent["text"], ocr_blob, min_words=4)
+            # 5-word verbatim runs signal real lazy transcription; 4-word overlaps
+            # are usually legitimate (proper nouns you must name, or narration
+            # describing the same visual a character's line refers to).
+            run = longest_common_run(ent["text"], ocr_blob, min_words=echo_min_words)
             if run:
                 ocr_echo += 1
                 _add(group_flags, gid,
