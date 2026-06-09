@@ -862,6 +862,26 @@ def _shots_count_matches_paras(obj: Dict[str, Any]) -> bool:
     shots = obj.get("shots") or []
     return isinstance(paras, list) and isinstance(shots, list) and len(paras) == len(shots)
 
+def _ensure_paragraph_coverage(
+    beats: List[Dict[str, Any]], paragraphs: List[str]
+) -> List[str]:
+    """Guarantee one narration paragraph per beat (no silently-dropped beats).
+
+    The model occasionally returns fewer paragraphs than the section has beats;
+    ``_build_default_shots_from_payload`` then uses ``n = min(beats, paragraphs)``
+    and drops the trailing beats, leaving those groups SILENT in the video. Pad
+    the paragraph list to one-per-beat using a deterministic fallback from each
+    uncovered beat's ``what_happens`` (never truncates extra paragraphs).
+    """
+    paras = [str(p) for p in (paragraphs or [])]
+    bl = beats or []
+    for i in range(len(paras), len(bl)):
+        b = bl[i] if isinstance(bl[i], dict) else {}
+        wh = str(b.get("what_happens") or "").strip()
+        paras.append(wh or "The scene continues.")
+    return paras
+
+
 def _build_default_shots_from_payload(payload: Dict[str, Any], script_paragraphs: List[str], *, wpm: int) -> List[Dict[str, Any]]:
     beats = payload.get("beats") or []
     shots: List[Dict[str, Any]] = []
@@ -1091,6 +1111,11 @@ Turn beats + OCR + scene data into a recap that feels like a movie trailer, not 
 - NEVER quote UI/interface text. NEVER narrate view counts, comment counts, likes,
   episode/chapter numbers, site names, or watermarks — these are app chrome, not story.
 - PARAPHRASE dialogue into narration in your own words; do not transcribe it.
+- HARD CONSTRAINT: do NOT reuse any run of 4 or more consecutive words that
+  appears in the panel's OCR/dialogue text. Restate the meaning in completely
+  different wording. (e.g. OCR "IT IS NOT OVER YET" -> narrate "he refuses to
+  fall — the fight is far from finished", NOT "it is not over yet".) Quote a
+  short phrase only if it is a truly iconic line AND you frame it as a quote.
 - NEVER repeat the same phrase, sentence, or fact across paragraphs — if a beat
   echoes an earlier one, advance it or rephrase with new emphasis.
 - Treat OCR text as a NOISY hint, not ground truth — OCR misreads are common
@@ -1440,6 +1465,10 @@ def main() -> int:
             if _validate_section_json(o1):
                 # post-clean narration + enforce tag rules again
                 script_paras = [clean_narration_post_llm(str(p)) for p in (o1.get("script_paragraphs") or [])]
+                # COVERAGE: never let the model silently drop beats — one
+                # paragraph per beat. The shots-repair below (paras != shots count)
+                # then rebuilds shots covering every beat/group.
+                script_paras = _ensure_paragraph_coverage(chunk, script_paras)
                 o1["script_paragraphs"] = script_paras
 
                 tts_v3 = list(o1.get("tts_paragraphs_v3") or [])
@@ -1458,6 +1487,10 @@ def main() -> int:
                     else:
                         cleaned_tts.append(clean_narration_post_llm(p))
 
+                # COVERAGE: keep one TTS paragraph per narration paragraph so the
+                # backfilled beats also get voiced (and don't desync the clips).
+                for j in range(len(cleaned_tts), len(script_paras)):
+                    cleaned_tts.append("[serious] " + script_paras[j])
                 o1["tts_paragraphs_v3"] = cleaned_tts
 
                 # tag repair
