@@ -20,9 +20,32 @@ import json
 import os
 import random
 import re
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
+
+# Shared exact-token + estimated-cost accounting (sibling tool module).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from usage_cost import UsageAccumulator  # noqa: E402
+
+
+def _openai_usage(resp: Any) -> Dict[str, int]:
+    """Exact (input, output) token counts from an OpenAI response.
+
+    Handles both the Responses API (input_tokens/output_tokens) and Chat
+    Completions (prompt_tokens/completion_tokens).
+    """
+    u = getattr(resp, "usage", None)
+    if u is None:
+        return {"input": 0, "output": 0}
+    inp = getattr(u, "input_tokens", None)
+    if inp is None:
+        inp = getattr(u, "prompt_tokens", 0)
+    out = getattr(u, "output_tokens", None)
+    if out is None:
+        out = getattr(u, "completion_tokens", 0)
+    return {"input": int(inp or 0), "output": int(out or 0)}
 
 # =============================================================================
 # ElevenLabs v3 tags (leading tag must be one of these)
@@ -703,6 +726,7 @@ def _call_chat_json(
     *,
     temperature: float,
     max_output_tokens: int,
+    usage_acc: Optional[UsageAccumulator] = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     schema_hint = json.dumps(schema, ensure_ascii=False)
     messages = [
@@ -726,6 +750,9 @@ def _call_chat_json(
     if _chat_supports_response_format(client):
         kwargs["response_format"] = {"type": "json_object"}
     resp = client.chat.completions.create(**kwargs)
+    if usage_acc is not None:
+        u = _openai_usage(resp)
+        usage_acc.add(input_tokens=u["input"], output_tokens=u["output"])
     raw = _resp_to_text(resp).strip()
     try:
         return (json.loads(raw) if raw else None), raw
@@ -741,6 +768,7 @@ def _call_openai_json(
     *,
     temperature: float,
     max_output_tokens: int,
+    usage_acc: Optional[UsageAccumulator] = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
 
     if _responses_supports_response_format(client):
@@ -757,6 +785,10 @@ def _call_openai_json(
                 "json_schema": {"name": "script_section", "schema": schema, "strict": True},
             },
         )
+
+        if usage_acc is not None:
+            u = _openai_usage(resp)
+            usage_acc.add(input_tokens=u["input"], output_tokens=u["output"])
 
         parsed, raw = _resp_to_json_or_text(resp)
         if isinstance(parsed, dict):
@@ -780,6 +812,7 @@ def _call_openai_json(
         schema=schema,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
+        usage_acc=usage_acc,
     )
 
 # =============================================================================
@@ -1283,6 +1316,7 @@ def main() -> int:
     }
 
     client = OpenAI()
+    usage = UsageAccumulator(args.model)
     out_sections: List[Dict[str, Any]] = []
     regenerated = 0
     parse_errors = 0
@@ -1382,6 +1416,7 @@ def main() -> int:
                 schema=section_schema,
                 temperature=0.5,
                 max_output_tokens=args.max_output_tokens,
+                usage_acc=usage,
             )
             raw = r1
 
@@ -1544,12 +1579,22 @@ def main() -> int:
         "force_genre": (args.force_genre or "").strip(),
         "word_target_total": total_word_target,
         "section_word_targets": per_section_targets,
-        "stats": {"parse_errors": parse_errors, "regenerated": regenerated},
+        "stats": {
+            "parse_errors": parse_errors,
+            "regenerated": regenerated,
+            "usage": {
+                "calls": usage.calls,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "est_cost_usd": round(usage.cost(), 4),
+            },
+        },
         "sections": out_sections,
     }
 
     dump_json(args.out, out_obj)
     print(f"[ok] wrote={args.out} sections={len(out_sections)} parse_errors={parse_errors} regenerated={regenerated}")
+    print(usage.summary())
     return 0
 
 if __name__ == "__main__":

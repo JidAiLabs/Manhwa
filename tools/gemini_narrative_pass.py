@@ -33,6 +33,16 @@ from google.genai.errors import ClientError
 # Shared keep/redundant + bubble/intensity normalization (sibling tool module).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_selection import normalize_scene_selection  # noqa: E402
+from usage_cost import UsageAccumulator  # noqa: E402
+
+
+def _usage_from_resp(resp: Any) -> Dict[str, int]:
+    """Extract exact (input, output) token counts from a Gemini response."""
+    um = getattr(resp, "usage_metadata", None)
+    return {
+        "input": int(getattr(um, "prompt_token_count", 0) or 0),
+        "output": int(getattr(um, "candidates_token_count", 0) or 0),
+    }
 
 
 def load_json(path: str) -> Dict[str, Any]:
@@ -127,7 +137,7 @@ def _call_model(
     response_schema: Dict[str, Any],
     max_output_tokens: int,
     temperature: float,
-) -> Tuple[Optional[Dict[str, Any]], str]:
+) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
     parts: List[types.Part] = []
     parts.append(_part_text("INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False)))
 
@@ -149,15 +159,16 @@ def _call_model(
         ),
     )
 
+    usage = _usage_from_resp(resp)
     parsed = getattr(resp, "parsed", None)
     if isinstance(parsed, dict):
-        return parsed, (resp.text or "")
+        return parsed, (resp.text or ""), usage
 
     raw = resp.text or ""
     try:
-        return json.loads(raw), raw
+        return json.loads(raw), raw, usage
     except Exception:
-        return _extract_json_object(raw), raw
+        return _extract_json_object(raw), raw, usage
 
 
 def _call_model_with_backoff(
@@ -171,7 +182,7 @@ def _call_model_with_backoff(
     max_output_tokens: int,
     temperature: float,
     backoff_max: float,
-) -> Tuple[Optional[Dict[str, Any]], str]:
+) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
     attempt = 0
     while True:
         try:
@@ -348,6 +359,7 @@ def main() -> int:
     beats_out: List[Dict[str, Any]] = []
     parse_errors = 0
     regenerated = 0
+    usage = UsageAccumulator(args.model)
 
     def write_checkpoint() -> None:
         tmp_obj = {
@@ -376,7 +388,7 @@ def main() -> int:
         raw_text = ""
 
         for _ in range(args.retries + 1):
-            obj, raw = _call_model_with_backoff(
+            obj, raw, u = _call_model_with_backoff(
                 client=client,
                 model=args.model,
                 system_instruction=system,
@@ -387,6 +399,7 @@ def main() -> int:
                 temperature=0.2,
                 backoff_max=args.backoff_max,
             )
+            usage.add(input_tokens=u["input"], output_tokens=u["output"])
             raw_text = raw
 
             if isinstance(obj, dict) and int(obj.get("group_id") or 0) == gid:
@@ -399,7 +412,7 @@ def main() -> int:
                 "last_output": (raw_text or "")[:4000],
                 "instruction": "Re-output the beat as VALID JSON matching the schema exactly. No extra text.",
             }
-            obj2, raw2 = _call_model_with_backoff(
+            obj2, raw2, u2 = _call_model_with_backoff(
                 client=client,
                 model=args.model,
                 system_instruction="You are a strict JSON formatter. Output valid JSON only.",
@@ -410,6 +423,7 @@ def main() -> int:
                 temperature=0.0,
                 backoff_max=args.backoff_max,
             )
+            usage.add(input_tokens=u2["input"], output_tokens=u2["output"])
             raw_text = raw2
             if isinstance(obj2, dict) and int(obj2.get("group_id") or 0) == gid:
                 beat = obj2
@@ -457,11 +471,21 @@ def main() -> int:
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
         "model": args.model,
         "count_beats": len(beats_out),
-        "stats": {"parse_errors": parse_errors, "regenerated": regenerated},
+        "stats": {
+            "parse_errors": parse_errors,
+            "regenerated": regenerated,
+            "usage": {
+                "calls": usage.calls,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "est_cost_usd": round(usage.cost(), 4),
+            },
+        },
         "beats": beats_out,
     }
     dump_json(args.out, out_obj)
     print(f"[ok] wrote={args.out} beats={len(beats_out)} parse_errors={parse_errors} regenerated={regenerated}")
+    print(usage.summary())
     return 0
 
 
