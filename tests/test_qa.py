@@ -34,6 +34,25 @@ from studio.catalog import repo
 # Minimal valid JPEG bytes (so PIL/imghdr is satisfied if ever used)
 # ---------------------------------------------------------------------------
 
+def test_qa_report_embeds_audio_when_tts_index_present(ep_dir, tmp_path):
+    """When tts/tts_index.json exists, narration paragraphs get an <audio> player
+    sourced from the clip whose segment_id matches."""
+    from studio.qa import build_qa_report
+    tts = ep_dir / "tts"
+    (tts / "clips").mkdir(parents=True)
+    (tts / "clips" / "g0001_p00.wav").write_bytes(b"RIFF....WAVE")
+    (tts / "tts_index.json").write_text(json.dumps({
+        "backend": "chatterbox-turbo",
+        "clips": [{"segment_id": "g0001_p00", "audio_file": "clips/g0001_p00.wav"}],
+    }), encoding="utf-8")
+
+    out = ep_dir / "qa_report.html"
+    build_qa_report(ep_dir, out)
+    html = out.read_text(encoding="utf-8")
+    assert "<audio" in html
+    assert 'src="tts/clips/g0001_p00.wav"' in html
+
+
 def _tiny_jpeg(path: Path) -> None:
     """Write a minimal but structurally valid 1×1 white JPEG."""
     # Smallest valid JPEG that browsers can render

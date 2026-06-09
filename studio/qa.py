@@ -96,6 +96,20 @@ def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
     if scenes_data is not None:
         found_manifests.append("scenes")
 
+    # Optional TTS clips: map segment_id -> audio path (relative to the report,
+    # which sits at ep_dir, so prefix the tts/ dir). Lets the report embed a
+    # playable clip next to each narration paragraph.
+    tts_data = _load_optional(ep_dir / "tts" / "tts_index.json")
+    audio_by_seg: dict[str, str] = {}
+    if tts_data:
+        for clip in tts_data.get("clips") or []:
+            sid = str(clip.get("segment_id") or "")
+            af = str(clip.get("audio_file") or "")
+            if sid and af:
+                audio_by_seg[sid] = f"tts/{af}"
+        if audio_by_seg:
+            found_manifests.append(f"tts({tts_data.get('backend', '?')})")
+
     # Resolve the canonical scene image directory from the scenes manifest's
     # out_dir (its basename), defaulting to "scenes". This keeps the report
     # pointed at whichever scene set the pipeline actually produced rather than
@@ -193,6 +207,7 @@ def build_qa_report(ep_dir: Path, out_html: Path) -> Path:
                 scene_dir_name=scene_dir_name,
                 scene_flags=scene_flags,
                 group_flags=group_flags.get(group_id) or [],
+                audio_by_seg=audio_by_seg,
             )
         )
 
@@ -316,9 +331,11 @@ def _render_group_card(
     scene_dir_name: str = "scenes",
     scene_flags: dict[str, list] | None = None,
     group_flags: list[dict[str, Any]] | None = None,
+    audio_by_seg: dict[str, str] | None = None,
 ) -> str:
     scene_flags = scene_flags or {}
     group_flags = group_flags or []
+    audio_by_seg = audio_by_seg or {}
     parts: list[str] = []
     parts.append(f'<div class="group-card" id="group-{group_id}">')
 
@@ -373,6 +390,12 @@ def _render_group_card(
             if seg_id:
                 parts.append(f'<div class="segment-id"><code>{_e(seg_id)}</code></div>')
             parts.append(f'<p class="narration-text">{_e(text)}</p>')
+            audio_src = audio_by_seg.get(seg_id)
+            if audio_src:
+                parts.append(
+                    f'<audio class="narration-audio" controls preload="none" '
+                    f'src="{_e(audio_src)}"></audio>'
+                )
             parts.append("</div>")  # .narration-entry
     else:
         parts.append(
@@ -567,6 +590,7 @@ a    { color: #0057b7; }
   font-style: italic;
   font-size: .88em;
 }
+.narration-audio { width: 100%; height: 32px; margin-top: .3rem; }
 
 /* ── Responsive ── */
 @media (max-width: 640px) {
