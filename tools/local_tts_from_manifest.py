@@ -75,12 +75,21 @@ def mood_to_exaggeration(tag: Optional[str]) -> float:
 
 
 def wav_duration_sec(path: str) -> float:
-    """Duration of a PCM WAV via the stdlib (no ffprobe dependency)."""
+    """Duration in seconds of a WAV file.
+
+    Tries the stdlib ``wave`` (PCM, zero extra deps); falls back to ``soundfile``
+    for float/IEEE WAVs that ``wave`` can't parse (Chatterbox/torchaudio output).
+    """
     try:
         with wave.open(path, "rb") as w:
-            frames = w.getnframes()
             rate = w.getframerate() or 1
-            return frames / float(rate)
+            return w.getnframes() / float(rate)
+    except Exception:
+        pass
+    try:
+        import soundfile as sf
+        info = sf.info(path)
+        return float(info.frames) / float(info.samplerate or 1)
     except Exception:
         return 0.0
 
@@ -238,7 +247,9 @@ def _make_chatterbox_synth(voice_ref: str) -> SynthFn:
         if voice_ref and os.path.exists(voice_ref):
             kwargs["audio_prompt_path"] = voice_ref
         wav = model.generate(text, **kwargs)
-        ta.save(out_path, wav, model.sr)
+        # Save standard 16-bit PCM (stdlib-wave readable + what Blender VSE wants),
+        # not the float WAV torchaudio writes by default for float tensors.
+        ta.save(out_path, wav, model.sr, encoding="PCM_S", bits_per_sample=16)
 
     return synth
 
