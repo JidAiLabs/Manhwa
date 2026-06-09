@@ -344,10 +344,18 @@ def _render_group_card(
     parts.append(f'<div class="group-label">Group&nbsp;{group_id}</div>')
     for sf in scene_files:
         ocr = ocr_by_file.get(sf, "")
-        parts.append('<div class="scene-block">')
+        flags_here = scene_flags.get(sf) or []
+        # Only the AI's deliberate cuts (duplicate / cropped fragment) get the
+        # prominent dim+overlay. Timeline 'dropped' (pacing trims) are normal —
+        # the panel is fine, it just didn't fit the time budget — so don't alarm.
+        is_redundant = any(f.get("kind") == "redundant" for f in flags_here)
+        block_cls = "scene-block scene-dropped" if is_redundant else "scene-block"
+        parts.append(f'<div class="{block_cls}">')
         parts.append(
             f'<img src="{_e(scene_dir_name)}/{_e(sf)}" alt="{_e(sf)}" loading="lazy">'
         )
+        if is_redundant:
+            parts.append('<div class="dropped-overlay">✕ cut (duplicate / cropped)</div>')
         parts.append(f'<div class="scene-name"><code>{_e(sf)}</code></div>')
         parts.append(_flag_badges(scene_flags.get(sf) or []))
         if ocr:
@@ -523,7 +531,15 @@ a    { color: #0057b7; }
   letter-spacing: .08em;
   margin-bottom: .2rem;
 }
-.scene-block { display: flex; flex-direction: column; gap: .2rem; }
+.scene-block { display: flex; flex-direction: column; gap: .2rem; position: relative; }
+/* Dropped/redundant panels: dimmed + greyscaled so the kept montage stands out
+   and they don't read as duplicates. */
+.scene-dropped img { opacity: .28; filter: grayscale(1); }
+.dropped-overlay {
+  position: absolute; top: 40%; left: 0; right: 0; text-align: center;
+  color: #fff; font-size: .72rem; font-weight: 800; letter-spacing: .06em;
+  background: rgba(180,38,30,.85); padding: 2px 0;
+}
 .scene-block img {
   width: 100%;
   height: auto;
