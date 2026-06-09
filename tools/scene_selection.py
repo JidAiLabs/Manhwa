@@ -75,11 +75,14 @@ def choose_kept_scenes(
     selection: List[Dict[str, Any]] | None,
     max_keep: int,
 ) -> List[str]:
-    """Pick which panels to show, dropping ``redundant`` ones first.
+    """Pick which panels to show, DROPPING ``redundant`` panels entirely.
 
-    Keeps ``keep``-role panels before ``redundant`` ones, but returns the chosen
-    set in the ORIGINAL scene order (never reorders the montage). Always returns
-    at least one panel for a non-empty shot, even if ``max_keep`` < 1.
+    A recap shows only the panels worth showing: ``redundant`` panels are not
+    displayed at all (so the kept panels get the freed time as longer holds and
+    same-moment duplicates never appear on screen), rather than being padded back
+    in to fill the time budget. Shows up to *max_keep* ``keep`` panels in original
+    order. If a shot has NO keepers (all redundant), it falls back to the first
+    *max_keep* panels so the shot is never empty.
     """
     if not scene_files:
         return []
@@ -88,16 +91,9 @@ def choose_kept_scenes(
         for e in (selection or [])
     }
     keepers = [sf for sf in scene_files if role_by_file.get(sf, "keep") == "keep"]
-    redundant = [sf for sf in scene_files if role_by_file.get(sf, "keep") != "keep"]
 
     n = max(1, int(max_keep))
-    chosen = set(keepers[:n])
-    # fill remaining slots with redundant panels (in order) if room remains
-    for sf in redundant:
-        if len(chosen) >= n:
-            break
-        chosen.add(sf)
-    # guarantee at least one panel
+    chosen = (keepers or scene_files)[:n]
     if not chosen:
-        chosen.add(scene_files[0])
-    return [sf for sf in scene_files if sf in chosen]
+        chosen = scene_files[:1]
+    return chosen

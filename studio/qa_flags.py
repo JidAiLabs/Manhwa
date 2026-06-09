@@ -229,17 +229,49 @@ def compute_flags(
                     "scene_files": ref.get("scene_files") or [],
                 })
 
-    # --- 3. short-on-screen (per picture) -------------------------------
-    short_pictures = 0
+    # --- 3. shown vs dropped — the REAL rendered montage --------------------
+    # The video does NOT show every panel: timeline_planner keeps
+    # floor(group_seconds / min_cut_sec) panels per group, dropping 'redundant'
+    # ones first. So measure what actually renders (shown), what gets cut
+    # (dropped), and flag ONLY panels that are still under min_sec after cutting
+    # (a genuinely too-short shot) — not the script's pre-trim over-references.
+    role_by_file: dict[str, str] = {}
+    for beat in (beats or {}).get("beats") or []:
+        for ent in beat.get("scene_selection") or []:
+            role_by_file[str(ent.get("scene_file") or "")] = str(ent.get("role") or "keep")
+
+    group_dur: dict[int, float] = {}
     for gid, entries in narr_by_gid.items():
-        for ent in entries:
-            sps = seconds_per_scene(ent)
-            if ent["scene_files"] and 0 < sps < min_sec_per_pic:
-                for sf in ent["scene_files"]:
-                    short_pictures += 1
-                    _add(scene_flags, str(sf),
-                         {"kind": "short_on_screen",
-                          "detail": f"{sps:.1f}s on screen (< {min_sec_per_pic:g}s)"})
+        group_dur[gid] = sum(float(e.get("duration_s") or 0.0) for e in entries)
+
+    shown_panels = 0
+    dropped_panels = 0
+    shown_under_min = 0
+    panels_in_groups = 0
+    for shot in shots:
+        gid = int(shot.get("shot_id") or shot.get("group_id") or 0)
+        sfiles = [str(x) for x in (shot.get("scene_files") or [])]
+        if not sfiles:
+            continue
+        panels_in_groups += len(sfiles)
+        dur = group_dur.get(gid, 0.0)
+        kmax = max(1, int(dur // min_sec_per_pic)) if dur > 0 else len(sfiles)
+        keepers = [sf for sf in sfiles if role_by_file.get(sf, "keep") == "keep"]
+        shown = (keepers or sfiles)[:kmax]
+        shown_set = set(shown)
+        shown_panels += len(shown)
+        dropped_panels += len(sfiles) - len(shown)
+        for sf in sfiles:
+            if sf not in shown_set:
+                _add(scene_flags, sf, {"kind": "dropped",
+                                       "detail": "cut from the video (over time budget / redundant)"})
+        # genuinely too short: even after cutting, each shown panel is < min_sec
+        if dur > 0 and shown and (dur / len(shown)) < min_sec_per_pic:
+            shown_under_min += 1
+            secs = dur / len(shown)
+            for sf in shown:
+                _add(scene_flags, sf, {"kind": "short_on_screen",
+                                       "detail": f"{secs:.1f}s shown (shot too short for {min_sec_per_pic:g}s)"})
 
     # --- 4. OCR-echo (narration repeats on-page text verbatim) ----------
     ocr_echo = 0
@@ -294,7 +326,9 @@ def compute_flags(
         "groups": len(shots),
         "near_dup_pairs": len(dup_pairs),
         "text_dominated": text_dominated,
-        "short_pictures": short_pictures,
+        "shown_panels": shown_panels,
+        "dropped_panels": dropped_panels,
+        "shown_under_min": shown_under_min,
         "ocr_echo": ocr_echo,
         "missing_narration_groups": missing_narration,
         "redundant_marked": redundant_marked,
@@ -304,7 +338,7 @@ def compute_flags(
         "density_ok": scenes_per_page <= density_per_page_max,
         "dup_ok": len(dup_pairs) == 0,
         "echo_ok": ocr_echo == 0,
-        "pacing_ok": short_pictures == 0,
+        "pacing_ok": shown_under_min == 0,
         "narration_ok": missing_narration == 0,
         "sync_ok": not scene_set_drift,
     }

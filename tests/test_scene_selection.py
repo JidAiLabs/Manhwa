@@ -96,17 +96,27 @@ def test_choose_drops_redundant_first():
     assert out == ["a.jpg", "c.jpg"]
 
 
-def test_choose_keeps_original_order():
+def test_choose_keepers_in_original_order():
     files = ["a.jpg", "b.jpg", "c.jpg"]
     sel = _sel({"a.jpg": "keep", "b.jpg": "keep", "c.jpg": "redundant"})
     out = ss.choose_kept_scenes(files, sel, max_keep=3)
-    assert out == ["a.jpg", "b.jpg", "c.jpg"]   # room for all, order preserved
+    # redundant c is DROPPED even though there's room — keepers hold longer
+    assert out == ["a.jpg", "b.jpg"]
 
 
-def test_choose_fills_with_redundant_when_room_remains():
+def test_choose_does_not_pad_with_redundant():
     files = ["a.jpg", "b.jpg", "c.jpg"]
     sel = _sel({"a.jpg": "keep", "b.jpg": "redundant", "c.jpg": "redundant"})
-    # max_keep 2, only 1 keeper → fill one redundant (first in order), preserve order
+    # only 1 keeper; redundant panels are NOT padded back in → just the keeper,
+    # which then gets the whole shot's time (longer hold, no on-screen dup)
+    out = ss.choose_kept_scenes(files, sel, max_keep=2)
+    assert out == ["a.jpg"]
+
+
+def test_choose_falls_back_to_files_when_no_keepers():
+    files = ["a.jpg", "b.jpg", "c.jpg"]
+    sel = _sel({"a.jpg": "redundant", "b.jpg": "redundant", "c.jpg": "redundant"})
+    # all redundant → show the first max_keep so the shot isn't empty
     out = ss.choose_kept_scenes(files, sel, max_keep=2)
     assert out == ["a.jpg", "b.jpg"]
 

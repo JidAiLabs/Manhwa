@@ -258,7 +258,7 @@ def main() -> int:
     ap.add_argument("--max-groups", type=int, default=0, help="0 = all")
     ap.add_argument("--resume", action="store_true", help="If out exists, keep good beats and only regen errors/missing")
     ap.add_argument("--retries", type=int, default=2, help="Retries per group on parse/validation failure")
-    ap.add_argument("--max-output-tokens", type=int, default=1800)
+    ap.add_argument("--max-output-tokens", type=int, default=2400)
     args = ap.parse_args()
 
     groups_m = load_json(args.groups_manifest)
@@ -281,10 +281,14 @@ def main() -> int:
         "Rendering hints: avoid zooming into text bubbles; focus faces/hands/key objects/wide.\n"
         "\n"
         "ALSO judge each panel for the recap video (scene_selection, one entry per scene_file):\n"
-        "  role: 'keep' if it advances the story or shows a distinct moment; 'redundant' if it\n"
-        "    is a near-repeat, a minor reaction, or shows the SAME moment as another panel in\n"
-        "    this group (a recap should not show the same beat twice). Be willing to mark\n"
-        "    repeats 'redundant' — but when unsure, 'keep'.\n"
+        "  role: a recap shows ONLY the strongest panels, so be decisive about cutting:\n"
+        "    Mark a panel 'redundant' if ANY of these hold — it shows the SAME moment/action as\n"
+        "    another panel in this group (even a slightly different frame of one continuous\n"
+        "    motion — e.g. two near-identical action shots a beat apart); it is a minor reaction\n"
+        "    or transition; or it adds no NEW story information or distinct visual beyond a panel\n"
+        "    you already kept. Mark 'keep' only for panels that each carry a distinct story beat.\n"
+        "    Typically 1-2 panels per group are 'keep'; the rest are often 'redundant'. NEVER\n"
+        "    mark every panel redundant — keep at least the single strongest.\n"
         "  bubble_mode: the dominant speech-bubble style — 'spoken' (smooth oval, said aloud),\n"
         "    'inner_thought' (jagged/cloud, thinking), 'narration' (rectangular caption box),\n"
         "    'shout' (spiky), or 'none' if no bubble.\n"
@@ -402,7 +406,13 @@ def main() -> int:
             usage.add(input_tokens=u["input"], output_tokens=u["output"])
             raw_text = raw
 
-            if isinstance(obj, dict) and int(obj.get("group_id") or 0) == gid:
+            # Accept any content-bearing dict; we KNOW the group_id (loop var) and
+            # scene_files (payload), so stamp them ourselves rather than forcing the
+            # model to echo group_id correctly — that mismatch was driving needless
+            # repair retries (~70% extra calls) with no quality benefit.
+            if isinstance(obj, dict) and (obj.get("what_happens") or obj.get("beat_title")):
+                obj["group_id"] = gid
+                obj["scene_files"] = payload["scene_files"]
                 beat = obj
                 break
 
@@ -425,7 +435,9 @@ def main() -> int:
             )
             usage.add(input_tokens=u2["input"], output_tokens=u2["output"])
             raw_text = raw2
-            if isinstance(obj2, dict) and int(obj2.get("group_id") or 0) == gid:
+            if isinstance(obj2, dict) and (obj2.get("what_happens") or obj2.get("beat_title")):
+                obj2["group_id"] = gid
+                obj2["scene_files"] = payload["scene_files"]
                 beat = obj2
                 break
 

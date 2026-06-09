@@ -196,7 +196,10 @@ def test_compute_flags_scorecard_counts():
     assert sc["scenes_per_page"] == pytest.approx(2.0)
     assert sc["near_dup_pairs"] == 1          # p0/p1
     assert sc["text_dominated"] == 1          # p2
-    assert sc["short_pictures"] == 2          # p0,p1 @ 2s each
+    # g1: 4s, 2 panels -> kmax 1 -> show 1 (4s, fine); g2: 10s, 2 panels -> show 2
+    assert sc["shown_panels"] == 3            # 1 from g1 + 2 from g2
+    assert sc["dropped_panels"] == 1          # the 2nd panel of g1 (over budget)
+    assert sc["shown_under_min"] == 0         # nothing rendered under 3.5s
     assert sc["ocr_echo"] == 1                # group 1 paragraph echoes p0 OCR
 
 
@@ -206,10 +209,12 @@ def test_compute_flags_marks_scene_and_group_flags():
         scenes=scenes, vision_items=vision, groups=groups, script=script,
         source_page_count=2, min_sec_per_pic=3.5, text_frac=0.30,
     )
-    # p0 is flagged as a near-duplicate and as too-short
+    # p0 is flagged as a near-duplicate (and is the kept panel of g1, so shown)
     p0 = out["scene_flags"].get("p0.jpg", [])
     assert any(f["kind"] == "near_duplicate" for f in p0)
-    assert any(f["kind"] == "short_on_screen" for f in p0)
+    # p1 is dropped from g1 by the time budget (2 panels, only room for 1)
+    p1 = out["scene_flags"].get("p1.jpg", [])
+    assert any(f["kind"] == "dropped" for f in p1)
     # p2 flagged text-dominated
     p2 = out["scene_flags"].get("p2.jpg", [])
     assert any(f["kind"] == "text_dominated" for f in p2)

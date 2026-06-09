@@ -273,7 +273,9 @@ def _render_scorecard(sc: dict[str, Any]) -> str:
              f'{sc.get("scenes_per_page")}'),
         chip("near-dup pairs (0)", sc.get("dup_ok", False), sc.get("near_dup_pairs")),
         chip("OCR-echoes (0)", sc.get("echo_ok", False), sc.get("ocr_echo")),
-        chip("short <3.5s pics (0)", sc.get("pacing_ok", False), sc.get("short_pictures")),
+        chip("shown panels", True, sc.get("shown_panels", 0)),
+        chip("dropped (budget)", True, sc.get("dropped_panels", 0)),
+        chip("shown <3.5s (0)", sc.get("pacing_ok", False), sc.get("shown_under_min", 0)),
         chip("text-only bubbles", sc.get("text_dominated", 0) == 0, sc.get("text_dominated")),
         chip("groups w/o narration (0)", sc.get("narration_ok", False),
              sc.get("missing_narration_groups")),
@@ -465,6 +467,7 @@ a    { color: #0057b7; }
 .flag-ocr_echo { background: #f3d6ff; color: #6a1b8a; }
 .flag-no_narration { background: #e0e0e0; color: #444; }
 .flag-redundant { background: #d8d8d8; color: #555; text-decoration: line-through; }
+.flag-dropped { background: #ececec; color: #888; }
 
 /* ── Group card ── */
 .group-card {
