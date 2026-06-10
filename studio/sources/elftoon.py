@@ -87,9 +87,12 @@ def _parse_series(tree: HTMLParser) -> tuple[str, list[ChapterRef]]:
         title = og.attributes.get("content", "Unknown") if og else "Unknown"
 
     # --- Chapters ---
-    # ul.clstyle li[data-num] — ordered newest-first on the page
+    # li[data-num] — ordered newest-first on the page. Deliberately NOT
+    # anchored to a ul class: the theme dropped `clstyle` from the chapter
+    # list (it now names an unrelated element), which silently yielded zero
+    # chapters. data-num + a chapter link is the stable signature.
     chapters: list[ChapterRef] = []
-    for li in tree.css("ul.clstyle li[data-num]"):
+    for li in tree.css("li[data-num]"):
         # data-num is the chapter number
         num_str = li.attributes.get("data-num", "")
         try:

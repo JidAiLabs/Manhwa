@@ -94,7 +94,7 @@ def test_list_chapters_last_chapter():
             "https://elftoon.com/manga/infinite-evolution-from-zero/"
         )
 
-    assert chapters[-1].number == 94.0
+    assert chapters[-1].number == 98.0
 
 
 def test_list_chapters_urls_are_absolute():
@@ -126,7 +126,7 @@ def test_list_chapters_label_contains_number():
         )
 
     assert "1" in chapters[0].label
-    assert "94" in chapters[-1].label
+    assert "98" in chapters[-1].label
 
 
 # ---------------------------------------------------------------------------
