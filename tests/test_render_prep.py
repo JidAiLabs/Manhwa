@@ -166,3 +166,42 @@ def test_rewrite_plan_sets_subdir_dims_and_filtered_cuts():
     assert out["timeline"][0]["cuts"][0]["file"] == "a.jpg"
     # original object untouched
     assert "scenes_subdir" not in plan
+
+
+# ---- branding insertion (intro after first beat, end-card outro) ------------
+
+def _mini_plan():
+    return {"timeline": [
+        {"segment_id": "g0001_p00", "start_sec": 0.0, "duration_sec": 10.0,
+         "end_sec": 10.0, "cuts": [{"file": "a.jpg", "start": 0.0, "dur": 10.0}]},
+        {"segment_id": "g0002_p01", "start_sec": 10.0, "duration_sec": 8.0,
+         "end_sec": 18.0, "cuts": [{"file": "b.jpg", "start": 0.0, "dur": 8.0}]},
+    ], "total_duration_sec": 18.0}
+
+
+def test_branding_inserts_intro_after_first_item_and_appends_outro():
+    plan = _mini_plan()
+    out = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.1)
+    tl = out["timeline"]
+    assert [t["segment_id"] for t in tl] == [
+        "g0001_p00", "branding_intro", "g0002_p01", "branding_outro"]
+    intro = tl[1]
+    assert intro["branding"] == "intro"
+    assert intro["start_sec"] == 10.0
+    assert intro["duration_sec"] >= 6.0            # audio + breathing pad
+    # intro shows the SAME panel the story paused on (last cut of item 1)
+    assert intro["cuts"][0]["file"] == "a.jpg"
+    # story resumes shifted by the intro length
+    assert abs(tl[2]["start_sec"] - (10.0 + intro["duration_sec"])) < 1e-6
+    outro = tl[3]
+    assert outro["branding"] == "outro"
+    assert outro["start_sec"] == tl[2]["end_sec"]
+    assert outro["duration_sec"] >= 12.1
+    assert out["total_duration_sec"] == outro["end_sec"]
+
+
+def test_branding_untouched_when_durations_zero():
+    plan = _mini_plan()
+    out = rp.insert_branding_items(plan, intro_dur=0.0, outro_dur=0.0)
+    assert [t["segment_id"] for t in out["timeline"]] == ["g0001_p00", "g0002_p01"]
+    assert out["total_duration_sec"] == 18.0

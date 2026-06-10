@@ -291,6 +291,71 @@ def rewrite_plan(
     return out
 
 
+def insert_branding_items(
+    plan: Dict[str, Any],
+    *,
+    intro_dur: float,
+    outro_dur: float,
+    intro_pad: float = 1.0,
+    outro_pad: float = 3.0,
+) -> Dict[str, Any]:
+    """Insert the channel intro (after the first story beat — the hook plays
+    first, then the brand moment over the panel the story paused on) and the
+    end-card outro. All later timings shift by the intro length; the renderer
+    matches items on ``branding`` and supplies the bundled audio/visuals.
+    Zero durations = no-op (assets missing)."""
+    out = json.loads(json.dumps(plan))
+    tl = out.get("timeline") or []
+    if not tl:
+        return out
+
+    new_tl: List[Dict[str, Any]] = list(tl)
+    if intro_dur > 0:
+        first = tl[0]
+        d = round(intro_dur + intro_pad, 4)
+        cuts = first.get("cuts") or []
+        hold_file = str(cuts[-1].get("file")) if cuts else str(first.get("primary_scene_file") or "")
+        intro_item = {
+            "segment_id": "branding_intro",
+            "branding": "intro",
+            "start_sec": first["end_sec"],
+            "duration_sec": d,
+            "end_sec": round(float(first["end_sec"]) + d, 4),
+            "cuts": [{"file": hold_file, "start": 0.0, "dur": d}] if hold_file else [],
+        }
+        new_tl = [first, intro_item]
+        for item in tl[1:]:
+            it = dict(item)
+            it["start_sec"] = round(float(item["start_sec"]) + d, 4)
+            it["end_sec"] = round(float(item["end_sec"]) + d, 4)
+            new_tl.append(it)
+
+    if outro_dur > 0:
+        last_end = float(new_tl[-1]["end_sec"])
+        d = round(outro_dur + outro_pad, 4)
+        new_tl.append({
+            "segment_id": "branding_outro",
+            "branding": "outro",
+            "start_sec": round(last_end, 4),
+            "duration_sec": d,
+            "end_sec": round(last_end + d, 4),
+            "cuts": [],
+        })
+
+    out["timeline"] = new_tl
+    out["total_duration_sec"] = float(new_tl[-1]["end_sec"])
+    return out
+
+
+def _wav_duration_sec(path: str) -> float:
+    import wave
+    try:
+        with wave.open(path, "rb") as w:
+            return w.getnframes() / float(w.getframerate() or 1)
+    except Exception:
+        return 0.0
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -311,6 +376,12 @@ def main() -> int:
     ap.add_argument("--bubble-conf", type=float, default=0.30)
     ap.add_argument("--no-bubbles", action="store_true", help="skip bubble inpainting")
     ap.add_argument("--no-trim", action="store_true", help="skip border trimming")
+    ap.add_argument("--no-branding", action="store_true",
+                    help="skip channel intro/outro insertion")
+    ap.add_argument("--branding-dir",
+                    default=os.path.join(os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__))), "assets", "branding", "origin-power"),
+                    help="dir holding intro.wav / outro.wav (channel constants)")
     ap.add_argument("--device", default="mps")
     args = ap.parse_args()
 
@@ -392,12 +463,21 @@ def main() -> int:
     out_plan = rewrite_plan(plan, scenes_subdir="scenes_clean",
                             scene_dims=scene_dims,
                             cuts_by_segment=cuts_by_segment)
+
+    intro_dur = outro_dur = 0.0
+    if not args.no_branding:
+        intro_dur = _wav_duration_sec(os.path.join(args.branding_dir, "intro.wav"))
+        outro_dur = _wav_duration_sec(os.path.join(args.branding_dir, "outro.wav"))
+        out_plan = insert_branding_items(out_plan, intro_dur=intro_dur, outro_dur=outro_dur)
+
     out_path = args.out_plan or (os.path.splitext(args.plan)[0] + ".clean.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out_plan, f, ensure_ascii=False, indent=2)
 
     print(f"[ok] wrote={out_path} shown={len(shown)} "
-          f"seam_dups_dropped={sorted(set(all_dropped))} bubbles_inpainted={bubbles_cleaned}")
+          f"seam_dups_dropped={sorted(set(all_dropped))} bubbles_inpainted={bubbles_cleaned} "
+          f"branding=intro:{intro_dur:.1f}s/outro:{outro_dur:.1f}s "
+          f"total={out_plan.get('total_duration_sec', 0)/60:.1f}min")
     return 0
 
 

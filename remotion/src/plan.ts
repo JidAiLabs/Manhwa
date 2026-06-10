@@ -44,6 +44,9 @@ export type TimelineItem = {
   scene_files?: string[];
   motion?: Motion;
   camera?: Camera;
+  // "intro" | "outro" — inserted by tools/render_prep.py; the renderer
+  // supplies the bundled channel audio/visuals for these items.
+  branding?: string;
 };
 
 export type SceneDims = {w: number; h: number};
