@@ -4,6 +4,8 @@ import {
   Audio,
   Img,
   interpolate,
+  Loop,
+  OffthreadVideo,
   random,
   spring,
   useCurrentFrame,
@@ -12,22 +14,60 @@ import {
 import introWav from '../assets/intro.wav';
 import logo from '../assets/logo.png';
 import outroWav from '../assets/outro.wav';
+import particles from '../assets/particles.mp4';
 import watermark from '../assets/watermark.png';
 
-/** Semi-transparent channel watermark, bottom-right, above everything. */
-export const Watermark: React.FC<{opacity?: number}> = ({opacity = 0.4}) => (
-  <Img
-    src={watermark}
+/**
+ * Pre-rendered particle overlay (tools/particle_overlay.py): gaussian bokeh
+ * sprites with depth, sub-frame motion blur and integer-cycle turbulence,
+ * rendered on black as a seamless 16s loop and SCREEN-blended here — the
+ * standard technique behind cinematic dust/snow overlays.
+ */
+export const ParticleOverlay: React.FC<{opacity?: number}> = ({opacity = 0.8}) => {
+  const {fps} = useVideoConfig();
+  return (
+    <AbsoluteFill style={{pointerEvents: 'none', mixBlendMode: 'screen', opacity}}>
+      <Loop durationInFrames={Math.round(16 * fps)}>
+        <OffthreadVideo
+          muted
+          src={particles}
+          style={{width: '100%', height: '100%', objectFit: 'cover'}}
+        />
+      </Loop>
+    </AbsoluteFill>
+  );
+};
+
+/** Semi-transparent channel watermark + minimal wordmark, bottom-right. */
+export const Watermark: React.FC<{opacity?: number}> = ({opacity = 0.5}) => (
+  <div
     style={{
       position: 'absolute',
       right: 28,
       bottom: 24,
-      width: 84,
-      height: 84,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 14,
       opacity,
       pointerEvents: 'none',
     }}
-  />
+  >
+    <div
+      style={{
+        textAlign: 'right',
+        fontFamily: 'Avenir Next, Helvetica, sans-serif',
+        color: 'white',
+        textShadow: '0 1px 6px rgba(0,0,0,0.55)',
+        lineHeight: 1.25,
+      }}
+    >
+      <div style={{fontSize: 19, fontWeight: 700, letterSpacing: 2.5}}>ORIGIN POWER</div>
+      <div style={{fontSize: 13, fontWeight: 500, letterSpacing: 4.2, opacity: 0.85}}>
+        MANHWA RECAP
+      </div>
+    </div>
+    <Img src={watermark} style={{width: 64, height: 64}} />
+  </div>
 );
 
 /**
@@ -132,55 +172,66 @@ export const EndCard: React.FC = () => {
 };
 
 /**
- * Very minimal ambient drift — a handful of pale petals/snowflakes falling
- * slowly with a gentle sway. Deterministic (remotion random(seed)) so renders
- * are reproducible. Keep it barely-there: it adds life to static art without
- * stealing attention.
+ * Ambient drift — soft luminous motes (snow/dust) in three parallax depth
+ * layers. What makes it read premium instead of cheesy: radial-gradient
+ * soft edges (never hard shapes), depth scaling (near = bigger, faster,
+ * blurrier; far = tiny, slow, dim), per-mote twinkle, and wind built from
+ * layered sines instead of linear motion. Deterministic via random(seed).
  */
-const COUNT = 14;
+type Layer = {n: number; size: number; speed: number; blur: number; alpha: number};
+const LAYERS: Layer[] = [
+  {n: 9, size: 3.5, speed: 0.55, blur: 0.5, alpha: 0.5}, // far
+  {n: 7, size: 6.5, speed: 0.85, blur: 1.5, alpha: 0.75}, // mid
+  {n: 5, size: 11, speed: 1.25, blur: 3.5, alpha: 1.0}, // near
+];
 
-export const AmbientDrift: React.FC<{seed?: string; opacity?: number}> = ({
-  seed = 'petals',
-  opacity = 0.22,
+export const AmbientDrift: React.FC<{seed?: string; intensity?: number}> = ({
+  seed = 'motes',
+  intensity = 0.55,
 }) => {
   const frame = useCurrentFrame();
   const {width, height, fps} = useVideoConfig();
+  const t = frame / fps;
 
-  const petals = Array.from({length: COUNT}, (_, i) => {
-    const rx = random(`${seed}-x-${i}`);
-    const rs = random(`${seed}-s-${i}`);
-    const rp = random(`${seed}-p-${i}`);
-    const rz = random(`${seed}-z-${i}`);
-    const fallFrames = (22 + rs * 18) * fps; // 22–40s per screen height
-    const progress = ((frame + rp * fallFrames) % fallFrames) / fallFrames;
-    const sway = Math.sin((frame / fps) * (0.3 + rs * 0.4) + rp * Math.PI * 2) * 42;
-    return {
-      x: rx * width + sway,
-      y: progress * (height + 60) - 30,
-      size: 5 + rz * 7,
-      opacity: opacity * (0.55 + rz * 0.45),
-      rot: frame * (0.2 + rs * 0.5) + rp * 360,
-    };
-  });
+  const motes: React.ReactNode[] = [];
+  LAYERS.forEach((layer, li) => {
+    for (let i = 0; i < layer.n; i++) {
+      const k = `${seed}-${li}-${i}`;
+      const rx = random(`${k}x`);
+      const rv = random(`${k}v`);
+      const rp = random(`${k}p`);
+      const rz = random(`${k}z`);
 
-  return (
-    <AbsoluteFill style={{pointerEvents: 'none'}}>
-      {petals.map((p, i) => (
+      const fallSec = (30 - 12 * (layer.speed - 0.55)) * (0.8 + rv * 0.4);
+      const prog = ((t / fallSec + rp) % 1 + 1) % 1;
+      const y = prog * (height + 80) - 40;
+      // wind: two incommensurate sines per mote = organic, non-looping drift
+      const sway =
+        Math.sin(t * (0.18 + rv * 0.22) + rp * 6.28) * 55 * layer.speed +
+        Math.sin(t * (0.53 + rz * 0.31) + rx * 6.28) * 18;
+      const x = rx * (width + 120) - 60 + sway + t * 6 * layer.speed; // gentle side wind
+      const xw = ((x % (width + 120)) + (width + 120)) % (width + 120) - 60;
+
+      const twinkle = 0.75 + 0.25 * Math.sin(t * (0.6 + rz * 0.9) + rp * 6.28);
+      const size = layer.size * (0.8 + rz * 0.5);
+      motes.push(
         <div
-          key={i}
+          key={k}
           style={{
             position: 'absolute',
-            left: p.x,
-            top: p.y,
-            width: p.size,
-            height: p.size * 0.8,
-            borderRadius: '60% 40% 55% 45%',
-            background: 'rgb(252, 246, 250)',
-            opacity: p.opacity,
-            transform: `rotate(${p.rot}deg)`,
+            left: xw,
+            top: y,
+            width: size * 2.6,
+            height: size * 2.6,
+            background:
+              'radial-gradient(circle, rgba(255,250,246,0.95) 0%, rgba(255,250,246,0.35) 45%, rgba(255,250,246,0) 72%)',
+            filter: `blur(${layer.blur}px)`,
+            opacity: intensity * layer.alpha * twinkle,
           }}
-        />
-      ))}
-    </AbsoluteFill>
-  );
+        />,
+      );
+    }
+  });
+
+  return <AbsoluteFill style={{pointerEvents: 'none'}}>{motes}</AbsoluteFill>;
 };

@@ -306,3 +306,42 @@ def test_filter_content_parts_keeps_two_art_parts():
     parts = [(10, 150), (250, 390)]
     out = rp.filter_content_parts(img, parts, boxes=[])
     assert out == [(10, 150), (250, 390)]
+
+
+# ---- OCR-word-box cleaning (user's original method): remove the exact text
+# rects (invisible small-region inpaint), gated to bubble interiors -----------
+
+def test_clean_with_word_boxes_removes_text_cleanly():
+    img = _bubble_scene()
+    out = rp.clean_scene_image(img, [(30, 50, 170, 150)],
+                               text_boxes=[(68, 93, 132, 107)])
+    assert out[95:105, 72:128].mean() > 230        # text gone
+    assert out[80, 100].mean() > 230               # interior intact
+    assert out[100, 41].mean() < 60                # ring intact
+    assert abs(int(out[10:30, 10:30].mean()) - 90) <= 2   # art untouched
+
+
+def test_clean_word_boxes_outside_bubbles_ignored():
+    img = _bubble_scene()
+    img[20:30, 20:60] = 250                        # light text ON ART (embedded)
+    out = rp.clean_scene_image(img, [(30, 50, 170, 150)],
+                               text_boxes=[(20, 20, 60, 30), (68, 93, 132, 107)])
+    assert out[20:30, 20:60].mean() > 230          # embedded art text SURVIVES
+    assert out[95:105, 72:128].mean() > 230        # bubble text removed
+
+
+# ---- speech-mode arbiter: false system_box detections on DIALOGUE panels
+# must not shield speech bubbles from cleaning; real system windows live on
+# panels Gemini classified as non-speech (bubble_mode none/narration) --------
+
+def test_speech_mode_files_from_beats():
+    beats = {"beats": [
+        {"scene_selection": [
+            {"scene_file": "talk.jpg", "bubble_mode": "spoken"},
+            {"scene_file": "think.jpg", "bubble_mode": "inner_thought"},
+            {"scene_file": "sys.jpg", "bubble_mode": "none"},
+            {"scene_file": "cap.jpg", "bubble_mode": "narration"},
+        ]},
+    ]}
+    out = rp.speech_mode_files(beats)
+    assert out == {"talk.jpg", "think.jpg"}

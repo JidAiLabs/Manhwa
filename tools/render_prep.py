@@ -205,8 +205,8 @@ def _bubble_text(
     box: Tuple[int, int, int, int],
     *,
     pad: int = 4,
-) -> Tuple[np.ndarray, Optional[int]]:
-    """(mask, fill_value) for the TEXT inside one bubble box.
+) -> Tuple[np.ndarray, Optional[int], Optional[np.ndarray]]:
+    """(text_mask, fill_value, interior_mask) for one bubble box.
 
     User direction: the bubble (shape + outline) STAYS; only its text is
     blanked with the bubble's own flat color — no inpainting, so no smears.
@@ -221,7 +221,7 @@ def _bubble_text(
     y2 = min(H, int(box[3]) + pad)
     mask = np.zeros((H, W), np.uint8)
     if x2 - x1 < 4 or y2 - y1 < 4:
-        return mask, None
+        return mask, None, None
 
     gray = img[y1:y2, x1:x2].mean(axis=2) if img.ndim == 3 else img[y1:y2, x1:x2]
     gray = gray.astype(np.uint8)
@@ -244,11 +244,11 @@ def _bubble_text(
     elif black is not None:
         comp, is_white = black, False
     else:
-        return mask, None
+        return mask, None, None
 
     cnts, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
-        return mask, None
+        return mask, None, None
     filled = np.zeros_like(comp)
     cv2.drawContours(filled, cnts, -1, 1, -1)
     inside = cv2.erode(
@@ -265,7 +265,10 @@ def _bubble_text(
         text, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
     text &= inside  # the dilation must never reach the outline ring
     mask[y1:y2, x1:x2] = text * 255
-    return mask, fill
+
+    inside_full = np.zeros((H, W), np.uint8)
+    inside_full[y1:y2, x1:x2] = inside
+    return mask, fill, inside_full
 
 
 def bubble_text_mask(img: np.ndarray, box: Tuple[int, int, int, int]) -> np.ndarray:
@@ -276,20 +279,36 @@ def bubble_text_mask(img: np.ndarray, box: Tuple[int, int, int, int]) -> np.ndar
 def clean_scene_image(
     img: np.ndarray,
     boxes: Sequence[Tuple[int, int, int, int]],
+    text_boxes: Optional[Sequence[Tuple[int, int, int, int]]] = None,
 ) -> np.ndarray:
-    """Blank the text inside each bubble with the bubble's own flat color.
+    """Remove the text inside each bubble; the bubble itself stays.
 
-    Bubbles themselves stay (empty bubbles read as normal comic art); pixels
-    outside the text masks are byte-identical to the input.
+    Primary method (the user's original approach): inpaint the exact OCR word
+    rects that fall inside the bubble interior — regions that small heal
+    invisibly, it reads as "the text was simply removed". Word boxes outside
+    every bubble are ignored, so text embedded in artwork survives. Fallback
+    when OCR missed a bubble entirely: blank contrasting pixels with the
+    bubble's own flat color.
     """
     if not boxes:
         return img
     out = img.copy()
+    words = [tuple(int(v) for v in t) for t in (text_boxes or [])]
     for b in boxes:
-        mask, fill = _bubble_text(out, b)
-        if fill is None or not mask.any():
+        tmask, fill, inside = _bubble_text(out, b)
+        if inside is None:
             continue
-        out[mask > 0] = fill
+        wmask = np.zeros(out.shape[:2], np.uint8)
+        for (wx1, wy1, wx2, wy2) in words:
+            pad = 5  # cover anti-aliased stroke edges beyond the tight OCR box
+            wmask[max(0, wy1 - pad):wy2 + pad, max(0, wx1 - pad):wx2 + pad] = 255
+        wmask = cv2.bitwise_and(wmask, (inside > 0).astype(np.uint8) * 255)
+        if wmask.any() and fill is not None:
+            # flat fill with the bubble's own interior color: on a flat
+            # interior this is exact removal — nothing to ghost or smear
+            out[wmask > 0] = fill
+        elif fill is not None and tmask.any():
+            out[tmask > 0] = fill
     return out
 
 
@@ -510,6 +529,23 @@ def insert_branding_items(
     return out
 
 
+SPEECH_MODES = {"spoken", "shout", "inner_thought"}
+
+
+def speech_mode_files(beats_obj: Dict[str, Any]) -> set:
+    """Scene files Gemini classified as SPEECH panels (bubble_mode spoken/
+    shout/inner_thought). On these, a system_box detection is presumed a false
+    positive and must not shield the speech bubbles from text cleaning; real
+    system windows live on panels Gemini saw as none/narration."""
+    out: set = set()
+    for b in beats_obj.get("beats") or []:
+        for e in b.get("scene_selection") or []:
+            if str(e.get("bubble_mode") or "").strip().lower() in SPEECH_MODES:
+                out.add(str(e.get("scene_file") or ""))
+    out.discard("")
+    return out
+
+
 def _wav_duration_sec(path: str) -> float:
     import wave
     try:
@@ -539,7 +575,9 @@ def main() -> int:
                     help="manifest.vision.json — its text_coverage/text_only feed "
                          "the bubble-dominance gate (default: <episode>/manifest.vision.json)")
     ap.add_argument("--out-plan", default="", help="default: <plan>.clean.json next to --plan")
-    ap.add_argument("--bubble-conf", type=float, default=0.30)
+    # 0.20: edge-clipped/small bubbles score low, and false positives are
+    # harmless by construction (no white/black interior -> untouched).
+    ap.add_argument("--bubble-conf", type=float, default=0.20)
     ap.add_argument("--no-bubbles", action="store_true", help="skip bubble inpainting")
     ap.add_argument("--no-trim", action="store_true", help="skip border trimming")
     ap.add_argument("--no-branding", action="store_true",
@@ -575,12 +613,28 @@ def main() -> int:
     # that is text_only or mostly OCR text is as bad on screen as a bubble blob.
     vision_path = args.vision_manifest or os.path.join(args.episode_dir, "manifest.vision.json")
     text_score: Dict[str, float] = {}
+    word_boxes_by_file: Dict[str, List[Tuple[int, int, int, int]]] = {}
     if os.path.exists(vision_path):
         with open(vision_path, "r", encoding="utf-8") as f:
             for it in json.load(f).get("items") or []:
                 sf = str(it.get("scene_file") or "")
                 tc = float(it.get("text_coverage") or 0.0)
                 text_score[sf] = 1.0 if it.get("text_only") else tc
+                w = float(it.get("width") or 0)
+                h = float(it.get("height") or 0)
+                if w > 0 and h > 0:
+                    word_boxes_by_file[sf] = [
+                        (int(b[0] * w), int(b[1] * h), int(b[2] * w), int(b[3] * h))
+                        for wd in ((it.get("vision") or {}).get("ocr_words") or [])
+                        for b in [wd.get("bbox") or []]
+                        if len(b) == 4
+                    ]
+
+    beats_path = os.path.join(args.episode_dir, "manifest.beats.json")
+    speech_files: set = set()
+    if os.path.exists(beats_path):
+        with open(beats_path, "r", encoding="utf-8") as f:
+            speech_files = speech_mode_files(json.load(f))
 
     scenes_dir = os.path.join(args.episode_dir, "scenes")
     img_cache: Dict[str, Optional[np.ndarray]] = {}
@@ -691,10 +745,14 @@ def main() -> int:
             continue
         img = img.copy()
 
-        # system windows are protected: their text is read aloud by the script
-        boxes = filter_protected_boxes(_boxes(fname), _sys_boxes(fname))
+        # system windows are protected: their text is read aloud by the script.
+        # On speech panels (per Gemini's bubble_mode) a system_box detection is
+        # a false positive and must not shield the dialogue bubbles.
+        protected = [] if fname in speech_files else _sys_boxes(fname)
+        boxes = filter_protected_boxes(_boxes(fname), protected)
         if boxes:
-            img = clean_scene_image(img, boxes)
+            img = clean_scene_image(img, boxes,
+                                    text_boxes=word_boxes_by_file.get(fname))
             bubbles_cleaned += len(boxes)
 
         # over-merged crops: split at wide white voids; parts that are just

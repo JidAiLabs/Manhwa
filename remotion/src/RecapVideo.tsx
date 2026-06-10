@@ -1,6 +1,6 @@
 import React from 'react';
 import {AbsoluteFill, Sequence} from 'remotion';
-import {AmbientDrift, EndCard, IntroOverlay, Watermark} from './Branding';
+import {EndCard, IntroOverlay, Watermark} from './Branding';
 import {RenderPlan, toFrames, toStartFrame} from './plan';
 import {Shot} from './Shot';
 
@@ -27,7 +27,6 @@ export const RecapVideo: React.FC<RenderPlan> = ({timeline, scenes_subdir, scene
           )}
         </Sequence>
       ))}
-      <AmbientDrift />
       <Watermark />
     </AbsoluteFill>
   );
