@@ -474,6 +474,61 @@ def filter_content_parts(
     return out
 
 
+def dead_box_recrop(
+    img: np.ndarray,
+    boxes: Sequence[Tuple[int, int, int, int]],
+    *,
+    max_blank_frac: float = 0.35,
+    min_h: int = 120,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Crop away large now-blank caption/bubble boxes that dominate a panel.
+
+    After text blanking, big rectangular caption boxes become empty white
+    voids (ghost remnants included) that can fill most of the frame while a
+    thin strip of real art survives (user report #22: feet strip + two huge
+    blanked boxes). When boxes cover more than *max_blank_frac* of the panel,
+    crop to the largest band of rows whose art lives OUTSIDE the boxes.
+    NOT yet wired into main — see handover."""
+    h, w = img.shape[:2]
+    info: Dict[str, Any] = {"blank_box_frac": 0.0, "recropped": False}
+    if h == 0 or w == 0 or not boxes:
+        return img, info
+
+    info["blank_box_frac"] = bubble_coverage((h, w), boxes)
+    if info["blank_box_frac"] < max_blank_frac:
+        return img, info
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    edges = cv2.Canny(gray, 50, 150) > 0
+    outside = np.ones((h, w), bool)
+    for (x1, y1, x2, y2) in boxes:
+        # pad past the box border strokes so they don't count as "art"
+        outside[max(0, int(y1) - 6):min(h, int(y2) + 6),
+                max(0, int(x1) - 6):min(w, int(x2) + 6)] = False
+
+    row_art = (edges & outside).sum(axis=1) / np.maximum(1, outside.sum(axis=1))
+    content = row_art > 0.01
+
+    best: Tuple[int, int] = (0, 0)
+    y = 0
+    while y < h:
+        if content[y]:
+            start = y
+            while y < h and (content[y] or (y - start < 20)):
+                y += 1
+            if (y - start) > (best[1] - best[0]):
+                best = (start, y)
+        else:
+            y += 1
+
+    if best[1] - best[0] >= min_h:
+        a = max(0, best[0] - 10)
+        b = min(h, best[1] + 10)
+        info["recropped"] = True
+        return img[a:b], info
+    return img, info
+
+
 def split_spans_for_panel(img: np.ndarray, *, text_rich: bool) -> List[Tuple[int, int]]:
     """Spans for the splitter. Document-like panels (the ORV in-story app
     list — many text rows) are NEVER split: white gaps between rows would

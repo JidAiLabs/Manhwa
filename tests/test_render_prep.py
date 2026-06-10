@@ -434,3 +434,35 @@ def test_non_text_rich_panel_still_splits():
     img[10:100] = 60
     img[200:290] = 80
     assert len(rp.split_spans_for_panel(img, text_rich=False)) == 2
+
+
+# ---- dead-box recrop (user's #22): large blanked caption boxes must not
+# dominate the frame — crop to the art region outside them, or flag husk -----
+
+def _feet_and_captions():
+    """Art strip on top, two big blanked caption boxes below (ghost remnants)."""
+    img = np.full((500, 800, 3), 250, dtype=np.uint8)
+    art = (_pattern(150, 800)[..., 0])
+    art3 = np.select([art > 170, art > 85], [255, 128], default=40).astype(np.uint8)
+    img[0:150] = np.dstack([art3, art3, art3])
+    cv2.rectangle(img, (40, 180), (380, 480), (15, 15, 15), 4)      # box borders
+    cv2.rectangle(img, (420, 160), (780, 470), (15, 15, 15), 4)
+    img[300, 100:300] = 235                                          # ghost line
+    boxes = [(40, 180, 380, 480), (420, 160, 780, 470)]
+    return img, boxes
+
+
+def test_dead_box_recrop_crops_to_art():
+    img, boxes = _feet_and_captions()
+    out, info = rp.dead_box_recrop(img, boxes)
+    assert info["blank_box_frac"] > 0.35       # boxes dominate the panel
+    assert info["recropped"] is True
+    assert out.shape[0] <= 200                  # cropped to the art strip
+    assert rp.art_content_score(out, []) > 0.012
+
+
+def test_dead_box_recrop_noop_on_normal_panel():
+    img = (_pattern(400, 300) > 128).astype(np.uint8) * 255
+    out, info = rp.dead_box_recrop(img, [(10, 10, 60, 60)])   # small box
+    assert info["recropped"] is False
+    assert out.shape == img.shape
