@@ -18,7 +18,9 @@ import re
 from typing import Any, Dict, Optional
 
 # UI counters / app chrome — "VIEWS: 1", "LIKES 203", subscriber counts.
-_COUNTER_RE = re.compile(r"\b(views?|likes?|subscribers?|comments?)\s*[:.]?\s*[\d,.]+", re.I)
+# The value class includes I/l/| /O: Vision routinely OCRs digits as letters
+# ("VIEWS: I" is the real ORV panel that slipped the first filter pass).
+_COUNTER_RE = re.compile(r"\b(views?|likes?|subscribers?|comments?)\s*[:.]?\s*[\dIlO|,.]+", re.I)
 
 # Publication credits and platform names.
 _CREDITS_RE = re.compile(
@@ -45,20 +47,24 @@ def is_chrome_scene(
     item: Dict[str, Any],
     *,
     series_title: Optional[str] = None,
+    midtone_frac: Optional[float] = None,
 ) -> bool:
     """True when a vision item's scene is publication chrome, not story.
 
     Rules (any hit = chrome):
-      1. UI counters dominate the text (VIEWS/LIKES + numbers).
+      1. UI counters dominate the text (VIEWS/LIKES + numbers, including
+         OCR digit-confusions like 'VIEWS: I').
       2. Credits/publisher/platform vocabulary present.
       3. The OCR is nothing but a chapter/episode/number marker.
-      4. The OCR is dominated by the series title (cover/title page) —
-         title words must make up most of the text, so dialogue that merely
-         reuses title words stays story.
+      4. The OCR is dominated by the series title (cover/title page).
+      5. OCR-BLIND chrome (stylized number cards): empty OCR + a near-binary
+         pixel profile (*midtone_frac*, supplied by callers with image
+         access) — real art always has midtones.
     """
     ocr = str(item.get("ocr_clean") or "").strip()
     if not ocr:
-        return False  # pure art — never chrome by text rules
+        # pure art — chrome only when image stats prove a binary card
+        return midtone_frac is not None and midtone_frac < 0.08
 
     if _COUNTER_RE.search(ocr):
         # counters are chrome when they ARE the content, not one mention in

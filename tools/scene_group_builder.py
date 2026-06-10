@@ -298,9 +298,24 @@ def main() -> int:
     chrome_dropped: List[str] = []
     if not args.keep_chrome:
         from scene_chrome import is_chrome_scene  # sibling tool module
+
+        def _midtone(s: Dict[str, Any]) -> Optional[float]:
+            """Midtone fraction for OCR-blind chrome (stylized number cards).
+            Only computed for empty-OCR scenes — a few image reads per chapter."""
+            if s.get("ocr_clean") or not s.get("scene_path"):
+                return None
+            try:
+                from PIL import Image
+                import numpy as np
+                im = np.asarray(Image.open(s["scene_path"]).convert("L"))
+                return float(((im > 60) & (im < 200)).mean())
+            except Exception:
+                return None
+
         keep: List[Dict[str, Any]] = []
         for s in scenes:
-            if is_chrome_scene(s, series_title=args.series_title or None):
+            if is_chrome_scene(s, series_title=args.series_title or None,
+                               midtone_frac=_midtone(s)):
                 chrome_dropped.append(str(s["scene_file"]))
             else:
                 keep.append(s)

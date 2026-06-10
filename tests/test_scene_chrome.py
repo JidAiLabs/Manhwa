@@ -83,3 +83,19 @@ def test_in_story_app_panel_with_counters_is_NOT_chrome():
 
 def test_bare_counter_walls_still_chrome():
     assert _is("VIEWS: 1 VIEWS: 1 VIEWS: 1 VIEWS: 1") is True
+
+
+def test_counter_with_ocr_digit_confusion_is_chrome():
+    # Vision reads "VIEWS: 1" as "VIEWS: I" (digit/letter confusion) — the
+    # real ORV panel that survived the first filter pass.
+    assert _is("[VIEWS: I") is True
+    assert _is("VIEWS: I VIEWS: I VIEWS: l") is True
+
+
+def test_empty_ocr_binary_card_is_chrome_with_image_stats():
+    # the giant stylized "1" card: OCR-blind, but near-binary pixels betray it
+    item = {"ocr_clean": "", "text_only": False, "text_coverage": 0.0}
+    assert sc.is_chrome_scene(item, midtone_frac=0.04) is True     # binary card
+    assert sc.is_chrome_scene(item, midtone_frac=0.45) is False    # real art
+    # without image stats, empty OCR stays non-chrome (pure-art panels)
+    assert sc.is_chrome_scene(item) is False
