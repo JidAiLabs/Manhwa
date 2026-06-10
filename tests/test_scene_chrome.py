@@ -105,3 +105,17 @@ def test_site_plug_and_scanlation_credits_are_chrome():
     # the real IE cover: title + site plug + editor credit
     assert _is("INFINITE EVOLUTION FROM ZERO PLEASE READ THIS CHAPTER ON ELFTOON.COM ED: HAL") is True
     assert _is("READ FREE AT MANHWASITE.NET TL: JOE PR: AMY") is True
+
+
+def test_vertical_title_ocr_garbage_is_chrome():
+    # real ORV cover: vertical title letters OCR as fake words around the
+    # one distinctive title word
+    item = {"ocr_clean": "SR OMNISCIENT CE IA ED NEO TR", "text_only": False,
+            "text_coverage": 0.1}
+    assert sc.is_chrome_scene(item, series_title="Omniscient Reader") is True
+
+
+def test_long_dialogue_using_title_word_not_chrome():
+    item = {"ocr_clean": "HE FELT TRULY OMNISCIENT FOR ONE MOMENT TODAY AFTER READING EVERY SINGLE PAGE",
+            "text_only": False, "text_coverage": 0.2}
+    assert sc.is_chrome_scene(item, series_title="Omniscient Reader") is False

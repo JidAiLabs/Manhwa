@@ -1,0 +1,63 @@
+{
+  "file": "panel_000033.jpg",
+  "image_wh": [
+    800,
+    3000
+  ],
+  "force": false,
+  "disable_sfx_filter": false,
+  "params": {
+    "safe_pad": 6,
+    "ring_size": 8,
+    "white_thr": 225,
+    "bright_thr": 170,
+    "sat_low_thr": 45,
+    "roi_min_bright_frac": 0.22,
+    "roi_max_std_bright": 28.0,
+    "roi_min_low_sat_frac": 0.65,
+    "ring_min_white_frac": 0.2,
+    "ring_min_median_gray": 165.0,
+    "ring_max_std_bright": 26.0,
+    "ring_min_low_sat_frac": 0.7
+  },
+  "boxes": [
+    {
+      "raw_bbox": [
+        57,
+        731,
+        301,
+        964
+      ],
+      "safe_roi": [
+        51,
+        725,
+        307,
+        970
+      ],
+      "roi": {
+        "white_frac": 0.6243622448979592,
+        "median_gray": 254.0,
+        "std_gray": 98.0123748032431,
+        "std_gray_bright": 15.889686995886567,
+        "bright_frac": 0.6817442602040816,
+        "low_sat_frac": 0.6691645408163265,
+        "median_sat": 2.0
+      },
+      "ring": {
+        "ring_white_frac": 0.873795761078998,
+        "ring_median_gray": 255.0,
+        "ring_std_gray": 30.637395949454348,
+        "ring_std_gray_bright": 15.350884178261907,
+        "ring_bright_frac": 0.938205339939444,
+        "ring_low_sat_frac": 0.950316542802092,
+        "ring_median_sat": 0.0
+      },
+      "bubble_by_roi": true,
+      "bubble_by_ring": true,
+      "is_bubble_like": true,
+      "sfx_like": false,
+      "decision": "kept_safe",
+      "src": "ocr_line"
+    }
+  ]
+}

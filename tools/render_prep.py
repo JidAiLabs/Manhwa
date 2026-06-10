@@ -828,14 +828,16 @@ def main() -> int:
     split_map: Dict[str, Tuple[str, str]] = {}
     bubbles_cleaned = 0
 
-    def _write_part(name: str, part: np.ndarray) -> None:
+    def _write_part(name: str, part: np.ndarray, doc: bool = False) -> None:
         if not args.no_trim:
             tx1, ty1, tx2, ty2 = content_bbox(part)
             part = part[ty1:ty2, tx1:tx2]
         cv2.imwrite(os.path.join(clean_dir, name), part,
                     [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         ph, pw = part.shape[:2]
-        scene_dims[name] = {"w": int(pw), "h": int(ph)}
+        # doc: document/UI panels — the renderer must never cover-crop their
+        # text (full-bleed) and never scroll them; contain-fit only.
+        scene_dims[name] = {"w": int(pw), "h": int(ph), "doc": bool(doc)}
 
     for fname in shown:
         img, boxes = _cleaned(fname)
@@ -858,7 +860,7 @@ def main() -> int:
                 stem, ext = os.path.splitext(fname)
                 names = (f"{stem}_a{ext}", f"{stem}_b{ext}")
                 for nm, (a, b) in zip(names, content):
-                    _write_part(nm, img[a:b])
+                    _write_part(nm, img[a:b], doc=rich)
                 split_map[fname] = names
                 print(f"[ok] {fname}: SPLIT -> {names[0]} + {names[1]} (split2)")
                 continue
@@ -866,7 +868,7 @@ def main() -> int:
                 a, b = content[0]
                 img = img[a:b]
 
-        _write_part(fname, img)
+        _write_part(fname, img, doc=rich)
         print(f"[ok] {fname}: bubbles={len(boxes)} -> "
               f"{scene_dims[fname]['w']}x{scene_dims[fname]['h']}")
 

@@ -57,7 +57,12 @@ export type TimelineItem = {
   branding?: string;
 };
 
-export type SceneDims = {w: number; h: number};
+export type SceneDims = {
+  w: number;
+  h: number;
+  // document/UI panel (render_prep): never cover-crop or scroll its text
+  doc?: boolean;
+};
 
 export type RenderPlan = {
   timeline: TimelineItem[];
@@ -70,6 +75,11 @@ export type RenderPlan = {
 // Panels at least this wide (w/h) render full-bleed (cover) instead of
 // contained-with-margins — the page-margin look the user rejected.
 export const WIDE_COVER_MIN_ASPECT = 1.3;
+
+// Panels at least this tall (h/w) get a SCROLL SHOT: full-width display with
+// the camera travelling vertically — contain-fit renders them unreadably
+// small (the user's CRASH/ROAR strips).
+export const TALL_SCROLL_MIN_ASPECT = 2.0;
 
 export const toFrames = (sec: number): number => Math.max(1, Math.ceil(sec * FPS));
 export const toStartFrame = (sec: number): number => Math.round(sec * FPS);

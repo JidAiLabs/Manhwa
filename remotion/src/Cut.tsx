@@ -1,6 +1,6 @@
 import React from 'react';
 import {AbsoluteFill, Easing, Img, interpolate, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
-import {Camera, clamp, DEFAULT_SAFE_INSET, Motion, PAN_CAP_FRAC, SceneDims, WIDE_COVER_MIN_ASPECT, zoomCap} from './plan';
+import {Camera, clamp, DEFAULT_SAFE_INSET, Motion, PAN_CAP_FRAC, SceneDims, TALL_SCROLL_MIN_ASPECT, WIDE_COVER_MIN_ASPECT, zoomCap} from './plan';
 
 /**
  * One panel on screen with deterministic Ken Burns (zoom start→end, pan
@@ -21,7 +21,9 @@ export const CutView: React.FC<{
   const frame = useCurrentFrame();
   const {width, height} = useVideoConfig();
   const src = staticFile(`${scenesSubdir}/${file}`);
-  const wide = !!dims && dims.h > 0 && dims.w / dims.h >= WIDE_COVER_MIN_ASPECT;
+  const doc = !!dims?.doc;
+  const wide = !doc && !!dims && dims.h > 0 && dims.w / dims.h >= WIDE_COVER_MIN_ASPECT;
+  const tall = !doc && !!dims && dims.w > 0 && dims.h / dims.w >= TALL_SCROLL_MIN_ASPECT;
 
   const cap = zoomCap(camera);
   const z0 = clamp(motion?.zoom?.start ?? 1.02, 1.0, cap);
@@ -55,6 +57,51 @@ export const CutView: React.FC<{
 
   const inset = motion?.fg_fit?.safe_inset_pct ?? DEFAULT_SAFE_INSET;
   const boxPct = (1 - 2 * inset) * 100;
+
+  if (tall && dims) {
+    // SCROLL SHOT: tall strips are unreadable contain-fitted — display at a
+    // readable width and travel the camera vertically across the artwork,
+    // easing in and HOLDING the final view for the last ~15% of the cut.
+    // Default reads downward (webtoon order); tilt_up beats scroll upward.
+    // readable width, but cap total travel at ~2.4 screen-heights so the
+    // scroll speed stays watchable on very long strips
+    const maxScaledH = height * 3.4;
+    const dispW = Math.min(width * 0.92, maxScaledH * (dims.w / dims.h));
+    const scaledH = dispW * (dims.h / dims.w);
+    const travel = Math.max(0, scaledH - height);
+    const prog = interpolate(frame, [0, Math.max(1, durationInFrames * 0.85)], [0, 1], {
+      easing: Easing.inOut(Easing.ease),
+      extrapolateLeft: 'clamp',
+      extrapolateRight: 'clamp',
+    });
+    const up = (motion?.mode ?? '') === 'tilt_up';
+    const y = up ? -travel * (1 - prog) : -travel * prog;
+    return (
+      <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
+        <Img
+          src={src}
+          style={{
+            position: 'absolute',
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            transform: 'scale(1.1)',
+            filter: `blur(${bgBlurPx}px) brightness(${1 - bgDim})`,
+          }}
+        />
+        <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center'}}>
+          <Img
+            src={src}
+            style={{
+              width: dispW,
+              transform: `translateY(${y}px)`,
+              boxShadow: '0 0 50px rgba(0,0,0,0.5)',
+            }}
+          />
+        </AbsoluteFill>
+      </AbsoluteFill>
+    );
+  }
 
   if (file2) {
     // split2: two halves of an over-merged crop, side by side, shared motion.

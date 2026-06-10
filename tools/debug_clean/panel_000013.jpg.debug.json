@@ -1,0 +1,177 @@
+{
+  "file": "panel_000013.jpg",
+  "image_wh": [
+    800,
+    1531
+  ],
+  "force": false,
+  "disable_sfx_filter": false,
+  "params": {
+    "safe_pad": 6,
+    "ring_size": 8,
+    "white_thr": 225,
+    "bright_thr": 170,
+    "sat_low_thr": 45,
+    "roi_min_bright_frac": 0.22,
+    "roi_max_std_bright": 28.0,
+    "roi_min_low_sat_frac": 0.65,
+    "ring_min_white_frac": 0.2,
+    "ring_min_median_gray": 165.0,
+    "ring_max_std_bright": 26.0,
+    "ring_min_low_sat_frac": 0.7
+  },
+  "boxes": [
+    {
+      "raw_bbox": [
+        293,
+        360,
+        670,
+        417
+      ],
+      "safe_roi": [
+        287,
+        354,
+        676,
+        423
+      ],
+      "roi": {
+        "white_frac": 0.6967698669945233,
+        "median_gray": 254.0,
+        "std_gray": 108.28492948034733,
+        "std_gray_bright": 11.66919174506467,
+        "bright_frac": 0.7221414999441154,
+        "low_sat_frac": 1.0,
+        "median_sat": 0.0
+      },
+      "ring": {
+        "ring_white_frac": 1.0,
+        "ring_median_gray": 255.0,
+        "ring_std_gray": 0.07930668719710361,
+        "ring_std_gray_bright": 0.07930668719710361,
+        "ring_bright_frac": 1.0,
+        "ring_low_sat_frac": 1.0,
+        "ring_median_sat": 0.0
+      },
+      "bubble_by_roi": true,
+      "bubble_by_ring": true,
+      "is_bubble_like": true,
+      "sfx_like": false,
+      "decision": "kept_safe",
+      "src": "ocr_line"
+    },
+    {
+      "raw_bbox": [
+        528,
+        671,
+        799,
+        844
+      ],
+      "safe_roi": [
+        522,
+        665,
+        800,
+        850
+      ],
+      "roi": {
+        "white_frac": 0.06558428932529652,
+        "median_gray": 51.0,
+        "std_gray": 54.54496491338877,
+        "std_gray_bright": 8.71584800304432,
+        "bright_frac": 0.06700369434182384,
+        "low_sat_frac": 0.07307019249465292,
+        "median_sat": 135.0
+      },
+      "ring": {
+        "ring_white_frac": 0.09994353472614342,
+        "ring_median_gray": 49.0,
+        "ring_std_gray": 63.123665684308996,
+        "ring_std_gray_bright": 9.979638216417447,
+        "ring_bright_frac": 0.10239036325992848,
+        "ring_low_sat_frac": 0.11650668172407302,
+        "ring_median_sat": 135.0
+      },
+      "bubble_by_roi": false,
+      "bubble_by_ring": false,
+      "is_bubble_like": false,
+      "sfx_like": true,
+      "decision": "skipped_unsafe",
+      "src": "ocr_line"
+    },
+    {
+      "raw_bbox": [
+        284,
+        777,
+        547,
+        941
+      ],
+      "safe_roi": [
+        278,
+        771,
+        553,
+        947
+      ],
+      "roi": {
+        "white_frac": 0.044793388429752064,
+        "median_gray": 50.0,
+        "std_gray": 47.41162113654017,
+        "std_gray_bright": 10.077425610585484,
+        "bright_frac": 0.046053719008264465,
+        "low_sat_frac": 0.05053719008264463,
+        "median_sat": 157.0
+      },
+      "ring": {
+        "ring_white_frac": 0.10249771550411209,
+        "ring_median_gray": 47.0,
+        "ring_std_gray": 68.15809326969595,
+        "ring_std_gray_bright": 9.634181402766576,
+        "ring_bright_frac": 0.10539141029546147,
+        "ring_low_sat_frac": 0.11925068534876637,
+        "ring_median_sat": 145.0
+      },
+      "bubble_by_roi": false,
+      "bubble_by_ring": false,
+      "is_bubble_like": false,
+      "sfx_like": true,
+      "decision": "skipped_unsafe",
+      "src": "ocr_line"
+    },
+    {
+      "raw_bbox": [
+        228,
+        968,
+        353,
+        1044
+      ],
+      "safe_roi": [
+        222,
+        962,
+        359,
+        1050
+      ],
+      "roi": {
+        "white_frac": 0.11761778367617784,
+        "median_gray": 57.0,
+        "std_gray": 77.84908034064833,
+        "std_gray_bright": 21.092578120942065,
+        "bright_frac": 0.14465826144658261,
+        "low_sat_frac": 0.20802919708029197,
+        "median_sat": 172.0
+      },
+      "ring": {
+        "ring_white_frac": 0.0,
+        "ring_median_gray": 63.0,
+        "ring_std_gray": 38.56272573668188,
+        "ring_std_gray_bright": 999.0,
+        "ring_bright_frac": 0.0,
+        "ring_low_sat_frac": 0.0,
+        "ring_median_sat": 176.0
+      },
+      "bubble_by_roi": false,
+      "bubble_by_ring": false,
+      "is_bubble_like": false,
+      "sfx_like": true,
+      "decision": "skipped_unsafe",
+      "src": "ocr_line"
+    }
+  ]
+}

@@ -97,5 +97,10 @@ def is_chrome_scene(
             in_title = sum(1 for w in words if w in title_words)
             if in_title / len(words) >= 0.6 and len(words) <= len(title_words) + 3:
                 return True
+            # vertical/stylized covers OCR as garbage tokens around the one
+            # distinctive title word ("SR OMNISCIENT CE IA ED NEO TR")
+            big = [w for w in title_words if len(w) >= 8]
+            if big and len(words) <= 10 and any(w in words for w in big):
+                return True
 
     return False
