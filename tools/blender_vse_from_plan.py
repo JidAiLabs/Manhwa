@@ -94,11 +94,15 @@ def sec_to_frame_start(sec: float, fps: int) -> int:
     return max(1, 1 + int(round(float(sec) * float(fps))))
 
 def resolve_path(scene_dir: str, f: str) -> str:
+    # ALWAYS return an absolute path: relative strip paths are re-resolved by
+    # Blender against the .blend file's own directory when the saved file is
+    # reopened (e.g. by the render pass) — every strip silently goes missing
+    # (magenta/black frames) while audio keeps working.
     if not f:
         return ""
     if os.path.isabs(f) and os.path.exists(f):
         return f
-    cand = os.path.join(scene_dir, f)
+    cand = os.path.abspath(os.path.join(scene_dir, f))
     if os.path.exists(cand):
         return cand
     root, _ = os.path.splitext(cand)
@@ -449,12 +453,15 @@ def main():
             # Channel collision safety
             cut_fs = channel_safe_start(FG_CH, cut_fs)
 
-            # Background blur
+            # Background blur — channel_base must be the BG *channel*, never a
+            # frame number: channel_safe_start() returns frames, and passing it
+            # here once parked the whole blur+dim stack on channel 128 (the
+            # clamp ceiling), ABOVE the foreground -> every frame rendered black.
             if bg_enabled:
                 add_blurred_bg(
                     scene, img_path,
                     name_prefix=f"BG_{shot_fs:06d}_{idx:04d}_{ci:02d}",
-                    channel_base=channel_safe_start(BG_CH, cut_fs),
+                    channel_base=BG_CH,
                     fs=cut_fs,
                     length=cut_len,
                     out_w=out_w,

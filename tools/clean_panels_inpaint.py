@@ -47,6 +47,28 @@ class Box:
         return (self.x1, self.y1, self.x2, self.y2)
 
 
+def chunk_box_to_scene_local(
+    chunk_box_xyxy: Tuple[float, float, float, float],
+    scene_box_xyxy: Tuple[float, float, float, float],
+    min_px: int = 3,
+) -> Optional[Tuple[int, int, int, int]]:
+    """Map a chunk-space element box (e.g. a YOLO speech_bubble) into a scene
+    crop's local pixel coordinates.
+
+    Returns the intersection shifted to the crop origin, or None when the
+    overlap is thinner than *min_px*. Slivers of bubbles poking in from
+    OUTSIDE the crop are returned on purpose — those remnant arcs are exactly
+    what the inpaint mask must cover.
+    """
+    bx1, by1, bx2, by2 = chunk_box_xyxy
+    sx1, sy1, sx2, sy2 = scene_box_xyxy
+    ix1, iy1 = max(bx1, sx1), max(by1, sy1)
+    ix2, iy2 = min(bx2, sx2), min(by2, sy2)
+    if (ix2 - ix1) < min_px or (iy2 - iy1) < min_px:
+        return None
+    return (int(ix1 - sx1), int(iy1 - sy1), int(ix2 - sx1), int(iy2 - sy1))
+
+
 def load_json(path: str) -> Any:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)

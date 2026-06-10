@@ -51,11 +51,56 @@ def boxes_to_panels_norm(
     return result
 
 
+def snap_panels_to_elements(
+    panels_norm: Sequence[Sequence[float]],
+    element_boxes_norm: Sequence[Sequence[float]],
+    *,
+    min_inside_frac: float = 0.55,
+) -> List[List[float]]:
+    """Grow panel boxes to swallow speech bubbles/system boxes they slice.
+
+    A panel edge cutting through a bubble leaves a bubble remnant in the crop
+    (and the rest in a neighbour). Each element box is assigned to the ONE
+    panel containing the largest share of its area; when that share is at
+    least *min_inside_frac* but not total, that panel grows to the union.
+    Elements fully inside (nothing to fix) or mostly outside every panel
+    (floating in the gutter) are left alone. Output stays sorted by ymin.
+    Boxes are normalized [ymin, xmin, ymax, xmax].
+    """
+    panels = [[float(v) for v in p] for p in panels_norm]
+    for b in element_boxes_norm:
+        by0, bx0, by1, bx1 = (float(v) for v in b)
+        barea = max(0.0, by1 - by0) * max(0.0, bx1 - bx0)
+        if barea <= 0.0:
+            continue
+        best_i, best_frac = -1, 0.0
+        for i, (py0, px0, py1, px1) in enumerate(panels):
+            iy = max(0.0, min(py1, by1) - max(py0, by0))
+            ix = max(0.0, min(px1, bx1) - max(px0, bx0))
+            frac = (iy * ix) / barea
+            if frac > best_frac:
+                best_frac, best_i = frac, i
+        if best_i >= 0 and min_inside_frac <= best_frac < 1.0 - 1e-9:
+            p = panels[best_i]
+            panels[best_i] = [min(p[0], by0), min(p[1], bx0),
+                              max(p[2], by1), max(p[3], bx1)]
+    panels.sort(key=lambda p: p[0])
+    return [[round(v, 6) for v in p] for p in panels]
+
+
 # ---------------------------------------------------------------------------
 # YOLO inference
 # ---------------------------------------------------------------------------
 
 _PANEL_CLASS_ID = 0  # class 0 = panel in the trained webtoon model
+
+# Non-panel classes the webtoon model was trained on (data.yaml order:
+# panel, system_box, speech_bubble, text, sfx, character). These were
+# previously discarded; now emitted as elements_norm for bubble snapping
+# and pixel-accurate inpaint masks.
+_ELEMENT_CLASS_IDS = {1: "system_box", 2: "speech_bubble", 4: "sfx"}
+# Classes whose sliced boxes should pull the panel boundary outward.
+_SNAP_CLASSES = ("speech_bubble", "system_box")
 
 
 def detect_panels(
@@ -64,6 +109,7 @@ def detect_panels(
     weights: str,
     conf: float = 0.25,
     device: Optional[str] = None,
+    snap: bool = True,
 ) -> Dict[str, Any]:
     """Run YOLO panel detection over all chunks listed in a stitch manifest.
 
@@ -123,20 +169,38 @@ def detect_panels(
 
         boxes = result.boxes
         px_boxes: List[Tuple[float, float, float, float]] = []
+        el_px: Dict[str, List[Tuple[float, float, float, float]]] = {
+            name: [] for name in _ELEMENT_CLASS_IDS.values()
+        }
 
         if boxes is not None and len(boxes) > 0:
             xyxy = boxes.xyxy.cpu().numpy()   # shape (N, 4)
             cls = boxes.cls.cpu().numpy()      # shape (N,)
             for (x1, y1, x2, y2), c in zip(xyxy, cls):
-                if int(c) == _PANEL_CLASS_ID:
-                    px_boxes.append((float(x1), float(y1), float(x2), float(y2)))
+                ci = int(c)
+                box = (float(x1), float(y1), float(x2), float(y2))
+                if ci == _PANEL_CLASS_ID:
+                    px_boxes.append(box)
+                elif ci in _ELEMENT_CLASS_IDS:
+                    el_px[_ELEMENT_CLASS_IDS[ci]].append(box)
 
         panels_norm = boxes_to_panels_norm(px_boxes, w=img_w, h=img_h)
+        elements_norm = {
+            name: boxes_to_panels_norm(bx, w=img_w, h=img_h)
+            for name, bx in el_px.items()
+            if bx
+        }
+        if snap:
+            snap_boxes = [b for name in _SNAP_CLASSES for b in elements_norm.get(name, [])]
+            if snap_boxes:
+                panels_norm = snap_panels_to_elements(panels_norm, snap_boxes)
 
         out_chunks.append(
             {
                 "chunk_file": basename,
                 "panels_norm": panels_norm,
+                # additive: chunk-space boxes of the model's non-panel classes
+                "elements_norm": elements_norm,
             }
         )
 
