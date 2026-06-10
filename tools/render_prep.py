@@ -328,6 +328,25 @@ def bubble_coverage(
     return float(grid.mean())
 
 
+def art_content_score(
+    img: np.ndarray,
+    bubble_boxes: Sequence[Tuple[int, int, int, int]],
+) -> float:
+    """Fraction of edge pixels OUTSIDE the bubble regions — how much actual
+    artwork detail a (cleaned) panel offers. Empty-bubble husks over gradients
+    score near zero; real art scores an order of magnitude higher. This is the
+    gate that catches panels which only become worthless AFTER text cleaning."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    edges = cv2.Canny(gray, 50, 150)
+    keep = np.ones(gray.shape, bool)
+    for (x1, y1, x2, y2) in bubble_boxes:
+        keep[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)] = False
+    n = int(keep.sum())
+    if n == 0:
+        return 0.0
+    return float((edges > 0)[keep].sum()) / n
+
+
 def drop_bubble_dominated_cuts(
     cuts: Sequence[Dict[str, Any]],
     coverage_by_file: Dict[str, float],
@@ -427,13 +446,14 @@ def filter_content_parts(
     min_h: int = 120,
     max_bubble_cov: float = 0.5,
     min_midtone_frac: float = 0.15,
+    min_art_score: float = 0.012,
 ) -> List[Tuple[int, int]]:
     """Keep only the REAL-art parts of a split scene.
 
     Discards parts that are (a) too short, (b) mostly covered by detected
-    bubbles, or (c) near-binary black+white — spiky scream/SFX bubbles evade
-    the bubble detector but have almost no midtones, while colored manhwa art
-    always does."""
+    bubbles, (c) near-binary black+white — spiky scream/SFX bubbles evade the
+    bubble detector but have almost no midtones — or (d) edge-dead gradient
+    husks (midtone-rich backgrounds with no actual line art)."""
     gray_full = img.mean(axis=2) if img.ndim == 3 else img
     out: List[Tuple[int, int]] = []
     for (a, b) in parts:
@@ -448,8 +468,40 @@ def filter_content_parts(
         midtone = float(((g > 60) & (g < 200)).mean())
         if midtone < min_midtone_frac:
             continue
+        if art_content_score(img[a:b], part_boxes) < min_art_score:
+            continue
         out.append((a, b))
     return out
+
+
+def split_spans_for_panel(img: np.ndarray, *, text_rich: bool) -> List[Tuple[int, int]]:
+    """Spans for the splitter. Document-like panels (the ORV in-story app
+    list — many text rows) are NEVER split: white gaps between rows would
+    shred them into sub-min_h fragments and discard story content."""
+    if text_rich:
+        return [(0, int(img.shape[0]))]
+    return split_on_white_bands(img)
+
+
+def panel_recoverable(
+    img: np.ndarray,
+    boxes: Sequence[Tuple[int, int, int, int]],
+    *,
+    min_art_score: float = 0.012,
+    text_rich: bool = False,
+) -> bool:
+    """The drop-vs-recrop decision for a CLEANED panel: dropped ONLY when no
+    region holds real content. Text-rich (document) panels are judged WHOLE
+    by edge detail — text glyphs ARE their content; everything else is judged
+    by its best split part, which the writer then recrops to."""
+    if text_rich:
+        # document panels: their text/UI IS the content — never exclude the
+        # detector's (often false-positive) boxes from the score, else a
+        # boxed-over stats page reads as blank (the ORV p000003 case)
+        return art_content_score(img, []) >= min_art_score
+    spans = split_spans_for_panel(img, text_rich=False)
+    parts = filter_content_parts(img, spans, boxes, min_art_score=min_art_score)
+    return len(parts) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +636,11 @@ def main() -> int:
                     help="skip channel intro/outro insertion")
     ap.add_argument("--no-split", action="store_true",
                     help="skip splitting over-merged crops on white bands")
+    ap.add_argument("--series-title", default="",
+                    help="series title for cover/title-page chrome detection")
+    ap.add_argument("--min-art-score", type=float, default=0.012,
+                    help="cuts whose CLEANED panel has less edge detail than "
+                         "this are dropped (empty-bubble husks)")
     ap.add_argument("--panel-weights",
                     default="/Users/anka/webtoon-ai/runs/detect/webtoon/yolo26_musgd_run/weights/best.pt",
                     help="trained webtoon YOLO — its system_box class protects "
@@ -613,6 +670,7 @@ def main() -> int:
     # that is text_only or mostly OCR text is as bad on screen as a bubble blob.
     vision_path = args.vision_manifest or os.path.join(args.episode_dir, "manifest.vision.json")
     text_score: Dict[str, float] = {}
+    vision_item: Dict[str, Dict[str, Any]] = {}
     word_boxes_by_file: Dict[str, List[Tuple[int, int, int, int]]] = {}
     if os.path.exists(vision_path):
         with open(vision_path, "r", encoding="utf-8") as f:
@@ -620,6 +678,9 @@ def main() -> int:
                 sf = str(it.get("scene_file") or "")
                 tc = float(it.get("text_coverage") or 0.0)
                 text_score[sf] = 1.0 if it.get("text_only") else tc
+                vision_item[sf] = {"ocr_clean": it.get("ocr_clean"),
+                                   "text_only": it.get("text_only"),
+                                   "text_coverage": tc}
                 w = float(it.get("width") or 0)
                 h = float(it.get("height") or 0)
                 if w > 0 and h > 0:
@@ -689,11 +750,38 @@ def main() -> int:
             sys_cache[fname] = out
         return sys_cache[fname]
 
+    from scene_chrome import is_chrome_scene  # sibling tool module
+
+    # cleaned-image cache: cleaning result is needed BOTH by the blankness
+    # gate (what does the viewer see after text removal?) and the writer.
+    cleaned_cache: Dict[str, Tuple[Optional[np.ndarray], List[Tuple[int, int, int, int]]]] = {}
+
+    def _text_rich(fname: str) -> bool:
+        return (text_score.get(fname, 0.0) >= 0.22
+                or len(word_boxes_by_file.get(fname, [])) >= 15)
+
+    def _cleaned(fname: str) -> Tuple[Optional[np.ndarray], List[Tuple[int, int, int, int]]]:
+        if fname not in cleaned_cache:
+            img = _img(fname)
+            if img is None:
+                cleaned_cache[fname] = (None, [])
+            elif _text_rich(fname) and fname not in speech_files:
+                # DOCUMENT panel (word-rich, no speech per Gemini): its text IS
+                # the content — never blank it. The detector false-positives UI
+                # cards as bubbles and would erase story text (ORV stats page).
+                cleaned_cache[fname] = (img.copy(), [])
+            else:
+                protected = [] if fname in speech_files else _sys_boxes(fname)
+                boxes = filter_protected_boxes(_boxes(fname), protected)
+                out = clean_scene_image(img.copy(), boxes,
+                                        text_boxes=word_boxes_by_file.get(fname)) if boxes else img.copy()
+                cleaned_cache[fname] = (out, boxes)
+        return cleaned_cache[fname]
+
     # 1. drop bad cuts per shot — seam duplicates (geometric, then VISUAL
-    # containment: global coords miss stitch-overlap dups entirely), then
-    # bubble/text-dominated panels (max of bubble-shape coverage and the
-    # vision text metrics — they catch different cases: big-bubble/small-text
-    # vs dense-caption-no-bubble).
+    # containment), then bubble/text-dominated panels, then CHROME
+    # (publisher/cover/counter pages) and post-clean HUSKS (panels with no
+    # art detail left once their bubbles are emptied).
     cuts_by_segment: Dict[str, List[Dict[str, Any]]] = {}
     all_dropped: List[str] = []
     for item in plan.get("timeline") or []:
@@ -711,9 +799,20 @@ def main() -> int:
                 f = str(c["file"])
                 img = _img(f)
                 bub = bubble_coverage(img.shape, _boxes(f)) if img is not None else 0.0
-                cov[f] = max(bub, text_score.get(f, 0.0))
-                if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
-                    exempt.add(f)  # system-message panel — story beat, never drop
+                score = max(bub, text_score.get(f, 0.0))
+                if is_chrome_scene(vision_item.get(f, {}),
+                                   series_title=args.series_title or None):
+                    score = 1.0  # chrome is never story — overrides exemptions
+                else:
+                    cimg, cboxes = _cleaned(f)
+                    rich = _text_rich(f)
+                    if cimg is not None and not panel_recoverable(
+                            cimg, cboxes, min_art_score=args.min_art_score,
+                            text_rich=rich):
+                        score = 1.0  # no recoverable region after cleaning
+                    if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
+                        exempt.add(f)  # system-message panel — story beat
+                cov[f] = score
             new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)
             dropped = list(dropped) + bdropped
         cuts_by_segment[item["segment_id"]] = new_cuts
@@ -739,26 +838,20 @@ def main() -> int:
         scene_dims[name] = {"w": int(pw), "h": int(ph)}
 
     for fname in shown:
-        img = _img(fname)
+        img, boxes = _cleaned(fname)
         if img is None:
             print(f"[warn] unreadable scene, kept original reference: {fname}")
             continue
         img = img.copy()
-
-        # system windows are protected: their text is read aloud by the script.
-        # On speech panels (per Gemini's bubble_mode) a system_box detection is
-        # a false positive and must not shield the dialogue bubbles.
-        protected = [] if fname in speech_files else _sys_boxes(fname)
-        boxes = filter_protected_boxes(_boxes(fname), protected)
-        if boxes:
-            img = clean_scene_image(img, boxes,
-                                    text_boxes=word_boxes_by_file.get(fname))
-            bubbles_cleaned += len(boxes)
+        bubbles_cleaned += len(boxes)
 
         # over-merged crops: split at wide white voids; parts that are just
         # floating (now-empty) bubbles are discarded, two real parts render
         # side by side, a single real part crops the void away entirely.
-        spans = [(0, img.shape[0])] if args.no_split else split_on_white_bands(img)
+        # Document-like panels (text-rich) are never split.
+        rich = _text_rich(fname)
+        spans = ([(0, img.shape[0])] if args.no_split
+                 else split_spans_for_panel(img, text_rich=rich))
         if len(spans) > 1:
             content = filter_content_parts(img, spans, boxes)
             if len(content) == 2:

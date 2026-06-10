@@ -277,6 +277,13 @@ def main() -> int:
     ap.add_argument("--merge-single-text-only", action="store_true")
     ap.add_argument("--max-merge-text-run", type=int, default=2, help="Max consecutive text_only allowed inside a group")
 
+    ap.add_argument("--keep-chrome", action="store_true",
+                    help="keep publication chrome scenes (publisher logos, cover/"
+                         "title pages, chapter-number cards, view counters). By "
+                         "default chrome is EXCLUDED before grouping so it is "
+                         "never narrated or shown.")
+    ap.add_argument("--series-title", default="",
+                    help="series title for cover/title-page chrome detection")
     ap.add_argument("--low-text-cov", type=float, default=0.18)
     ap.add_argument("--heavy-text-cov", type=float, default=0.42)
     ap.add_argument("--short-ocr-len", type=int, default=25)
@@ -287,6 +294,19 @@ def main() -> int:
 
     man = load_json(args.vision_manifest)
     scenes = normalize_items(man)
+
+    chrome_dropped: List[str] = []
+    if not args.keep_chrome:
+        from scene_chrome import is_chrome_scene  # sibling tool module
+        keep: List[Dict[str, Any]] = []
+        for s in scenes:
+            if is_chrome_scene(s, series_title=args.series_title or None):
+                chrome_dropped.append(str(s["scene_file"]))
+            else:
+                keep.append(s)
+        scenes = keep
+        if chrome_dropped:
+            print(f"[chrome] excluded {len(chrome_dropped)}: {chrome_dropped}")
 
     shots = group_scenes(
         scenes,
@@ -302,6 +322,7 @@ def main() -> int:
 
     out_obj = {
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
+        "chrome_excluded": chrome_dropped,
         "grouping": {
             "method": "deterministic_consecutive_merge_only_v3_1",
             "max_group_len": max(2, int(args.max_group_len)),
@@ -318,7 +339,11 @@ def main() -> int:
     }
 
     out_path = args.out
-    if not os.path.isabs(out_path):
+    if not os.path.isabs(out_path) and not os.path.dirname(out_path):
+        # bare filename → place it next to the vision manifest. Paths WITH a
+        # directory part are respected as given: the old unconditional join
+        # doubled relative paths (<ep>/<ep>/manifest.groups.json) and silently
+        # left the real manifest stale.
         out_path = os.path.join(os.path.dirname(os.path.abspath(args.vision_manifest)), out_path)
 
     dump_json(out_path, out_obj)

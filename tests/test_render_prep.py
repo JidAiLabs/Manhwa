@@ -345,3 +345,92 @@ def test_speech_mode_files_from_beats():
     ]}
     out = rp.speech_mode_files(beats)
     assert out == {"talk.jpg", "think.jpg"}
+
+
+# ---- post-clean blankness: a panel that is only empty bubbles + gradient
+# after cleaning (user's IE husk) must not be shown -----------------------------
+
+def _husk(w=300, h=400):
+    """Gradient background + two empty bubble outlines + caption rect."""
+    img = np.zeros((h, w, 3), np.uint8)
+    ramp = np.linspace(190, 230, h).astype(np.uint8)
+    img[:] = ramp[:, None, None]
+    cv2.circle(img, (100, 200), 70, (20, 20, 20), 3)
+    cv2.circle(img, (220, 330), 60, (20, 20, 20), 3)
+    cv2.rectangle(img, (60, 40), (240, 110), (20, 20, 20), 3)
+    cv2.circle(img, (100, 200), 67, (250, 250, 250), -1)
+    cv2.circle(img, (220, 330), 57, (250, 250, 250), -1)
+    return img
+
+
+def test_art_score_low_for_cleaned_husk():
+    img = _husk()
+    boxes = [(20, 120, 180, 280), (150, 260, 290, 400), (50, 30, 250, 120)]
+    assert rp.art_content_score(img, boxes) < 0.012
+
+
+def test_art_score_high_for_real_art():
+    # hard-edged line art: posterized pattern has ink-like boundaries
+    img = (_pattern(400, 300) > 128).astype(np.uint8) * 255
+    assert rp.art_content_score(img, []) > 0.03
+
+
+import cv2  # noqa: E402  (used by _husk)
+
+
+# ---- unify drop-vs-recrop: gradient husk parts (midtones but no edges) are
+# not content; a panel is only DROPPED when no part survives ------------------
+
+def test_filter_content_parts_rejects_gradient_husk_part():
+    img = np.zeros((400, 300, 3), np.uint8)
+    ramp = np.linspace(170, 220, 400).astype(np.uint8)   # gradient = midtones
+    img[:] = ramp[:, None, None]
+    # top part: real line art (hard edges AND midtones, like actual manhwa)
+    pat = _pattern(150, 300)[..., 0]
+    art = np.select([pat > 170, pat > 85], [255, 128], default=30).astype(np.uint8)
+    img[10:160] = np.dstack([art, art, art])[:150]
+    # bottom part: gradient only (the husk look) — stays as initialized
+    parts = [(0, 170), (220, 400)]
+    out = rp.filter_content_parts(img, parts, boxes=[])
+    assert out == [(0, 170)]                     # husk part rejected
+
+
+def test_panel_recoverable_when_any_part_has_art():
+    img = np.zeros((400, 300, 3), np.uint8)
+    ramp = np.linspace(170, 220, 400).astype(np.uint8)
+    img[:] = ramp[:, None, None]
+    art = (_pattern(150, 300) > 128).astype(np.uint8) * 255
+    img[10:160] = art[:150]
+    assert rp.panel_recoverable(img, boxes=[]) is True     # recrop, don't drop
+    img2 = np.zeros((400, 300, 3), np.uint8)
+    img2[:] = ramp[:, None, None]                          # all gradient
+    assert rp.panel_recoverable(img2, boxes=[]) is False   # nothing to save
+
+
+# ---- document-like panels (the ORV app-list) must be judged WHOLE: the
+# splitter would shred their rows into sub-min_h fragments and discard all ----
+
+def _app_list_panel():
+    img = np.full((600, 400, 3), 252, dtype=np.uint8)
+    cv2.rectangle(img, (10, 10), (390, 70), (90, 90, 90), -1)     # title bar
+    for i in range(6):                                            # episode rows
+        y = 120 + i * 80
+        cv2.line(img, (20, y), (380, y), (60, 60, 60), 2)
+        cv2.putText(img, f"READ EPISODE {1380+i} VIEWS: 1", (24, y - 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 40, 40), 2)
+    return img
+
+
+def test_document_panel_recoverable_and_not_shredded():
+    img = _app_list_panel()
+    assert rp.panel_recoverable(img, boxes=[], text_rich=True) is True
+    # text_rich forces whole-panel judgment — exactly one span, the panel
+    spans = rp.split_spans_for_panel(img, text_rich=True)
+    assert spans == [(0, img.shape[0])]
+
+
+def test_non_text_rich_panel_still_splits():
+    img = np.full((300, 100, 3), 250, dtype=np.uint8)
+    img[10:100] = 60
+    img[200:290] = 80
+    assert len(rp.split_spans_for_panel(img, text_rich=False)) == 2
