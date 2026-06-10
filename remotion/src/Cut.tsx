@@ -11,12 +11,13 @@ import {Camera, clamp, DEFAULT_SAFE_INSET, Motion, PAN_CAP_FRAC, SceneDims, WIDE
  */
 export const CutView: React.FC<{
   file: string;
+  file2?: string;
   durationInFrames: number;
   motion?: Motion;
   camera?: Camera;
   scenesSubdir?: string;
   dims?: SceneDims;
-}> = ({file, durationInFrames, motion, camera, scenesSubdir = 'scenes', dims}) => {
+}> = ({file, file2, durationInFrames, motion, camera, scenesSubdir = 'scenes', dims}) => {
   const frame = useCurrentFrame();
   const {width, height} = useVideoConfig();
   const src = staticFile(`${scenesSubdir}/${file}`);
@@ -54,6 +55,50 @@ export const CutView: React.FC<{
 
   const inset = motion?.fg_fit?.safe_inset_pct ?? DEFAULT_SAFE_INSET;
   const boxPct = (1 - 2 * inset) * 100;
+
+  if (file2) {
+    // split2: two halves of an over-merged crop, side by side, shared motion.
+    const src2 = staticFile(`${scenesSubdir}/${file2}`);
+    return (
+      <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
+        <Img
+          src={src}
+          style={{
+            position: 'absolute',
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            transform: 'scale(1.1)',
+            filter: `blur(${bgBlurPx}px) brightness(${1 - bgDim})`,
+          }}
+        />
+        <AbsoluteFill
+          style={{
+            flexDirection: 'row',
+            justifyContent: 'center',
+            alignItems: 'center',
+            gap: 24,
+            padding: 36,
+            transform: `scale(${zoom})`,
+          }}
+        >
+          {[src, src2].map((s) => (
+            <Img
+              key={s}
+              src={s}
+              style={{
+                maxWidth: '48%',
+                maxHeight: '92%',
+                objectFit: 'contain',
+                borderRadius: 6,
+                boxShadow: '0 10px 40px rgba(0,0,0,0.45)',
+              }}
+            />
+          ))}
+        </AbsoluteFill>
+      </AbsoluteFill>
+    );
+  }
 
   if (wide) {
     // Full-bleed: the panel IS the frame — no margins, no blur layer.

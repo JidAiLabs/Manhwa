@@ -30,6 +30,7 @@ export const Shot: React.FC<{
         >
           <CutView
             file={c.file}
+            file2={c.layout === 'split2' ? c.file2 : undefined}
             durationInFrames={toFrames(c.dur)}
             motion={item.motion}
             camera={item.camera}

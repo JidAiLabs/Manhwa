@@ -200,18 +200,19 @@ def content_bbox(
 # 2. oval-aware bubble mask + inpaint (pure given an image)
 # ---------------------------------------------------------------------------
 
-def bubble_mask_in_box(
+def _bubble_text(
     img: np.ndarray,
     box: Tuple[int, int, int, int],
     *,
     pad: int = 4,
-) -> np.ndarray:
-    """uint8 mask (255 = erase) of the bubble inside a detector box.
+) -> Tuple[np.ndarray, Optional[int]]:
+    """(mask, fill_value) for the TEXT inside one bubble box.
 
-    The bubble interior is the near-white (or near-black, for shout bubbles)
-    connected component around the box centre — NOT the whole box, so art
-    around the oval survives. Morphological close swallows the text strokes;
-    dilation swallows the outline ring. Clipped to the padded box.
+    User direction: the bubble (shape + outline) STAYS; only its text is
+    blanked with the bubble's own flat color — no inpainting, so no smears.
+    The interior is the near-white (or near-black, shout bubbles) connected
+    component around the box centre; text = contrasting pixels safely inside
+    that component's filled contour (eroded clear of the outline ring).
     """
     H, W = img.shape[:2]
     x1 = max(0, int(box[0]) - pad)
@@ -220,7 +221,7 @@ def bubble_mask_in_box(
     y2 = min(H, int(box[3]) + pad)
     mask = np.zeros((H, W), np.uint8)
     if x2 - x1 < 4 or y2 - y1 < 4:
-        return mask
+        return mask, None
 
     gray = img[y1:y2, x1:x2].mean(axis=2) if img.ndim == 3 else img[y1:y2, x1:x2]
     gray = gray.astype(np.uint8)
@@ -238,36 +239,198 @@ def bubble_mask_in_box(
 
     white = centre_component(gray >= 225)
     black = centre_component(gray <= 35)
-    comp = None
     if white is not None and (black is None or white.sum() >= black.sum()):
-        comp = white
+        comp, is_white = white, True
     elif black is not None:
-        comp = black
-    if comp is None:
-        return mask
+        comp, is_white = black, False
+    else:
+        return mask, None
 
-    comp = cv2.morphologyEx(
-        comp, cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
-    comp = cv2.dilate(
-        comp, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
-    mask[y1:y2, x1:x2] = comp * 255
-    return mask
+    cnts, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return mask, None
+    filled = np.zeros_like(comp)
+    cv2.drawContours(filled, cnts, -1, 1, -1)
+    inside = cv2.erode(
+        filled, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+
+    if is_white:
+        text = ((gray <= 170) & (inside > 0)).astype(np.uint8)
+        fill = int(np.median(gray[comp > 0])) if comp.any() else 250
+    else:
+        text = ((gray >= 90) & (inside > 0)).astype(np.uint8)
+        fill = int(np.median(gray[comp > 0])) if comp.any() else 10
+
+    text = cv2.dilate(
+        text, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    text &= inside  # the dilation must never reach the outline ring
+    mask[y1:y2, x1:x2] = text * 255
+    return mask, fill
+
+
+def bubble_text_mask(img: np.ndarray, box: Tuple[int, int, int, int]) -> np.ndarray:
+    """uint8 mask (255 = blank) of the TEXT inside a bubble box."""
+    return _bubble_text(img, box)[0]
 
 
 def clean_scene_image(
     img: np.ndarray,
     boxes: Sequence[Tuple[int, int, int, int]],
 ) -> np.ndarray:
-    """Inpaint every bubble box's oval mask; untouched pixels stay identical."""
+    """Blank the text inside each bubble with the bubble's own flat color.
+
+    Bubbles themselves stay (empty bubbles read as normal comic art); pixels
+    outside the text masks are byte-identical to the input.
+    """
     if not boxes:
         return img
-    total = np.zeros(img.shape[:2], np.uint8)
+    out = img.copy()
     for b in boxes:
-        total = cv2.bitwise_or(total, bubble_mask_in_box(img, b))
-    if not total.any():
-        return img
-    return cv2.inpaint(img, total, 5, cv2.INPAINT_TELEA)
+        mask, fill = _bubble_text(out, b)
+        if fill is None or not mask.any():
+            continue
+        out[mask > 0] = fill
+    return out
+
+
+def bubble_coverage(
+    shape: Tuple[int, ...],
+    boxes: Sequence[Tuple[int, int, int, int]],
+) -> float:
+    """Fraction of the panel covered by bubble boxes (union, downscaled grid)."""
+    h, w = int(shape[0]), int(shape[1])
+    if h <= 0 or w <= 0 or not boxes:
+        return 0.0
+    s = 4
+    grid = np.zeros((max(1, h // s), max(1, w // s)), np.uint8)
+    for (x1, y1, x2, y2) in boxes:
+        grid[max(0, int(y1) // s): max(0, int(y2) // s),
+             max(0, int(x1) // s): max(0, int(x2) // s)] = 1
+    return float(grid.mean())
+
+
+def drop_bubble_dominated_cuts(
+    cuts: Sequence[Dict[str, Any]],
+    coverage_by_file: Dict[str, float],
+    *,
+    max_coverage: float = 0.45,
+    exempt: Optional[set] = None,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Drop cuts that are mostly bubble/text (a cleaned bubble-only panel is a
+    near-blank blob on screen). *exempt* files (system-message panels — story
+    beats like the Sky Corporation cliffhanger) are never dropped. Never
+    empties a shot — the least bubbly cut survives."""
+    ex = exempt or set()
+    over = [c for c in cuts
+            if str(c["file"]) not in ex
+            and coverage_by_file.get(str(c["file"]), 0.0) >= max_coverage]
+    if not over:
+        return list(cuts), []
+    dropped = [str(c["file"]) for c in over]
+    if len(dropped) == len(cuts):
+        keeper = min(cuts, key=lambda c: coverage_by_file.get(str(c["file"]), 0.0))
+        dropped = [f for f in dropped if f != str(keeper["file"])]
+        if not dropped:
+            return list(cuts), []
+    return _redistribute(cuts, dropped), dropped
+
+
+def filter_protected_boxes(
+    boxes: Sequence[Tuple[int, int, int, int]],
+    protected: Sequence[Tuple[int, int, int, int]],
+    *,
+    max_overlap: float = 0.3,
+) -> List[Tuple[int, int, int, int]]:
+    """Remove bubble boxes that mostly overlap a protected (system_box) region —
+    system-window text is read aloud by the script and must stay visible."""
+    out: List[Tuple[int, int, int, int]] = []
+    for b in boxes:
+        bx1, by1, bx2, by2 = b
+        barea = max(1, (bx2 - bx1) * (by2 - by1))
+        hit = False
+        for (px1, py1, px2, py2) in protected:
+            ix = max(0, min(bx2, px2) - max(bx1, px1))
+            iy = max(0, min(by2, py2) - max(by1, py1))
+            if (ix * iy) / barea >= max_overlap:
+                hit = True
+                break
+        if not hit:
+            out.append(b)
+    return out
+
+
+def split_on_white_bands(
+    img: np.ndarray,
+    *,
+    min_band_h: int = 40,
+    white_thresh: int = 225,
+    white_frac: float = 0.93,
+    min_part_h: int = 16,
+    pad: int = 12,
+) -> List[Tuple[int, int]]:
+    """(y1, y2) content spans of an over-merged crop, split at wide internal
+    white bands (the dead page-void between stacked panels). One span = no
+    split. Spans are padded and clipped."""
+    gray = img.mean(axis=2) if img.ndim == 3 else img.astype(np.float64)
+    H = gray.shape[0]
+    white_rows = (gray >= white_thresh).mean(axis=1) >= white_frac
+
+    spans: List[Tuple[int, int]] = []
+    y = 0
+    while y < H:
+        if not white_rows[y]:
+            start = y
+            while y < H and not white_rows[y]:
+                y += 1
+            spans.append((start, y))
+        else:
+            y += 1
+
+    # merge spans separated by thin white gaps (< min_band_h = not a real band)
+    merged: List[Tuple[int, int]] = []
+    for s in spans:
+        if merged and s[0] - merged[-1][1] < min_band_h:
+            merged[-1] = (merged[-1][0], s[1])
+        else:
+            merged.append(s)
+
+    merged = [(a, b) for a, b in merged if b - a >= min_part_h]
+    if len(merged) <= 1:
+        return [(0, H)]
+    return [(max(0, a - pad), min(H, b + pad)) for a, b in merged]
+
+
+def filter_content_parts(
+    img: np.ndarray,
+    parts: Sequence[Tuple[int, int]],
+    boxes: Sequence[Tuple[int, int, int, int]],
+    *,
+    min_h: int = 120,
+    max_bubble_cov: float = 0.5,
+    min_midtone_frac: float = 0.15,
+) -> List[Tuple[int, int]]:
+    """Keep only the REAL-art parts of a split scene.
+
+    Discards parts that are (a) too short, (b) mostly covered by detected
+    bubbles, or (c) near-binary black+white — spiky scream/SFX bubbles evade
+    the bubble detector but have almost no midtones, while colored manhwa art
+    always does."""
+    gray_full = img.mean(axis=2) if img.ndim == 3 else img
+    out: List[Tuple[int, int]] = []
+    for (a, b) in parts:
+        if (b - a) < min_h:
+            continue
+        part_boxes = [(x1, y1 - a, x2, y2 - a)
+                      for (x1, y1, x2, y2) in boxes
+                      if min(y2, b) - max(y1, a) > 0]
+        if bubble_coverage((b - a, img.shape[1]), part_boxes) >= max_bubble_cov:
+            continue
+        g = gray_full[a:b]
+        midtone = float(((g > 60) & (g < 200)).mean())
+        if midtone < min_midtone_frac:
+            continue
+        out.append((a, b))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -372,12 +535,21 @@ def main() -> int:
     ap.add_argument("--plan", required=True)
     ap.add_argument("--scenes-manifest", required=True)
     ap.add_argument("--episode-dir", required=True)
+    ap.add_argument("--vision-manifest", default="",
+                    help="manifest.vision.json — its text_coverage/text_only feed "
+                         "the bubble-dominance gate (default: <episode>/manifest.vision.json)")
     ap.add_argument("--out-plan", default="", help="default: <plan>.clean.json next to --plan")
     ap.add_argument("--bubble-conf", type=float, default=0.30)
     ap.add_argument("--no-bubbles", action="store_true", help="skip bubble inpainting")
     ap.add_argument("--no-trim", action="store_true", help="skip border trimming")
     ap.add_argument("--no-branding", action="store_true",
                     help="skip channel intro/outro insertion")
+    ap.add_argument("--no-split", action="store_true",
+                    help="skip splitting over-merged crops on white bands")
+    ap.add_argument("--panel-weights",
+                    default="/Users/anka/webtoon-ai/runs/detect/webtoon/yolo26_musgd_run/weights/best.pt",
+                    help="trained webtoon YOLO — its system_box class protects "
+                         "system-message panels from the bubble gate/blanking")
     ap.add_argument("--branding-dir",
                     default=os.path.join(os.path.dirname(os.path.dirname(
                         os.path.abspath(__file__))), "assets", "branding", "origin-power"),
@@ -399,6 +571,17 @@ def main() -> int:
             "x2": float(box[2]), "y2": gy0 + float(box[3]),
         }
 
+    # vision text metrics — the EXISTING "text domain" measurement: a panel
+    # that is text_only or mostly OCR text is as bad on screen as a bubble blob.
+    vision_path = args.vision_manifest or os.path.join(args.episode_dir, "manifest.vision.json")
+    text_score: Dict[str, float] = {}
+    if os.path.exists(vision_path):
+        with open(vision_path, "r", encoding="utf-8") as f:
+            for it in json.load(f).get("items") or []:
+                sf = str(it.get("scene_file") or "")
+                tc = float(it.get("text_coverage") or 0.0)
+                text_score[sf] = 1.0 if it.get("text_only") else tc
+
     scenes_dir = os.path.join(args.episode_dir, "scenes")
     img_cache: Dict[str, Optional[np.ndarray]] = {}
 
@@ -407,8 +590,56 @@ def main() -> int:
             img_cache[fname] = cv2.imread(os.path.join(scenes_dir, fname))
         return img_cache[fname]
 
-    # 1. drop seam duplicates per shot — geometric first, then VISUAL
-    # containment (global coords miss stitch-overlap duplicates entirely).
+    detector = None
+    if not args.no_bubbles:
+        detector = _load_bubble_detector(args.device)
+    boxes_cache: Dict[str, List[Tuple[int, int, int, int]]] = {}
+
+    def _boxes(fname: str) -> List[Tuple[int, int, int, int]]:
+        if detector is None:
+            return []
+        if fname not in boxes_cache:
+            img = _img(fname)
+            boxes_cache[fname] = [] if img is None else [
+                (int(x1), int(y1), int(x2), int(y2))
+                for (x1, y1, x2, y2, _s) in detector.detect(
+                    img, imgsz=1024, conf=args.bubble_conf)
+            ]
+        return boxes_cache[fname]
+
+    # system_box detections from OUR trained model (works on crops, mAP .843):
+    # they veto both the dominance gate and text blanking. Fail-soft when the
+    # weights are missing — protection off, loudly.
+    panel_model = None
+    if os.path.exists(args.panel_weights):
+        from ultralytics import YOLO
+        panel_model = YOLO(args.panel_weights)
+    else:
+        print(f"[warn] panel weights missing ({args.panel_weights}) — "
+              "system-message protection DISABLED")
+    sys_cache: Dict[str, List[Tuple[int, int, int, int]]] = {}
+
+    def _sys_boxes(fname: str) -> List[Tuple[int, int, int, int]]:
+        if panel_model is None:
+            return []
+        if fname not in sys_cache:
+            img = _img(fname)
+            out: List[Tuple[int, int, int, int]] = []
+            if img is not None:
+                r = panel_model.predict(img, conf=0.30, device=args.device, verbose=False)[0]
+                if r.boxes is not None:
+                    for (x1, y1, x2, y2), c in zip(
+                            r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy()):
+                        if int(c) == 1:  # system_box
+                            out.append((int(x1), int(y1), int(x2), int(y2)))
+            sys_cache[fname] = out
+        return sys_cache[fname]
+
+    # 1. drop bad cuts per shot — seam duplicates (geometric, then VISUAL
+    # containment: global coords miss stitch-overlap dups entirely), then
+    # bubble/text-dominated panels (max of bubble-shape coverage and the
+    # vision text metrics — they catch different cases: big-bubble/small-text
+    # vs dense-caption-no-bubble).
     cuts_by_segment: Dict[str, List[Dict[str, Any]]] = {}
     all_dropped: List[str] = []
     for item in plan.get("timeline") or []:
@@ -419,6 +650,18 @@ def main() -> int:
             imgs = {k: v for k, v in imgs.items() if v is not None}
             new_cuts, vdropped = drop_visual_duplicate_cuts(new_cuts, imgs)
             dropped = list(dropped) + vdropped
+        if new_cuts:
+            cov: Dict[str, float] = {}
+            exempt: set = set()
+            for c in new_cuts:
+                f = str(c["file"])
+                img = _img(f)
+                bub = bubble_coverage(img.shape, _boxes(f)) if img is not None else 0.0
+                cov[f] = max(bub, text_score.get(f, 0.0))
+                if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
+                    exempt.add(f)  # system-message panel — story beat, never drop
+            new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)
+            dropped = list(dropped) + bdropped
         cuts_by_segment[item["segment_id"]] = new_cuts
         all_dropped.extend(dropped)
 
@@ -428,37 +671,61 @@ def main() -> int:
     clean_dir = os.path.join(args.episode_dir, "scenes_clean")
     os.makedirs(clean_dir, exist_ok=True)
 
-    detector = None
-    if not args.no_bubbles:
-        detector = _load_bubble_detector(args.device)
-
     scene_dims: Dict[str, Dict[str, int]] = {}
+    split_map: Dict[str, Tuple[str, str]] = {}
     bubbles_cleaned = 0
+
+    def _write_part(name: str, part: np.ndarray) -> None:
+        if not args.no_trim:
+            tx1, ty1, tx2, ty2 = content_bbox(part)
+            part = part[ty1:ty2, tx1:tx2]
+        cv2.imwrite(os.path.join(clean_dir, name), part,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        ph, pw = part.shape[:2]
+        scene_dims[name] = {"w": int(pw), "h": int(ph)}
+
     for fname in shown:
-        src = os.path.join(scenes_dir, fname)
-        img = cv2.imread(src)
+        img = _img(fname)
         if img is None:
             print(f"[warn] unreadable scene, kept original reference: {fname}")
             continue
+        img = img.copy()
 
-        boxes: List[Tuple[int, int, int, int]] = []
-        if detector is not None:
-            for (bx1, by1, bx2, by2, _score) in detector.detect(
-                    img, imgsz=1024, conf=args.bubble_conf):
-                boxes.append((int(bx1), int(by1), int(bx2), int(by2)))
+        # system windows are protected: their text is read aloud by the script
+        boxes = filter_protected_boxes(_boxes(fname), _sys_boxes(fname))
         if boxes:
             img = clean_scene_image(img, boxes)
             bubbles_cleaned += len(boxes)
 
-        if not args.no_trim:
-            x1, y1, x2, y2 = content_bbox(img)
-            img = img[y1:y2, x1:x2]
+        # over-merged crops: split at wide white voids; parts that are just
+        # floating (now-empty) bubbles are discarded, two real parts render
+        # side by side, a single real part crops the void away entirely.
+        spans = [(0, img.shape[0])] if args.no_split else split_on_white_bands(img)
+        if len(spans) > 1:
+            content = filter_content_parts(img, spans, boxes)
+            if len(content) == 2:
+                stem, ext = os.path.splitext(fname)
+                names = (f"{stem}_a{ext}", f"{stem}_b{ext}")
+                for nm, (a, b) in zip(names, content):
+                    _write_part(nm, img[a:b])
+                split_map[fname] = names
+                print(f"[ok] {fname}: SPLIT -> {names[0]} + {names[1]} (split2)")
+                continue
+            if len(content) == 1:
+                a, b = content[0]
+                img = img[a:b]
 
-        cv2.imwrite(os.path.join(clean_dir, fname), img,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), 92])
-        h, w = img.shape[:2]
-        scene_dims[fname] = {"w": int(w), "h": int(h)}
-        print(f"[ok] {fname}: bubbles={len(boxes)} -> {w}x{h}")
+        _write_part(fname, img)
+        print(f"[ok] {fname}: bubbles={len(boxes)} -> "
+              f"{scene_dims[fname]['w']}x{scene_dims[fname]['h']}")
+
+    # split scenes render as side-by-side pairs
+    for cs in cuts_by_segment.values():
+        for c in cs:
+            f = str(c.get("file"))
+            if f in split_map:
+                c["file"], c["file2"] = split_map[f]
+                c["layout"] = "split2"
 
     out_plan = rewrite_plan(plan, scenes_subdir="scenes_clean",
                             scene_dims=scene_dims,

@@ -31,7 +31,15 @@ export type Camera = {
   max_zoom?: number;
 };
 
-export type Cut = {file: string; start: number; dur: number};
+export type Cut = {
+  file: string;
+  start: number;
+  dur: number;
+  // render_prep splits over-merged crops: layout "split2" shows file + file2
+  // side by side on one screen.
+  file2?: string;
+  layout?: string;
+};
 
 export type TimelineItem = {
   segment_id: string;
