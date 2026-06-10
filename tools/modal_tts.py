@@ -38,19 +38,17 @@ app = modal.App("manhwa-tts")
 HF_CACHE_PATH = "/root/.cache/huggingface"
 hf_cache_vol = modal.Volume.from_name("manhwa-hf-cache", create_if_missing=True)
 
-# CUDA image with Qwen3-TTS + flash-attn. Measured on A10G with sdpa: 36 clips
-# / 8.9 min audio in ~20 min ≈ $0.37/chapter (generation-dominated); flash-attn
-# is the speed/cost lever. It compiles from source, so the base image must be
-# the CUDA *devel* registry image (nvcc) and torch must be installed first
-# (--no-build-isolation). One-time build, cached as an image layer.
+# CUDA image with Qwen3-TTS, sdpa attention. Measured on A10G: 36 clips /
+# 8.9 min audio in ~20 min ≈ $0.37/chapter (generation-dominated).
+# flash-attn was attempted as the speed lever and REVERTED: its setup.py
+# 404s fetching a prebuilt wheel for this torch/CUDA/py combo and the
+# source build dies on Modal's builder. To retry later: pin torch to a
+# version with a published flash-attn wheel and pip_install the wheel URL
+# from github.com/Dao-AILab/flash-attention/releases directly.
 image = (
-    modal.Image.from_registry("nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.12")
-    .entrypoint([])  # silence the verbose NVIDIA banner
+    modal.Image.debian_slim(python_version="3.12")
     .apt_install("espeak-ng", "sox", "ffmpeg")
-    .pip_install("torch", "ninja", "packaging", "wheel")
-    .pip_install("qwen-tts", "soundfile")
-    .env({"MAX_JOBS": "8"})  # bound flash-attn's parallel compile memory
-    .pip_install("flash-attn", extra_options="--no-build-isolation")
+    .pip_install("qwen-tts", "soundfile", "torch")
     .env({"HF_HOME": HF_CACHE_PATH})
 )
 
@@ -73,7 +71,7 @@ def synth_qwen(items: list, persona: str, ref_wav: bytes = b"", ref_text: str = 
                 else "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
     model = Qwen3TTSModel.from_pretrained(
         model_id, device_map="cuda", dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        attn_implementation="sdpa",
     )
     print(f"[gpu] {model_id} loaded" + (" — voice-clone mode" if ref_wav else ""))
 
