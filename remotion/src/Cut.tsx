@@ -1,21 +1,26 @@
 import React from 'react';
 import {AbsoluteFill, Easing, Img, interpolate, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
-import {Camera, clamp, DEFAULT_SAFE_INSET, Motion, PAN_CAP_FRAC, zoomCap} from './plan';
+import {Camera, clamp, DEFAULT_SAFE_INSET, Motion, PAN_CAP_FRAC, SceneDims, WIDE_COVER_MIN_ASPECT, zoomCap} from './plan';
 
 /**
- * One panel on screen: blurred cover background + contained foreground with
- * deterministic Ken Burns (zoom start→end, pan start_bias→end_bias) — the same
- * semantics tools/blender_vse_from_plan.py applies to its image strips.
+ * One panel on screen with deterministic Ken Burns (zoom start→end, pan
+ * start_bias→end_bias). Wide panels (aspect ≥ WIDE_COVER_MIN_ASPECT, known
+ * from render_prep's scene_dims) render FULL-BLEED (cover, no margins);
+ * everything else keeps the blurred-cover background + contained foreground —
+ * the same semantics tools/blender_vse_from_plan.py applies to its strips.
  */
 export const CutView: React.FC<{
   file: string;
   durationInFrames: number;
   motion?: Motion;
   camera?: Camera;
-}> = ({file, durationInFrames, motion, camera}) => {
+  scenesSubdir?: string;
+  dims?: SceneDims;
+}> = ({file, durationInFrames, motion, camera, scenesSubdir = 'scenes', dims}) => {
   const frame = useCurrentFrame();
   const {width, height} = useVideoConfig();
-  const src = staticFile(`scenes/${file}`);
+  const src = staticFile(`${scenesSubdir}/${file}`);
+  const wide = !!dims && dims.h > 0 && dims.w / dims.h >= WIDE_COVER_MIN_ASPECT;
 
   const cap = zoomCap(camera);
   const z0 = clamp(motion?.zoom?.start ?? 1.02, 1.0, cap);
@@ -49,6 +54,24 @@ export const CutView: React.FC<{
 
   const inset = motion?.fg_fit?.safe_inset_pct ?? DEFAULT_SAFE_INSET;
   const boxPct = (1 - 2 * inset) * 100;
+
+  if (wide) {
+    // Full-bleed: the panel IS the frame — no margins, no blur layer.
+    return (
+      <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
+        <Img
+          src={src}
+          style={{
+            position: 'absolute',
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            transform: `translate(${ox}px, ${oy}px) scale(${Math.max(zoom, 1.0)})`,
+          }}
+        />
+      </AbsoluteFill>
+    );
+  }
 
   return (
     <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>

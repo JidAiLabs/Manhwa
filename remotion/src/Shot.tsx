@@ -1,13 +1,17 @@
 import React from 'react';
 import {Audio, Sequence, staticFile} from 'remotion';
 import {CutView} from './Cut';
-import {publicRelAudio, TimelineItem, toFrames, toStartFrame} from './plan';
+import {publicRelAudio, SceneDims, TimelineItem, toFrames, toStartFrame} from './plan';
 
 /**
  * One timeline item (= one narration group): its narration audio at the shot
  * start, and its cuts[] montage at their planner-given offsets/durations.
  */
-export const Shot: React.FC<{item: TimelineItem}> = ({item}) => {
+export const Shot: React.FC<{
+  item: TimelineItem;
+  scenesSubdir: string;
+  sceneDims: Record<string, SceneDims>;
+}> = ({item, scenesSubdir, sceneDims}) => {
   const cuts =
     item.cuts && item.cuts.length > 0
       ? item.cuts
@@ -29,6 +33,8 @@ export const Shot: React.FC<{item: TimelineItem}> = ({item}) => {
             durationInFrames={toFrames(c.dur)}
             motion={item.motion}
             camera={item.camera}
+            scenesSubdir={scenesSubdir}
+            dims={sceneDims[c.file]}
           />
         </Sequence>
       ))}

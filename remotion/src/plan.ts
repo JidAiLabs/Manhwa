@@ -46,10 +46,19 @@ export type TimelineItem = {
   camera?: Camera;
 };
 
+export type SceneDims = {w: number; h: number};
+
 export type RenderPlan = {
   timeline: TimelineItem[];
   total_duration_sec?: number;
+  // written by tools/render_prep.py: cleaned/trimmed copies + their sizes
+  scenes_subdir?: string;
+  scene_dims?: Record<string, SceneDims>;
 };
+
+// Panels at least this wide (w/h) render full-bleed (cover) instead of
+// contained-with-margins — the page-margin look the user rejected.
+export const WIDE_COVER_MIN_ASPECT = 1.3;
 
 export const toFrames = (sec: number): number => Math.max(1, Math.ceil(sec * FPS));
 export const toStartFrame = (sec: number): number => Math.round(sec * FPS);
