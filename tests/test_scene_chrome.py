@@ -99,3 +99,9 @@ def test_empty_ocr_binary_card_is_chrome_with_image_stats():
     assert sc.is_chrome_scene(item, midtone_frac=0.45) is False    # real art
     # without image stats, empty OCR stays non-chrome (pure-art panels)
     assert sc.is_chrome_scene(item) is False
+
+
+def test_site_plug_and_scanlation_credits_are_chrome():
+    # the real IE cover: title + site plug + editor credit
+    assert _is("INFINITE EVOLUTION FROM ZERO PLEASE READ THIS CHAPTER ON ELFTOON.COM ED: HAL") is True
+    assert _is("READ FREE AT MANHWASITE.NET TL: JOE PR: AMY") is True

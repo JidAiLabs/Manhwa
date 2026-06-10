@@ -31,6 +31,13 @@ _CREDITS_RE = re.compile(
 )
 
 # A bare chapter/episode marker (the whole text is just the marker).
+# Site plugs and scanlation-team credits (aggregator stamps on covers).
+_SITE_RE = re.compile(
+    r"\b\w[\w-]*\.(com|net|org|io|to)\b|please\s+read|read\s+(this|free)|"
+    r"\b(ed|tl|pr|qc|clrd|rd)\s*:",
+    re.I,
+)
+
 _MARKER_RE = re.compile(
     r"^\s*(?:chapter|episode|ep\.?|prologue|final(?:e)?|season\s*\d+)?[\s:#-]*\d{0,4}\s*$",
     re.I,
@@ -75,6 +82,9 @@ def is_chrome_scene(
             return True
 
     if _CREDITS_RE.search(ocr):
+        return True
+
+    if _SITE_RE.search(ocr):
         return True
 
     if _MARKER_RE.match(ocr):
