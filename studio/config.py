@@ -21,6 +21,10 @@ class Config:
     tts_python: str = ""                     # python for the local-TTS venv (deps
                                              # conflict with YOLO's torch); "" = pipeline python
     tts_kokoro_voice: str = "af_heart"      # kokoro voice pack (e.g. am_puck male)
+    narration_source: str = "gemini_verbatim"  # scripted stage: "gemini_verbatim"
+                                             # (voice the image-grounded beats
+                                             # narration verbatim — A/B winner,
+                                             # no OpenAI) | "legacy" | "openai_polish"
 
 def load_creds_env(path: Path | None = None) -> None:
     """Load KEY=VALUE lines from keys/creds.env into os.environ.
@@ -63,4 +67,5 @@ def load(path: Path | None = None) -> Config:
         tts_voice_ref=t.get("voice_ref", ""),
         tts_python=t.get("python", ""),
         tts_kokoro_voice=t.get("kokoro_voice", "af_heart"),
+        narration_source=m.get("narration_source", "gemini_verbatim"),
     )

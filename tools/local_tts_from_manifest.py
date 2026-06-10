@@ -106,6 +106,101 @@ def exaggeration_to_speed(exaggeration: float) -> float:
     return 1.12        # explosive — fast, urgent
 
 
+# ---------------------------------------------------------------------------
+# Clip conditioning — fixes the "first word is swallowed" defect measured on
+# the Modal ch1 run: some takes open at 10-22% of body loudness for 300ms+
+# (perceptually silent), and lead/tail dead air varies per clip. Conditioning
+# trims to uniform pads and lifts a soft attack with a bounded gain.
+# ---------------------------------------------------------------------------
+PAD_LEAD_SEC = 0.12      # uniform lead-in kept before the first word
+PAD_TRAIL_SEC = 0.20     # natural breath kept after the last word
+ATTACK_WINDOW_SEC = 0.4  # window judged (and lifted) at the clip head
+ATTACK_MIN_RATIO = 0.5   # head RMS below this fraction of body RMS = soft
+ATTACK_MAX_GAIN = 4.0    # +12 dB ceiling so noise is never blasted
+_SILENCE_AMP = 0.01      # ~-40 dBFS
+
+
+def condition_wav(x, sr: int):
+    """Condition one mono float32 waveform; returns (y, info).
+
+    info: lead_trim_sec / trail_trim_sec (dead air removed beyond the pads),
+    soft_attack (head needed lifting), attack_gain (bounded make-up gain,
+    constant over the head then ramped to 1.0 so there is no audible step).
+    Pure numpy — unit-testable without any TTS model.
+    """
+    import numpy as np
+
+    info = {"lead_trim_sec": 0.0, "trail_trim_sec": 0.0,
+            "soft_attack": False, "attack_gain": 1.0}
+    x = np.asarray(x, dtype=np.float32)
+    loud = np.abs(x) > _SILENCE_AMP
+    if not loud.any():
+        return x, info
+
+    first = int(np.argmax(loud))
+    last = int(len(x) - np.argmax(loud[::-1]) - 1)
+    start = max(0, first - int(PAD_LEAD_SEC * sr))
+    end = min(len(x), last + 1 + int(PAD_TRAIL_SEC * sr))
+    info["lead_trim_sec"] = round(start / sr, 3)
+    info["trail_trim_sec"] = round((len(x) - end) / sr, 3)
+    y = x[start:end].copy()
+
+    aw = int(ATTACK_WINDOW_SEC * sr)
+    if len(y) > 2 * aw:
+        def _rms(seg) -> float:
+            return float(np.sqrt((seg.astype(np.float64) ** 2).mean()))
+
+        head = _rms(y[:aw])
+        win = max(1, int(0.1 * sr))
+        vals = [_rms(y[i:i + win]) for i in range(aw, len(y) - win, win)]
+        vals = [v for v in vals if v > _SILENCE_AMP]
+        body = float(np.median(vals)) if vals else 0.0
+
+        if body > 0.0 and 0.0 < head < ATTACK_MIN_RATIO * body:
+            g = min(ATTACK_MAX_GAIN, (0.8 * body) / head)
+            if g > 1.0:
+                fade = max(1, int(0.1 * sr))
+                gain = np.full(aw, g, dtype=np.float32)
+                gain[aw - fade:] = np.linspace(g, 1.0, fade, dtype=np.float32)
+                y[:aw] *= gain
+                np.clip(y, -1.0, 1.0, out=y)
+                info["soft_attack"] = True
+                info["attack_gain"] = round(float(g), 2)
+    return y, info
+
+
+def condition_wav_file(path: str) -> dict:
+    """Condition a mono wav in place (PCM16 out); returns the info dict.
+
+    Fail-soft: conditioning is an enhancement — an unreadable/corrupt clip is
+    left untouched and the skip is recorded as ``condition_error`` in the
+    returned dict (which lands in tts_index.json), never raised.
+    """
+    import numpy as np
+    try:
+        try:
+            with wave.open(path, "rb") as w:
+                sr = w.getframerate()
+                x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+                x = x.astype(np.float32) / 32768.0
+        except Exception:
+            import soundfile as sf
+            x, sr = sf.read(path, dtype="float32")
+            if getattr(x, "ndim", 1) > 1:
+                x = x[:, 0]
+        y, info = condition_wav(x, int(sr))
+        pcm = (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(int(sr))
+            w.writeframes(pcm.tobytes())
+        return info
+    except Exception as exc:
+        print(f"[warn] conditioning skipped for {os.path.basename(path)}: {exc}")
+        return {"condition_error": str(exc)[:120]}
+
+
 def wav_duration_sec(path: str) -> float:
     """Duration in seconds of a WAV file.
 
@@ -223,8 +318,11 @@ def synthesize_manifest(
         audio_path = os.path.join(clips_dir, f"{seg_id}.wav")
 
         cached = os.path.exists(audio_path) and not overwrite
+        cond: Dict[str, Any] = {}
         if not cached:
             synth_fn(sent_text, audio_path, exaggeration)
+            # uniform lead/tail pads + soft-attack lift (first word audible)
+            cond = condition_wav_file(audio_path)
         dur = duration_fn(audio_path)
 
         index["clips"].append({
@@ -240,9 +338,11 @@ def synthesize_manifest(
             "audio_file": os.path.relpath(audio_path, out_dir),
             "duration_sec": round(dur, 4),
             "cached": cached,
+            **cond,
         })
         total += dur
-        print(f"[{'cache' if cached else 'ok'}] {seg_id} dur={dur:.2f}s mood={tag or '-'}")
+        flag = " SOFT-ATTACK-LIFTED" if cond.get("soft_attack") else ""
+        print(f"[{'cache' if cached else 'ok'}] {seg_id} dur={dur:.2f}s mood={tag or '-'}{flag}")
 
     index["total_duration_sec"] = round(total, 4)
     return index
@@ -319,11 +419,38 @@ def _make_chatterbox_turbo_synth(voice_ref: str) -> SynthFn:
 # from the instruction, so this is how we get a consistent MALE narrator).
 QWEN_VOICE_PERSONA = "A deep, resonant male narrator voice, clear and dramatic."
 
+# VoiceDesign re-DESIGNS a voice on every call (same persona → audibly different
+# narrators), so the locked production narrator is a CLONE of the user-picked
+# clip (g0021_p02 → assets/voice/narrator_ref.wav). Cloning needs the Base
+# checkpoint; VoiceDesign checkpoints refuse generate_voice_clone.
+QWEN_MODEL_VOICE_DESIGN = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+QWEN_MODEL_BASE = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+
+def ref_text_for(voice_ref: str) -> str:
+    """Transcript of a voice-clone reference wav, from its `.txt` sidecar
+    (same path, .txt extension). Empty string when absent — the clone then
+    falls back to x-vector-only mode instead of ICL."""
+    base, _ = os.path.splitext(voice_ref or "")
+    sidecar = base + ".txt"
+    try:
+        with open(sidecar, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
 
 def _make_qwen_synth(voice_ref: str, language: str = "English",
                      persona: str = QWEN_VOICE_PERSONA) -> SynthFn:
-    """Qwen3-TTS (Apache-2.0) — instruction-driven emotion + voice design. We
-    prepend a male-narrator *persona* and append the per-clip emotion instruction.
+    """Qwen3-TTS (Apache-2.0). Two modes:
+
+    - voice_ref given  → CLONE the locked narrator (Base checkpoint,
+      `generate_voice_clone` with the ref wav + its .txt transcript). Clone
+      mode takes no emotion instruction — delivery follows the reference
+      prosody + the text's own punctuation.
+    - no voice_ref     → VoiceDesign persona + per-clip emotion instruction
+      (voice varies run-to-run; audition/exploration only).
+
     Apple-Silicon adapted: device=mps, fp16 (~1.7x faster than fp32 on MPS), and
     `sdpa` attention (flash-attention_2 is CUDA-only; sdpa has an MPS path and
     beats `eager`). On CUDA it uses flash-attention + bf16 and is far faster.
@@ -339,11 +466,30 @@ def _make_qwen_synth(voice_ref: str, language: str = "English",
     else:
         device, dtype, attn = "cpu", torch.float32, "sdpa"
 
+    clone = bool(voice_ref) and os.path.exists(voice_ref)
+    model_id = QWEN_MODEL_BASE if clone else QWEN_MODEL_VOICE_DESIGN
     model = Qwen3TTSModel.from_pretrained(
-        "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-        device_map=device, dtype=dtype, attn_implementation=attn,
+        model_id, device_map=device, dtype=dtype, attn_implementation=attn,
     )
-    print(f"[qwen3-tts] loaded on {device} ({attn}, {dtype})")
+    print(f"[qwen3-tts] {model_id} on {device} ({attn}, {dtype})"
+          + (f" — cloning {voice_ref}" if clone else ""))
+
+    if clone:
+        rtext = ref_text_for(voice_ref)
+        # ICL mode (with transcript) clones prosody best; x-vector-only is the
+        # fallback when no transcript sidecar exists.
+        prompt = model.create_voice_clone_prompt(
+            ref_audio=voice_ref,
+            ref_text=(rtext or None),
+            x_vector_only_mode=not bool(rtext),
+        )
+
+        def synth(text: str, out_path: str, exaggeration: float) -> None:
+            wavs, sr = model.generate_voice_clone(
+                text=text, language=language, voice_clone_prompt=prompt)
+            sf.write(out_path, wavs[0], sr, subtype="PCM_16")
+
+        return synth
 
     def synth(text: str, out_path: str, exaggeration: float) -> None:
         instruct = f"{persona} {exaggeration_to_instruction(exaggeration)}".strip()
@@ -377,7 +523,9 @@ def main() -> int:
     ap.add_argument("--script", required=True, help="manifest.script.json")
     ap.add_argument("--out-dir", required=True, help="creates clips/ + tts_index.json")
     ap.add_argument("--backend", choices=["chatterbox", "chatterbox-turbo", "qwen", "kokoro"], default="chatterbox")
-    ap.add_argument("--voice-ref", default="", help="chatterbox: 5-10s reference wav to clone")
+    ap.add_argument("--voice-ref", default="",
+                    help="reference wav to clone: chatterbox (5-10s sample) or qwen "
+                         "(locked narrator, e.g. assets/voice/narrator_ref.wav + .txt transcript)")
     ap.add_argument("--kokoro-voice", default="af_heart")
     ap.add_argument("--text-source", choices=["tts_v3", "script", "tts_ssml"], default="tts_v3")
     ap.add_argument("--overwrite", action="store_true")

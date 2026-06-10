@@ -70,6 +70,28 @@ def _build_vision_map(vision_manifest: Dict[str, Any]) -> Dict[str, Dict[str, An
     return {it.get("scene_file"): it for it in items if it.get("scene_file")}
 
 
+def _build_cast_block(cast_path: str) -> str:
+    """Render manifest.cast.json into a prompt block the narration uses to name
+    characters consistently. Empty string when no cast file is given."""
+    if not cast_path or not os.path.exists(cast_path):
+        return ""
+    try:
+        with open(cast_path, "r", encoding="utf-8") as f:
+            cast = json.load(f)
+    except Exception:
+        return ""
+    lines = ["CHAPTER CAST — name these consistently; match each figure by appearance:"]
+    for c in (cast.get("cast") or []):
+        name = c.get("canonical_name") or c.get("id") or "?"
+        role = c.get("role") or ""
+        desc = (c.get("visual_description") or "").strip()
+        aliases = ", ".join(c.get("aliases") or [])
+        tag = f" (aka {aliases})" if aliases else ""
+        lines.append(f"  - {name} [{role}]{tag}: {desc}")
+    lines.append("")  # trailing blank so it reads cleanly before the next section
+    return "\n".join(lines) + "\n"
+
+
 def _pack_group_payload(group: Dict[str, Any], vision_items_by_file: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     scene_files = group.get("scene_files") or []
     scenes: List[Dict[str, Any]] = []
@@ -260,6 +282,8 @@ def main() -> int:
     ap.add_argument("--resume", action="store_true", help="If out exists, keep good beats and only regen errors/missing")
     ap.add_argument("--retries", type=int, default=2, help="Retries per group on parse/validation failure")
     ap.add_argument("--max-output-tokens", type=int, default=2400)
+    ap.add_argument("--cast", default="", help="Optional manifest.cast.json for consistent character naming + dialogue attribution")
+    ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
     args = ap.parse_args()
 
     groups_m = load_json(args.groups_manifest)
@@ -281,13 +305,37 @@ def main() -> int:
         "End with a strong hook line.\n"
         "Rendering hints: avoid zooming into text bubbles; focus faces/hands/key objects/wide.\n"
         "\n"
+        "WRITE ONE 'narration' line (NEVER leave it empty) — the sentence(s) a narrator SPEAKS\n"
+        "  over these panels (1-3 sentences). Write like a top manhwa-recap channel: NAME the\n"
+        "  characters, describe the ACTION, weave in their words. This is the final voiced line.\n"
+        "    - GROUND it strictly in THESE panels — describe only what is actually drawn here.\n"
+        "      Invent NOTHING: no event/motion/outcome not shown, and NO setting that isn't\n"
+        "      visible (never 'chandeliers', 'a grand hall', 'marble', 'parchment' unless on the page).\n"
+        "    - NAME characters from the CHAPTER CAST by matching appearance; never 'a figure'/\n"
+        "      'a young man' when it matches the cast. Same person = same name every scene.\n"
+        "    - DIALOGUE — quote SPARINGLY, recap-style: PARAPHRASE the bulk into narration and\n"
+        "      QUOTE only a SHORT punchy fragment (a threat, a name, a key line — a few words),\n"
+        "      attributed. Do NOT quote a whole long bubble; NEVER stack two long quotes in a row.\n"
+        "      Good: the Assassins sneer that his 'peasant blood' changes nothing -> a painless death.\n"
+        "      inner_thought -> render as the character's thought (at most one short quote).\n"
+        "      NEVER quote UI text/watermarks/counters/sound-effects — only real character speech.\n"
+        "    - ACTION beats (a fight, a knife drawn, a strike — few words, lots of motion) are the\n"
+        "      CLIMAX: describe the PHYSICAL action vividly and grounded — who draws/strikes/dodges\n"
+        "      what, and the stakes (e.g. 'Prince Cheon finally rips his hidden knife free to defend\n"
+        "      himself'). Do NOT skip them or retreat into vague atmosphere.\n"
+        "    - Present tense, active voice; cinematic but accurate. No camera words.\n"
+        "\n"
+        "{CAST_BLOCK}"
         "ALSO judge each panel for the recap video (scene_selection, one entry per scene_file):\n"
         "  role: DEFAULT to 'keep'. Only mark a panel 'redundant' when it is genuinely\n"
         "    expendable — i.e. ONE of these clearly holds:\n"
         "      (a) DUPLICATE: it shows essentially the SAME moment as another panel here (a\n"
         "          near-identical repeat, or a barely-different frame of one continuous motion); OR\n"
         "      (b) CROPPED FRAGMENT: it is a partial/cut-off version of another panel — a face or\n"
-        "          body sliced at a panel edge, a thin sliver, a stitch-seam fragment.\n"
+        "          body sliced at a panel edge, a thin sliver, a stitch-seam fragment; OR\n"
+        "      (c) TEXT/BUBBLE PANEL: it is dominated by a speech bubble or SFX text with little\n"
+        "          distinct artwork — once bubbles are cleaned it is near-blank, so it adds nothing\n"
+        "          visually (its words still get woven into the narration). Mark it 'redundant'.\n"
         "    For a duplicate pair, KEEP the one with the most COMPLETE framing and mark the other\n"
         "    'redundant'. Do NOT drop a panel merely for being a minor reaction, a transition, or\n"
         "    'for brevity' — distinct panels (even small ones) stay 'keep'. Most panels are 'keep';\n"
@@ -298,6 +346,13 @@ def main() -> int:
         "  intensity: the emotional energy — 'calm', 'tense', 'intense', or 'explosive'.\n"
         "Return ONLY valid JSON matching the provided schema. No extra text.\n"
     )
+    system = system.replace("{CAST_BLOCK}", _build_cast_block(args.cast))
+    corrections: Dict[int, str] = {}
+    if args.corrections and os.path.exists(args.corrections):
+        try:
+            corrections = {int(k): str(v) for k, v in json.load(open(args.corrections)).items()}
+        except Exception:
+            corrections = {}
 
     beat_schema = {
         "type": "OBJECT",
@@ -306,6 +361,7 @@ def main() -> int:
             "scene_files": {"type": "ARRAY", "items": {"type": "STRING"}},
             "beat_title": {"type": "STRING"},
             "what_happens": {"type": "STRING"},
+            "narration": {"type": "STRING"},
             "emotional_turn": {"type": "STRING"},
             "conflict_or_stakes": {"type": "STRING"},
             "reveals_or_info": {"type": "STRING"},
@@ -340,6 +396,7 @@ def main() -> int:
             "scene_files",
             "beat_title",
             "what_happens",
+            "narration",
             "emotional_turn",
             "conflict_or_stakes",
             "reveals_or_info",
@@ -384,9 +441,21 @@ def main() -> int:
         if not gid:
             continue
 
-        if gid in existing_by_id:
+        # Resume keeps good beats — UNLESS this group has a correction queued
+        # (closed-loop grounding gate), in which case we force a regen.
+        if gid in existing_by_id and gid not in corrections:
             beats_out.append(existing_by_id[gid])
             continue
+
+        sys_g = system
+        if gid in corrections:
+            sys_g = system + (
+                "\n\nCORRECTION FOR THIS GROUP — your previous narration asserted something NOT "
+                "visible in these panels:\n  " + corrections[gid] + "\n"
+                "Rewrite the 'narration' to REMOVE that invented content. Stay strictly to what is "
+                "visible here plus the panel's actual dialogue; keep the cast names.\n"
+            )
+            regenerated += 1
 
         payload = _pack_group_payload(g, vision_by_file)
         img_paths = _select_images_for_group(payload, vision_by_file, args.max_images_per_group)
@@ -394,11 +463,11 @@ def main() -> int:
         beat: Optional[Dict[str, Any]] = None
         raw_text = ""
 
-        for _ in range(args.retries + 1):
+        for _attempt in range(args.retries + 1):
             obj, raw, u = _call_model_with_backoff(
                 client=client,
                 model=args.model,
-                system_instruction=system,
+                system_instruction=sys_g,
                 user_payload=payload,
                 image_paths=img_paths,
                 response_schema=beat_schema,
@@ -414,6 +483,13 @@ def main() -> int:
             # model to echo group_id correctly — that mismatch was driving needless
             # repair retries (~70% extra calls) with no quality benefit.
             if isinstance(obj, dict) and (obj.get("what_happens") or obj.get("beat_title")):
+                # Guard: a valid beat with an EMPTY narration (seen on action beats) must
+                # not be silently accepted — retry the full generation for a real line,
+                # and only on the last attempt fall back to what_happens so it's never blank.
+                if not (obj.get("narration") or "").strip():
+                    if _attempt < args.retries:
+                        continue
+                    obj["narration"] = obj.get("what_happens") or obj.get("beat_title") or ""
                 obj["group_id"] = gid
                 obj["scene_files"] = payload["scene_files"]
                 beat = obj

@@ -639,6 +639,186 @@ def _insert_breaks_ssml(paragraph: str, break_s: float = 0.6, max_breaks: int = 
     return ssml
 
 # =============================================================================
+# TTS caps normalization (gemini_verbatim) — quoted dialogue arrives as verbatim
+# OCR shout-caps ("KILL HIM!"); TTS engines need sentence case (caps risk
+# letter-spelling/shouting artifacts), and the shout should map to mood
+# INTENSITY, not literal caps. Only ALL-CAPS words are touched; everything else
+# stays byte-identical.
+# =============================================================================
+_CAPS_KEEP = {"AI", "OK", "TV", "MC", "HP", "MP", "XP", "UI", "OP"}
+_I_FORMS = {
+    "i'm": "I'm", "i'll": "I'll", "i've": "I've", "i'd": "I'd",
+    "i’m": "I’m", "i’ll": "I’ll",
+    "i’ve": "I’ve", "i’d": "I’d",
+}
+_CAPS_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’\-]*")
+_OPEN_QUOTE_PRECEDERS = set(" \t\n,:;—–-(")
+
+
+def _should_capitalize_at(s: str, pos: int) -> bool:
+    """A normalized (lowercased) word at *pos* starts a sentence if it follows
+    start-of-string, a sentence ender, or an OPENING quote — but not a closing
+    quote (dialogue attribution: '"Kill him!" the assassins lunge.')."""
+    i = pos - 1
+    while i >= 0 and s[i].isspace():
+        i -= 1
+    if i < 0:
+        return True
+    c = s[i]
+    if c in "\"“":
+        q = s[i - 1] if i >= 1 else None
+        return q is None or q in _OPEN_QUOTE_PRECEDERS
+    return c in ".!?"
+
+
+def normalize_caps_for_tts(
+    text: str, proper_case: Optional[Dict[str, str]] = None
+) -> Tuple[str, bool]:
+    """Sentence-case ALL-CAPS (shout) words for TTS.
+
+    Returns (normalized_text, had_shout_caps). Words with >=2 letters that are
+    entirely uppercase are lowercased — except known acronyms (_CAPS_KEEP) —
+    then re-capitalized at sentence starts/opening quotes; *proper_case* maps
+    lowercase word -> cast casing ("cheon" -> "Cheon") so names survive; the
+    standalone pronoun I and its contractions keep their capital.
+    Text without shout-caps is returned unchanged.
+    """
+    s = str(text or "")
+    proper = proper_case or {}
+    out: List[str] = []
+    spans: List[int] = []  # output offsets of each replaced word
+    last = 0
+    out_len = 0
+    for m in _CAPS_WORD_RE.finditer(s):
+        w = m.group(0)
+        alpha = re.sub(r"[^A-Za-z]", "", w)
+        if len(alpha) < 2 or not alpha.isupper() or w in _CAPS_KEEP:
+            continue
+        gap = s[last : m.start()]
+        out.append(gap)
+        out_len += len(gap)
+        lower = w.lower()
+        rep = _I_FORMS.get(lower) or proper.get(lower) or lower
+        spans.append(out_len)
+        out.append(rep)
+        out_len += len(rep)
+        last = m.end()
+    if not spans:
+        return s, False
+    out.append(s[last:])
+    res = list("".join(out))
+    joined = "".join(res)
+    for pos in spans:
+        if _should_capitalize_at(joined, pos):
+            res[pos] = res[pos].upper()
+    return "".join(res), True
+
+
+_INTENSITY_RANK = {"calm": 0, "tense": 1, "intense": 2, "explosive": 3}
+# Only neutral default tags get escalated; deliberate moods (sad, whisper,
+# angry, …) are kept — a death scene is legitimately sad AND intense.
+_ESCALATABLE_TAGS = {"calm", "serious"}
+
+
+def _intensity_rank_for_beat(beat: Dict[str, Any]) -> int:
+    """Max scene_selection intensity of a beat (Gemini's per-panel energy
+    judgment), as a rank 0..3. Missing/unknown intensities rank 0."""
+    rank = 0
+    for e in beat.get("scene_selection") or []:
+        if isinstance(e, dict):
+            rank = max(rank, _INTENSITY_RANK.get(str(e.get("intensity") or "").strip().lower(), 0))
+    return rank
+
+
+def _escalate_tag_for_intensity(tag: str, rank: int) -> str:
+    """Bump a neutral mood tag when the panels (or shout-caps dialogue) say the
+    moment is hotter than the keyword-inferred mood — caps map to intensity."""
+    t = (tag or "serious").strip().lower()
+    if t not in _ESCALATABLE_TAGS:
+        return t
+    if rank >= 3:
+        return "excited"
+    if rank == 2:
+        return "tense"
+    return t
+
+
+def _build_verbatim_section(
+    *,
+    section_index: int,
+    chunk: List[Dict[str, Any]],
+    payload: Dict[str, Any],
+    word_target: int,
+    genre_mode: str,
+    proper_case: Optional[Dict[str, str]] = None,
+    wpm: int = 135,
+) -> Dict[str, Any]:
+    """Materialize one script section directly from beats[].narration — the
+    image-grounded Gemini line (A/B Variant B) — with NO LLM call.
+
+    The narration is voiced VERBATIM (it was reviewed as-is in the narration
+    report); the only transforms are whitespace collapse + shout-caps
+    normalization. One paragraph per beat by construction, so no beat can be
+    silently dropped.
+    """
+    paras: List[str] = []
+    shout_flags: List[bool] = []
+    for b in chunk:
+        b = b if isinstance(b, dict) else {}
+        if b.get("error"):
+            # never voice the parse-failure placeholder text
+            base = "The scene continues."
+        else:
+            base = (
+                str(b.get("narration") or "").strip()
+                or str(b.get("what_happens") or "").strip()
+                or str(b.get("beat_title") or "").strip()
+                or "The scene continues."
+            )
+        base = re.sub(r"\s+", " ", base).strip()
+        text, had_shouts = normalize_caps_for_tts(base, proper_case)
+        paras.append(text)
+        shout_flags.append(had_shouts)
+
+    # Mood tag per beat from its mood_words/stakes, escalated by panel
+    # intensity and shout-caps; text is the script paragraph verbatim.
+    tagged = _ensure_tts_tags_from_beats(chunk, paras)
+    tts: List[str] = []
+    for i, tp in enumerate(tagged):
+        tag, _rest = _split_leading_bracket_tag(str(tp))
+        rank = _intensity_rank_for_beat(chunk[i] if isinstance(chunk[i], dict) else {})
+        if shout_flags[i]:
+            rank = max(rank, 2)
+        tag = _escalate_tag_for_intensity(tag or "serious", rank)
+        tts.append(f"[{tag}] {paras[i]}".strip())
+
+    shots = _normalize_shots(_build_default_shots_from_payload(payload, paras, wpm=wpm))
+
+    titles = [str(b.get("beat_title") or "").strip() for b in chunk if isinstance(b, dict)]
+    summary = " · ".join(t for t in titles if t)[:300]
+
+    cliffhanger = "Something shifts…"
+    for b in reversed(chunk):
+        hook = str((b or {}).get("hook") or "").strip()
+        if hook:
+            cliffhanger = hook
+            break
+
+    return {
+        "section_index": section_index,
+        "word_target": word_target,
+        "section_genre_mode": genre_mode,
+        "section_summary": summary,
+        "script_paragraphs": paras,
+        "tts_paragraphs_v3": tts,
+        "pronunciation_lexemes": [],
+        "shots": shots,
+        "cliffhanger_line": cliffhanger,
+        "sfx_cues": [],
+    }
+
+
+# =============================================================================
 # OpenAI response helpers (structured outputs + fallback)
 # =============================================================================
 def _resp_to_text(resp: Any) -> str:
@@ -725,6 +905,13 @@ def _chat_supports_response_format(client: OpenAI) -> bool:
     except Exception:
         return False
 
+def _is_reasoning_model(model: str) -> bool:
+    """gpt-5 / o-series chat calls renamed max_tokens->max_completion_tokens and
+    only accept the default temperature (1). Detect them to build valid kwargs."""
+    m = (model or "").lower()
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
 def _call_chat_json(
     client: OpenAI,
     model: str,
@@ -749,12 +936,17 @@ def _call_chat_json(
             ),
         },
     ]
-    kwargs: Dict[str, Any] = dict(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_output_tokens,
-    )
+    kwargs: Dict[str, Any] = dict(model=model, messages=messages)
+    if _is_reasoning_model(model):
+        # gpt-5 / o-series: renamed token cap; only the default temperature is allowed.
+        # reasoning tokens count against the cap, so deep reasoning can starve the JSON
+        # output. This is prose polishing, not a reasoning task -> minimal effort keeps
+        # the budget for output (and avoids over-creative drift).
+        kwargs["max_completion_tokens"] = max_output_tokens
+        kwargs["reasoning_effort"] = "minimal"
+    else:
+        kwargs["temperature"] = temperature
+        kwargs["max_tokens"] = max_output_tokens
     if _chat_supports_response_format(client):
         kwargs["response_format"] = {"type": "json_object"}
     resp = client.chat.completions.create(**kwargs)
@@ -1251,6 +1443,39 @@ IMPORTANT:
 Return ONLY valid JSON matching the schema. No extra text.
 """
 
+# --- Variant C (openai_polish): swap the "dramatize/movie-trailer" mission for a
+# strict grounded-polish mission. Each beat carries 'grounded_draft' — a cinematic
+# narration line already written FROM THE ARTWORK by the multimodal pass. OpenAI is
+# blind to the image, so its only safe job is to polish that draft, never to invent.
+_LEGACY_CORE_MISSION = (
+    "=== CORE MISSION ===\n"
+    "Turn beats + OCR + scene data into a recap that feels like a movie trailer, not a book report."
+)
+POLISH_CORE_MISSION = """=== CORE MISSION (GROUNDED POLISH — READ CAREFULLY) ===
+Each beat carries a 'grounded_draft': a cinematic narration line ALREADY written from the
+actual panel artwork. You are blind to the image, so the draft is your ground truth.
+Your ONLY job is to POLISH each draft into the final spoken line:
+  - tighten to the word budget, smooth rhythm and cross-beat transitions, fix clunky phrasing
+    (e.g. "is present", "reacts with", "a figure"), apply the TTS/mood formatting below.
+HARD GROUNDING RULE (overrides any instinct to dramatize):
+  - Introduce NO new action, event, motion, sequence, reversal, or entity that is not in the
+    grounded_draft. Do NOT add dynamism the draft doesn't state. If the draft says someone is
+    STANDING behind enemies, they are standing — never "vanish and reappear". When in doubt,
+    stay closer to the draft. A faithful, slightly plainer line always beats an invented one.
+  - If the draft is already good, keep it almost verbatim (just add the mood tag + fix flow).
+
+Examples (grounded_draft -> GOOD polished vs BAD invented):
+  draft: "The protagonist stands behind the hooded figures, arms crossed and crackling with blue
+          power, as one shouts and they turn, drawing swords."
+  GOOD:  "One of them screams 'He's behind us!' — they whirl, swords out, to face the protagonist
+          standing calm, arms crossed, crackling with blue power."
+  BAD:   "He radiates blue light before vanishing and reappearing behind them."   <- invents a teleport
+  draft: "Three cloaked figures stand in a fading beam of white light; the protagonist's foot
+          ignites with blue energy."
+  GOOD:  "Three cloaked figures appear in a sudden beam of white light. The protagonist's foot
+          ignites with blue energy, primed to strike."
+"""
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -1270,6 +1495,22 @@ def main() -> int:
     ap.add_argument("--words-per-beat", type=int, default=110)
 
     ap.add_argument("--force-genre", default="", help="Force section_genre_mode (e.g. hunter)")
+    ap.add_argument(
+        "--narration-source",
+        choices=["legacy", "openai_polish", "gemini_verbatim"],
+        default="legacy",
+        help="legacy = expand beats from scratch (default, unchanged). "
+        "openai_polish = treat each beat's image-grounded 'narration' as a draft and "
+        "polish-without-inventing (Variant C of the narration-grounding A/B). "
+        "gemini_verbatim = voice each beat's image-grounded 'narration' VERBATIM "
+        "(the A/B winner, Variant B) — deterministic, zero LLM calls, no OpenAI key.",
+    )
+    ap.add_argument(
+        "--cast",
+        default="",
+        help="Optional manifest.cast.json; gemini_verbatim uses its names to keep "
+        "proper nouns cased when normalizing shout-caps OCR dialogue.",
+    )
     ap.add_argument("--max-output-tokens", type=int, default=2600)
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--resume", action="store_true")
@@ -1300,6 +1541,20 @@ def main() -> int:
             vision_by_file = _build_vision_map(load_json(args.vision))
         except Exception:
             vision_by_file = {}
+
+    # Cast names -> word-level casing map for shout-caps normalization
+    # ("CHEON" stays "Cheon" when an OCR quote is sentence-cased).
+    proper_case: Dict[str, str] = {}
+    if args.cast and os.path.exists(args.cast):
+        try:
+            for c in load_json(args.cast).get("cast") or []:
+                names = [str(c.get("canonical_name") or "")] + [str(a) for a in (c.get("aliases") or [])]
+                for nm in names:
+                    for w in nm.split():
+                        if w[:1].isupper() and len(re.sub(r"[^A-Za-z]", "", w)) >= 2:
+                            proper_case[w.lower()] = w
+        except Exception:
+            proper_case = {}
 
     sections = _chunk_beats(beats, args.beats_per_section)
 
@@ -1409,7 +1664,9 @@ def main() -> int:
         "additionalProperties": False,
     }
 
-    client = OpenAI()
+    # gemini_verbatim is fully deterministic — never construct (or require) an
+    # OpenAI client for it; OpenAI() raises without OPENAI_API_KEY.
+    client = OpenAI() if args.narration_source != "gemini_verbatim" else None
     usage = UsageAccumulator(args.model)
     out_sections: List[Dict[str, Any]] = []
     regenerated = 0
@@ -1435,6 +1692,8 @@ def main() -> int:
             .replace("{TOL_PCT}", str(int(args.word_tolerance * 100)))
             .replace("{GENRE_FLAVOR}", "=== GENRE FLAVOR (ONLY WHEN SUPPORTED BY VISUALS/OCR) ===\n" + genre_flavor)
         )
+        if args.narration_source == "openai_polish":
+            system = system.replace(_LEGACY_CORE_MISSION, POLISH_CORE_MISSION)
 
         # R3 — cross-section continuity: build a STORY SO FAR synopsis from the
         # sections already generated in THIS run (resumed sections included via
@@ -1489,6 +1748,9 @@ def main() -> int:
                     "bubble_modes": _bubble_modes_for_beat(b),
                 }
             )
+            if args.narration_source == "openai_polish":
+                # Variant C: hand OpenAI the image-grounded line to polish, not invent from.
+                payload_beats[-1]["grounded_draft"] = (b.get("narration") or "").strip()
 
         payload = {
             "section_index": section_index,
@@ -1504,7 +1766,19 @@ def main() -> int:
         obj: Optional[Dict[str, Any]] = None
         raw: str = ""
 
-        for _attempt in range(args.retries + 1):
+        if args.narration_source == "gemini_verbatim":
+            # The image-grounded narration IS the script — materialize it.
+            obj = _build_verbatim_section(
+                section_index=section_index,
+                chunk=chunk,
+                payload=payload,
+                word_target=word_target,
+                genre_mode=genre_mode,
+                proper_case=proper_case,
+                wpm=int(args.wpm),
+            )
+
+        for _attempt in range(0 if obj is not None else args.retries + 1):
             o1, r1 = _call_openai_json(
                 client=client,
                 model=args.model,
@@ -1684,6 +1958,7 @@ def main() -> int:
         "source_beats_manifest": os.path.abspath(args.beats),
         "source_vision_manifest": os.path.abspath(args.vision) if args.vision else "",
         "model": args.model,
+        "narration_source": args.narration_source,
         "minutes_range": {"min": args.min_minutes, "max": args.max_minutes},
         "duration_mode": args.duration_mode,
         "words_per_beat": int(args.words_per_beat),

@@ -33,11 +33,12 @@ $V -m studio status [series_id]                                # chapter status 
 |-------|-------|-------|
 | `visioned` (OCR) | `keys/gcp-vision.json` | repo key; auto-set |
 | `beated` (Gemini beats) | same `keys/gcp-vision.json` SA key | **no gcloud needed** — pipeline uses the SA's OWN project (`gen-lang-client-…`), not `GOOGLE_CLOUD_PROJECT` |
-| `scripted` (recap script) | `OPENAI_API_KEY` | in creds.env |
+| `scripted` (recap script) | **none by default** | default `[models].narration_source = "gemini_verbatim"` voices the image-grounded beats narration verbatim — deterministic, $0, no key. `OPENAI_API_KEY` (in creds.env) only for `legacy`/`openai_polish` |
 | `voiced` (TTS) | depends on `[tts].backend` | **`chatterbox`/`kokoro` = local, FREE, no key** (default chatterbox). `elevenlabs` needs `ELEVENLABS_API_KEY`+`ELEVENLABS_VOICE_ID` |
 
 ### Models & cost (configurable in `studio.toml`)
-- `[models].beats_model` (Gemini, default `gemini-2.5-flash`; `gemini-2.5-flash-lite` ~5× cheaper) and `[models].script_model` (OpenAI, default **`gpt-5-nano`** — note `gpt-4.1-mini` API-retires **2026-10-14**).
+- `[models].beats_model` (Gemini, default `gemini-2.5-flash`; `gemini-2.5-flash-lite` ~5× cheaper) and `[models].script_model` (OpenAI, default **`gpt-5-nano`** — note `gpt-4.1-mini` API-retires **2026-10-14**; only used when narration_source ≠ gemini_verbatim).
+- `[models].narration_source` (default **`gemini_verbatim`**): the scripted stage voices `beats[].narration` (the image-grounded Gemini line, A/B winner) VERBATIM — no LLM call, with shout-caps→sentence-case normalization (cast names preserved via `manifest.cast.json`) and caps/panel-intensity→mood-tag escalation. The beated stage auto-builds the chapter cast (`cast_builder.py`, idempotent) and passes `--cast`.
 - `[tts].backend` = `chatterbox` | `chatterbox-turbo` | `qwen` | `kokoro` | `elevenlabs`. Adapter `tools/local_tts_from_manifest.py` emits the same `clips/{segment_id}.wav` + `tts_index.json` contract for all. **Each local backend needs its OWN venv** (conflicting deps) — set `[tts].python` to the right one per backend:
   - **chatterbox** (MIT, expressive emotion dial) + **chatterbox-turbo** (fast, flat) → `.tts_venv` (torch 2.6). `python3.12 -m venv .tts_venv && .tts_venv/bin/pip install chatterbox-tts`.
   - **qwen** (Apache-2.0, instruction-driven emotion, 1.7B-VoiceDesign) → `.qwen_venv` (transformers 4.57). `python3.12 -m venv .qwen_venv && .qwen_venv/bin/pip install qwen-tts soundfile`. `brew install sox` silences a soft warning.

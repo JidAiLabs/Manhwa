@@ -113,6 +113,7 @@ def _ep_paths(ep_dir: Path) -> dict:
         "scenes_manifest": ep_dir / "manifest.scenes.json",
         "vision": ep_dir / "manifest.vision.json",
         "groups": ep_dir / "manifest.groups.json",
+        "cast": ep_dir / "manifest.cast.json",
         "beats": ep_dir / "manifest.beats.json",
         "script": ep_dir / "manifest.script.json",
         "tts_dir": ep_dir / "tts",
@@ -187,12 +188,23 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
     p = _ep_paths(ep_dir)
+    if not p["cast"].exists():
+        # One Gemini call → chapter cast registry (manifest.cast.json) so the
+        # narration names the same character consistently. Skipped when the
+        # file exists, so a beated retry never re-pays for it.
+        _run_tool("cast_builder.py",
+                  ["--groups-manifest", str(p["groups"]),
+                   "--vision-manifest", str(p["vision"]),
+                   "--out", str(p["cast"]),
+                   "--project", project, "--location", location,
+                   "--model", cfg.beats_model])
     _run_tool("gemini_narrative_pass.py",
               ["--groups-manifest", str(p["groups"]),
                "--vision-manifest", str(p["vision"]),
                "--out", str(p["beats"]),
                "--project", project, "--location", location,
                "--model", cfg.beats_model,
+               "--cast", str(p["cast"]),
                # Send enough panels per group that the scene_selection
                # (keep/redundant) judgment can see every candidate — otherwise an
                # unseen panel defaults to 'keep' and same-moment dups survive.
@@ -201,11 +213,18 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
 
 
 def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
-    _check_openai()
     p = _ep_paths(ep_dir)
-    _run_tool("script_expander.py",
-              ["--beats", str(p["beats"]), "--vision", str(p["vision"]), "--out", str(p["script"]),
-               "--model", cfg.script_model])
+    src = cfg.narration_source or "gemini_verbatim"
+    args = ["--beats", str(p["beats"]), "--vision", str(p["vision"]), "--out", str(p["script"]),
+            "--model", cfg.script_model, "--narration-source", src]
+    if src == "gemini_verbatim":
+        # Deterministic materialization of the image-grounded Gemini narration
+        # (A/B winner) — zero LLM calls, so no OpenAI credential gate. --cast
+        # keeps proper nouns cased when shout-caps OCR dialogue is normalized.
+        args += ["--cast", str(p["cast"])]
+    else:
+        _check_openai()
+    _run_tool("script_expander.py", args)
 
 
 def _stage_voiced(ep_dir: Path, cfg: Config) -> None:

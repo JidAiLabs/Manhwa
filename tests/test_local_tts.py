@@ -132,3 +132,81 @@ def test_synthesize_manifest_caches_existing(tmp_path):
         duration_fn=lambda p: 1.0, overwrite=False,
     )
     assert synth_calls == []                      # both cached, no synthesis
+
+
+# ---- voice-clone ref sidecar (locked narrator g0021_p02) -------------------
+
+def test_ref_text_for_reads_sidecar_transcript(tmp_path):
+    ref = tmp_path / "narrator_ref.wav"
+    ref.write_bytes(b"RIFF")
+    (tmp_path / "narrator_ref.txt").write_text("Three cloaked figures appear.\n")
+    assert lt.ref_text_for(str(ref)) == "Three cloaked figures appear."
+
+
+def test_ref_text_for_empty_when_no_sidecar(tmp_path):
+    ref = tmp_path / "narrator_ref.wav"
+    ref.write_bytes(b"RIFF")
+    assert lt.ref_text_for(str(ref)) == ""
+
+
+# ---- clip conditioning: lead/tail trim + soft-attack lift ------------------
+# Root cause (measured on the Modal ch1 run): some clips open at 10-22% of
+# body loudness for 300ms+ — the first word is perceptually swallowed.
+
+import numpy as np
+
+
+def _tone(sr=24000, sec=2.0, amp=0.5):
+    t = np.arange(int(sr * sec)) / sr
+    return (amp * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+
+def test_condition_trims_long_lead_to_pad():
+    sr = 24000
+    x = np.concatenate([np.zeros(sr, np.float32), _tone(sr, 2.0)])  # 1.0s dead lead
+    y, info = lt.condition_wav(x, sr)
+    lead = np.argmax(np.abs(y) > 0.01) / sr
+    assert lead <= lt.PAD_LEAD_SEC + 0.02
+    assert info["lead_trim_sec"] >= 0.8
+
+
+def test_condition_keeps_tight_clip_intact():
+    sr = 24000
+    x = _tone(sr, 2.0)
+    y, info = lt.condition_wav(x, sr)
+    assert len(y) <= len(x) + int(lt.PAD_LEAD_SEC * sr)
+    assert info["soft_attack"] is False
+    assert info["attack_gain"] == 1.0
+    # body untouched
+    assert np.allclose(y[-sr:], x[len(x) - sr:], atol=1e-6) or len(y) <= len(x)
+
+
+def test_condition_lifts_soft_attack_bounded():
+    sr = 24000
+    head = _tone(sr, 0.4, amp=0.05)          # 10% of body level
+    body = _tone(sr, 2.0, amp=0.5)
+    x = np.concatenate([head, body])
+    y, info = lt.condition_wav(x, sr)
+    assert info["soft_attack"] is True
+    assert 1.0 < info["attack_gain"] <= lt.ATTACK_MAX_GAIN
+    aw = int(lt.ATTACK_WINDOW_SEC * sr)
+    head_rms = float(np.sqrt((y[:aw] ** 2).mean()))
+    body_rms = float(np.sqrt((y[-sr:] ** 2).mean()))
+    assert head_rms / body_rms >= 0.35       # audibly present now (was 0.10)
+    assert np.abs(y).max() <= 1.0            # never clips
+
+
+def test_condition_silence_only_is_noop():
+    sr = 24000
+    x = np.zeros(sr, np.float32)
+    y, info = lt.condition_wav(x, sr)
+    assert len(y) == len(x)
+    assert info["soft_attack"] is False
+
+
+def test_condition_wav_file_fails_soft_on_unreadable_file(tmp_path):
+    p = tmp_path / "bad.wav"
+    p.write_bytes(b"FAKEWAV")
+    info = lt.condition_wav_file(str(p))
+    assert "condition_error" in info          # visible in the index, not silent
+    assert p.read_bytes() == b"FAKEWAV"       # original file left untouched

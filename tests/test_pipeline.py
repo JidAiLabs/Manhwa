@@ -333,7 +333,9 @@ class TestResumability:
 class TestMissingCredential:
     """Cred-gated stages raise MissingCredential and set *_failed status."""
 
-    def test_missing_openai_sets_scripted_failed(self, tmp_path, monkeypatch):
+    def test_missing_openai_sets_scripted_failed_for_legacy_source(self, tmp_path, monkeypatch):
+        """legacy narration_source still requires OPENAI_API_KEY (gemini_verbatim,
+        the default, does not — covered by TestScriptedNarrationSource)."""
         import studio.pipeline as pipeline_mod
 
         ep_dir = tmp_path / "ep"
@@ -351,7 +353,13 @@ class TestMissingCredential:
         repo.set_chapter_status(con, cid, "grouped", ep_dir=str(ep_dir), updated_at=FIXED_NOW)
         chapter = repo.get_chapter(con, cid)
 
-        cfg = _make_cfg(tmp_path)
+        cfg = Config(
+            sites={},
+            yolo_weights=tmp_path / "fake.pt",
+            detect_backend="yolo",
+            gallerydl_sleep=0.0,
+            narration_source="legacy",
+        )
 
         # Ensure no env credentials present
         monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
@@ -361,7 +369,7 @@ class TestMissingCredential:
         # Stub _run_tool (shouldn't be called for cred-gated stages)
         tool_calls: list[str] = []
 
-        def stub(script_name, args_list):
+        def stub(script_name, args_list, **kwargs):
             tool_calls.append(script_name)
 
         monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
@@ -377,6 +385,153 @@ class TestMissingCredential:
         # beated stage runs (vertex cred ok via env), scripted fails (no OPENAI)
         assert ch.status == "scripted_failed"
         assert "OPENAI_API_KEY" in (ch.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Cast-aware beated stage + gemini_verbatim scripted stage (narration v2)
+# ---------------------------------------------------------------------------
+
+def _capturing_stub(ep_dir: Path):
+    """_run_tool stub that records (script, args) and touches each stage's
+    real output marker so run_chapter keeps advancing."""
+    SCRIPT_TO_MARKER = {
+        "cast_builder.py":            "manifest.cast.json",
+        "gemini_narrative_pass.py":   "manifest.beats.json",
+        "script_expander.py":         "manifest.script.json",
+        "elevenlabs_tts_from_manifest.py": "tts/tts_index.json",
+        "local_tts_from_manifest.py": "tts/tts_index.json",
+        "timeline_planner.py":        "render.plan.json",
+    }
+    calls: list[tuple[str, list[str]]] = []
+
+    def stub(script_name, args_list, **kwargs):
+        calls.append((script_name, list(args_list)))
+        marker = SCRIPT_TO_MARKER.get(script_name)
+        if marker:
+            mp = ep_dir / marker
+            mp.parent.mkdir(parents=True, exist_ok=True)
+            mp.touch()
+
+    stub.calls = calls  # type: ignore[attr-defined]
+    return stub
+
+
+def _fake_repo_root_with_key(tmp_path: Path) -> Path:
+    """Repo root whose keys/gcp-vision.json lets _stage_beated auth hermetically."""
+    root = tmp_path / "fakeroot"
+    (root / "keys").mkdir(parents=True)
+    (root / "keys" / "gcp-vision.json").write_text('{"project_id": "test-proj"}')
+    return root
+
+
+def _chapter_at(con, ep_dir: Path, status: str, markers: list[str]):
+    for m in markers:
+        mp = ep_dir / m
+        mp.parent.mkdir(parents=True, exist_ok=True)
+        mp.touch()
+    sid = repo.upsert_series(con, "test", f"https://x.test/{status}", f"t-{status}", "T", added_at=FIXED_NOW)
+    cid = repo.upsert_chapter(con, sid, 1.0, "Ch 1", "https://x.test/c1", updated_at=FIXED_NOW)
+    repo.set_chapter_status(con, cid, status, ep_dir=str(ep_dir), updated_at=FIXED_NOW)
+    return repo.get_chapter(con, cid)
+
+
+_GROUPED_MARKERS = ["manifest.stitch.json", "manifest.panels.json",
+                    "manifest.scenes.json", "manifest.vision.json",
+                    "manifest.groups.json"]
+
+
+class TestBeatedCastWiring:
+    """_stage_beated builds the chapter cast (once) and threads --cast through."""
+
+    def _run(self, tmp_path, monkeypatch, *, pre_cast: bool):
+        import studio.pipeline as pipeline_mod
+
+        ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+        if pre_cast:
+            (ep_dir / "manifest.cast.json").touch()
+
+        monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", _fake_repo_root_with_key(tmp_path))
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "to-be-overwritten")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        stub = _capturing_stub(ep_dir)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
+
+        con = connect(tmp_path / "test.db")
+        chapter = _chapter_at(con, ep_dir, "grouped", _GROUPED_MARKERS)
+        pipeline_mod.run_chapter(con, chapter, _make_cfg(tmp_path), now_fn=_now)
+        return stub, repo.get_chapter(con, chapter.id), ep_dir
+
+    def test_cast_built_before_narrative_pass_and_flag_passed(self, tmp_path, monkeypatch):
+        stub, ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=False)
+        names = [n for n, _ in stub.calls]
+        assert "cast_builder.py" in names
+        assert names.index("cast_builder.py") < names.index("gemini_narrative_pass.py")
+
+        cast_args = dict(zip(*[iter(next(a for n, a in stub.calls if n == "cast_builder.py"))] * 2))
+        assert cast_args["--out"].endswith("manifest.cast.json")
+
+        gem_args = next(a for n, a in stub.calls if n == "gemini_narrative_pass.py")
+        assert "--cast" in gem_args
+        assert gem_args[gem_args.index("--cast") + 1] == str(ep_dir / "manifest.cast.json")
+        # beats keep the canonical unified filename (no .narr.json fork)
+        assert gem_args[gem_args.index("--out") + 1] == str(ep_dir / "manifest.beats.json")
+
+    def test_existing_cast_skips_cast_builder(self, tmp_path, monkeypatch):
+        stub, ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=True)
+        names = [n for n, _ in stub.calls]
+        assert "cast_builder.py" not in names
+        gem_args = next(a for n, a in stub.calls if n == "gemini_narrative_pass.py")
+        assert "--cast" in gem_args
+
+
+class TestScriptedNarrationSource:
+    """Default narration_source=gemini_verbatim voices the Gemini line without
+    OpenAI; the stage passes --narration-source and --cast to script_expander."""
+
+    def test_verbatim_scripted_runs_without_openai_key(self, tmp_path, monkeypatch):
+        import studio.pipeline as pipeline_mod
+
+        ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        stub = _capturing_stub(ep_dir)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
+
+        con = connect(tmp_path / "test.db")
+        chapter = _chapter_at(con, ep_dir, "beated",
+                              _GROUPED_MARKERS + ["manifest.beats.json", "manifest.cast.json"])
+        cfg = _make_cfg(tmp_path)
+        assert cfg.narration_source == "gemini_verbatim"   # the production default
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+
+        se_args = next(a for n, a in stub.calls if n == "script_expander.py")
+        assert se_args[se_args.index("--narration-source") + 1] == "gemini_verbatim"
+        assert se_args[se_args.index("--cast") + 1] == str(ep_dir / "manifest.cast.json")
+
+        ch = repo.get_chapter(con, chapter.id)
+        # scripted succeeded with NO OpenAI key; pipeline stops at the TTS cred wall
+        assert ch.status == "voiced_failed"
+        assert "ELEVENLABS_API_KEY" in (ch.error or "")
+
+
+class TestConfigNarrationSource:
+    def test_load_parses_models_narration_source(self, tmp_path):
+        from studio.config import load
+        toml = tmp_path / "studio.toml"
+        toml.write_text('[models]\nnarration_source = "legacy"\n')
+        assert load(toml).narration_source == "legacy"
+
+    def test_default_is_gemini_verbatim(self, tmp_path):
+        from studio.config import load
+        toml = tmp_path / "studio.toml"
+        toml.write_text("")
+        assert load(toml).narration_source == "gemini_verbatim"
 
 
 class TestMissingEpDir:
