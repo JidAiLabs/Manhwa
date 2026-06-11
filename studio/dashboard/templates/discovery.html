@@ -1,16 +1,23 @@
 {% extends "base.html" %}{% set active='discovery' %}{% block body %}
 <h2>Discovery <small>— AniList trending (internal titles only) · competitor YouTube scan: v1.1</small></h2>
-<div class="row"><a href="/discovery?refresh=1"><button class="ghost">refresh from AniList</button></a></div>
-<table><tr><th>title</th><th>trend</th><th>chapters</th><th>status</th><th></th></tr>
+<div class="row"><a href="/discovery?refresh=1"><button class="ghost">refresh from AniList</button></a>
+<span class="kv">AniList only reports a chapter count for COMPLETED series — “ongoing” is normal.</span></div>
+<table><tr><th>title</th><th>trend</th><th>chapters</th><th>status</th><th>add to production</th></tr>
 {% for t in titles %}
 <tr><td><b>{{ t.title }}</b></td><td class="kv">▲ {{ t.trend_score|int }}</td>
-<td class="kv">{{ t.chapters or '?' }}</td>
+<td class="kv">{{ t.chapters or 'ongoing' }}</td>
 <td>{% if t.status=='tracked' %}<span class="b new">TRACKED</span>
 {% elif t.status=='in_production' %}<span class="b run">IN PRODUCTION</span>
 {% else %}<span class="b q">{{ t.status|upper }}</span>{% endif %}</td>
-<td>{% if t.status=='candidate' %}<form class="inline" method="post" action="/discovery/{{ t.anilist_id }}/track">
-<button class="ghost">track</button></form>{% endif %}</td></tr>
+<td>
+{% if t.status in ('candidate','tracked') %}
+<form class="inline" method="post" action="/discovery/{{ t.anilist_id }}/add">
+<select name="source"><option>asura</option><option>webtoon</option><option>elftoon</option></select>
+<input name="url" placeholder="paste the series URL on that source" style="background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:6px;width:280px">
+<button class="ghost">add series</button></form>
+{% else %}<span class="kv">on the Series board</span>{% endif %}
+</td></tr>
 {% else %}<tr><td colspan="5" class="kv">no cache yet — hit “refresh from AniList”</td></tr>{% endfor %}
 </table>
-<div class="note">“track” marks the candidate; adding the actual source URL stays in the CLI (adapters need it): studio add-series &lt;source&gt; &lt;url&gt;.</div>
+<div class="note">“add series” runs source discovery in the worker; the series then appears on the Series board where “prepare ALL chapters” takes over. AniList knows trends; only the source site knows the chapter list.</div>
 {% endblock %}

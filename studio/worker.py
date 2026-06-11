@@ -74,6 +74,109 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO)) -> int:
 # handlers
 # --------------------------------------------------------------------------
 
+def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
+                     log: TextIO, *, branding: str = "both") -> None:
+    """render_prep + prep_qa for a chapter; records the qa_scan stage."""
+    ep = Path(ch["ep_dir"] or "")
+    title = _series_title(con, ch["series_id"])
+    with record_stage(con, chapter_id=ch["id"], stage="prepped",
+                      series_id=ch["series_id"]):
+        rc = _stream([PY, str(REPO / "tools" / "render_prep.py"),
+                      "--plan", str(ep / "render.plan.json"),
+                      "--scenes-manifest", str(ep / "manifest.scenes.json"),
+                      "--episode-dir", str(ep), "--series-title", title,
+                      "--branding", branding], log)
+        if rc != 0:
+            raise RuntimeError(f"render_prep exited {rc}")
+    t0 = time.time()
+    rc = _stream([PY, str(REPO / "tools" / "prep_qa.py"),
+                  "--episode-dir", str(ep), "--series-title", title], log)
+    con.execute(
+        "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
+        "meta_json) VALUES (?,?,?,?, json_object('series_id', ?))",
+        (ch["id"], "qa_scan", round(time.time() - t0, 2),
+         1 if rc == 0 else 0, ch["series_id"]))
+    con.commit()
+    if rc != 0:
+        raise RuntimeError("prep-QA found ERROR-severity flags — open the "
+                           f"report in {ep}")
+
+
+def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
+    """Everything up to a reviewable QA REPORT, with NO voiceover:
+    chain → scripted, then an ESTIMATED-timing plan (planner runs without
+    audio), prep, and the QA scan. The chapter lands as 'QA ready' for the
+    story approval."""
+    ch = _chapter(con, job["chapter_id"])
+    with record_stage(con, chapter_id=ch["id"], stage="chain:scripted",
+                      series_id=ch["series_id"]):
+        rc = _stream([PY, "-m", "studio", "fetch", str(ch["series_id"]),
+                      "--chapters", str(int(ch["number"]))], log)
+        if rc != 0:
+            raise RuntimeError(f"studio fetch exited {rc}")
+        rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
+                      "--chapters", str(int(ch["number"])),
+                      "--until", "scripted"], log)
+        if rc != 0:
+            raise RuntimeError(f"studio run exited {rc}")
+    ch = _chapter(con, job["chapter_id"])  # ep_dir may have been set
+    ep = Path(ch["ep_dir"] or "")
+    with record_stage(con, chapter_id=ch["id"], stage="planned",
+                      series_id=ch["series_id"]):
+        rc = _stream([PY, str(REPO / "tools" / "timeline_planner.py"),
+                      "--groups", str(ep / "manifest.groups.json"),
+                      "--beats", str(ep / "manifest.beats.json"),
+                      "--script", str(ep / "manifest.script.json"),
+                      "--vision", str(ep / "manifest.vision.json"),
+                      "--out", str(ep / "render.plan.json"),
+                      "--mode", "narrated", "--min-cut-sec", "3.5"], log)
+        if rc != 0:
+            raise RuntimeError(f"timeline_planner exited {rc}")
+    _run_prep_and_qa(con, ch, log)
+
+
+def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
+                 log: TextIO) -> None:
+    """After STORY approval: voice the narration, rebuild the plan with real
+    audio timing, re-prep, machine-re-scan QA (must stay green), and build a
+    listenable preview. The user then approves the VOICEOVER, which triggers
+    the render."""
+    allowed, why = gates.voice_allowed(con, job["chapter_id"])
+    if not allowed:
+        raise RuntimeError(f"voiceover blocked: {why}")
+    ch = _chapter(con, job["chapter_id"])
+    with record_stage(con, chapter_id=ch["id"], stage="voiced",
+                      series_id=ch["series_id"]):
+        rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
+                      "--chapters", str(int(ch["number"])),
+                      "--until", "planned"], log)
+        if rc != 0:
+            raise RuntimeError(f"studio run exited {rc}")
+    ch = _chapter(con, job["chapter_id"])
+    _run_prep_and_qa(con, ch, log)
+    ep = Path(ch["ep_dir"] or "")
+    clips = sorted((ep / "tts" / "clips").glob("*.wav"))
+    if clips:
+        lst = ep / "render" / "voice_preview.txt"
+        lst.parent.mkdir(parents=True, exist_ok=True)
+        lst.write_text("".join(f"file '{c}'\n" for c in clips))
+        _stream(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat",
+                 "-safe", "0", "-i", str(lst), "-codec:a", "libmp3lame",
+                 "-b:a", "96k", str(ep / "render" / "voice_preview.mp3")],
+                log)
+
+
+def _h_add_series(con: sqlite3.Connection, job: Dict[str, Any],
+                  log: TextIO) -> None:
+    src = job["payload"].get("source", "")
+    url = job["payload"].get("url", "")
+    if not src or not url:
+        raise RuntimeError("add_series needs source + url")
+    rc = _stream([PY, "-m", "studio", "add-series", src, url], log)
+    if rc != 0:
+        raise RuntimeError(f"add-series exited {rc}")
+
+
 def _h_chain(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
     """Run pipeline stages for one chapter up to payload['target'] via the
     studio CLI (it owns config, creds, resumability). Targets at or past
@@ -187,6 +290,9 @@ def _h_refresh(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
 
 
 HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]] = {
+    "prepare": _h_prepare,
+    "voiceover": _h_voiceover,
+    "add_series": _h_add_series,
     "chain": _h_chain,
     "qa_scan": _h_qa_scan,
     "render_segment": _h_render_segment,

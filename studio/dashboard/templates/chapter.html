@@ -7,34 +7,37 @@
 <div class="t">{% if s.done and s.dur %}{{ fmt_eta(s.dur) }}{% elif s.done %}✓{% else %}~{{ fmt_eta(s.eta) }}{% endif %}</div>
 </div>{% endfor %}
 </div>
+
+<h2>Step 1 — story approval <small>(read the QA report + the narration below)</small></h2>
 <div class="row">
-{% if voice_allowed %}<span class="b ok">narration approved</span>{% else %}<span class="b warn">voiceover 🔒 {{ voice_block_reason }}</span>{% endif %}
-{% if qa_ok %}<span class="b ok">QA PASSED</span>{% else %}<span class="b warn">QA pending/failed</span>{% endif %}
-{% if render_allowed %}<span class="b ok">render unlocked</span>{% else %}<span class="b warn">render 🔒 {{ render_block_reason }}</span>{% endif %}
-</div>
-<div class="row">
+{% if qa_ok %}<span class="b ok">QA REPORT GREEN</span>{% else %}<span class="b warn">no QA report yet — “prepare → QA” first</span>{% endif %}
+{% if voice_allowed %}<span class="b ok">story approved → voiceover queued automatically</span>{% else %}
 <form class="inline" method="post" action="/approve">
 <input type="hidden" name="gate" value="voice"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
-<button class="green">approve narration</button></form>
+<button class="green">approve story → start voiceover</button></form>{% endif %}
+{% if ep_rel %}<a href="/media/{{ ep_rel }}/prep_qa.html" style="color:var(--acc)">open QA report</a>{% endif %}
 <form class="inline" method="post" action="/jobs">
-<input type="hidden" name="type" value="chain"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
-<input type="hidden" name="target" value="planned"><button>voice + plan</button></form>
-<form class="inline" method="post" action="/jobs">
-<input type="hidden" name="type" value="qa_scan"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
-<button class="ghost">QA scan</button></form>
+<input type="hidden" name="type" value="prepare"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
+<button class="ghost">prepare → QA</button></form>
+</div>
+
+<h2>Step 2 — voiceover approval <small>(listen, then approve — the video renders automatically)</small></h2>
+<div class="row">
+{% if ep_rel and has_voice_preview %}
+<audio controls preload="none" src="/media/{{ ep_rel }}/render/voice_preview.mp3" style="vertical-align:middle"></audio>
+{% else %}<span class="kv">voiceover preview appears here after step 1</span>{% endif %}
+{% if render_allowed %}<span class="b ok">voiceover approved → render queued automatically</span>{% else %}
 <form class="inline" method="post" action="/approve">
 <input type="hidden" name="gate" value="render"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
-<button class="green">approve render</button></form>
-<form class="inline" method="post" action="/jobs">
-<input type="hidden" name="type" value="render_segment"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
-<button>render segment</button></form>
-{% if ep_rel %}<a href="/media/{{ ep_rel }}/prep_qa.html" style="color:var(--acc)">prep-QA report</a>{% endif %}
+<button class="green">approve voiceover → render video</button></form>
+<span class="kv">{{ render_block_reason if not qa_ok else '' }}</span>{% endif %}
 </div>
-<h2>Groups <small>— read the narration here, then “approve narration” to unlock voiceover</small></h2>
+
+<h2>Groups <small>— narration beside panels</small></h2>
 {% for g in gallery %}
 <div class="seg"><span class="kv"><b>{{ g.segment_id }}</b>{% if g.duration %} · {{ '%.1f'|format(g.duration) }}s{% endif %}</span>
 {% if g.narration %}<div class="nar">{{ g.narration }}</div>{% endif %}
 {% if ep_rel %}{% for f in g.files %}<img src="/media/{{ ep_rel }}/{{ g.src_dir }}/{{ f }}" loading="lazy">{% endfor %}{% endif %}
 </div>
-{% else %}<div class="kv">no narration yet — “prepare narration” first</div>{% endfor %}
+{% else %}<div class="kv">no narration yet — “prepare → QA” first</div>{% endfor %}
 {% endblock %}

@@ -222,11 +222,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             (REPO / "ongoing").resolve()) if ch["ep_dir"] else None)
         allowed, why = gates.render_allowed(c, cid)
         v_allowed, v_why = gates.voice_allowed(c, cid)
+        has_preview = bool(ch["ep_dir"] and (
+            Path(ch["ep_dir"]) / "render" / "voice_preview.mp3").exists())
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
                     qa_ok=gates.latest_qa_ok(c, cid),
                     render_allowed=allowed, render_block_reason=why,
                     voice_allowed=v_allowed, voice_block_reason=v_why,
+                    has_voice_preview=has_preview,
                     cost=_chapter_costs(ch["ep_dir"]),
                     gallery=_gallery(ch["ep_dir"]), ep_rel=ep_rel)
 
@@ -308,12 +311,25 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                  series_id: Optional[int] = Form(None),
                  bundle_id: Optional[int] = Form(None),
                  target: str = Form(""), branding: str = Form("both")):
+        c = con()
+        if type == "prepare_series":
+            # expand: one 'prepare' job per chapter that has no QA yet,
+            # ordered by chapter number (the serial worker grinds the list)
+            rows = c.execute(
+                "SELECT id FROM chapter WHERE series_id=? AND id NOT IN "
+                "(SELECT DISTINCT chapter_id FROM stage_run WHERE "
+                "stage='qa_scan' AND ok=1) ORDER BY number", (series_id,)
+            ).fetchall()
+            for (cid,) in rows:
+                jobs.enqueue(c, "prepare", chapter_id=cid,
+                             series_id=series_id)
+            return RedirectResponse("/", status_code=303)
         payload: Dict[str, Any] = {}
         if target:
             payload["target"] = target
         if type == "render_segment":
             payload["branding"] = branding
-        jobs.enqueue(con(), type, chapter_id=chapter_id, series_id=series_id,
+        jobs.enqueue(c, type, chapter_id=chapter_id, series_id=series_id,
                      bundle_id=bundle_id, payload=payload)
         return RedirectResponse("/", status_code=303)
 
@@ -332,8 +348,18 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                      chapter_id: Optional[int] = Form(None),
                      bundle_id: Optional[int] = Form(None),
                      note: str = Form("")):
-        gates.approve(con(), gate, chapter_id=chapter_id,
+        c = con()
+        gates.approve(c, gate, chapter_id=chapter_id,
                       bundle_id=bundle_id, note=note)
+        # auto-advance: an approval IS the trigger for the next step
+        # (the worker still re-checks every gate before doing anything)
+        if gate == "voice" and chapter_id:
+            jobs.enqueue(c, "voiceover", chapter_id=chapter_id)
+        elif gate == "render" and chapter_id:
+            jobs.enqueue(c, "render_segment", chapter_id=chapter_id,
+                         payload={"branding": "both"})
+        elif gate == "concat" and bundle_id:
+            jobs.enqueue(c, "concat", bundle_id=bundle_id)
         back = f"/chapter/{chapter_id}" if chapter_id else "/videos"
         return RedirectResponse(back, status_code=303)
 
@@ -349,5 +375,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def post_track(anilist_id: int):
         discovery.mark(con(), anilist_id, "tracked")
         return RedirectResponse("/discovery", status_code=303)
+
+    @app.post("/discovery/{anilist_id}/add")
+    def post_discovery_add(anilist_id: int, source: str = Form(...),
+                           url: str = Form(...)):
+        c = con()
+        discovery.mark(c, anilist_id, "in_production")
+        jobs.enqueue(c, "add_series", payload={"source": source, "url": url})
+        return RedirectResponse("/", status_code=303)
 
     return app

@@ -78,3 +78,42 @@ def test_log_partial_tails_file(client, tmp_path):
     jid = con.execute("SELECT id FROM job WHERE log_path IS NOT NULL"
                       ).fetchone()[0]
     assert "beta" in c.get(f"/partials/log/{jid}").text
+
+
+def test_approvals_auto_advance_the_pipeline(client):
+    """The user's flow: approving IS the trigger. Story approval enqueues
+    voiceover; voiceover approval enqueues the render."""
+    c, con = client
+    c.post("/approve", data={"gate": "voice", "chapter_id": 1},
+           follow_redirects=False)
+    c.post("/approve", data={"gate": "render", "chapter_id": 1},
+           follow_redirects=False)
+    types = [r[0] for r in con.execute("SELECT type FROM job ORDER BY id")]
+    assert types == ["voiceover", "render_segment"]
+
+
+def test_prepare_series_expands_to_per_chapter_jobs(client):
+    c, con = client
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, updated_at) VALUES (2,1,2,'Ch 2','u2','discovered','t')")
+    # chapter 1 already has a green QA scan -> only chapter 2 needs prep
+    con.execute("INSERT INTO stage_run (chapter_id, stage, ok, duration_sec)"
+                " VALUES (1,'qa_scan',1,10)")
+    con.commit()
+    c.post("/jobs", data={"type": "prepare_series", "series_id": 1},
+           follow_redirects=False)
+    rows = con.execute("SELECT type, chapter_id FROM job").fetchall()
+    assert rows == [("prepare", 2)]
+
+
+def test_discovery_add_creates_job_and_marks(client):
+    c, con = client
+    con.execute("INSERT INTO discovery_title (anilist_id, title) "
+                "VALUES (42,'Some Manhwa')")
+    con.commit()
+    c.post("/discovery/42/add", data={"source": "asura", "url": "https://x"},
+           follow_redirects=False)
+    assert con.execute("SELECT status FROM discovery_title WHERE anilist_id=42"
+                       ).fetchone()[0] == "in_production"
+    t, payload = con.execute("SELECT type, payload_json FROM job").fetchone()
+    assert t == "add_series" and "asura" in payload
