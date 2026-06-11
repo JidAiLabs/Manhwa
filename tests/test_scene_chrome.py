@@ -130,6 +130,15 @@ def test_domain_plug_chrome_even_when_wordy():
     assert _is(ocr) is True
 
 
+def test_endcard_with_spaced_domain_and_plug_phrases_is_chrome():
+    # the real IE p000096 end card: OCR splits the domain ("ELFTOON .com")
+    # and is wordy — but "thanks for reading" / "join our discord" are
+    # unmistakable publication plugs
+    ocr = ("f on THANKS FOR READING THIS CHAPTER ON OUR WEBSITE ELFTOON .com "
+           "DON'T HESITATE TO JOIN OUR DISCORD SERVER AND 1FT US")
+    assert _is(ocr) is True
+
+
 def test_single_watermark_domain_on_story_panel_not_chrome():
     # the IE p000039 case: aggregators stamp ELFTOON.COM ON story art — one
     # domain hit amid real dialogue is a watermark, not a chrome page

@@ -4,7 +4,9 @@ thumbnail_gen.py — YouTube thumbnail via Nano Banana Pro (Gemini 3 Pro Image).
 
 Generates ONE upload thumbnail per chapter in the proven recap-channel style:
 dramatic weak-vs-powerful split composition, the REAL characters lifted from
-reference panels of the chapter, bold outlined series title + chapter badge.
+reference panels of the chapter, BEFORE/AFTER labels (or a custom hook via
+--hook-text). NO series titles or chapter numbers — recap channels never
+render the licensed name; titles/hooks come from tools/youtube_meta.py.
 
 Reference panels are auto-picked from manifest.beats.json scene_selection
 (earliest kept calm/tense panel = "weak", last kept intense panel = climax),
@@ -62,14 +64,23 @@ def pick_reference_scenes(beats_obj: Dict[str, Any], *,
     return out[:max_refs]
 
 
-def build_prompt(series_title: str, chapter_label: str,
-                 hook_text: str = "") -> str:
-    title = series_title.upper()
-    badge = chapter_label.upper()
-    hook = (f'\n- Add a short impact word overlay in white bold caps with '
-            f'black outline near the top-right: "{hook_text.upper()}".'
-            if hook_text else "")
-    return f"""Create a YouTube thumbnail (16:9) for a manhwa recap video of "{series_title}".
+def build_prompt(hook_text: str = "") -> str:
+    """Thumbnail prompt. NO series titles, NO chapter numbers anywhere —
+    recap channels never show the licensed name (the user's directive).
+    Default text is the BEFORE/AFTER pair; *hook_text* swaps in one short
+    impact phrase with a pointer arrow instead."""
+    if hook_text:
+        text_block = (f'- ONE short impact phrase in huge yellow capital '
+                      f'letters with a thick black outline, placed in the '
+                      f'upper area: "{hook_text.upper()}", with a small '
+                      f'hand-drawn yellow arrow pointing from it toward the '
+                      f'powered-up character.')
+    else:
+        text_block = ('- "BEFORE" in huge yellow capital letters with a '
+                      'thick black outline at the bottom of the LEFT half.\n'
+                      '- "AFTER" in the same style at the bottom of the '
+                      'RIGHT half.')
+    return f"""Create a YouTube thumbnail (16:9) for a webtoon recap video.
 
 COMPOSITION — dramatic transformation split:
 - LEFT HALF: the protagonist at his weakest — beaten, desperate, close-up on the face, cold blue/teal grading, dim moody lighting.
@@ -80,11 +91,10 @@ CHARACTER FIDELITY:
 - Use the EXACT character designs from the reference images: same face, hairstyle, hair color, clothing. Repaint them in clean, high-detail webtoon/anime style — do NOT copy panel crops literally.
 - IGNORE and DO NOT reproduce any speech bubbles, Korean/Chinese/English on-page text, watermarks, or UI from the references.
 
-TEXT (render precisely, nothing else):
-- Big bold title at the bottom spanning the width: "{title}" in yellow capital letters with a thick black outline and slight 3D depth.
-- Small rounded badge in the top-left corner: "{badge}" in white on a red gradient.{hook}
+TEXT (render EXACTLY this and nothing else — no series name, no chapter or episode numbers, no logos):
+{text_block}
 
-STYLE: maximum-contrast YouTube thumbnail look — saturated colors, crisp edges, cinematic glow, particles/sparks, vignette. No other text, no logos, no watermark, no borders."""
+STYLE: maximum-contrast YouTube thumbnail look — saturated colors, crisp edges, cinematic glow, particles/sparks, vignette. No watermark, no borders."""
 
 
 def _load_ref_images(episode_dir: str, refs: List[str], *,
@@ -133,13 +143,12 @@ def _make_client(location: str):
     return attempts
 
 
-def generate(episode_dir: str, series_title: str, *, chapter_label: str,
-             hook_text: str, refs: List[str], models: List[str],
-             location: str, aspect: str, size: str,
+def generate(episode_dir: str, *, hook_text: str, refs: List[str],
+             models: List[str], location: str, aspect: str, size: str,
              out_path: str) -> Optional[str]:
     from google.genai import types
 
-    prompt = build_prompt(series_title, chapter_label, hook_text)
+    prompt = build_prompt(hook_text)
     images = _load_ref_images(episode_dir, refs)
     if not images:
         print("[err] no usable reference images")
@@ -192,11 +201,9 @@ def write_youtube_jpg(master_png: str, yt_path: str,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--episode-dir", required=True)
-    ap.add_argument("--series-title", required=True)
-    ap.add_argument("--chapter-label", default="",
-                    help="badge text; default derived from the folder name")
     ap.add_argument("--hook-text", default="",
-                    help="optional short impact word overlay")
+                    help="short impact phrase overlay (default: BEFORE/AFTER "
+                         "labels); series titles are NEVER rendered")
     ap.add_argument("--refs", default="",
                     help="comma-separated scene files (default: auto from "
                          "beats scene_selection)")
@@ -210,7 +217,6 @@ def main() -> int:
     args = ap.parse_args()
 
     ep = args.episode_dir.rstrip("/")
-    label = args.chapter_label or os.path.basename(ep).replace("_", " ")
 
     refs = [r.strip() for r in args.refs.split(",") if r.strip()]
     if not refs:
@@ -223,8 +229,7 @@ def main() -> int:
         return 1
 
     out_png = args.out or os.path.join(ep, "render", "thumbnail.png")
-    model = generate(ep, args.series_title, chapter_label=label,
-                     hook_text=args.hook_text, refs=refs,
+    model = generate(ep, hook_text=args.hook_text, refs=refs,
                      models=[m.strip() for m in args.models.split(",")],
                      location=args.location, aspect=args.aspect,
                      size=args.size, out_path=out_png)

@@ -36,10 +36,14 @@ def test_pick_reference_scenes_empty():
     assert tg.pick_reference_scenes({"beats": []}) == []
 
 
-def test_build_prompt_contains_title_badge_and_rules():
-    p = tg.build_prompt("Nano Machine", "Chapter 1", "")
-    assert '"NANO MACHINE"' in p and '"CHAPTER 1"' in p
+def test_build_prompt_default_before_after_no_titles():
+    p = tg.build_prompt("")
+    assert '"BEFORE"' in p and '"AFTER"' in p
+    assert "no series name" in p               # licensed names never rendered
     assert "speech bubbles" in p and "16:9" in p
-    assert "impact word" not in p              # no hook unless asked
-    p2 = tg.build_prompt("Nano Machine", "Chapter 1", "Absolute Power")
-    assert '"ABSOLUTE POWER"' in p2
+
+
+def test_build_prompt_hook_replaces_before_after():
+    p = tg.build_prompt("Secret AI System")
+    assert '"SECRET AI SYSTEM"' in p and "arrow" in p
+    assert '"BEFORE"' not in p

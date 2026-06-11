@@ -48,7 +48,8 @@ for _p in (_TOOLS_DIR, _REPO_ROOT):
         sys.path.insert(0, _p)
 
 import render_prep as rp                      # art/bubble metrics, detector
-from scene_chrome import is_chrome_scene      # chrome rules (single source)
+from render_prep import multi_scale_contained
+from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
@@ -237,13 +238,37 @@ def image_flags(
 # vision / narration / plan checks
 # ---------------------------------------------------------------------------
 
+def cross_dup_flags(seq: Sequence[Dict[str, Any]],
+                    get_img) -> List[Dict[str, Any]]:
+    """Consecutive shown cuts that are near-identical (or zoom pairs) — the
+    on-screen duplicate class the user keeps catching by eye."""
+    flags: List[Dict[str, Any]] = []
+    prev: Optional[Dict[str, Any]] = None
+    for cur in seq:
+        f = str(cur.get("file"))
+        if prev and str(prev.get("file")) != f:
+            ia, ib = get_img(str(prev.get("file"))), get_img(f)
+            if ia is not None and ib is not None and (
+                    multi_scale_contained(ib, ia)
+                    or multi_scale_contained(ia, ib)):
+                flags.append(_flag(
+                    "cross_dup", ERROR,
+                    f"near-duplicate of the previous cut "
+                    f"({prev.get('file')} in {prev.get('segment_id')})",
+                    scene=f, segment_id=str(cur.get("segment_id") or "")))
+        prev = cur
+    return flags
+
+
 def vision_flags(parent: str, vitem: Dict[str, Any], *,
                  dims_entry: Optional[Dict[str, Any]],
                  series_title: Optional[str],
+                 midtone_frac: Optional[float] = None,
                  segment_id: str = "") -> List[Dict[str, Any]]:
     d = dims_entry or {}
     flags: List[Dict[str, Any]] = []
-    if is_chrome_scene(vitem, series_title=series_title):
+    if is_chrome_scene(vitem, series_title=series_title,
+                       midtone_frac=midtone_frac):
         flags.append(_flag("chrome_leak", ERROR,
                            f"chrome per scene_chrome rules is SHOWN — "
                            f"ocr={str(vitem.get('ocr_clean'))[:80]!r}",
@@ -441,20 +466,31 @@ def render_html(report: Dict[str, Any],
 
     gallery_html = ""
     if gallery:
-        cells = []
+        blocks = []
+        n_files = 0
         for g in gallery:
-            fn = str(g.get("file") or "")
             seg = str(g.get("segment_id") or "")
-            cells.append(
-                '<figure style="margin:4px;display:inline-block;'
-                'text-align:center;background:#fff;border:1px solid #ddd;'
-                'padding:4px">'
-                f"{_img_tag(thumbs, fn, max_w=170)}"
-                f'<figcaption style="font-size:11px;color:#444">'
-                f"{_html.escape(seg)}<br>{_html.escape(fn)}</figcaption>"
-                "</figure>")
-        gallery_html = (f"<h2>All shown cuts ({len(gallery)}) — timeline "
-                        f"order</h2><div>{''.join(cells)}</div>")
+            narration = str(g.get("narration") or "")
+            figs = []
+            for fn in g.get("files") or []:
+                n_files += 1
+                figs.append(
+                    '<figure style="margin:4px;display:inline-block;'
+                    'text-align:center;background:#fff;border:1px solid '
+                    '#ddd;padding:4px">'
+                    f"{_img_tag(thumbs, str(fn), max_w=170)}"
+                    f'<figcaption style="font-size:11px;color:#444">'
+                    f"{_html.escape(str(fn))}</figcaption></figure>")
+            blocks.append(
+                '<div style="background:#fff;border:1px solid #ddd;'
+                'border-radius:6px;padding:8px 12px;margin:10px 0">'
+                f'<div style="font-size:12px;color:#888"><code>'
+                f"{_html.escape(seg)}</code></div>"
+                + (f'<div style="font-size:14px;margin:4px 0 8px">'
+                   f"{_html.escape(narration)}</div>" if narration else "")
+                + "".join(figs) + "</div>")
+        gallery_html = (f"<h2>All shown cuts ({n_files}) — timeline order, "
+                        f"narration per segment</h2>{''.join(blocks)}")
 
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>prep QA — {_html.escape(report['title'])}</title>
@@ -545,6 +581,16 @@ def main() -> int:
             fname, img, boxes, doc=doc, dims_entry=d if d else None,
             sys=sys_panel, segment_id=seg_by_file[fname]))
 
+    # consecutive on-screen near-duplicates (zoom pairs included)
+    _imc: Dict[str, Any] = {}
+
+    def _clean_img(f: str):
+        if f not in _imc:
+            _imc[f] = cv2.imread(os.path.join(clean_dir, f))
+        return _imc[f]
+
+    flags.extend(cross_dup_flags(cuts, _clean_img))
+
     # vision-level checks once per shown parent scene
     seen_parents: set = set()
     for c in cuts:
@@ -552,10 +598,20 @@ def main() -> int:
         if parent in seen_parents or parent not in vitems:
             continue
         seen_parents.add(parent)
+        vit = vitems[parent]
+        mid = None
+        if needs_image_stats(str(vit.get("ocr_clean") or "")):
+            # same image-stat disambiguation the gate uses (watermark-on-art
+            # vs cover; OCR-blind number cards)
+            src = cv2.imread(os.path.join(ep, "scenes", parent))
+            if src is not None:
+                g = src.mean(axis=2)
+                mid = float(((g > 60) & (g < 200)).mean())
         flags.extend(vision_flags(
-            parent, vitems[parent],
+            parent, vit,
             dims_entry=dims.get(c["file"]),
             series_title=args.series_title or None,
+            midtone_frac=mid,
             segment_id=c["segment_id"]))
 
     # narration checks per story item; a panel's text counts as VISIBLE when
@@ -593,14 +649,23 @@ def main() -> int:
     title = f"{title} — {os.path.basename(ep).replace('_', ' ')}"
     report = build_report(title, flags, n_cuts=len(cuts))
 
-    # gallery: every shown cut in timeline order (dedup, first appearance)
-    gallery: List[Dict[str, str]] = []
+    # gallery: one block per timeline item — narration + its cut thumbs
+    gallery: List[Dict[str, Any]] = []
     seen_gallery: set = set()
-    for c in cuts:
-        if c["file"] in seen_gallery:
-            continue
-        seen_gallery.add(c["file"])
-        gallery.append({"file": c["file"], "segment_id": c["segment_id"]})
+    for item in plan.get("timeline") or []:
+        files: List[str] = []
+        for c in item.get("cuts") or []:
+            for f in (c.get("file"), c.get("file2")):
+                if f:
+                    files.append(str(f))
+                    seen_gallery.add(str(f))
+        if not files and item.get("branding"):
+            continue  # outro end-card draws itself
+        narration = ("" if item.get("branding")
+                     else str(item.get("tts_text") or ""))
+        seg = str(item.get("segment_id") or "")
+        gallery.append({"segment_id": seg, "narration": narration,
+                        "files": files})
 
     thumbs: Dict[str, bytes] = {}
     want = ({str(f.get("scene") or f.get("thumb_scene") or "") for f in flags}
@@ -609,6 +674,8 @@ def main() -> int:
         if not scene or scene in thumbs:
             continue
         img = cv2.imread(os.path.join(clean_dir, scene))
+        if img is None:  # parent-named flag for a split scene -> original
+            img = cv2.imread(os.path.join(ep, "scenes", scene))
         if img is None:
             continue
         h, w = img.shape[:2]

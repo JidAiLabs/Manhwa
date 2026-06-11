@@ -327,15 +327,44 @@ def test_render_html_segment_flag_uses_thumb_scene_fallback():
     assert html.count("data:image/jpeg;base64,") == 1
 
 
-def test_render_html_gallery_shows_all_cuts():
-    # every report carries a full gallery of the shown cuts in timeline
-    # order — an all-clean report is a review page, not an empty table
-    rep = pq.build_report("X", [], n_cuts=2)
-    gallery = [{"file": "p000001.jpg", "segment_id": "g0001_p00"},
-               {"file": "p000002.jpg", "segment_id": "g0002_p01"}]
+def test_render_html_gallery_groups_by_segment_with_narration():
+    # gallery = one block per SEGMENT: its narration line above its cut
+    # thumbs, in timeline order — the user reviews story + visuals together
+    rep = pq.build_report("X", [], n_cuts=3)
+    gallery = [
+        {"segment_id": "g0001_p00",
+         "narration": "Prince Cheon flees through the fog.",
+         "files": ["p000001.jpg", "p000002.jpg"]},
+        {"segment_id": "g0002_p01", "narration": "The assassins close in.",
+         "files": ["p000003.jpg"]},
+    ]
     html = pq.render_html(rep, thumbs={"p000001.jpg": b"\xff\xd8a",
-                                       "p000002.jpg": b"\xff\xd8b"},
+                                       "p000002.jpg": b"\xff\xd8b",
+                                       "p000003.jpg": b"\xff\xd8c"},
                           gallery=gallery)
     assert "All shown cuts" in html
-    assert html.count("data:image/jpeg;base64,") == 2
-    assert "g0002_p01" in html
+    assert html.count("data:image/jpeg;base64,") == 3
+    assert "Prince Cheon flees through the fog." in html
+    assert "The assassins close in." in html
+    assert html.index("g0001_p00") < html.index("g0002_p01")
+
+
+def test_cross_dup_flag_for_consecutive_near_identical_cuts():
+    import numpy as np
+    import cv2
+    big = np.full((600, 400, 3), 200, np.uint8)
+    rng = np.random.default_rng(7)
+    for _ in range(40):
+        x, y = int(rng.integers(10, 370)), int(rng.integers(10, 570))
+        cv2.rectangle(big, (x, y), (x + 18, y + 12),
+                      (int(rng.integers(0, 255)),) * 3, -1)
+    zoom = cv2.resize(big[380:560, 100:340], (400, 300))
+    other = np.full((600, 400, 3), 30, np.uint8)
+    seq = [{"segment_id": "g1", "file": "a.jpg"},
+           {"segment_id": "g2", "file": "b.jpg"},
+           {"segment_id": "g3", "file": "c.jpg"}]
+    imgs = {"a.jpg": big, "b.jpg": zoom, "c.jpg": other}
+    fl = pq.cross_dup_flags(seq, lambda f: imgs.get(f))
+    assert any(f["code"] == "cross_dup" and f["severity"] == "ERROR"
+               and f["scene"] == "b.jpg" for f in fl)
+    assert not any(f.get("scene") == "c.jpg" for f in fl)

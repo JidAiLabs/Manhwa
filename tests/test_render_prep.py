@@ -439,12 +439,19 @@ def test_non_text_rich_panel_still_splits():
 # ---- dead-box recrop (user's #22): large blanked caption boxes must not
 # dominate the frame — crop to the art region outside them, or flag husk -----
 
+def _tinted_art(h, w):
+    """Webtoon-like art block: midtones AND chroma (the recoverability
+    fallback rejects chroma-zero panels as spike/blob garbage)."""
+    art = (_pattern(h, w)[..., 0])
+    art3 = np.select([art > 170, art > 85], [255, 128], default=40).astype(np.uint8)
+    g = np.minimum(255, art3.astype(int) + 50).astype(np.uint8)
+    return np.dstack([art3, g, art3])
+
+
 def _feet_and_captions():
     """Art strip on top, two big blanked caption boxes below (ghost remnants)."""
     img = np.full((500, 800, 3), 250, dtype=np.uint8)
-    art = (_pattern(150, 800)[..., 0])
-    art3 = np.select([art > 170, art > 85], [255, 128], default=40).astype(np.uint8)
-    img[0:150] = np.dstack([art3, art3, art3])
+    img[0:150] = _tinted_art(150, 800)
     cv2.rectangle(img, (40, 180), (380, 480), (15, 15, 15), 4)      # box borders
     cv2.rectangle(img, (420, 160), (780, 470), (15, 15, 15), 4)
     img[300, 100:300] = 235                                          # ghost line
@@ -589,24 +596,93 @@ def test_panel_recoverable_whole_panel_fallback_for_bright_art():
     # glow span) while the WHOLE cleaned panel is real art — the writer keeps
     # the whole image in that case, so the gate must judge that same image
     # (IE p000039: dad + lightbulb glow + two big bubbles)
-    img = _pattern(500, 400)
-    img = np.select([img > 170, img > 85], [255, 128], default=40).astype(np.uint8)
+    img = _tinted_art(500, 400)
     box = (0, 0, 400, 400)                     # bubble "covers" 80% of height
     assert rp.panel_recoverable(img, [box]) is True
 
 
 def test_panel_recoverable_whole_fallback_accepts_bright_glow_art():
-    # the real IE p000039 profile: ~85% near-white/glow, ~9% midtones — above
-    # the 0.08 binary-card line it is ART, not a card; must be recoverable
+    # the real IE p000039 profile: bright glow, ~11% midtones, but COLORFUL
+    # (chroma_p90≈63) — recoverable art
     img = np.full((400, 400, 3), 250, dtype=np.uint8)
-    art = _pattern(70, 400)
-    art3 = np.select([art > 170, art > 85], [255, 128], default=40).astype(np.uint8)
-    img[330:400] = art3
+    img[330:400] = _tinted_art(70, 400)
     assert rp.panel_recoverable(img, []) is True
     # while a NEAR-BINARY panel (midtone < 0.08) stays unrecoverable
     binimg = np.full((400, 400, 3), 250, dtype=np.uint8)
     binimg[330:400, ::3] = 0                    # spiky binary burst rows
     assert rp.panel_recoverable(binimg, []) is False
+
+
+def test_panel_recoverable_rejects_monochrome_aa_spiky():
+    # the real Nano p000020: full-bleed anti-aliased spike burst (midtones
+    # from AA but chroma EXACTLY 0) + a big blanked caption box — neither
+    # the whole-panel fallback nor the dead-box band may rescue it
+    img = np.full((400, 400, 3), 250, dtype=np.uint8)
+    img[:, ::3] = 0                                # spikes everywhere
+    img[:, 1::3] = 128                             # anti-aliased gray between
+    boxes = [(0, 0, 400, 210)]                     # blanked caption, 52% cover
+    assert rp.panel_recoverable(img, boxes) is False
+
+
+def test_panel_recoverable_rim_edges_outside_boxes_dont_count():
+    # the real IE p000008: edge-dead gradient curtain + empty bubbles whose
+    # OUTLINE RIMS sit just outside the detector boxes — padding the
+    # exclusion kills the fake art score; not recoverable
+    img = np.zeros((600, 400, 3), np.uint8)
+    for y in range(600):
+        img[y, :] = 120 + int(60 * y / 600)        # smooth gradient (no edges)
+    cv2.ellipse(img, (200, 300), (120, 90), 0, 0, 360, (10, 10, 10), 3)
+    cv2.ellipse(img, (200, 300), (114, 84), 0, 0, 360, (250, 250, 250), -1)
+    boxes = [(80, 210, 320, 390)]                  # detector box INSIDE rim
+    assert rp.panel_recoverable(img, boxes) is False
+
+
+# ---- cross-segment duplicates: consecutive shown cuts must differ -----------
+
+def _stamp(img, seed):
+    rng = np.random.default_rng(seed)
+    for _ in range(40):
+        x, y = rng.integers(10, img.shape[1] - 30), rng.integers(10, img.shape[0] - 30)
+        cv2.rectangle(img, (int(x), int(y)), (int(x) + 18, int(y) + 12),
+                      (int(rng.integers(0, 255)),) * 3, -1)
+    return img
+
+
+def test_multi_scale_contained_catches_zoom_pair():
+    big = _stamp(np.full((600, 400, 3), 200, np.uint8), 7)
+    zoom = cv2.resize(big[380:560, 100:340], (400, 300))   # blow-up of a region
+    other = _stamp(np.full((600, 400, 3), 200, np.uint8), 99)
+    assert rp.multi_scale_contained(zoom, big) is True
+    assert rp.multi_scale_contained(other, big) is False
+
+
+def test_cross_segment_duplicate_dropped_from_multicut_segment():
+    big = _stamp(np.full((600, 400, 3), 200, np.uint8), 7)
+    zoom = cv2.resize(big[380:560, 100:340], (400, 300))
+    other = _stamp(np.full((600, 400, 3), 200, np.uint8), 99)
+    cbs = {"g1": [{"file": "a.jpg", "start": 0.0, "dur": 4.0}],
+           "g2": [{"file": "b.jpg", "start": 0.0, "dur": 3.0},
+                  {"file": "c.jpg", "start": 3.0, "dur": 3.0}]}
+    imgs = {"a.jpg": big, "b.jpg": zoom, "c.jpg": other}
+    order = ["g1", "g2"]
+    out, dropped = rp.drop_cross_segment_duplicate_cuts(
+        cbs, order, lambda f: imgs.get(f))
+    assert dropped == [("g2", "b.jpg")]
+    assert [c["file"] for c in out["g2"]] == ["c.jpg"]
+    assert abs(sum(c["dur"] for c in out["g2"]) - 6.0) < 0.01  # time kept
+
+
+def test_cross_segment_duplicate_sole_cut_marked_not_emptied():
+    big = _stamp(np.full((600, 400, 3), 200, np.uint8), 7)
+    near = big.copy()
+    cbs = {"g1": [{"file": "a.jpg", "start": 0.0, "dur": 4.0}],
+           "g2": [{"file": "b.jpg", "start": 0.0, "dur": 5.0}]}
+    imgs = {"a.jpg": big, "b.jpg": near}
+    out, dropped = rp.drop_cross_segment_duplicate_cuts(
+        cbs, ["g1", "g2"], lambda f: imgs.get(f))
+    # sole-cut segments are never emptied here — flagged for substitution
+    assert out["g2"] == cbs["g2"]
+    assert dropped == [("g2", "b.jpg")]
 
 
 def test_doc_like_separates_documents_from_dialogue():
@@ -634,6 +710,40 @@ def test_doc_like_mixed_panel_with_substantial_ui_text_is_document():
     assert rp.doc_like(0.25, 30, inwords + outwords, [bubble]) is True
     # but a couple of stray outside words do NOT make dialogue a document
     assert rp.doc_like(0.25, 18, inwords[:16] + outwords[:2], [bubble]) is False
+
+
+def test_substitute_avoids_files_shown_in_adjacent_segments():
+    # IE p000008 case: the numerically nearest kept scene is the ADJACENT
+    # segment's sys curtain (p000007) — substituting it would put the same
+    # panel on screen twice in a row; pick the nearest NON-adjacent instead
+    cbs = {"g1": [{"file": "p000007.jpg", "start": 0.0, "dur": 5.0}],
+           "g2": [{"file": "p000008.jpg", "start": 0.0, "dur": 5.0}],
+           "g3": [{"file": "p000009.jpg", "start": 0.0, "dur": 5.0}],
+           "g4": [{"file": "p000012.jpg", "start": 0.0, "dur": 5.0}]}
+    cov = {"p000007.jpg": 0.0, "p000008.jpg": 1.0,
+           "p000009.jpg": 0.0, "p000012.jpg": 0.0}
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cbs, cov, durations={k: 5.0 for k in cbs},
+        order=["g1", "g2", "g3", "g4"])
+    assert out["g2"][0]["file"] == "p000012.jpg"   # p7/p9 adjacent -> avoided
+    assert subs == [("g2", "p000008.jpg", "p000012.jpg")]
+
+
+def test_substitute_adjacent_garbage_segments_get_distinct_files():
+    # two garbage segments in a row must not both receive the same
+    # substitute (IE g0062/g0063 both got p000093 — identical neighbors)
+    cbs = {"g0": [{"file": "p000093.jpg", "start": 0.0, "dur": 4.0}],
+           "g1": [{"file": "p000050.jpg", "start": 0.0, "dur": 4.0}],
+           "g2": [{"file": "p000094.jpg", "start": 0.0, "dur": 4.0}],
+           "g3": [{"file": "p000095.jpg", "start": 0.0, "dur": 4.0}]}
+    cov = {"p000093.jpg": 0.0, "p000050.jpg": 0.0,
+           "p000094.jpg": 1.0, "p000095.jpg": 1.0}
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cbs, cov, durations={k: 4.0 for k in cbs},
+        order=["g0", "g1", "g2", "g3"])
+    f2, f3 = out["g2"][0]["file"], out["g3"][0]["file"]
+    assert f2 != f3                                     # never twin neighbors
+    assert {f2, f3} <= {"p000093.jpg", "p000050.jpg"}
 
 
 def test_substitute_skips_exempt_borderline_and_multicut():

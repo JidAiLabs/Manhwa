@@ -32,14 +32,19 @@ _CREDITS_RE = re.compile(
 
 # Site plugs and scanlation-team credits (aggregator stamps on covers).
 # Domains and team-credit tags are chrome no matter how wordy the page
-# (the IE cover OCRs ~58 words around ELFTOON.COM). Bare plug PHRASES are
-# chrome only on short banners: story dialogue legitimately says "read this"
-# (the ORV novel-app panel: "WHY DOESN'T ANYONE READ THIS?").
+# (the IE cover OCRs ~58 words around ELFTOON.COM). OCR often splits the
+# domain ("ELFTOON .com" on the IE end card) — tolerate spaces around the
+# dot. Bare plug PHRASES are chrome only on short banners: story dialogue
+# legitimately says "read this" (the ORV novel-app panel).
 _SITE_HARD_RE = re.compile(
-    r"\b\w[\w-]*\.(com|net|org|io|to)\b|\b(ed|tl|pr|qc|clrd|rd)\s*:",
+    r"\b\w[\w-]*\s?\.\s?(com|net|org|io|to|gg)\b|\b(ed|tl|pr|qc|clrd|rd)\s*:",
     re.I,
 )
-_SITE_PLUG_RE = re.compile(r"please\s+read|read\s+(this|free)", re.I)
+_SITE_PLUG_RE = re.compile(
+    r"please\s+read|read\s+(this|free)|thanks\s+for\s+reading|"
+    r"join\s+our\s+discord|our\s+(web\s?site|discord)|discord\s+server",
+    re.I,
+)
 _SITE_PLUG_MAX_WORDS = 12
 
 _MARKER_RE = re.compile(
@@ -96,9 +101,12 @@ def is_chrome_scene(
         return True
 
     hard_hits = sum(1 for _ in _SITE_HARD_RE.finditer(ocr))
+    plug = bool(_SITE_PLUG_RE.search(ocr))
     if hard_hits >= 2:
         return True  # domains + team-credit tags pile up on real covers
     if hard_hits == 1:
+        if plug:
+            return True  # domain + "thanks for reading"/"join our" = end card
         # ONE domain amid real dialogue is an aggregator watermark stamped ON
         # story art (IE p000039) — chrome only when the panel is otherwise
         # text-sparse AND image stats don't prove real art
@@ -106,7 +114,7 @@ def is_chrome_scene(
                 and not (midtone_frac is not None and midtone_frac >= 0.15)):
             return True
 
-    if _SITE_PLUG_RE.search(ocr) and len(_norm_words(ocr)) <= _SITE_PLUG_MAX_WORDS:
+    if plug and len(_norm_words(ocr)) <= _SITE_PLUG_MAX_WORDS:
         return True
 
     if _MARKER_RE.match(ocr):

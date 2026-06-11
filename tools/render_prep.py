@@ -108,6 +108,80 @@ def _redistribute(
     return out
 
 
+def multi_scale_contained(
+    small_img: np.ndarray,
+    big_img: np.ndarray,
+    *,
+    thresh: float = 0.86,
+    max_dim: int = 400,
+) -> bool:
+    """True when *small_img* is (a possibly ZOOMED) region of *big_img*.
+
+    Artists repeat a beat as a blow-up detail panel (the chibi-run +
+    foot-zoom pair); same-scale template matching cannot see that — try a
+    ladder of scales."""
+    def gray(im: np.ndarray) -> np.ndarray:
+        return cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) if im.ndim == 3 else im
+
+    g1, g2 = gray(small_img), gray(big_img)
+    if float(g1.std()) < 4 or float(g2.std()) < 4:
+        return False  # featureless panel: zero-variance NCC is meaningless
+    sb = min(1.0, max_dim / max(g2.shape[:2]))
+    big = cv2.resize(g2, (max(1, int(g2.shape[1] * sb)),
+                          max(1, int(g2.shape[0] * sb))))
+    for s in (1.0, 0.85, 0.72, 0.6, 0.5, 0.42, 0.35):
+        w = int(g1.shape[1] * sb * s)
+        h = int(g1.shape[0] * sb * s)
+        if w < 24 or h < 24 or h > big.shape[0] or w > big.shape[1]:
+            continue
+        t = cv2.resize(g1, (w, h))
+        res = np.nan_to_num(cv2.matchTemplate(big, t, cv2.TM_CCOEFF_NORMED))
+        if float(res.max()) >= thresh:
+            return True
+    return False
+
+
+def drop_cross_segment_duplicate_cuts(
+    cuts_by_segment: Dict[str, List[Dict[str, Any]]],
+    order: Sequence[str],
+    get_img,
+    *,
+    thresh: float = 0.86,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]]]:
+    """Consecutive SHOWN cuts must differ — across segment boundaries too.
+
+    The per-segment dedup never compares neighbors from different segments,
+    so eye-closeup/keyboard/foot-zoom pairs reached the screen back-to-back.
+    Duplicates in multi-cut segments are dropped (time redistributed);
+    sole-cut duplicates are only REPORTED — the caller forces them through
+    garbage substitution instead of emptying the segment."""
+    out = {k: list(v) for k, v in cuts_by_segment.items()}
+    dropped: List[Tuple[str, str]] = []
+    prev_file: Optional[str] = None
+    for seg in order:
+        kept: List[Dict[str, Any]] = []
+        cuts = out.get(seg) or []
+        for c in cuts:
+            f = str(c.get("file"))
+            dup = False
+            if prev_file and prev_file != f:
+                ia, ib = get_img(prev_file), get_img(f)
+                if ia is not None and ib is not None and (
+                        multi_scale_contained(ib, ia, thresh=thresh)
+                        or multi_scale_contained(ia, ib, thresh=thresh)):
+                    dup = True
+                    dropped.append((seg, f))
+            if dup and len(cuts) > 1:
+                continue                      # drop; prev_file unchanged
+            kept.append(c)
+            prev_file = f
+        if len(kept) != len(cuts) and kept:
+            removed = [str(c.get("file")) for c in cuts
+                       if c not in kept]
+            out[seg] = _redistribute(cuts, removed)
+    return out, dropped
+
+
 def visually_contained(
     small_img: np.ndarray,
     big_img: np.ndarray,
@@ -615,9 +689,18 @@ def dead_box_recrop(
         b = min(h, best[1] + 10)
         # an edge-rich band can still be a binary scream bubble (radiating
         # black/white spikes, the Nano p000020 case) — real art has midtones
+        # AND color; anti-aliased spikes fake midtones but stay chroma-zero
         band = gray[a:b]
         midtone = float(((band > 60) & (band < 200)).mean())
-        if midtone >= 0.15:
+        chroma_ok = True
+        if img.ndim == 3:
+            sub = img[a:b].astype(int)
+            chroma = float(np.maximum(
+                np.maximum(np.abs(sub[..., 0] - sub[..., 1]),
+                           np.abs(sub[..., 1] - sub[..., 2])),
+                np.abs(sub[..., 0] - sub[..., 2])).mean())
+            chroma_ok = chroma >= 5.0
+        if midtone >= 0.15 and chroma_ok:
             info["recropped"] = True
             info["band"] = (a, b)
             return img[a:b], info
@@ -750,10 +833,27 @@ def panel_recoverable(
     # every part can fail individually (bubble-dominated span, bright glow
     # span) while the WHOLE panel is real art — the writer keeps the whole
     # image when no part qualifies, so judge that same image (IE p000039).
-    # 0.08 is the established binary-card line: below it = card, not art.
+    # Guards (measured on the real misses):
+    #  - midtone >= 0.08, the established binary-card line;
+    #  - chroma evidence: monochrome panels at this point are spike bursts /
+    #    blanked-bubble blobs, never color-webtoon art (Nano p000020 has
+    #    chroma 0.0 yet midtone 0.13 from anti-aliasing);
+    #  - boxes PADDED before edge exclusion: empty-bubble outline rims sit
+    #    just outside the detector boxes and fake an art score on otherwise
+    #    edge-dead gradients (IE p000008 curtain).
     gray = img.mean(axis=2) if img.ndim == 3 else img
     midtone = float(((gray > 60) & (gray < 200)).mean())
-    if midtone >= 0.08 and art_content_score(img, boxes) >= min_art_score:
+    if img.ndim == 3:
+        b = img[..., 0].astype(int)
+        g2 = img[..., 1].astype(int)
+        r = img[..., 2].astype(int)
+        chroma = float(np.maximum(np.maximum(np.abs(b - g2), np.abs(g2 - r)),
+                                  np.abs(b - r)).mean())
+    else:
+        chroma = 0.0
+    padded = [(x1 - 8, y1 - 8, x2 + 8, y2 + 8) for (x1, y1, x2, y2) in boxes]
+    if (midtone >= 0.08 and chroma >= 5.0
+            and art_content_score(img, padded) >= min_art_score):
         return True
     # blank caption boxes can dominate coverage while a thin band of real art
     # survives outside them (#22) — recoverable iff dead_box_recrop rescues it
@@ -776,6 +876,7 @@ def substitute_garbage_sole_cuts(
     durations: Dict[str, float],
     exempt: Optional[set] = None,
     min_cov: float = 0.99,
+    order: Optional[Sequence[str]] = None,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str, str]]]:
     """Never ship hard garbage as a segment's only visual.
 
@@ -783,7 +884,9 @@ def substitute_garbage_sole_cuts(
     segments means chrome covers / unrecoverable husks still reach the screen
     (the IE elftoon cover cold-open). Such survivors (score >= *min_cov*,
     not *exempt*) are replaced by the numerically nearest KEPT story scene,
-    holding for the segment's full duration."""
+    holding for the segment's full duration. With *order* (timeline segment
+    ids), files shown in the immediately adjacent segments are avoided — the
+    substitute must not put the neighbor's panel on screen twice in a row."""
     ex = exempt or set()
     garbage = {seg: cuts[0] for seg, cuts in cuts_by_segment.items()
                if len(cuts) == 1
@@ -797,12 +900,26 @@ def substitute_garbage_sole_cuts(
                    and coverage_by_file.get(str(c.get("file")), 0.0) < min_cov})
     if not pool:
         return out, subs
-    for seg, cut in garbage.items():
+    seg_pos = {s: i for i, s in enumerate(order)} if order else {}
+    files_by_seg = {seg: {str(c.get("file")) for c in cuts}
+                    for seg, cuts in cuts_by_segment.items()}
+    # process in timeline order, refreshing the neighbor map after each
+    # assignment — two garbage neighbors must never receive the same panel
+    for seg in sorted(garbage, key=lambda s: seg_pos.get(s, 0)):
+        cut = garbage[seg]
         old = str(cut.get("file"))
         n = _scene_num(old)
-        best = min(pool, key=lambda f: (abs(_scene_num(f) - n), _scene_num(f) < n))
+        avoid: set = set()
+        if order and seg in seg_pos:
+            i = seg_pos[seg]
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(order):
+                    avoid |= files_by_seg.get(order[j], set())
+        cand = [f for f in pool if f not in avoid] or pool
+        best = min(cand, key=lambda f: (abs(_scene_num(f) - n), _scene_num(f) < n))
         dur = round(float(durations.get(seg) or cut.get("dur") or 0.0), 4)
         out[seg] = [{"file": best, "start": 0.0, "dur": dur}]
+        files_by_seg[seg] = {best}
         subs.append((seg, old, best))
     return out, subs
 
@@ -1176,15 +1293,50 @@ def main() -> int:
         cuts_by_segment[item["segment_id"]] = new_cuts
         all_dropped.extend(dropped)
 
-    # sole-cut segments whose survivor is hard garbage (chrome cover, husk)
-    # show the nearest kept story panel instead
+    # consecutive shown cuts must differ — the artist's blow-up/repeat panels
+    # land in NEIGHBORING segments and the per-segment dedup never sees them.
+    # Substitution can CREATE new adjacencies, so iterate to a fixpoint.
+    order = [str(it.get("segment_id")) for it in plan.get("timeline") or []]
     durations = {str(it.get("segment_id")): float(it.get("duration_sec") or 0.0)
                  for it in plan.get("timeline") or []}
-    cuts_by_segment, subs = substitute_garbage_sole_cuts(
-        cuts_by_segment, cov_all, durations=durations, exempt=exempt_all)
-    for seg, old, new in subs:
-        all_dropped.append(old)
-        print(f"[ok] {seg}: garbage sole cut {old} -> SUBSTITUTED {new}")
+
+    # compare what the WRITER will emit: margins dilute template matching,
+    # so trim first (the keyboard pair only matches post-trim)
+    trimmed_cache: Dict[str, Optional[np.ndarray]] = {}
+
+    def _trimmed_clean(f: str) -> Optional[np.ndarray]:
+        if f not in trimmed_cache:
+            img = _cleaned(f)[0]
+            if img is not None and not args.no_trim:
+                tx1, ty1, tx2, ty2 = content_bbox(img)
+                img = img[ty1:ty2, tx1:tx2]
+            trimmed_cache[f] = img
+        return trimmed_cache[f]
+
+    for _round in range(3):
+        cuts_by_segment, xdropped = drop_cross_segment_duplicate_cuts(
+            cuts_by_segment, order, _trimmed_clean, thresh=0.84)
+        for seg, f in xdropped:
+            sole = (len(cuts_by_segment[seg]) == 1
+                    and str(cuts_by_segment[seg][0]["file"]) == f)
+            print(f"[ok] {seg}: cross-segment duplicate {f}"
+                  + (" -> forcing substitution" if sole else " dropped"))
+            if sole:
+                cov_all[f] = 1.0      # sole survivor is a dup
+                exempt_all.discard(f)
+            else:
+                all_dropped.append(f)
+
+        # sole-cut segments whose survivor is hard garbage (chrome cover,
+        # husk, cross-segment duplicate) show the nearest kept story panel
+        cuts_by_segment, subs = substitute_garbage_sole_cuts(
+            cuts_by_segment, cov_all, durations=durations, exempt=exempt_all,
+            order=order)
+        for seg, old, new in subs:
+            all_dropped.append(old)
+            print(f"[ok] {seg}: garbage sole cut {old} -> SUBSTITUTED {new}")
+        if not xdropped and not subs:
+            break
 
     shown = sorted({c["file"] for cs in cuts_by_segment.values() for c in cs})
 
