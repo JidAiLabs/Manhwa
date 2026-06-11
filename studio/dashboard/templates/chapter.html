@@ -1,0 +1,31 @@
+{% extends "base.html" %}{% set active='series' %}{% block body %}
+<h2>{{ series_title }} — {{ ch.label }} <small>· status {{ ch.status }} · LLM cost ${{ '%.3f'|format(cost) }}</small></h2>
+<div class="stage">
+{% for s in timeline %}
+<div class="st {{ 'done' if s.done else '' }}">
+<div class="n">{{ s.stage }}{{ ' 🔒' if s.locked else '' }}</div>
+<div class="t">{% if s.done and s.dur %}{{ fmt_eta(s.dur) }}{% elif s.done %}✓{% else %}~{{ fmt_eta(s.eta) }}{% endif %}</div>
+</div>{% endfor %}
+</div>
+<div class="row">
+{% if qa_ok %}<span class="b ok">QA PASSED</span>{% else %}<span class="b warn">QA pending/failed</span>{% endif %}
+{% if render_allowed %}<span class="b ok">render unlocked</span>{% else %}<span class="b warn">{{ render_block_reason }}</span>{% endif %}
+<form class="inline" method="post" action="/approve">
+<input type="hidden" name="gate" value="render"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
+<button class="green">approve render</button></form>
+<form class="inline" method="post" action="/jobs">
+<input type="hidden" name="type" value="qa_scan"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
+<button class="ghost">QA scan</button></form>
+<form class="inline" method="post" action="/jobs">
+<input type="hidden" name="type" value="render_segment"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
+<button>render segment</button></form>
+{% if ep_rel %}<a href="/media/{{ ep_rel }}/prep_qa.html" style="color:var(--acc)">prep-QA report</a>{% endif %}
+</div>
+<h2>Groups <small>— narration beside panels</small></h2>
+{% for g in gallery %}
+<div class="seg"><span class="kv"><b>{{ g.segment_id }}</b> · {{ '%.1f'|format(g.duration) }}s</span>
+{% if g.narration %}<div class="nar">{{ g.narration }}</div>{% endif %}
+{% if ep_rel %}{% for f in g.files %}<img src="/media/{{ ep_rel }}/scenes_clean/{{ f }}" loading="lazy">{% endfor %}{% endif %}
+</div>
+{% else %}<div class="kv">no clean plan yet — run the chain first</div>{% endfor %}
+{% endblock %}

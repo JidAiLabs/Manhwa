@@ -1,0 +1,27 @@
+{% extends "base.html" %}{% set active='videos' %}{% block body %}
+<h2>Videos <small>— bundle = intro + chapter segments + outro (concat, no re-render)</small></h2>
+<table><tr><th>bundle</th><th>kind</th><th>projected runtime</th><th>segments</th><th>state</th><th></th></tr>
+{% for b in bundles %}
+<tr><td><b>{{ b.title or ('bundle #' ~ b.id) }}</b></td>
+<td class="kv">{{ b.kind }}{% if b.season_no %} S{{ b.season_no }}{% endif %}</td>
+<td class="kv">≈ {{ b.runtime }}</td>
+<td><span class="bar"><i style="width:{{ (100*b.ready//b.total) if b.total else 0 }}%"></i></span>
+<span class="kv">{{ b.ready }}/{{ b.total }}</span></td>
+<td>{% if b.state=='concatenated' %}<span class="b ok">DONE → {{ b.output_path }}</span>
+{% elif b.approved %}<span class="b ok">APPROVED</span>{% else %}<span class="b warn">AWAITS APPROVAL 🔒</span>{% endif %}</td>
+<td>
+<form class="inline" method="post" action="/approve"><input type="hidden" name="gate" value="concat">
+<input type="hidden" name="bundle_id" value="{{ b.id }}"><button class="green">approve</button></form>
+<form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="concat">
+<input type="hidden" name="bundle_id" value="{{ b.id }}"><button>concat</button></form>
+</td></tr>
+{% else %}<tr><td colspan="6" class="kv">no bundles yet</td></tr>{% endfor %}
+</table>
+<h2>New bundle</h2>
+<form method="post" action="/bundles" class="row">
+<select name="series_id">{% for s in series %}<option value="{{ s.id }}">{{ s.title }}</option>{% endfor %}</select>
+<select name="kind"><option>season</option><option>full</option></select>
+<input name="season_no" placeholder="season # (for kind=season)" style="background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:7px">
+<input name="title" placeholder="bundle title" style="background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:7px">
+<button>create</button></form>
+{% endblock %}

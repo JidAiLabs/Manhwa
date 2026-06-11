@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% set active='discovery' %}{% block body %}
+<h2>Discovery <small>— AniList trending (internal titles only) · competitor YouTube scan: v1.1</small></h2>
+<div class="row"><a href="/discovery?refresh=1"><button class="ghost">refresh from AniList</button></a></div>
+<table><tr><th>title</th><th>trend</th><th>chapters</th><th>status</th><th></th></tr>
+{% for t in titles %}
+<tr><td><b>{{ t.title }}</b></td><td class="kv">▲ {{ t.trend_score|int }}</td>
+<td class="kv">{{ t.chapters or '?' }}</td>
+<td>{% if t.status=='tracked' %}<span class="b new">TRACKED</span>
+{% elif t.status=='in_production' %}<span class="b run">IN PRODUCTION</span>
+{% else %}<span class="b q">{{ t.status|upper }}</span>{% endif %}</td>
+<td>{% if t.status=='candidate' %}<form class="inline" method="post" action="/discovery/{{ t.anilist_id }}/track">
+<button class="ghost">track</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="5" class="kv">no cache yet — hit “refresh from AniList”</td></tr>{% endfor %}
+</table>
+<div class="note">“track” marks the candidate; adding the actual source URL stays in the CLI (adapters need it): studio add-series &lt;source&gt; &lt;url&gt;.</div>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% set active='queue' %}{% block body %}
+<div class="cards">
+{% for s in series %}<div class="card"><div class="k">{{ s.title }}</div>
+<div class="v">{{ s.done }}/{{ s.total }}</div>
+<div class="s">{{ s.new }} new · est {{ s.eta }}</div></div>{% endfor %}
+</div>
+<div class="cols"><div>
+<div hx-get="/partials/queue" hx-trigger="every 2s" hx-swap="innerHTML">
+{% include "partials/queue_table.html" %}
+</div>
+<div class="note">Worker enforces: serial GPU · QA exit-0 before render · approval before render/concat.</div>
+</div><div>
+<div class="kv" style="margin-bottom:6px"><b>live log</b> (click a running job)</div>
+<div class="log" id="log">(no job selected)</div>
+</div></div>
+{% endblock %}

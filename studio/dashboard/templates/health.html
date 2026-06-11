@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% set active='health' %}{% block body %}
+<h2>Health</h2>
+<div class="cards">
+{% for k, v in checks.items() %}
+<div class="card"><div class="k">{{ k }}</div><div class="v" style="font-size:15px">{{ v }}</div></div>
+{% endfor %}
+</div>
+{% endblock %}
