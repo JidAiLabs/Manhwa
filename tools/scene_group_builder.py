@@ -297,12 +297,14 @@ def main() -> int:
 
     chrome_dropped: List[str] = []
     if not args.keep_chrome:
-        from scene_chrome import is_chrome_scene  # sibling tool module
+        from scene_chrome import is_chrome_scene, needs_image_stats
 
         def _midtone(s: Dict[str, Any]) -> Optional[float]:
-            """Midtone fraction for OCR-blind chrome (stylized number cards).
-            Only computed for empty-OCR scenes — a few image reads per chapter."""
-            if s.get("ocr_clean") or not s.get("scene_path"):
+            """Midtone fraction for OCR-blind chrome (stylized number cards)
+            and watermark-vs-cover disambiguation (single site hit). Computed
+            only for those signatures — a few image reads per chapter."""
+            if (not needs_image_stats(str(s.get("ocr_clean") or ""))
+                    or not s.get("scene_path")):
                 return None
             try:
                 from PIL import Image

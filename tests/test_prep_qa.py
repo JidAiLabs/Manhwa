@@ -1,0 +1,316 @@
+"""
+tests/test_prep_qa.py
+
+TDD for tools/prep_qa.py — the pre-render QA scanner (QA-first directive).
+Scans render.plan.clean.json + scenes_clean/ per shown cut and flags every
+known defect class BEFORE any render is started: husk leaks, dead blank-box
+leaks, ghost/visible bubble text, chrome leakage (image + narration), doc/tall
+consistency, plan integrity (missing files/dims/audio, flash cuts, cold open).
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import numpy as np
+
+_SPEC = importlib.util.spec_from_file_location(
+    "prep_qa",
+    Path(__file__).resolve().parent.parent / "tools" / "prep_qa.py",
+)
+pq = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(pq)  # type: ignore[union-attr]
+
+
+# ---- helpers ----------------------------------------------------------------
+
+def _art(h, w, tone=120):
+    """Midtone art block with texture (passes art/midtone gates)."""
+    img = np.full((h, w, 3), tone, dtype=np.uint8)
+    ys, xs = np.mgrid[0:h, 0:w]
+    img[((ys // 7) + (xs // 7)) % 2 == 0] = max(30, tone - 70)
+    return img
+
+
+def _plan(items):
+    return {"timeline": items, "scenes_subdir": "scenes_clean",
+            "total_duration_sec": sum(i.get("duration_sec", 0) for i in items),
+            "scene_dims": {}}
+
+
+def _item(seg, files, dur=8.0, **kw):
+    cuts = [{"file": f, "start": i * dur / max(1, len(files)),
+             "dur": dur / max(1, len(files))} for i, f in enumerate(files)]
+    d = {"segment_id": seg, "cuts": cuts, "duration_sec": dur,
+         "tts_text": kw.pop("tts_text", "A quiet morning passes."),
+         "tts_audio": kw.pop("tts_audio", f"/tts/{seg}.wav"),
+         "tts_audio_duration_sec": kw.pop("tts_audio_duration_sec", dur)}
+    d.update(kw)
+    return d
+
+
+# ---- parent_scene / iter_shown_cuts ------------------------------------------
+
+def test_parent_scene_maps_split_parts():
+    assert pq.parent_scene("p000031_a.jpg") == "p000031.jpg"
+    assert pq.parent_scene("p000031_b.jpg") == "p000031.jpg"
+    assert pq.parent_scene("p000031.jpg") == "p000031.jpg"
+
+
+def test_iter_shown_cuts_walks_cuts_split2_and_branding():
+    items = [
+        _item("g0001_p00", ["p000001.jpg"]),
+        {"segment_id": "branding_intro", "branding": "intro", "duration_sec": 7.0,
+         "cuts": [{"file": "p000002.jpg", "start": 0.0, "dur": 7.0}]},
+        _item("g0002_p00", ["p000003_a.jpg"]),
+    ]
+    items[2]["cuts"][0]["file2"] = "p000003_b.jpg"
+    items[2]["cuts"][0]["layout"] = "split2"
+    cuts = pq.iter_shown_cuts(_plan(items))
+    files = [(c["segment_id"], c["file"]) for c in cuts]
+    assert ("g0001_p00", "p000001.jpg") in files
+    assert ("branding_intro", "p000002.jpg") in files
+    assert ("g0002_p00", "p000003_a.jpg") in files
+    assert ("g0002_p00", "p000003_b.jpg") in files          # file2 included
+    assert [c for c in cuts if c["file"] == "p000002.jpg"][0]["branding"]
+
+
+# ---- box interior stats: blank voids, ghosts, visible text -------------------
+
+def _bubble_panel(*, ghost=False, visible_text=False):
+    """Art panel with one white bubble box; optionally ghost or crisp text."""
+    img = _art(400, 300)
+    img[60:200, 40:260] = 250                                  # blanked bubble
+    if ghost:
+        img[120:128, 70:230] = 215                             # faint remnant
+    if visible_text:
+        for y in range(90, 180, 18):
+            for x in range(70, 220, 22):
+                img[y:y + 8, x:x + 13] = 20                    # glyph blobs
+    return img, (40, 60, 260, 200)
+
+
+def test_box_interior_stats_blank_and_clean():
+    img, box = _bubble_panel()
+    st = pq.box_interior_stats(img, box)
+    assert st["blank"] is True
+    assert st["ghost_frac"] < 0.01 and st["ink_frac"] < 0.01
+
+
+def test_box_interior_stats_detects_ghost():
+    img, box = _bubble_panel(ghost=True)
+    st = pq.box_interior_stats(img, box)
+    assert st["blank"] is True and st["ghost_frac"] >= 0.02
+
+
+def test_box_interior_stats_detects_visible_text():
+    img, box = _bubble_panel(visible_text=True)
+    st = pq.box_interior_stats(img, box)
+    assert st["ink_frac"] >= 0.05
+    assert st["ink_glyphs"] >= 6                   # many glyph-sized blobs
+    assert st["blank"] is False                    # kept text != blank void
+
+
+def test_box_interior_stats_art_stroke_not_glyphs():
+    # a single thick art stroke inside a white-ish box is NOT text
+    img = _art(400, 300)
+    img[60:200, 40:260] = 250
+    import cv2
+    cv2.line(img, (60, 80), (240, 180), (20, 20, 20), 12)
+    st = pq.box_interior_stats(img, (40, 60, 260, 200))
+    assert st["ink_frac"] >= 0.05 and st["ink_glyphs"] < 6
+
+
+# ---- image_flags --------------------------------------------------------------
+
+def test_image_flags_husk_and_dead_box_leak():
+    img = np.full((500, 800, 3), 250, dtype=np.uint8)          # near-empty
+    img[0:80] = _art(80, 800)                                  # sliver of art
+    img[100:480, 40:760] = 252                                 # giant blank box
+    flags = pq.image_flags("p000010.jpg", img, [(40, 100, 760, 480)],
+                           doc=False, dims_entry={"w": 800, "h": 500, "doc": False})
+    codes = {f["code"] for f in flags}
+    assert "dead_box_leak" in codes
+
+
+def test_image_flags_low_art_husk():
+    img = np.full((400, 600, 3), 248, dtype=np.uint8)
+    flags = pq.image_flags("p000011.jpg", img, [], doc=False,
+                           dims_entry={"w": 600, "h": 400, "doc": False})
+    assert any(f["code"] == "husk" and f["severity"] == "ERROR" for f in flags)
+
+
+def test_image_flags_stale_dims_mismatch():
+    img = _art(400, 600)
+    flags = pq.image_flags("p000012.jpg", img, [], doc=False,
+                           dims_entry={"w": 999, "h": 400, "doc": False})
+    assert any(f["code"] == "stale_dims" for f in flags)
+
+
+def test_image_flags_doc_panel_skips_husk_and_dead_box():
+    img = np.full((400, 600, 3), 250, dtype=np.uint8)          # white doc page
+    flags = pq.image_flags("p000013.jpg", img, [(10, 10, 590, 390)],
+                           doc=True, dims_entry={"w": 600, "h": 400, "doc": True})
+    codes = {f["code"] for f in flags}
+    assert "husk" not in codes and "dead_box_leak" not in codes
+
+
+def test_image_flags_extreme_tall_is_info():
+    img = _art(3200, 400)
+    flags = pq.image_flags("p000014.jpg", img, [], doc=False,
+                           dims_entry={"w": 400, "h": 3200, "doc": False})
+    assert any(f["code"] == "extreme_tall" and f["severity"] == "INFO"
+               for f in flags)
+
+
+def test_image_flags_sys_panel_exempt_from_text_and_card_checks():
+    # system-message cards (Sky Corporation / activation captions) keep their
+    # text BY DESIGN — no visible_text/ghost/binary_card/dead_box/husk flags
+    img, box = _bubble_panel(visible_text=True, ghost=True)
+    flags = pq.image_flags("p000114.jpg", img, [box], doc=False,
+                           dims_entry={"w": 300, "h": 400, "doc": False},
+                           sys=True)
+    assert flags == []
+
+
+def test_image_flags_visible_text_needs_glyph_look():
+    # one thick art stroke in a white box: ink is high but it is NOT text
+    img = _art(400, 300)
+    img[60:200, 40:260] = 250
+    import cv2
+    cv2.line(img, (60, 80), (240, 180), (20, 20, 20), 12)
+    flags = pq.image_flags("p000029.jpg", img, [(40, 60, 260, 200)], doc=False,
+                           dims_entry={"w": 300, "h": 400, "doc": False})
+    assert not any(f["code"] == "visible_text" for f in flags)
+
+
+def test_image_flags_husk_borderline_is_warn():
+    img = np.full((400, 600, 3), 248, dtype=np.uint8)
+    img[0:40] = _art(40, 600)                      # a whisker of edges
+    art = pq.rp.art_content_score(img, [])
+    assert art > 0
+    fl_warn = pq.image_flags("p1.jpg", img, [], doc=False, dims_entry=None,
+                             min_art_score=art / 0.85)   # ratio 0.85 -> WARN
+    fl_err = pq.image_flags("p1.jpg", img, [], doc=False, dims_entry=None,
+                            min_art_score=art / 0.5)     # ratio 0.5 -> ERROR
+    assert any(f["code"] == "husk" and f["severity"] == "WARN" for f in fl_warn)
+    assert any(f["code"] == "husk" and f["severity"] == "ERROR" for f in fl_err)
+
+
+# ---- narration flags ----------------------------------------------------------
+
+def test_narration_flags_chrome_phrases():
+    f1 = pq.narration_flags("g0001_p00", "Presented by Redice Studio.", [])
+    f2 = pq.narration_flags("g0002_p00", "The view counter shows VIEWS: 1.", [])
+    ok = pq.narration_flags("g0003_p00",
+                            "Cheon flees through the fog-laced peaks.", [])
+    assert any(f["code"] == "chrome_narration" for f in f1)
+    assert any(f["code"] == "chrome_narration" for f in f2)
+    assert not ok
+
+
+def test_narration_flags_ocr_echo_only_when_text_visible():
+    ocr = "I will never become a cyborg no matter what they do to me"
+    narr = "He swears: I will never become a cyborg, he repeats."
+    visible = pq.narration_flags(
+        "g0004_p00", narr, [{"ocr": ocr, "visible": True}])
+    blanked = pq.narration_flags(
+        "g0004_p00", narr, [{"ocr": ocr, "visible": False}])
+    assert any(f["code"] == "ocr_echo" for f in visible)
+    # blanked bubbles: narration REPLACES the text — that is the design
+    assert not any(f["code"] == "ocr_echo" for f in blanked)
+
+
+# ---- vision consistency flags ---------------------------------------------------
+
+def test_vision_flags_chrome_leak_via_title_dominance():
+    vitem = {"ocr_clean": "OMNISCIENT READER", "text_only": False,
+             "text_coverage": 0.05, "n_words": 2}
+    fl = pq.vision_flags("p000029.jpg", vitem, dims_entry={"doc": False},
+                         series_title="Omniscient Reader")
+    assert any(f["code"] == "chrome_leak" and f["severity"] == "ERROR"
+               for f in fl)
+
+
+def test_vision_flags_doc_flag_missing_only_when_text_renders_unprotected():
+    vitem = {"ocr_clean": "lots of ui text " * 10, "text_only": False,
+             "text_coverage": 0.4, "n_words": 30}
+    # wordy + shown with text NOT blanked and NOT protected -> defect
+    fl = pq.vision_flags("p000003.jpg", vitem,
+                         dims_entry={"doc": False, "sys": False, "blanked": False},
+                         series_title=None)
+    assert any(f["code"] == "doc_flag_missing" for f in fl)
+    # blanked dialogue / doc-protected / sys panels: nothing to protect
+    for d in ({"doc": False, "sys": False, "blanked": True},
+              {"doc": True, "sys": False, "blanked": False},
+              {"doc": False, "sys": True, "blanked": False}):
+        ok = pq.vision_flags("p000003.jpg", vitem, dims_entry=d, series_title=None)
+        assert not any(f["code"] == "doc_flag_missing" for f in ok), d
+
+
+# ---- plan integrity flags --------------------------------------------------------
+
+def test_plan_flags_no_cold_open_when_intro_first():
+    items = [
+        {"segment_id": "branding_intro", "branding": "intro", "duration_sec": 7.0,
+         "cuts": [{"file": "p000001.jpg", "start": 0, "dur": 7.0}]},
+        _item("g0001_p00", ["p000001.jpg"]),
+    ]
+    fl = pq.plan_flags(_plan(items), clean_files={"p000001.jpg"},
+                       audio_exists=lambda p: True)
+    assert any(f["code"] == "no_cold_open" for f in fl)
+
+
+def test_plan_flags_missing_file_dims_audio_and_flash_cut():
+    items = [_item("g0001_p00", ["p000001.jpg", "p000404.jpg"])]
+    items[0]["cuts"][1]["dur"] = 0.8                       # flash cut
+    plan = _plan(items)
+    plan["scene_dims"] = {"p000001.jpg": {"w": 100, "h": 100, "doc": False}}
+    fl = pq.plan_flags(plan, clean_files={"p000001.jpg"},
+                       audio_exists=lambda p: False)
+    codes = [f["code"] for f in fl]
+    assert "missing_file" in codes                          # p000404 not on disk
+    assert "missing_dims" in codes                          # p000404 has no dims
+    assert "missing_audio" in codes
+    assert "flash_cut" in codes
+
+
+def test_plan_flags_empty_item_and_clean_plan_passes():
+    bad = _plan([dict(_item("g0001_p00", ["p000001.jpg"]), cuts=[])])
+    fl = pq.plan_flags(bad, clean_files={"p000001.jpg"},
+                       audio_exists=lambda p: True)
+    assert any(f["code"] == "empty_item" and f["severity"] == "ERROR"
+               for f in fl)
+
+    # the outro is rendered by Remotion's own end-card — cuts=[] is BY DESIGN
+    good_items = [
+        _item("g0001_p00", ["p000001.jpg"]),
+        {"segment_id": "branding_intro", "branding": "intro", "duration_sec": 7.0,
+         "cuts": [{"file": "p000001.jpg", "start": 0, "dur": 7.0}]},
+        {"segment_id": "branding_outro", "branding": "outro", "duration_sec": 5.0,
+         "cuts": []},
+    ]
+    plan = _plan(good_items)
+    plan["scene_dims"] = {"p000001.jpg": {"w": 100, "h": 100, "doc": False}}
+    fl = pq.plan_flags(plan, clean_files={"p000001.jpg"},
+                       audio_exists=lambda p: True)
+    assert not [f for f in fl if f["severity"] == "ERROR"]
+
+
+# ---- report assembly --------------------------------------------------------------
+
+def test_build_report_counts_and_html_smoke():
+    flags = [
+        {"code": "husk", "severity": "ERROR", "scene": "p000011.jpg",
+         "segment_id": "g0001_p00", "detail": "art_score=0.001"},
+        {"code": "ghost_text", "severity": "WARN", "scene": "p000012.jpg",
+         "segment_id": "g0002_p00", "detail": "ghost_frac=0.04"},
+    ]
+    rep = pq.build_report("Nano Machine — Chapter 1", flags, n_cuts=12)
+    assert rep["counts"]["ERROR"] == 1 and rep["counts"]["WARN"] == 1
+    assert rep["n_cuts"] == 12
+
+    html = pq.render_html(rep, thumbs={"p000011.jpg": b"\xff\xd8fakejpg"})
+    assert "husk" in html and "ghost_text" in html
+    assert "data:image/jpeg;base64," in html

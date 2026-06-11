@@ -466,3 +466,162 @@ def test_dead_box_recrop_noop_on_normal_panel():
     out, info = rp.dead_box_recrop(img, [(10, 10, 60, 60)])   # small box
     assert info["recropped"] is False
     assert out.shape == img.shape
+
+
+# ---- dead-box WIRING (#22): the gate must rescue blank-box-dominated panels
+# whose art band survives, and the writer must emit the recropped strip -------
+
+def test_dead_box_recrop_reports_band():
+    img, boxes = _feet_and_captions()
+    out, info = rp.dead_box_recrop(img, boxes)
+    a, b = info["band"]
+    assert b - a == out.shape[0] >= 120            # band == emitted crop rows
+
+
+def test_panel_recoverable_rescues_deadbox_dominated_strip():
+    # boxes cover ~0.53 of the panel: whole-span bubble coverage fails the
+    # part filter, yet the feet strip is real art — must NOT be dropped
+    img, boxes = _feet_and_captions()
+    assert rp.panel_recoverable(img, boxes) is True
+
+
+def test_select_panel_crops_deadbox_panel_yields_art_strip():
+    img, boxes = _feet_and_captions()
+    parts, info = rp.select_panel_crops(img, boxes, text_rich=False)
+    assert info["recropped"] is True
+    assert len(parts) == 1 and parts[0].shape[0] <= 200
+
+
+def test_select_panel_crops_still_splits_merged_panels():
+    img = np.full((400, 200, 3), 250, dtype=np.uint8)
+    img[20:140] = 120                              # two real-art panels
+    img[260:380] = 90                              # split by a white void
+    parts, info = rp.select_panel_crops(img, [], text_rich=False)
+    assert len(parts) == 2
+
+
+def test_select_panel_crops_document_panel_never_recropped():
+    img, boxes = _feet_and_captions()
+    parts, info = rp.select_panel_crops(img, boxes, text_rich=True)
+    assert len(parts) == 1 and parts[0].shape[0] == img.shape[0]
+    assert info["recropped"] is False
+
+
+def test_dead_box_recrop_rejects_binary_band():
+    # Nano p000020: an EMPTY spiky scream bubble (radiating black/white lines)
+    # has plenty of Canny edges but zero midtones — it is NOT an art band and
+    # must not be rescued; the panel then fails recoverability and drops.
+    img = np.full((500, 800, 3), 250, dtype=np.uint8)
+    spiky = np.zeros((160, 800), np.uint8)
+    spiky[:, ::3] = 255                                  # binary line burst
+    img[20:180] = np.dstack([spiky, spiky, spiky])
+    boxes = [(40, 200, 380, 480), (420, 200, 780, 480)]  # blank caption voids
+    out, info = rp.dead_box_recrop(img, boxes)
+    assert info["blank_box_frac"] >= 0.35
+    assert info["recropped"] is False
+    assert rp.panel_recoverable(img, boxes) is False
+
+
+# ---- residue sweep: word-box fill must leave NO remnants in the interior ----
+
+def test_clean_scene_residue_swept_after_word_fill():
+    # OCR word boxes covered only part of the text: the missed strokes and
+    # faint ghosts inside the bubble must be flattened to the fill color too
+    img = _bubble_scene()
+    img[120:128, 80:120] = 200                     # faint ghost line (missed)
+    out = rp.clean_scene_image(img, [(30, 50, 170, 150)],
+                               text_boxes=[(68, 93, 132, 107)])
+    assert out[121:127, 85:115].mean() > 230       # ghost flattened
+    assert out[100, 41].mean() < 60                # outline ring still dark
+    assert abs(int(out[10:30, 10:30].mean()) - 90) <= 2   # art untouched
+
+
+# ---- orphan word boxes: bubbles the detector missed entirely ----------------
+
+def test_orphan_word_boxes_on_white_surround_blanked():
+    # p000069/p000101: spiky/oval bubble evaded the detector, so its words got
+    # no interior gating — words sitting on a uniform near-white surround are
+    # bubble text and must be blanked anyway
+    img = np.full((300, 300, 3), 90, dtype=np.uint8)
+    img[40:160, 60:240] = 252                      # white bubble, NO box
+    for y in range(70, 130, 16):
+        for x in range(80, 210, 24):
+            img[y:y + 8, x:x + 14] = 25            # crisp glyph blobs
+    out = rp.clean_scene_image(img, [],
+                               text_boxes=[(80, 70, 224, 126)])
+    assert out[70:126, 90:210].mean() > 230        # text gone
+    assert abs(int(out[20, 20].mean()) - 90) <= 2  # art untouched
+
+
+def test_orphan_word_boxes_on_art_kept():
+    img = np.full((300, 300, 3), 90, dtype=np.uint8)
+    img[100:120, 80:220] = 250                     # light text embedded ON art
+    out = rp.clean_scene_image(img, [],
+                               text_boxes=[(80, 100, 220, 120)])
+    assert out[100:120, 80:220].mean() > 230       # embedded art text SURVIVES
+
+
+# ---- garbage sole-cut substitution: never ship chrome/husk as a segment's
+# only visual — show the nearest kept story panel instead ---------------------
+
+def test_substitute_garbage_sole_cut_with_neighbor():
+    cbs = {"g0001_p00": [{"file": "p000000.jpg", "start": 0.0, "dur": 8.0}],
+           "g0002_p01": [{"file": "p000003.jpg", "start": 0.0, "dur": 6.0}]}
+    cov = {"p000000.jpg": 1.0, "p000003.jpg": 0.1}
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cbs, cov, durations={"g0001_p00": 8.0, "g0002_p01": 6.0})
+    assert out["g0001_p00"] == [{"file": "p000003.jpg", "start": 0.0, "dur": 8.0}]
+    assert out["g0002_p01"] == cbs["g0002_p01"]
+    assert [(s[0], s[1]) for s in subs] == [("g0001_p00", "p000000.jpg")]
+
+
+def test_speech_shaped_boxes_excludes_ui_rows():
+    # the ORV app screen: the detector boxes its full-width list ROWS as
+    # "bubbles" — only oval-ish, sub-full-width boxes are speech bubbles
+    boxes = [(54, 165, 752, 357),     # full-width flat app row
+             (62, 15, 755, 158),      # another row
+             (83, 784, 525, 1071)]    # the actual thought bubble
+    assert rp.speech_shaped_boxes(boxes, 800) == [(83, 784, 525, 1071)]
+
+
+def test_doc_like_separates_documents_from_dialogue():
+    # app/stats screen: many words, few inside any bubble -> DOCUMENT
+    words = [(10 * i, 10, 10 * i + 8, 18) for i in range(30)]
+    assert rp.doc_like(0.3, 30, words, [(0, 100, 50, 150)]) is True
+    # wordy DIALOGUE panel: words clustered inside bubbles -> NOT a document
+    # (the IE p000059 case: 15+ OCR words misread as a document, so its
+    # dialogue stayed on screen while narration spoke the same lines)
+    inwords = [(10 * i, 8, 10 * i + 8, 30) for i in range(18)]
+    assert rp.doc_like(0.25, 18, inwords, [(0, 0, 320, 40)]) is False
+    # wordy with no detected bubbles -> document (stats page)
+    assert rp.doc_like(0.25, 18, inwords, []) is True
+    # sparse text -> never a document
+    assert rp.doc_like(0.05, 5, inwords[:5], []) is False
+
+
+def test_doc_like_mixed_panel_with_substantial_ui_text_is_document():
+    # ORV p000025: a speech bubble (majority of words) ABOVE app-list rows —
+    # the outside-bubble words are substantial, so it is still a document
+    # (losing doc status shredded the app UI in the splitter)
+    bubble = (0, 0, 320, 60)
+    inwords = [(10 * i, 10, 10 * i + 8, 30) for i in range(20)]      # in bubble
+    outwords = [(10 * i, 100, 10 * i + 8, 112) for i in range(10)]   # app rows
+    assert rp.doc_like(0.25, 30, inwords + outwords, [bubble]) is True
+    # but a couple of stray outside words do NOT make dialogue a document
+    assert rp.doc_like(0.25, 18, inwords[:16] + outwords[:2], [bubble]) is False
+
+
+def test_substitute_skips_exempt_borderline_and_multicut():
+    cbs = {
+        "g1": [{"file": "p000113.jpg", "start": 0.0, "dur": 5.0}],   # exempt sys
+        "g2": [{"file": "p000060.jpg", "start": 0.0, "dur": 5.0}],   # borderline
+        "g3": [{"file": "p000070.jpg", "start": 0.0, "dur": 2.0},    # multi-cut
+               {"file": "p000071.jpg", "start": 2.0, "dur": 3.0}],
+        "g4": [{"file": "p000050.jpg", "start": 0.0, "dur": 5.0}],   # good
+    }
+    cov = {"p000113.jpg": 1.0, "p000060.jpg": 0.6, "p000070.jpg": 1.0,
+           "p000071.jpg": 0.0, "p000050.jpg": 0.0}
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cbs, cov, durations={k: 5.0 for k in cbs},
+        exempt={"p000113.jpg"})
+    assert out == cbs and subs == []

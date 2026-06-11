@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -276,6 +277,56 @@ def bubble_text_mask(img: np.ndarray, box: Tuple[int, int, int, int]) -> np.ndar
     return _bubble_text(img, box)[0]
 
 
+def _merge_word_clusters(
+    rects: Sequence[Tuple[int, int, int, int]],
+    gap: int = 14,
+) -> List[Tuple[int, int, int, int]]:
+    """Union word rects that sit within *gap* px of each other — one cluster
+    per text block, so the surround ring samples the bubble, not neighbors."""
+    work = [list(r) for r in rects]
+    merged = True
+    while merged:
+        merged = False
+        out: List[List[int]] = []
+        for r in work:
+            for o in out:
+                if (min(r[2], o[2]) - max(r[0], o[0]) > -gap
+                        and min(r[3], o[3]) - max(r[1], o[1]) > -gap):
+                    o[0] = min(o[0], r[0]); o[1] = min(o[1], r[1])
+                    o[2] = max(o[2], r[2]); o[3] = max(o[3], r[3])
+                    merged = True
+                    break
+            else:
+                out.append(r)
+        work = out
+    return [tuple(r) for r in work]
+
+
+def _flat_surround_fill(
+    img: np.ndarray,
+    rect: Tuple[int, int, int, int],
+    pad: int = 10,
+) -> Optional[int]:
+    """Fill value when *rect* sits on a uniform near-white/near-black surround
+    (an undetected bubble interior); None when the surround is artwork."""
+    h, w = img.shape[:2]
+    gray = img.mean(axis=2) if img.ndim == 3 else img
+    x1, y1, x2, y2 = [int(v) for v in rect]
+    rx1, ry1 = max(0, x1 - pad), max(0, y1 - pad)
+    rx2, ry2 = min(w, x2 + pad), min(h, y2 + pad)
+    ring = np.ones((ry2 - ry1, rx2 - rx1), bool)
+    ring[(y1 - ry1):(y2 - ry1), (x1 - rx1):(x2 - rx1)] = False
+    vals = gray[ry1:ry2, rx1:rx2][ring]
+    if vals.size < 30:
+        return None
+    med = float(np.median(vals))
+    if med >= 232 and float((vals >= 215).mean()) >= 0.85:
+        return int(med)
+    if med <= 30 and float((vals <= 50).mean()) >= 0.85:
+        return int(med)
+    return None
+
+
 def clean_scene_image(
     img: np.ndarray,
     boxes: Sequence[Tuple[int, int, int, int]],
@@ -285,15 +336,20 @@ def clean_scene_image(
 
     Primary method (the user's original approach): inpaint the exact OCR word
     rects that fall inside the bubble interior — regions that small heal
-    invisibly, it reads as "the text was simply removed". Word boxes outside
-    every bubble are ignored, so text embedded in artwork survives. Fallback
-    when OCR missed a bubble entirely: blank contrasting pixels with the
-    bubble's own flat color.
+    invisibly, it reads as "the text was simply removed". Fallback when OCR
+    missed a bubble entirely: blank contrasting pixels with the bubble's own
+    flat color. A residue sweep then flattens anything still deviating from
+    the fill inside the interior (missed glyphs, anti-aliased ghosts).
+
+    Word boxes OUTSIDE every detected bubble are blanked only when their
+    surround is a uniform near-white/black void — a bubble the detector
+    missed (spiky scream balloons). Text embedded in artwork keeps its
+    textured surround and survives.
     """
-    if not boxes:
+    words = [tuple(int(v) for v in t) for t in (text_boxes or [])]
+    if not boxes and not words:
         return img
     out = img.copy()
-    words = [tuple(int(v) for v in t) for t in (text_boxes or [])]
     for b in boxes:
         tmask, fill, inside = _bubble_text(out, b)
         if inside is None:
@@ -309,6 +365,39 @@ def clean_scene_image(
             out[wmask > 0] = fill
         elif fill is not None and tmask.any():
             out[tmask > 0] = fill
+        if fill is not None:
+            # residue sweep — but only on genuinely flat interiors, so a
+            # false-positive detector box on artwork is never flattened
+            g = out.mean(axis=2) if out.ndim == 3 else out
+            flat = (np.abs(g.astype(int) - int(fill)) <= 15) & (inside > 0)
+            n_inside = int((inside > 0).sum())
+            if n_inside and flat.sum() / n_inside >= 0.80:
+                residue = (inside > 0) & ~flat
+                if residue.any():
+                    out[residue] = fill
+
+    if words:
+        grown = [(int(b[0]) - 6, int(b[1]) - 6, int(b[2]) + 6, int(b[3]) + 6)
+                 for b in boxes]
+
+        def covered(wr: Tuple[int, int, int, int]) -> bool:
+            wx1, wy1, wx2, wy2 = wr
+            wa = max(1, (wx2 - wx1) * (wy2 - wy1))
+            for (bx1, by1, bx2, by2) in grown:
+                ix = max(0, min(wx2, bx2) - max(wx1, bx1))
+                iy = max(0, min(wy2, by2) - max(wy1, by1))
+                if ix * iy >= 0.5 * wa:
+                    return True
+            return False
+
+        orphans = [w for w in words if not covered(w)]
+        for cl in _merge_word_clusters(orphans):
+            fill = _flat_surround_fill(out, cl)
+            if fill is not None:
+                h, w = out.shape[:2]
+                x1, y1 = max(0, cl[0] - 4), max(0, cl[1] - 4)
+                x2, y2 = min(w, cl[2] + 4), min(h, cl[3] + 4)
+                out[y1:y2, x1:x2] = fill
     return out
 
 
@@ -524,9 +613,109 @@ def dead_box_recrop(
     if best[1] - best[0] >= min_h:
         a = max(0, best[0] - 10)
         b = min(h, best[1] + 10)
-        info["recropped"] = True
-        return img[a:b], info
+        # an edge-rich band can still be a binary scream bubble (radiating
+        # black/white spikes, the Nano p000020 case) — real art has midtones
+        band = gray[a:b]
+        midtone = float(((band > 60) & (band < 200)).mean())
+        if midtone >= 0.15:
+            info["recropped"] = True
+            info["band"] = (a, b)
+            return img[a:b], info
     return img, info
+
+
+def select_panel_crops(
+    img: np.ndarray,
+    boxes: Sequence[Tuple[int, int, int, int]],
+    *,
+    text_rich: bool,
+    no_split: bool = False,
+) -> Tuple[List[np.ndarray], Dict[str, Any]]:
+    """The writer's crop decision for one CLEANED panel: dead-box recrop →
+    white-band split → content filter. Returns one part (possibly recropped)
+    or two parts (split2). Document panels pass through whole."""
+    info: Dict[str, Any] = {"recropped": False, "blank_box_frac": 0.0}
+    if not text_rich:
+        img2, dead = dead_box_recrop(img, boxes)
+        info.update(dead)
+        if dead.get("recropped"):
+            a, b = dead["band"]
+            boxes = [(x1, max(0, y1 - a), x2, min(b - a, y2 - a))
+                     for (x1, y1, x2, y2) in boxes
+                     if min(y2, b) - max(y1, a) > 0]
+            img = img2
+
+    spans = ([(0, int(img.shape[0]))] if no_split
+             else split_spans_for_panel(img, text_rich=text_rich))
+    if len(spans) > 1:
+        content = filter_content_parts(img, spans, boxes)
+        if len(content) == 2:
+            return [img[a:b] for (a, b) in content], info
+        if len(content) == 1:
+            a, b = content[0]
+            return [img[a:b]], info
+    return [img], info
+
+
+def speech_shaped_boxes(
+    boxes: Sequence[Tuple[int, int, int, int]],
+    panel_w: int,
+    *,
+    max_aspect: float = 3.5,
+    max_w_frac: float = 0.85,
+) -> List[Tuple[int, int, int, int]]:
+    """Only boxes shaped like speech bubbles. The bubble detector also boxes
+    full-width UI rows (the ORV app list) and caption strips — wide flat
+    rectangles are not speech, and must not make a document look dialogue."""
+    out: List[Tuple[int, int, int, int]] = []
+    for (x1, y1, x2, y2) in boxes:
+        w = max(1, x2 - x1)
+        h = max(1, y2 - y1)
+        if w >= max_w_frac * max(1, panel_w):
+            continue
+        if w >= max_aspect * h:
+            continue
+        out.append((x1, y1, x2, y2))
+    return out
+
+
+def doc_like(
+    text_coverage: float,
+    n_words: int,
+    word_boxes: Sequence[Tuple[int, int, int, int]],
+    bubble_boxes: Sequence[Tuple[int, int, int, int]],
+    *,
+    min_coverage: float = 0.22,
+    min_words: int = 15,
+    max_in_bubble_frac: float = 0.5,
+    min_outside_words: int = 8,
+) -> bool:
+    """Is this a DOCUMENT panel (app screen / stats page) or just wordy?
+
+    Word count alone misclassifies dialogue-heavy panels as documents (15+
+    words is two speech bubbles), which keeps their dialogue ON SCREEN while
+    the narration speaks the same lines. A document's words live OUTSIDE
+    speech bubbles; dialogue's words live inside them. Mixed panels (speech
+    bubble over an app screen, ORV p000025) stay documents when the
+    outside-bubble text is substantial on its own."""
+    if not (float(text_coverage) >= min_coverage or int(n_words) >= min_words):
+        return False
+    if not word_boxes or not bubble_boxes:
+        return True
+    grown = [(x1 - 6, y1 - 6, x2 + 6, y2 + 6)
+             for (x1, y1, x2, y2) in bubble_boxes]
+    inside = 0
+    for (wx1, wy1, wx2, wy2) in word_boxes:
+        wa = max(1, (wx2 - wx1) * (wy2 - wy1))
+        for (bx1, by1, bx2, by2) in grown:
+            ix = max(0, min(wx2, bx2) - max(wx1, bx1))
+            iy = max(0, min(wy2, by2) - max(wy1, by1))
+            if ix * iy >= 0.5 * wa:
+                inside += 1
+                break
+    outside = len(word_boxes) - inside
+    return (inside / len(word_boxes) < max_in_bubble_frac
+            or outside >= min_outside_words)
 
 
 def split_spans_for_panel(img: np.ndarray, *, text_rich: bool) -> List[Tuple[int, int]]:
@@ -556,7 +745,58 @@ def panel_recoverable(
         return art_content_score(img, []) >= min_art_score
     spans = split_spans_for_panel(img, text_rich=False)
     parts = filter_content_parts(img, spans, boxes, min_art_score=min_art_score)
-    return len(parts) > 0
+    if parts:
+        return True
+    # blank caption boxes can dominate coverage while a thin band of real art
+    # survives outside them (#22) — recoverable iff dead_box_recrop rescues it
+    cropped, dead = dead_box_recrop(img, boxes)
+    return bool(dead.get("recropped")) and art_content_score(cropped, []) >= min_art_score
+
+
+_SCENE_NUM_RE = re.compile(r"(\d+)")
+
+
+def _scene_num(fname: str) -> int:
+    m = _SCENE_NUM_RE.search(os.path.basename(str(fname)))
+    return int(m.group(1)) if m else -1
+
+
+def substitute_garbage_sole_cuts(
+    cuts_by_segment: Dict[str, List[Dict[str, Any]]],
+    coverage_by_file: Dict[str, float],
+    *,
+    durations: Dict[str, float],
+    exempt: Optional[set] = None,
+    min_cov: float = 0.99,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str, str]]]:
+    """Never ship hard garbage as a segment's only visual.
+
+    The never-empty rule keeps a segment's least-bad cut, which for sole-cut
+    segments means chrome covers / unrecoverable husks still reach the screen
+    (the IE elftoon cover cold-open). Such survivors (score >= *min_cov*,
+    not *exempt*) are replaced by the numerically nearest KEPT story scene,
+    holding for the segment's full duration."""
+    ex = exempt or set()
+    garbage = {seg: cuts[0] for seg, cuts in cuts_by_segment.items()
+               if len(cuts) == 1
+               and str(cuts[0].get("file")) not in ex
+               and coverage_by_file.get(str(cuts[0].get("file")), 0.0) >= min_cov}
+    out = {k: list(v) for k, v in cuts_by_segment.items()}
+    subs: List[Tuple[str, str, str]] = []
+    pool = sorted({str(c.get("file")) for seg, cuts in cuts_by_segment.items()
+                   for c in cuts
+                   if seg not in garbage
+                   and coverage_by_file.get(str(c.get("file")), 0.0) < min_cov})
+    if not pool:
+        return out, subs
+    for seg, cut in garbage.items():
+        old = str(cut.get("file"))
+        n = _scene_num(old)
+        best = min(pool, key=lambda f: (abs(_scene_num(f) - n), _scene_num(f) < n))
+        dur = round(float(durations.get(seg) or cut.get("dur") or 0.0), 4)
+        out[seg] = [{"file": best, "start": 0.0, "dur": dur}]
+        subs.append((seg, old, best))
+    return out, subs
 
 
 # ---------------------------------------------------------------------------
@@ -805,15 +1045,18 @@ def main() -> int:
             sys_cache[fname] = out
         return sys_cache[fname]
 
-    from scene_chrome import is_chrome_scene  # sibling tool module
+    from scene_chrome import is_chrome_scene, needs_image_stats  # sibling tool
 
     # cleaned-image cache: cleaning result is needed BOTH by the blankness
     # gate (what does the viewer see after text removal?) and the writer.
     cleaned_cache: Dict[str, Tuple[Optional[np.ndarray], List[Tuple[int, int, int, int]]]] = {}
 
     def _text_rich(fname: str) -> bool:
-        return (text_score.get(fname, 0.0) >= 0.22
-                or len(word_boxes_by_file.get(fname, [])) >= 15)
+        words = word_boxes_by_file.get(fname, [])
+        img = _img(fname)
+        panel_w = img.shape[1] if img is not None else 0
+        return doc_like(text_score.get(fname, 0.0), len(words), words,
+                        speech_shaped_boxes(_boxes(fname), panel_w))
 
     def _cleaned(fname: str) -> Tuple[Optional[np.ndarray], List[Tuple[int, int, int, int]]]:
         if fname not in cleaned_cache:
@@ -821,15 +1064,53 @@ def main() -> int:
             if img is None:
                 cleaned_cache[fname] = (None, [])
             elif _text_rich(fname) and fname not in speech_files:
-                # DOCUMENT panel (word-rich, no speech per Gemini): its text IS
-                # the content — never blank it. The detector false-positives UI
-                # cards as bubbles and would erase story text (ORV stats page).
-                cleaned_cache[fname] = (img.copy(), [])
+                # DOCUMENT panel (word-rich, no speech per Gemini): its
+                # document text IS the content and must survive — but a
+                # speech bubble floating OVER it (ORV p000025) is dialogue
+                # like any other: blank ONLY words inside speech-SHAPED
+                # boxes; UI rows (wide flat detector boxes) and all
+                # outside-bubble text stay untouched. No orphan pass here.
+                sboxes = speech_shaped_boxes(
+                    _boxes(fname), img.shape[1])
+                words = word_boxes_by_file.get(fname) or []
+                grown = [(x1 - 6, y1 - 6, x2 + 6, y2 + 6)
+                         for (x1, y1, x2, y2) in sboxes]
+
+                def _in_speech(wr):
+                    wx1, wy1, wx2, wy2 = wr
+                    wa = max(1, (wx2 - wx1) * (wy2 - wy1))
+                    for (bx1, by1, bx2, by2) in grown:
+                        ix = max(0, min(wx2, bx2) - max(wx1, bx1))
+                        iy = max(0, min(wy2, by2) - max(wy1, by1))
+                        if ix * iy >= 0.5 * wa:
+                            return True
+                    return False
+
+                inwords = [w for w in words if _in_speech(w)]
+                out = (clean_scene_image(img.copy(), sboxes, text_boxes=inwords)
+                       if (sboxes and inwords) else img.copy())
+                cleaned_cache[fname] = (out, [])
             else:
                 protected = [] if fname in speech_files else _sys_boxes(fname)
                 boxes = filter_protected_boxes(_boxes(fname), protected)
-                out = clean_scene_image(img.copy(), boxes,
-                                        text_boxes=word_boxes_by_file.get(fname)) if boxes else img.copy()
+                words = list(word_boxes_by_file.get(fname) or [])
+                if protected and words:
+                    # words inside protected system boxes are KEPT text — the
+                    # orphan-word path must never see (and blank) them
+                    def _in_protected(wr):
+                        wx1, wy1, wx2, wy2 = wr
+                        wa = max(1, (wx2 - wx1) * (wy2 - wy1))
+                        for (bx1, by1, bx2, by2) in protected:
+                            ix = max(0, min(wx2, bx2) - max(wx1, bx1))
+                            iy = max(0, min(wy2, by2) - max(wy1, by1))
+                            if ix * iy >= 0.5 * wa:
+                                return True
+                        return False
+                    words = [w for w in words if not _in_protected(w)]
+                # orphan-word blanking needs the cleaner even with zero
+                # detected bubbles (spiky balloons evade the detector)
+                out = (clean_scene_image(img.copy(), boxes, text_boxes=words)
+                       if (boxes or words) else img.copy())
                 cleaned_cache[fname] = (out, boxes)
         return cleaned_cache[fname]
 
@@ -839,6 +1120,8 @@ def main() -> int:
     # art detail left once their bubbles are emptied).
     cuts_by_segment: Dict[str, List[Dict[str, Any]]] = {}
     all_dropped: List[str] = []
+    cov_all: Dict[str, float] = {}
+    exempt_all: set = set()
     for item in plan.get("timeline") or []:
         cuts = item.get("cuts") or []
         new_cuts, dropped = drop_contained_duplicate_cuts(cuts, geom)
@@ -855,8 +1138,14 @@ def main() -> int:
                 img = _img(f)
                 bub = bubble_coverage(img.shape, _boxes(f)) if img is not None else 0.0
                 score = max(bub, text_score.get(f, 0.0))
-                if is_chrome_scene(vision_item.get(f, {}),
-                                   series_title=args.series_title or None):
+                vit = vision_item.get(f, {})
+                mid = None
+                if img is not None and needs_image_stats(
+                        str(vit.get("ocr_clean") or "")):
+                    g = img.mean(axis=2)
+                    mid = float(((g > 60) & (g < 200)).mean())
+                if is_chrome_scene(vit, series_title=args.series_title or None,
+                                   midtone_frac=mid):
                     score = 1.0  # chrome is never story — overrides exemptions
                 else:
                     cimg, cboxes = _cleaned(f)
@@ -867,11 +1156,27 @@ def main() -> int:
                         score = 1.0  # no recoverable region after cleaning
                     if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
                         exempt.add(f)  # system-message panel — story beat
+                    if rich:
+                        # document panels' text IS the story content — text
+                        # dominance must never drop them (ORV novel-app page)
+                        exempt.add(f)
                 cov[f] = score
             new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)
             dropped = list(dropped) + bdropped
+            cov_all.update(cov)
+            exempt_all |= exempt
         cuts_by_segment[item["segment_id"]] = new_cuts
         all_dropped.extend(dropped)
+
+    # sole-cut segments whose survivor is hard garbage (chrome cover, husk)
+    # show the nearest kept story panel instead
+    durations = {str(it.get("segment_id")): float(it.get("duration_sec") or 0.0)
+                 for it in plan.get("timeline") or []}
+    cuts_by_segment, subs = substitute_garbage_sole_cuts(
+        cuts_by_segment, cov_all, durations=durations, exempt=exempt_all)
+    for seg, old, new in subs:
+        all_dropped.append(old)
+        print(f"[ok] {seg}: garbage sole cut {old} -> SUBSTITUTED {new}")
 
     shown = sorted({c["file"] for cs in cuts_by_segment.values() for c in cs})
 
@@ -883,7 +1188,8 @@ def main() -> int:
     split_map: Dict[str, Tuple[str, str]] = {}
     bubbles_cleaned = 0
 
-    def _write_part(name: str, part: np.ndarray, doc: bool = False) -> None:
+    def _write_part(name: str, part: np.ndarray, doc: bool = False,
+                    sys_panel: bool = False, blanked: bool = False) -> None:
         if not args.no_trim:
             tx1, ty1, tx2, ty2 = content_bbox(part)
             part = part[ty1:ty2, tx1:tx2]
@@ -892,7 +1198,10 @@ def main() -> int:
         ph, pw = part.shape[:2]
         # doc: document/UI panels — the renderer must never cover-crop their
         # text (full-bleed) and never scroll them; contain-fit only.
-        scene_dims[name] = {"w": int(pw), "h": int(ph), "doc": bool(doc)}
+        # sys/blanked: QA metadata — system-message panels keep their text by
+        # design; blanked panels had bubble text removed (narration replaces it)
+        scene_dims[name] = {"w": int(pw), "h": int(ph), "doc": bool(doc),
+                            "sys": bool(sys_panel), "blanked": bool(blanked)}
 
     for fname in shown:
         img, boxes = _cleaned(fname)
@@ -902,28 +1211,32 @@ def main() -> int:
         img = img.copy()
         bubbles_cleaned += len(boxes)
 
-        # over-merged crops: split at wide white voids; parts that are just
-        # floating (now-empty) bubbles are discarded, two real parts render
-        # side by side, a single real part crops the void away entirely.
-        # Document-like panels (text-rich) are never split.
+        # over-merged crops: dead-box recrop first (blank caption voids, #22),
+        # then split at wide white voids; parts that are just floating
+        # (now-empty) bubbles are discarded, two real parts render side by
+        # side, a single real part crops the void away entirely.
+        # Document-like panels (text-rich) are never recropped or split.
         rich = _text_rich(fname)
-        spans = ([(0, img.shape[0])] if args.no_split
-                 else split_spans_for_panel(img, text_rich=rich))
-        if len(spans) > 1:
-            content = filter_content_parts(img, spans, boxes)
-            if len(content) == 2:
-                stem, ext = os.path.splitext(fname)
-                names = (f"{stem}_a{ext}", f"{stem}_b{ext}")
-                for nm, (a, b) in zip(names, content):
-                    _write_part(nm, img[a:b], doc=rich)
-                split_map[fname] = names
-                print(f"[ok] {fname}: SPLIT -> {names[0]} + {names[1]} (split2)")
-                continue
-            if len(content) == 1:
-                a, b = content[0]
-                img = img[a:b]
+        orig = _img(fname)
+        sysf = bool(orig is not None
+                    and bubble_coverage(orig.shape, _sys_boxes(fname)) >= 0.02)
+        blanked = bool(boxes) or (not rich and not sysf
+                                  and bool(word_boxes_by_file.get(fname)))
+        parts, pinfo = select_panel_crops(img, boxes, text_rich=rich,
+                                          no_split=args.no_split)
+        if pinfo.get("recropped"):
+            print(f"[ok] {fname}: DEAD-BOX recrop "
+                  f"blank_frac={pinfo['blank_box_frac']:.2f}")
+        if len(parts) == 2:
+            stem, ext = os.path.splitext(fname)
+            names = (f"{stem}_a{ext}", f"{stem}_b{ext}")
+            for nm, part in zip(names, parts):
+                _write_part(nm, part, doc=rich, sys_panel=sysf, blanked=blanked)
+            split_map[fname] = names
+            print(f"[ok] {fname}: SPLIT -> {names[0]} + {names[1]} (split2)")
+            continue
 
-        _write_part(fname, img, doc=rich)
+        _write_part(fname, parts[0], doc=rich, sys_panel=sysf, blanked=blanked)
         print(f"[ok] {fname}: bubbles={len(boxes)} -> "
               f"{scene_dims[fname]['w']}x{scene_dims[fname]['h']}")
 

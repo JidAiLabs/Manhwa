@@ -62,6 +62,10 @@ export type SceneDims = {
   h: number;
   // document/UI panel (render_prep): never cover-crop or scroll its text
   doc?: boolean;
+  // QA metadata from render_prep (not used for rendering): system-message
+  // panel with intentional kept text / panel whose bubble text was blanked
+  sys?: boolean;
+  blanked?: boolean;
 };
 
 export type RenderPlan = {

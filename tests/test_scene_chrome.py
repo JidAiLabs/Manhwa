@@ -107,6 +107,48 @@ def test_site_plug_and_scanlation_credits_are_chrome():
     assert _is("READ FREE AT MANHWASITE.NET TL: JOE PR: AMY") is True
 
 
+def test_read_this_dialogue_in_document_panel_not_chrome():
+    # the real ORV novel-app screen: 30+ words of in-story reader UI; the
+    # bubble line "WHY DOESN'T ANYONE READ THIS? IT'S A MASTERPIECE!" must not
+    # trip the site-plug rule — plug phrases are chrome only on short banners
+    item = {"ocr_clean": "THREE WAYS TO SURVIVE THE APOCALYPSE "
+                         + "READ EPISODE COMMENTS VIEWS " * 6
+                         + "WHY DOESN'T ANYONE READ THIS? IT'S A MASTERPIECE!",
+            "text_only": True, "text_coverage": 0.233}
+    assert sc.is_chrome_scene(item, series_title="Omniscient Reader") is False
+
+
+def test_short_read_plug_banner_still_chrome():
+    assert _is("PLEASE READ THIS CHAPTER ON OUR SITE") is True
+
+
+def test_domain_plug_chrome_even_when_wordy():
+    # the IE cover OCRs ~58 words (CJK credits etc.) but contains a domain —
+    # domains/team-credit tags are chrome regardless of length
+    ocr = ("INFINITE EVOLUTION FROM ZERO PLEASE READ THIS CHAPTER ON "
+           "ELFTOON.COM ED: HAL PR: TL: HAL " + "WORD " * 40)
+    assert _is(ocr) is True
+
+
+def test_single_watermark_domain_on_story_panel_not_chrome():
+    # the IE p000039 case: aggregators stamp ELFTOON.COM ON story art — one
+    # domain hit amid real dialogue is a watermark, not a chrome page
+    assert _is("HOLY CRAP! I GET IT! HONEY, IS IT POSSIBLE THAT OUR SON IS "
+               "A ONE-IN-A-MILLION PRODIGY? ELFTOON.COM") is False
+
+
+def test_watermark_only_panel_midtone_decides():
+    item = {"ocr_clean": "ELFTOON.COM", "text_only": False, "text_coverage": 0.01}
+    assert sc.is_chrome_scene(item, midtone_frac=0.40) is False   # real art
+    assert sc.is_chrome_scene(item) is True                       # no stats: banner
+
+
+def test_needs_image_stats_for_empty_or_single_site_hit():
+    assert sc.needs_image_stats("") is True
+    assert sc.needs_image_stats("ELFTOON.COM") is True
+    assert sc.needs_image_stats("A normal dialogue line.") is False
+
+
 def test_vertical_title_ocr_garbage_is_chrome():
     # real ORV cover: vertical title letters OCR as fake words around the
     # one distinctive title word

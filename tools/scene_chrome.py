@@ -30,13 +30,17 @@ _CREDITS_RE = re.compile(
     re.I,
 )
 
-# A bare chapter/episode marker (the whole text is just the marker).
 # Site plugs and scanlation-team credits (aggregator stamps on covers).
-_SITE_RE = re.compile(
-    r"\b\w[\w-]*\.(com|net|org|io|to)\b|please\s+read|read\s+(this|free)|"
-    r"\b(ed|tl|pr|qc|clrd|rd)\s*:",
+# Domains and team-credit tags are chrome no matter how wordy the page
+# (the IE cover OCRs ~58 words around ELFTOON.COM). Bare plug PHRASES are
+# chrome only on short banners: story dialogue legitimately says "read this"
+# (the ORV novel-app panel: "WHY DOESN'T ANYONE READ THIS?").
+_SITE_HARD_RE = re.compile(
+    r"\b\w[\w-]*\.(com|net|org|io|to)\b|\b(ed|tl|pr|qc|clrd|rd)\s*:",
     re.I,
 )
+_SITE_PLUG_RE = re.compile(r"please\s+read|read\s+(this|free)", re.I)
+_SITE_PLUG_MAX_WORDS = 12
 
 _MARKER_RE = re.compile(
     r"^\s*(?:chapter|episode|ep\.?|prologue|final(?:e)?|season\s*\d+)?[\s:#-]*\d{0,4}\s*$",
@@ -48,6 +52,13 @@ _WORD_RE = re.compile(r"[a-z0-9]+")
 
 def _norm_words(s: str) -> list:
     return _WORD_RE.findall((s or "").lower())
+
+
+def needs_image_stats(ocr: str) -> bool:
+    """Callers should compute midtone_frac for these OCR signatures: empty
+    OCR (stylized number cards) or a site hit that may be a mere watermark."""
+    ocr = (ocr or "").strip()
+    return not ocr or bool(_SITE_HARD_RE.search(ocr))
 
 
 def is_chrome_scene(
@@ -84,7 +95,18 @@ def is_chrome_scene(
     if _CREDITS_RE.search(ocr):
         return True
 
-    if _SITE_RE.search(ocr):
+    hard_hits = sum(1 for _ in _SITE_HARD_RE.finditer(ocr))
+    if hard_hits >= 2:
+        return True  # domains + team-credit tags pile up on real covers
+    if hard_hits == 1:
+        # ONE domain amid real dialogue is an aggregator watermark stamped ON
+        # story art (IE p000039) — chrome only when the panel is otherwise
+        # text-sparse AND image stats don't prove real art
+        if (len(_norm_words(ocr)) <= _SITE_PLUG_MAX_WORDS
+                and not (midtone_frac is not None and midtone_frac >= 0.15)):
+            return True
+
+    if _SITE_PLUG_RE.search(ocr) and len(_norm_words(ocr)) <= _SITE_PLUG_MAX_WORDS:
         return True
 
     if _MARKER_RE.match(ocr):
