@@ -216,3 +216,20 @@ discovered → downloaded → stitched → detected → scened → visioned
 Any stage failure sets `status = "<stage>_failed"` and records the error
 message.  `studio run` resumes from the failed stage without re-running
 earlier stages.
+
+## Dashboard + worker (2026-06-12)
+
+Two terminals:
+
+    .eval_venv/bin/python -m studio dashboard   # UI on http://127.0.0.1:8170
+    .eval_venv/bin/python -m studio worker      # serial job executor
+
+The UI only enqueues `job` rows and records `approval` rows; the worker
+executes (one job at a time — the GPU is the factory) and enforces the
+gates: **render needs the latest prep-QA scan green + your approval;
+concat needs bundle approval.** Job types: `chain` (run stages to a
+target status), `qa_scan`, `render_segment` (`--branding` per bundle
+position), `concat` (ffmpeg stream-copy of segments), `refresh`
+(re-discover chapters for tracked series). Timings land in `stage_run`
+and drive every ETA shown. Discovery = cached AniList trending
+(read-only, offline-safe). Logs: `logs/jobs/<id>.log`.
