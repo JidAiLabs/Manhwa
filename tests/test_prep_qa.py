@@ -314,3 +314,28 @@ def test_build_report_counts_and_html_smoke():
     html = pq.render_html(rep, thumbs={"p000011.jpg": b"\xff\xd8fakejpg"})
     assert "husk" in html and "ghost_text" in html
     assert "data:image/jpeg;base64," in html
+
+
+def test_render_html_segment_flag_uses_thumb_scene_fallback():
+    # segment-level flags (ocr_echo) have no scene — they must still show
+    # the panel that segment displays
+    flags = [{"code": "ocr_echo", "severity": "WARN", "scene": "",
+              "thumb_scene": "p000017.jpg", "segment_id": "g0011_p04",
+              "detail": "narration repeats..."}]
+    rep = pq.build_report("X", flags, n_cuts=1)
+    html = pq.render_html(rep, thumbs={"p000017.jpg": b"\xff\xd8fakejpg"})
+    assert html.count("data:image/jpeg;base64,") == 1
+
+
+def test_render_html_gallery_shows_all_cuts():
+    # every report carries a full gallery of the shown cuts in timeline
+    # order — an all-clean report is a review page, not an empty table
+    rep = pq.build_report("X", [], n_cuts=2)
+    gallery = [{"file": "p000001.jpg", "segment_id": "g0001_p00"},
+               {"file": "p000002.jpg", "segment_id": "g0002_p01"}]
+    html = pq.render_html(rep, thumbs={"p000001.jpg": b"\xff\xd8a",
+                                       "p000002.jpg": b"\xff\xd8b"},
+                          gallery=gallery)
+    assert "All shown cuts" in html
+    assert html.count("data:image/jpeg;base64,") == 2
+    assert "g0002_p01" in html

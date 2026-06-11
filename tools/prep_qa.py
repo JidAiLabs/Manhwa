@@ -409,18 +409,23 @@ def build_report(title: str, flags: List[Dict[str, Any]], *,
 _SEV_COLOR = {ERROR: "#c62828", WARN: "#ef6c00", INFO: "#546e7a"}
 
 
+def _img_tag(thumbs: Dict[str, bytes], scene: str, max_w: int = 240) -> str:
+    if scene not in thumbs:
+        return ""
+    b64 = base64.b64encode(thumbs[scene]).decode("ascii")
+    return (f'<img src="data:image/jpeg;base64,{b64}" '
+            f'style="max-width:{max_w}px;max-height:260px">')
+
+
 def render_html(report: Dict[str, Any],
-                thumbs: Optional[Dict[str, bytes]] = None) -> str:
+                thumbs: Optional[Dict[str, bytes]] = None,
+                gallery: Optional[List[Dict[str, str]]] = None) -> str:
     thumbs = thumbs or {}
     c = report["counts"]
     rows: List[str] = []
     for f in report["flags"]:
         scene = f.get("scene") or ""
-        img_tag = ""
-        if scene in thumbs:
-            b64 = base64.b64encode(thumbs[scene]).decode("ascii")
-            img_tag = (f'<img src="data:image/jpeg;base64,{b64}" '
-                       f'style="max-width:240px;max-height:200px">')
+        img_tag = _img_tag(thumbs, scene or str(f.get("thumb_scene") or ""))
         color = _SEV_COLOR.get(f["severity"], "#000")
         rows.append(
             "<tr>"
@@ -430,6 +435,27 @@ def render_html(report: Dict[str, Any],
             f"<td>{_html.escape(f.get('segment_id') or '')}</td>"
             f"<td>{_html.escape(f['detail'])}</td>"
             f"<td>{img_tag}</td></tr>")
+    flags_html = (f"""<table><tr><th>sev</th><th>flag</th><th>scene</th>
+<th>segment</th><th>detail</th><th>thumb</th></tr>{''.join(rows)}</table>"""
+                  if rows else "<p><b>All clean — no flags.</b></p>")
+
+    gallery_html = ""
+    if gallery:
+        cells = []
+        for g in gallery:
+            fn = str(g.get("file") or "")
+            seg = str(g.get("segment_id") or "")
+            cells.append(
+                '<figure style="margin:4px;display:inline-block;'
+                'text-align:center;background:#fff;border:1px solid #ddd;'
+                'padding:4px">'
+                f"{_img_tag(thumbs, fn, max_w=170)}"
+                f'<figcaption style="font-size:11px;color:#444">'
+                f"{_html.escape(seg)}<br>{_html.escape(fn)}</figcaption>"
+                "</figure>")
+        gallery_html = (f"<h2>All shown cuts ({len(gallery)}) — timeline "
+                        f"order</h2><div>{''.join(cells)}</div>")
+
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>prep QA — {_html.escape(report['title'])}</title>
 <style>
@@ -445,10 +471,9 @@ th{{background:#263238;color:#fff}}
 <b style="color:{_SEV_COLOR[WARN]}">WARN: {c.get(WARN, 0)}</b>
 <b style="color:{_SEV_COLOR[INFO]}">INFO: {c.get(INFO, 0)}</b>
 <b>shown cuts: {report['n_cuts']}</b></p>
-<table><tr><th>sev</th><th>flag</th><th>scene</th><th>segment</th>
-<th>detail</th><th>thumb</th></tr>
-{''.join(rows)}
-</table></body></html>"""
+{flags_html}
+{gallery_html}
+</body></html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -555,13 +580,32 @@ def main() -> int:
         flags.extend(narration_flags(str(item.get("segment_id") or ""),
                                      str(item.get("tts_text") or ""), panels))
 
+    # segment-level flags (no scene) still deserve a picture: the first cut
+    # their segment actually shows
+    first_cut_by_segment: Dict[str, str] = {}
+    for c in cuts:
+        first_cut_by_segment.setdefault(c["segment_id"], c["file"])
+    for f in flags:
+        if not f.get("scene") and f.get("segment_id") in first_cut_by_segment:
+            f["thumb_scene"] = first_cut_by_segment[f["segment_id"]]
+
     title = args.series_title or os.path.basename(os.path.dirname(ep))
     title = f"{title} — {os.path.basename(ep).replace('_', ' ')}"
     report = build_report(title, flags, n_cuts=len(cuts))
 
+    # gallery: every shown cut in timeline order (dedup, first appearance)
+    gallery: List[Dict[str, str]] = []
+    seen_gallery: set = set()
+    for c in cuts:
+        if c["file"] in seen_gallery:
+            continue
+        seen_gallery.add(c["file"])
+        gallery.append({"file": c["file"], "segment_id": c["segment_id"]})
+
     thumbs: Dict[str, bytes] = {}
-    for f in flags:
-        scene = f.get("scene")
+    want = ({str(f.get("scene") or f.get("thumb_scene") or "") for f in flags}
+            | seen_gallery)
+    for scene in sorted(want):
         if not scene or scene in thumbs:
             continue
         img = cv2.imread(os.path.join(clean_dir, scene))
@@ -581,7 +625,7 @@ def main() -> int:
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     with open(out_html, "w", encoding="utf-8") as f:
-        f.write(render_html(report, thumbs))
+        f.write(render_html(report, thumbs, gallery=gallery))
 
     c = report["counts"]
     print(f"[prep-qa] {title}: cuts={len(cuts)} "
