@@ -747,6 +747,14 @@ def panel_recoverable(
     parts = filter_content_parts(img, spans, boxes, min_art_score=min_art_score)
     if parts:
         return True
+    # every part can fail individually (bubble-dominated span, bright glow
+    # span) while the WHOLE panel is real art — the writer keeps the whole
+    # image when no part qualifies, so judge that same image (IE p000039).
+    # 0.08 is the established binary-card line: below it = card, not art.
+    gray = img.mean(axis=2) if img.ndim == 3 else img
+    midtone = float(((gray > 60) & (gray < 200)).mean())
+    if midtone >= 0.08 and art_content_score(img, boxes) >= min_art_score:
+        return True
     # blank caption boxes can dominate coverage while a thin band of real art
     # survives outside them (#22) — recoverable iff dead_box_recrop rescues it
     cropped, dead = dead_box_recrop(img, boxes)

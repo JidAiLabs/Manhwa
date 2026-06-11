@@ -584,6 +584,31 @@ def test_speech_shaped_boxes_excludes_ui_rows():
     assert rp.speech_shaped_boxes(boxes, 800) == [(83, 784, 525, 1071)]
 
 
+def test_panel_recoverable_whole_panel_fallback_for_bright_art():
+    # every split part can fail individually (bubble-dominated span, bright
+    # glow span) while the WHOLE cleaned panel is real art — the writer keeps
+    # the whole image in that case, so the gate must judge that same image
+    # (IE p000039: dad + lightbulb glow + two big bubbles)
+    img = _pattern(500, 400)
+    img = np.select([img > 170, img > 85], [255, 128], default=40).astype(np.uint8)
+    box = (0, 0, 400, 400)                     # bubble "covers" 80% of height
+    assert rp.panel_recoverable(img, [box]) is True
+
+
+def test_panel_recoverable_whole_fallback_accepts_bright_glow_art():
+    # the real IE p000039 profile: ~85% near-white/glow, ~9% midtones — above
+    # the 0.08 binary-card line it is ART, not a card; must be recoverable
+    img = np.full((400, 400, 3), 250, dtype=np.uint8)
+    art = _pattern(70, 400)
+    art3 = np.select([art > 170, art > 85], [255, 128], default=40).astype(np.uint8)
+    img[330:400] = art3
+    assert rp.panel_recoverable(img, []) is True
+    # while a NEAR-BINARY panel (midtone < 0.08) stays unrecoverable
+    binimg = np.full((400, 400, 3), 250, dtype=np.uint8)
+    binimg[330:400, ::3] = 0                    # spiky binary burst rows
+    assert rp.panel_recoverable(binimg, []) is False
+
+
 def test_doc_like_separates_documents_from_dialogue():
     # app/stats screen: many words, few inside any bubble -> DOCUMENT
     words = [(10 * i, 10, 10 * i + 8, 18) for i in range(30)]
