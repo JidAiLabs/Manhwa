@@ -209,6 +209,26 @@ def test_branding_inserts_intro_after_first_item_and_appends_outro():
     assert out["total_duration_sec"] == outro["end_sec"]
 
 
+def test_branding_which_intro_only_and_outro_only():
+    # bundle segments: FIRST chapter renders intro only, LAST outro only,
+    # middles none — so a concatenated season has exactly one intro/outro
+    plan = {"timeline": [
+        {"segment_id": "g0001_p00", "start_sec": 0.0, "end_sec": 10.0,
+         "duration_sec": 10.0, "cuts": [{"file": "a.jpg", "start": 0, "dur": 10}]}],
+        "total_duration_sec": 10.0}
+    intro = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
+                                     which="intro")
+    segs = [i.get("branding") for i in intro["timeline"]]
+    assert "intro" in segs and "outro" not in segs
+    outro = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
+                                     which="outro")
+    segs = [i.get("branding") for i in outro["timeline"]]
+    assert "outro" in segs and "intro" not in segs
+    none = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
+                                    which="none")
+    assert [i.get("branding") for i in none["timeline"]] == [None]
+
+
 def test_branding_untouched_when_durations_zero():
     plan = _mini_plan()
     out = rp.insert_branding_items(plan, intro_dur=0.0, outro_dur=0.0)

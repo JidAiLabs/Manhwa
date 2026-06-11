@@ -952,16 +952,29 @@ def insert_branding_items(
     outro_dur: float,
     intro_pad: float = 1.0,
     outro_pad: float = 3.0,
+    which: str = "both",
 ) -> Dict[str, Any]:
     """Insert the channel intro (after the first story beat — the hook plays
     first, then the brand moment over the panel the story paused on) and the
     end-card outro. All later timings shift by the intro length; the renderer
     matches items on ``branding`` and supplies the bundled audio/visuals.
-    Zero durations = no-op (assets missing)."""
+    Zero durations = no-op (assets missing).
+
+    *which*: "both" (single-chapter video, default) | "intro" | "outro" |
+    "none" — bundle segments use intro for the FIRST chapter, outro for the
+    LAST, none for middles, so a concatenated season carries exactly one
+    intro and one outro."""
     out = json.loads(json.dumps(plan))
     tl = out.get("timeline") or []
     if not tl:
         return out
+
+    if which not in ("both", "intro", "outro", "none"):
+        raise ValueError(f"branding which={which!r}")
+    if which in ("outro", "none"):
+        intro_dur = 0.0
+    if which in ("intro", "none"):
+        outro_dur = 0.0
 
     new_tl: List[Dict[str, Any]] = list(tl)
     if intro_dur > 0:
@@ -1053,7 +1066,12 @@ def main() -> int:
     ap.add_argument("--no-bubbles", action="store_true", help="skip bubble inpainting")
     ap.add_argument("--no-trim", action="store_true", help="skip border trimming")
     ap.add_argument("--no-branding", action="store_true",
-                    help="skip channel intro/outro insertion")
+                    help="skip channel intro/outro insertion (alias for "
+                         "--branding none)")
+    ap.add_argument("--branding", choices=["both", "intro", "outro", "none"],
+                    default="both",
+                    help="bundle segments: first chapter=intro, last=outro, "
+                         "middles=none; default both (single-chapter video)")
     ap.add_argument("--no-split", action="store_true",
                     help="skip splitting over-merged crops on white bands")
     ap.add_argument("--series-title", default="",
@@ -1413,10 +1431,12 @@ def main() -> int:
                             cuts_by_segment=cuts_by_segment)
 
     intro_dur = outro_dur = 0.0
-    if not args.no_branding:
+    which = "none" if args.no_branding else args.branding
+    if which != "none":
         intro_dur = _wav_duration_sec(os.path.join(args.branding_dir, "intro.wav"))
         outro_dur = _wav_duration_sec(os.path.join(args.branding_dir, "outro.wav"))
-        out_plan = insert_branding_items(out_plan, intro_dur=intro_dur, outro_dur=outro_dur)
+        out_plan = insert_branding_items(out_plan, intro_dur=intro_dur,
+                                         outro_dur=outro_dur, which=which)
 
     out_path = args.out_plan or (os.path.splitext(args.plan)[0] + ".clean.json")
     with open(out_path, "w", encoding="utf-8") as f:
