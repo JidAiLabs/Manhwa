@@ -49,3 +49,11 @@ def test_concat_gate(tmp_path):
     assert not allowed and "approval" in why
     gates.approve(con, "concat", bundle_id=5)
     assert gates.concat_allowed(con, 5) == (True, "")
+
+
+def test_voice_gate_requires_narration_approval(tmp_path):
+    con = _con(tmp_path)
+    allowed, why = gates.voice_allowed(con, 1)
+    assert not allowed and "narration" in why
+    gates.approve(con, "voice", chapter_id=1, note="read the lines, good")
+    assert gates.voice_allowed(con, 1) == (True, "")

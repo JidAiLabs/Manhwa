@@ -75,3 +75,21 @@ def test_recording_wrapper_records_failure(tmp_path):
         pass
     ok = con.execute("SELECT ok FROM stage_run WHERE chapter_id=5").fetchone()[0]
     assert ok == 0
+
+
+def test_chain_past_scripted_requires_voice_approval(tmp_path):
+    """run->planned crosses the voiceover line: blocked until the user
+    approves the narration (gate='voice'); run->scripted is never gated."""
+    con = _con(tmp_path)
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (1,'asura','u','s','S','t')")
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at) VALUES "
+                "(1,1,1,'Ch 1','u','scripted','/tmp/x','t')")
+    con.commit()
+    jid = jobs.enqueue(con, "chain", chapter_id=1,
+                       payload={"target": "planned"})
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path))
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (jid,)).fetchone()
+    assert state == "failed" and "narration" in err

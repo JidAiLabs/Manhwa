@@ -37,6 +37,14 @@ def latest_qa_ok(con: sqlite3.Connection, chapter_id: int) -> bool:
     return bool(r and r[0])
 
 
+def voice_allowed(con: sqlite3.Connection, chapter_id: int) -> Tuple[bool, str]:
+    """Confirm-upstream-before-expensive-downstream: the narration must be
+    read and approved before ~20 GPU-minutes of voiceover are spent on it."""
+    if not _has_approval(con, "voice", chapter_id=chapter_id):
+        return False, "needs narration approval (read the script first)"
+    return True, ""
+
+
 def render_allowed(con: sqlite3.Connection, chapter_id: int) -> Tuple[bool, str]:
     if not latest_qa_ok(con, chapter_id):
         return False, "needs a passing QA scan (latest scan missing or failed)"

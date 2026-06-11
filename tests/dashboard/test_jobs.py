@@ -45,3 +45,14 @@ def test_finish_failure_records_error(tmp_path):
     jobs.finish(con, a, ok=False, error="needs render approval")
     row = [r for r in jobs.queue_view(con) if r["id"] == a][0]
     assert row["state"] == "failed" and "approval" in row["error"]
+
+
+def test_queue_view_keeps_recent_finished_jobs(tmp_path):
+    """Done jobs must stay visible (with logs) — they should not vanish the
+    moment they finish (user lost their first QA scan this way)."""
+    con = _con(tmp_path)
+    a = jobs.enqueue(con, "qa_scan", chapter_id=1)
+    jobs.claim_next(con)
+    jobs.finish(con, a, ok=True)
+    view = jobs.queue_view(con)
+    assert any(r["id"] == a and r["state"] == "done" for r in view)

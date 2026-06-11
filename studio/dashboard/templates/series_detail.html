@@ -1,5 +1,5 @@
 {% extends "base.html" %}{% set active='series' %}{% block body %}
-<h2>{{ title }} <small>— {{ chapters|length }} chapters</small></h2>
+<h2>{{ title }} <small>— {{ chapters|length }} chapters · narration is reviewed BEFORE voiceover</small></h2>
 <table><tr><th>ch</th><th>label</th><th>status</th><th>season</th><th></th></tr>
 {% for c in chapters %}
 <tr><td>{{ c.number }}</td><td><a href="/chapter/{{ c.id }}" style="color:var(--acc)">{{ c.label }}</a></td>
@@ -7,9 +7,13 @@
 <td class="kv">{{ c.season or '—' }}</td>
 <td><form class="inline" method="post" action="/jobs">
 <input type="hidden" name="type" value="chain"><input type="hidden" name="chapter_id" value="{{ c.id }}">
-<input type="hidden" name="target" value="planned"><button class="ghost">run → planned</button></form>
+<input type="hidden" name="target" value="scripted"><button class="ghost">run → script</button></form>
+<form class="inline" method="post" action="/jobs">
+<input type="hidden" name="type" value="chain"><input type="hidden" name="chapter_id" value="{{ c.id }}">
+<input type="hidden" name="target" value="planned"><button class="ghost">voice + plan 🔒</button></form>
 <form class="inline" method="post" action="/jobs">
 <input type="hidden" name="type" value="qa_scan"><input type="hidden" name="chapter_id" value="{{ c.id }}">
 <button class="ghost">QA scan</button></form></td></tr>
 {% endfor %}</table>
+<div class="note">run → script = everything up to the written narration (no voiceover). voice + plan 🔒 refuses until you approve the narration on the chapter page — your confirm-upstream rule, enforced by the worker.</div>
 {% endblock %}

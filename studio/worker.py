@@ -76,9 +76,20 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO)) -> int:
 
 def _h_chain(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
     """Run pipeline stages for one chapter up to payload['target'] via the
-    studio CLI (it owns config, creds, resumability)."""
+    studio CLI (it owns config, creds, resumability). Targets at or past
+    'voiced' cross the narration-review line and need the voice gate."""
+    from studio.catalog.models import STATUS_ORDER
     ch = _chapter(con, job["chapter_id"])
-    target = job["payload"].get("target", "planned")
+    target = job["payload"].get("target", "scripted")
+    try:
+        crosses_voice = (STATUS_ORDER.index(target)
+                         >= STATUS_ORDER.index("voiced"))
+    except ValueError:
+        crosses_voice = True   # unknown target: fail safe, require approval
+    if crosses_voice:
+        allowed, why = gates.voice_allowed(con, ch["id"])
+        if not allowed:
+            raise RuntimeError(f"voiceover blocked: {why}")
     with record_stage(con, chapter_id=ch["id"], stage=f"chain:{target}",
                       series_id=ch["series_id"]):
         rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),

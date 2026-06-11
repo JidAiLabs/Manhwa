@@ -79,9 +79,15 @@ def set_log(con: sqlite3.Connection, job_id: int, log_path: str) -> None:
 
 
 def queue_view(con: sqlite3.Connection) -> List[Dict[str, Any]]:
-    rows = con.execute(
+    """Running first, then the queue, then the most recent finished jobs —
+    a job must never silently vanish the moment it completes."""
+    active = con.execute(
         f"SELECT {_COLS} FROM job WHERE type!='heartbeat' AND "
-        "state IN ('running','queued','failed') "
-        "ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'queued' THEN 1 "
-        "ELSE 2 END, priority, id").fetchall()
-    return [_row(r) for r in rows]
+        "state IN ('running','queued') "
+        "ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END, priority, id"
+    ).fetchall()
+    recent = con.execute(
+        f"SELECT {_COLS} FROM job WHERE type!='heartbeat' AND "
+        "state IN ('done','failed','cancelled') "
+        "ORDER BY finished_at DESC, id DESC LIMIT 12").fetchall()
+    return [_row(r) for r in active] + [_row(r) for r in recent]

@@ -58,30 +58,45 @@ def _chapter_costs(ep_dir: Optional[str]) -> float:
 
 
 def _gallery(ep_dir: Optional[str]) -> List[Dict[str, Any]]:
-    """Segment blocks (narration + cut files) from the clean plan."""
+    """Segment blocks (narration + panels). Prefers the prepped clean plan;
+    before one exists, falls back to manifest.beats.json so the narration
+    can be REVIEWED (and approved for voiceover) right after the script
+    stage — confirm upstream before spending GPU time downstream."""
     if not ep_dir:
         return []
     p = Path(ep_dir) / "render.plan.clean.json"
-    if not p.exists():
+    if p.exists():
+        try:
+            plan = json.loads(p.read_text())
+        except Exception:
+            return []
+        out = []
+        for item in plan.get("timeline") or []:
+            if item.get("branding"):
+                continue
+            files = []
+            for c in item.get("cuts") or []:
+                for f in (c.get("file"), c.get("file2")):
+                    if f:
+                        files.append(str(f))
+            out.append({"segment_id": item.get("segment_id"),
+                        "narration": item.get("tts_text") or "",
+                        "files": files, "src_dir": "scenes_clean",
+                        "duration": item.get("duration_sec") or 0})
+        return out
+
+    b = Path(ep_dir) / "manifest.beats.json"
+    if not b.exists():
         return []
     try:
-        plan = json.loads(p.read_text())
+        beats = json.loads(b.read_text()).get("beats") or []
     except Exception:
         return []
-    out = []
-    for item in plan.get("timeline") or []:
-        if item.get("branding"):
-            continue
-        files = []
-        for c in item.get("cuts") or []:
-            for f in (c.get("file"), c.get("file2")):
-                if f:
-                    files.append(str(f))
-        out.append({"segment_id": item.get("segment_id"),
-                    "narration": item.get("tts_text") or "",
-                    "files": files,
-                    "duration": item.get("duration_sec") or 0})
-    return out
+    return [{"segment_id": f"g{int(bt.get('group_id') or 0):04d}",
+             "narration": bt.get("narration") or "",
+             "files": [str(f) for f in (bt.get("scene_files") or [])[:4]],
+             "src_dir": "scenes", "duration": 0}
+            for bt in beats]
 
 
 def _stage_timeline(con: sqlite3.Connection, ch: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -206,10 +221,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         ep_rel = (Path(ch["ep_dir"]).resolve().relative_to(
             (REPO / "ongoing").resolve()) if ch["ep_dir"] else None)
         allowed, why = gates.render_allowed(c, cid)
+        v_allowed, v_why = gates.voice_allowed(c, cid)
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
                     qa_ok=gates.latest_qa_ok(c, cid),
                     render_allowed=allowed, render_block_reason=why,
+                    voice_allowed=v_allowed, voice_block_reason=v_why,
                     cost=_chapter_costs(ch["ep_dir"]),
                     gallery=_gallery(ch["ep_dir"]), ep_rel=ep_rel)
 
