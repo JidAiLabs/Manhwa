@@ -548,3 +548,36 @@ class TestMissingEpDir:
         cfg = _make_cfg(tmp_path)
         with pytest.raises(ValueError, match="ep_dir"):
             pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+
+
+# ---------------------------------------------------------------------------
+# --until: stop the chain at a target status (dashboard worker contract)
+# ---------------------------------------------------------------------------
+
+def test_run_chapter_until_stops_at_target(tmp_path, monkeypatch):
+    from studio import pipeline
+
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    con = connect(tmp_path / "s.db")
+    ch = _make_chapter(con, ep, status="downloaded")
+
+    ran = []
+
+    def _stub(name):
+        def run(ep_dir, cfg):
+            ran.append(name)
+            # touch the marker so the stage counts as completed
+            for status, _fn, marker in pipeline._STAGE_TABLE:
+                if status == name:
+                    (ep_dir / marker).parent.mkdir(parents=True, exist_ok=True)
+                    (ep_dir / marker).touch()
+        return run
+
+    table = [(s, _stub(s), m) for (s, _f, m) in pipeline._STAGE_TABLE]
+    monkeypatch.setattr(pipeline, "_STAGE_TABLE", table)
+
+    pipeline.run_chapter(con, ch, _make_cfg(tmp_path), now_fn=_now,
+                         until="scened")
+    assert ran == ["stitched", "detected", "scened"]
+    assert repo.get_chapter(con, ch.id).status == "scened"

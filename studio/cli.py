@@ -223,11 +223,59 @@ def cmd_run(args: argparse.Namespace) -> int:
                 continue
 
         print(f"  Running pipeline for ch{ch.number} (status={ch.status}) …")
-        pipeline.run_chapter(con, ch, cfg, now_fn=_now_iso)
+        pipeline.run_chapter(con, ch, cfg, now_fn=_now_iso,
+                             until=getattr(args, "until", None))
         updated = repo.get_chapter(con, ch.id)
         print(f"    → {updated.status}")
 
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: refresh
+# ---------------------------------------------------------------------------
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    """Re-run source discovery for tracked series. upsert_chapter is
+    idempotent on (series_id, number), so only NEW chapters create rows."""
+    con = _open_db()
+    now = _now_iso()
+    series_list = repo.list_series(con)
+    if args.series is not None:
+        series_list = [s for s in series_list if s.id == args.series]
+    total_new = 0
+    for s in series_list:
+        before = len(repo.list_chapters(con, s.id))
+        try:
+            adapter = get_adapter(s.source)
+            for ch in adapter.list_chapters(s.series_url):
+                repo.upsert_chapter(con, s.id, ch.number, ch.label, ch.url,
+                                    updated_at=now)
+        except Exception as e:
+            print(f"  [warn] {s.title}: discovery failed: {e}")
+            continue
+        new = len(repo.list_chapters(con, s.id)) - before
+        total_new += new
+        print(f"  {s.title}: {new} new chapter(s)")
+    print(f"refresh done: {total_new} new chapter(s)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommands: dashboard / worker
+# ---------------------------------------------------------------------------
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from studio.dashboard.app import create_app
+    uvicorn.run(create_app(db_path=args.db), host="127.0.0.1", port=args.port)
+    return 0
+
+
+def cmd_worker(args: argparse.Namespace) -> int:
+    from studio import worker
+    return worker.main(args.db)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +372,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("series_id", type=int)
     p_run.add_argument("--chapters", required=True,
                        help="Chapter selector: N, N-M, or 'new'")
+    p_run.add_argument("--until", default=None, metavar="STATUS",
+                       help="Stop after reaching this status (e.g. voiced)")
+
+    # refresh — re-discover chapters for tracked series (new-chapter feed)
+    p_refresh = sub.add_parser(
+        "refresh", help="Re-discover chapters for tracked series")
+    p_refresh.add_argument("--series", type=int, default=None, metavar="ID",
+                           help="Only this series (default: all)")
+
+    # dashboard / worker
+    p_dash = sub.add_parser("dashboard", help="Run the control dashboard UI")
+    p_dash.add_argument("--port", type=int, default=8170)
+    p_dash.add_argument("--db", default="studio.db")
+    p_worker = sub.add_parser("worker", help="Run the job queue executor")
+    p_worker.add_argument("--db", default="studio.db")
 
     # status
     p_status = sub.add_parser("status", help="Show chapter status table")
@@ -365,6 +428,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         "run":        cmd_run,
         "status":     cmd_status,
         "qa":         cmd_qa,
+        "refresh":    cmd_refresh,
+        "dashboard":  cmd_dashboard,
+        "worker":     cmd_worker,
     }
 
     fn = dispatch.get(args.command)

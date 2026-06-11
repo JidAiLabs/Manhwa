@@ -286,6 +286,7 @@ def run_chapter(
     cfg: Config,
     *,
     now_fn: Callable[[], str],
+    until: str | None = None,
 ) -> None:
     """Drive *chapter* through pipeline stages starting from its current status.
 
@@ -322,6 +323,13 @@ def run_chapter(
 
     # Walk the stage table and execute stages that haven't been completed yet
     for result_status, runner_fn, marker_rel in _STAGE_TABLE:
+        # honor --until: stop once the next stage would pass the target
+        if until is not None:
+            try:
+                if STATUS_ORDER.index(result_status) > STATUS_ORDER.index(until):
+                    break
+            except ValueError:
+                raise ValueError(f"Unknown --until status '{until}'")
         # Skip stages already completed (result_status <= effective_status in order)
         try:
             result_idx = STATUS_ORDER.index(result_status)
