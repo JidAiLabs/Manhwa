@@ -246,7 +246,11 @@ def scan(con: sqlite3.Connection, *, client=None,
     n = fetch_trending(con, client=client)
     log(f"[discovery] anilist rows: {n}")
     if searchers is None:
-        from studio.sources.base import get_adapter
+        # adapters self-register on import; REGISTRY maps id -> instance
+        import studio.sources.asura    # noqa: F401
+        import studio.sources.elftoon  # noqa: F401
+        import studio.sources.webtoon  # noqa: F401
+        from studio.sources.base import get as get_adapter
         searchers = {}
         for sid in ("asura", "webtoon", "elftoon"):
             try:
