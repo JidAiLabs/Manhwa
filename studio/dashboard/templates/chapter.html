@@ -36,5 +36,5 @@
 {% if g.narration %}<div class="nar">{{ g.narration }}</div>{% endif %}
 {% if ep_rel %}{% for f in g.files %}<img src="/media/{{ ep_rel }}/{{ g.src_dir }}/{{ f }}" loading="lazy">{% endfor %}{% endif %}
 </div>
-{% else %}<div class="kv">no narration yet — “run → script” first</div>{% endfor %}
+{% else %}<div class="kv">no narration yet — “prepare narration” first</div>{% endfor %}
 {% endblock %}

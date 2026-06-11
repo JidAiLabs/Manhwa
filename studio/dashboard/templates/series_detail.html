@@ -7,7 +7,7 @@
 <td class="kv">{{ c.season or '—' }}</td>
 <td><form class="inline" method="post" action="/jobs">
 <input type="hidden" name="type" value="chain"><input type="hidden" name="chapter_id" value="{{ c.id }}">
-<input type="hidden" name="target" value="scripted"><button class="ghost">run → script</button></form>
+<input type="hidden" name="target" value="scripted"><button class="ghost">prepare narration</button></form>
 <form class="inline" method="post" action="/jobs">
 <input type="hidden" name="type" value="chain"><input type="hidden" name="chapter_id" value="{{ c.id }}">
 <input type="hidden" name="target" value="planned"><button class="ghost">voice + plan 🔒</button></form>
@@ -15,5 +15,5 @@
 <input type="hidden" name="type" value="qa_scan"><input type="hidden" name="chapter_id" value="{{ c.id }}">
 <button class="ghost">QA scan</button></form></td></tr>
 {% endfor %}</table>
-<div class="note">run → script = everything up to the written narration (no voiceover). voice + plan 🔒 refuses until you approve the narration on the chapter page — your confirm-upstream rule, enforced by the worker.</div>
+<div class="note">prepare narration = everything up to the written script (no voiceover). voice + plan 🔒 refuses until you approve the narration on the chapter page — your confirm-upstream rule, enforced by the worker.</div>
 {% endblock %}
