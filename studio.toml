@@ -21,11 +21,15 @@ beats_model = "gemini-2.5-flash"
 script_model = "gpt-5-nano"
 
 [tts]
-# voiced backend: "elevenlabs" (cloud, paid) | "chatterbox" (local, free, MIT) |
-# "kokoro" (local, free, fast, flatter).
-backend = "kokoro"   # fast, free, viable at scale (~3 min/chapter); chatterbox/qwen are slow on MPS
+# voiced backend: "qwen" (local MPS, LOCKED narrator clone — production) |
+# "kokoro" (local, free, ~6x faster, flatter — pending listening verdict) |
+# "chatterbox" (local, MIT) | "elevenlabs" (cloud, paid).
+# Modal RETIRED (2026-06-11): local Qwen measured at the same ~20min/chapter
+# wall time as the A10G (both sdpa, no flash-attn); $0.37/ch bought nothing
+# but off-box execution. User directive: no external dependencies.
+backend = "qwen"
 voice_ref = "assets/voice/narrator_ref.wav"   # LOCKED narrator (user-picked clip g0021_p02).
                  # qwen clones it (Base ckpt, .txt transcript sidecar); chatterbox clones it too;
                  # kokoro ignores it (uses kokoro_voice).
-python = "/Users/anka/repos/Manhwa/.kokoro_venv/bin/python"   # isolated venv per backend (deps conflict)
-kokoro_voice = "am_puck"   # American male narrator
+python = "/Users/anka/repos/Manhwa/.qwen_venv/bin/python"   # isolated venv per backend (deps conflict)
+kokoro_voice = "am_puck"   # used only when backend = "kokoro"
