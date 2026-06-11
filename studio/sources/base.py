@@ -85,6 +85,14 @@ class SourceAdapter(ABC):
         Returns the list of image paths written, in page order.
         """
 
+    def search(self, title: str) -> list[tuple[str, str]]:
+        """Best-effort site search: [(series_title, series_url), ...].
+
+        Used by discovery to auto-link AniList trends to source URLs.
+        Default: no search capability. Implementations must swallow their
+        own errors and return [] — site churn must never break discovery."""
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Registry

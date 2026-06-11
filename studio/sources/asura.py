@@ -184,6 +184,28 @@ class AsuraAdapter(SourceAdapter):
             slug=slugify(title),
         )
 
+    def search(self, title: str) -> list[tuple[str, str]]:
+        """Asura SSR-embeds search results as &quot;-escaped JSON blocks
+        carrying "slug"/"title" and a "public_url" (/comics/<slug>-<hash>)."""
+        from urllib.parse import quote
+        try:
+            resp = httpx.get(f"{_BASE_URL}/series?name={quote(title)}",
+                             headers=_HEADERS, follow_redirects=True,
+                             timeout=15)
+            text = resp.text.replace("&quot;", '"')
+            origin = str(resp.url).split("/series")[0]
+            out: list[tuple[str, str]] = []
+            for m in re.finditer(
+                    r'"slug":\[0,"([^"]+)"\],"title":\[0,"([^"]+)"\]', text):
+                slug, t = m.group(1), m.group(2)
+                pu = re.search(r'"public_url":\[0,"(/comics/'
+                               + re.escape(slug) + r'[^"]*)"\]', text)
+                out.append((t, origin + (pu.group(1) if pu
+                                         else f"/comics/{slug}")))
+            return out[:10]
+        except Exception:
+            return []
+
     def download(self, chapter: ChapterRef, dest_dir: Path) -> list[Path]:
         resp = httpx.get(chapter.url, headers=_HEADERS, follow_redirects=True, timeout=30)
         resp.raise_for_status()

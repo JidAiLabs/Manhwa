@@ -281,6 +281,15 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
     con.commit()
 
 
+def _h_discovery_scan(con: sqlite3.Connection, job: Dict[str, Any],
+                      log: TextIO) -> None:
+    """AniList trends + auto-link source URLs + YouTube coverage per title."""
+    from studio.dashboard import discovery
+    n = discovery.scan(con, log=lambda *a: (log.write(" ".join(map(str, a))
+                                                      + "\n"), log.flush()))
+    log.write(f"scanned {n} titles\n")
+
+
 def _h_refresh(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
     rc = _stream([PY, "-m", "studio", "refresh"]
                  + (["--series", str(job["series_id"])] if job["series_id"]
@@ -290,6 +299,7 @@ def _h_refresh(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
 
 
 HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]] = {
+    "discovery_scan": _h_discovery_scan,
     "prepare": _h_prepare,
     "voiceover": _h_voiceover,
     "add_series": _h_add_series,

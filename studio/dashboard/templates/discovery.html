@@ -1,23 +1,42 @@
 {% extends "base.html" %}{% set active='discovery' %}{% block body %}
-<h2>Discovery <small>— AniList trending (internal titles only) · competitor YouTube scan: v1.1</small></h2>
-<div class="row"><a href="/discovery?refresh=1"><button class="ghost">refresh from AniList</button></a>
-<span class="kv">AniList only reports a chapter count for COMPLETED series — “ongoing” is normal.</span></div>
-<table><tr><th>title</th><th>trend</th><th>chapters</th><th>status</th><th>add to production</th></tr>
+<h2>Discovery <small>— AniList trend × source links × YouTube competitor coverage</small></h2>
+<div class="row">
+<form class="inline" method="post" action="/jobs">
+<input type="hidden" name="type" value="discovery_scan">
+<button>full scan (trends + links + YouTube)</button></form>
+<span class="kv">runs in the worker · AniList chapter counts only exist for COMPLETED series (“ongoing” is normal)</span>
+</div>
+<table><tr><th>title / summary</th><th>trend</th><th>ch</th><th>YouTube coverage</th><th>sources found</th><th>status</th></tr>
 {% for t in titles %}
-<tr><td><b>{{ t.title }}</b></td><td class="kv">▲ {{ t.trend_score|int }}</td>
+<tr {% if t.opportunity %}style="outline:1px solid var(--ok)"{% endif %}>
+<td style="max-width:430px"><b>{{ t.title }}</b>{% if t.opportunity %} <span class="b ok">OPPORTUNITY</span>{% endif %}
+{% if t.meta.genres %}<div class="kv">{{ t.meta.genres|join(' · ') }}{% if t.meta.status %} · {{ t.meta.status|lower }}{% endif %}</div>{% endif %}
+{% if t.meta.description %}<div class="kv" style="margin-top:4px">{{ t.meta.description[:220] }}{% if t.meta.description|length > 220 %}…{% endif %}</div>{% endif %}</td>
+<td class="kv">▲ {{ t.trend_score|int }}</td>
 <td class="kv">{{ t.chapters or 'ongoing' }}</td>
-<td>{% if t.status=='tracked' %}<span class="b new">TRACKED</span>
-{% elif t.status=='in_production' %}<span class="b run">IN PRODUCTION</span>
-{% else %}<span class="b q">{{ t.status|upper }}</span>{% endif %}</td>
+<td class="kv">{% if t.meta.youtube %}{{ t.meta.youtube.videos }} recaps · top {{ '{:,}'.format(t.meta.youtube.max_views) }} views
+{% if t.meta.youtube.channels %}<div>{{ t.meta.youtube.channels[:3]|join(', ') }}</div>{% endif %}
+{% else %}—{% endif %}</td>
 <td>
-{% if t.status in ('candidate','tracked') %}
+{% if t.meta.links %}
+{% for source, hit in t.meta.links.items() %}
+<form class="inline" method="post" action="/discovery/{{ t.anilist_id }}/add">
+<input type="hidden" name="source" value="{{ source }}">
+<input type="hidden" name="url" value="{{ hit.url }}">
+<button class="ghost" title="{{ hit.title }} ({{ hit.score }})">add from {{ source }}</button></form>
+{% endfor %}
+{% elif t.status in ('candidate','tracked') %}
 <form class="inline" method="post" action="/discovery/{{ t.anilist_id }}/add">
 <select name="source"><option>asura</option><option>webtoon</option><option>elftoon</option></select>
-<input name="url" placeholder="paste the series URL on that source" style="background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:6px;width:280px">
-<button class="ghost">add series</button></form>
-{% else %}<span class="kv">on the Series board</span>{% endif %}
-</td></tr>
-{% else %}<tr><td colspan="5" class="kv">no cache yet — hit “refresh from AniList”</td></tr>{% endfor %}
+<input name="url" placeholder="series URL" style="background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:6px;width:200px">
+<button class="ghost">add</button></form>
+{% endif %}
+</td>
+<td>{% if t.status=='in_production' %}<span class="b run">IN PRODUCTION</span>
+{% elif t.status=='tracked' %}<span class="b new">TRACKED</span>
+{% else %}<span class="b q">{{ t.status|upper }}</span>{% endif %}</td>
+</tr>
+{% else %}<tr><td colspan="6" class="kv">no cache yet — hit “full scan”</td></tr>{% endfor %}
 </table>
-<div class="note">“add series” runs source discovery in the worker; the series then appears on the Series board where “prepare ALL chapters” takes over. AniList knows trends; only the source site knows the chapter list.</div>
+<div class="note">OPPORTUNITY = trending ≥60 with ≤3 recaps under 100K views — high demand, thin competition. “add from &lt;source&gt;” uses the auto-matched URL (hover shows the matched title + confidence).</div>
 {% endblock %}

@@ -104,6 +104,31 @@ class WebtoonAdapter(SourceAdapter):
     id = "webtoon"
     capabilities = Capability.DOWNLOAD | Capability.LIST_CHAPTERS | Capability.SERIES_META
 
+    def search(self, title: str) -> list[tuple[str, str]]:
+        """webtoons.com/en/search — result cards are <a class='link _card_item'>
+        with the title as the first text line."""
+        from urllib.parse import quote
+
+        import httpx
+        from selectolax.parser import HTMLParser
+        try:
+            r = httpx.get(
+                "https://www.webtoons.com/en/search?keyword=" + quote(title),
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS "
+                                       "X 10_15_7) AppleWebKit/537.36"},
+                follow_redirects=True, timeout=15)
+            out: list[tuple[str, str]] = []
+            for a in HTMLParser(r.text).css("a._card_item"):
+                href = a.attributes.get("href") or ""
+                first_line = next((ln.strip() for ln in
+                                   (a.text() or "").splitlines()
+                                   if ln.strip()), "")
+                if href and first_line:
+                    out.append((first_line, href))
+            return out[:10]
+        except Exception:
+            return []
+
     def _fetch_entries(self, series_url: str) -> list:
         return _run_gallery_dl_j(series_url)
 

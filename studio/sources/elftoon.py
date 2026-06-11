@@ -173,6 +173,21 @@ class ElftoonAdapter(SourceAdapter):
     def _fetch_series_page(self, series_url: str) -> HTMLParser:
         return _get_html(series_url)
 
+    def search(self, title: str) -> list[tuple[str, str]]:
+        """WordPress search: /?s=<q>, result anchors carry class 'series'."""
+        from urllib.parse import quote
+        try:
+            tree = _get_html(f"https://elftoon.com/?s={quote(title)}")
+            out: list[tuple[str, str]] = []
+            for a in tree.css("a.series"):
+                href = a.attributes.get("href") or ""
+                txt = (a.text() or "").strip()
+                if href and txt:
+                    out.append((txt, href))
+            return out[:10]
+        except Exception:
+            return []
+
     def list_chapters(self, series_url: str) -> list[ChapterRef]:
         tree = self._fetch_series_page(series_url)
         _, chapters = _parse_series(tree)
