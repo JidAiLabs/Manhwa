@@ -150,9 +150,27 @@ def _part_image_jpeg(b: bytes) -> types.Part:
         return types.Part.from_bytes(data=b, mime_type="image/jpeg")
 
 
+def _schema_to_json_schema(s: Any) -> Any:
+    """Gemini response_schema (UPPERCASE type enums) -> standard JSON Schema
+    for Ollama's structured-output `format` parameter."""
+    if isinstance(s, dict):
+        out = {}
+        for k, v in s.items():
+            if k == "propertyOrdering":
+                continue
+            if k == "type" and isinstance(v, str):
+                out[k] = v.lower()
+            else:
+                out[k] = _schema_to_json_schema(v)
+        return out
+    if isinstance(s, list):
+        return [_schema_to_json_schema(x) for x in s]
+    return s
+
+
 def _call_model(
     *,
-    client: genai.Client,
+    client: Optional[genai.Client],
     model: str,
     system_instruction: str,
     user_payload: Dict[str, Any],
@@ -160,7 +178,36 @@ def _call_model(
     response_schema: Dict[str, Any],
     max_output_tokens: int,
     temperature: float,
+    backend: str = "vertex",
 ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
+    if backend == "ollama":
+        # local open model (Gemma 4 et al.) via the Ollama server — same
+        # contract: system + INPUT_JSON + panel images -> schema'd JSON
+        import ollama
+        msg: Dict[str, Any] = {
+            "role": "user",
+            "content": "INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False),
+        }
+        images = [p for p in image_paths if p and os.path.exists(p)]
+        if images:
+            msg["images"] = images
+        resp = ollama.chat(
+            model=model,
+            messages=[{"role": "system", "content": system_instruction}, msg],
+            format=_schema_to_json_schema(response_schema),
+            think=False,  # Gemma 4 thinks by default and burns the budget
+            options={"temperature": temperature,
+                     "num_predict": max_output_tokens,
+                     "num_ctx": 16384},
+        )
+        raw = (resp.get("message") or {}).get("content") or ""
+        usage = {"input": int(resp.get("prompt_eval_count") or 0),
+                 "output": int(resp.get("eval_count") or 0), "cached": 0}
+        try:
+            return json.loads(raw), raw, usage
+        except Exception:
+            return _extract_json_object(raw), raw, usage
+
     parts: List[types.Part] = []
     parts.append(_part_text("INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False)))
 
@@ -196,7 +243,7 @@ def _call_model(
 
 def _call_model_with_backoff(
     *,
-    client: genai.Client,
+    client: Optional[genai.Client],
     model: str,
     system_instruction: str,
     user_payload: Dict[str, Any],
@@ -205,6 +252,7 @@ def _call_model_with_backoff(
     max_output_tokens: int,
     temperature: float,
     backoff_max: float,
+    backend: str = "vertex",
 ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
     attempt = 0
     while True:
@@ -218,6 +266,7 @@ def _call_model_with_backoff(
                 response_schema=response_schema,
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
+                backend=backend,
             )
         except ClientError as e:
             msg = str(e)
@@ -269,9 +318,15 @@ def main() -> int:
     ap.add_argument("--vision-manifest", required=True)
     ap.add_argument("--out", required=True)
 
-    ap.add_argument("--project", required=True)
-    ap.add_argument("--location", required=True)
+    ap.add_argument("--project", default="",
+                    help="GCP project (required for --backend vertex)")
+    ap.add_argument("--location", default="",
+                    help="Vertex location (required for --backend vertex)")
     ap.add_argument("--model", default="gemini-2.5-flash")
+    ap.add_argument("--backend", choices=["vertex", "ollama"], default="vertex",
+                    help="ollama = local open model (Gemma 4) via the Ollama "
+                         "server; no GCP creds, $0")
+    ap.add_argument("--ollama-model", default="gemma4:26b")
 
     ap.add_argument("--min-sleep", type=float, default=1.2, help="Sleep between groups to avoid 429 bursts")
     ap.add_argument("--max-images-per-group", type=int, default=3, help="Cap images attached per group (0=none)")
@@ -295,7 +350,14 @@ def main() -> int:
 
     vision_by_file = _build_vision_map(vision_m)
 
-    client = genai.Client(vertexai=True, project=args.project, location=args.location)
+    if args.backend == "ollama":
+        client = None
+        args.model = args.ollama_model
+    else:
+        if not args.project or not args.location:
+            raise SystemExit("--project/--location are required for --backend vertex")
+        client = genai.Client(vertexai=True, project=args.project,
+                              location=args.location)
 
     system = (
         "You are a YouTube manhwa recap story editor.\n"
@@ -479,6 +541,7 @@ def main() -> int:
                 max_output_tokens=args.max_output_tokens,
                 temperature=0.2,
                 backoff_max=args.backoff_max,
+                backend=args.backend,
             )
             usage.add(input_tokens=u["input"], output_tokens=u["output"], cached_tokens=u.get("cached", 0))
             raw_text = raw
@@ -516,6 +579,7 @@ def main() -> int:
                 max_output_tokens=args.max_output_tokens,
                 temperature=0.0,
                 backoff_max=args.backoff_max,
+                backend=args.backend,
             )
             usage.add(input_tokens=u2["input"], output_tokens=u2["output"], cached_tokens=u2.get("cached", 0))
             raw_text = raw2

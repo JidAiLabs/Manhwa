@@ -20,6 +20,7 @@ from __future__ import annotations
 # USD per 1,000,000 tokens. ESTIMATES as of 2026-06 — update to match current
 # provider pricing. Keys are model-family prefixes (matched by startswith).
 PRICING: dict[str, dict[str, float]] = {
+    "gemma4": {"input": 0.0, "output": 0.0},   # local via Ollama — $0
     "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
     "gemini-2.5-flash": {"input": 0.30, "output": 2.50},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
