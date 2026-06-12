@@ -600,3 +600,14 @@ def test_caption_paraphrase_arbitration_downgrades_to_warn():
     fl2 = pq.caption_unvoiced_flags(beats, vitems,
                                     arbitrate=lambda cap, narr: False)
     assert [f["code"] for f in fl2] == ["caption_unvoiced"]
+
+
+def test_montage_flags_exempt_sys_doc_recurrence():
+    """IE g0006-g0009: alternating SYSTEM/DOCUMENT cards is legitimate —
+    they're exempt from the repeat cap and must not read as degeneracy."""
+    tl = []
+    for i, f in enumerate(("s.jpg", "d.jpg", "s.jpg", "d.jpg")):
+        tl.append(_seg(f"g{i+6:04d}_p00", "x", [f]))
+    plan = {"timeline": tl, "scene_dims": {"s.jpg": {"sys": True},
+                                           "d.jpg": {"doc": True}}}
+    assert pq.montage_flags(plan) == []

@@ -459,12 +459,19 @@ def montage_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     Regression source: Episode 2 showed 6 segments cycling 2 mangled crops
     after the phone panels were sliced and dropped upstream."""
     flags: List[Dict[str, Any]] = []
+    dims = (plan or {}).get("scene_dims") or {}
+
+    def _protected(f: str) -> bool:
+        d = dims.get(f) or {}
+        return bool(d.get("sys") or d.get("doc"))
+
     segs: List[Any] = []
     for it in (plan or {}).get("timeline") or []:
         if it.get("branding"):
             continue
         files = [str(c.get("file") or "") for c in it.get("cuts") or []
-                 if c.get("file") and not c.get("held")]
+                 if c.get("file") and not c.get("held")
+                 and not _protected(str(c.get("file")))]
         segs.append((str(it.get("segment_id") or ""), files))
     by_file: Dict[str, List[str]] = {}
     for sid, files in segs:
