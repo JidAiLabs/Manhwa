@@ -780,3 +780,32 @@ def test_substitute_skips_exempt_borderline_and_multicut():
         cbs, cov, durations={k: 5.0 for k in cbs},
         exempt={"p000113.jpg"})
     assert out == cbs and subs == []
+
+
+def test_substitution_spreads_usage_across_starved_pool():
+    """IE ch1 tail regression: a 2-panel pool refilling 3 garbage segments
+    must SPREAD shows (A,B,A), never loop the nearest panel 3x."""
+    cuts = {
+        "g0001_p00": [{"file": "p000001.jpg", "start": 0.0, "dur": 4.0}],
+        "g0002_p00": [{"file": "p000090.jpg", "start": 0.0, "dur": 4.0}],
+        "g0003_p00": [{"file": "p000091.jpg", "start": 0.0, "dur": 4.0}],
+        "g0004_p00": [{"file": "p000092.jpg", "start": 0.0, "dur": 4.0}],
+        "g0005_p00": [{"file": "p000002.jpg", "start": 0.0, "dur": 4.0}],
+    }
+    cov = {"p000090.jpg": 1.0, "p000091.jpg": 1.0, "p000092.jpg": 1.0,
+           "p000001.jpg": 0.0, "p000002.jpg": 0.0}
+    order = list(cuts)
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cuts, cov, durations={s: 4.0 for s in cuts}, order=order)
+    shown = {}
+    for seg in order:
+        for c in out[seg]:
+            shown[c["file"]] = shown.get(c["file"], 0) + 1
+    assert len(subs) == 3
+    # pigeonhole: 3 refills over a 2-panel pool MUST reuse one panel — the
+    # contract is SPREAD (both panels used, no 3-in-a-row), and the QA
+    # montage flags escalate truly starved tails to a human.
+    assert {f for _, _, f in subs} == {"p000001.jpg", "p000002.jpg"}
+    seq = [sorted(c["file"] for c in out[s_]) for s_ in order]
+    for i in range(len(seq) - 2):
+        assert not (seq[i] == seq[i + 1] == seq[i + 2]), seq

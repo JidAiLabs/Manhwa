@@ -903,6 +903,15 @@ def substitute_garbage_sole_cuts(
     seg_pos = {s: i for i, s in enumerate(order)} if order else {}
     files_by_seg = {seg: {str(c.get("file")) for c in cuts}
                     for seg, cuts in cuts_by_segment.items()}
+    # global show-counts: a starved pool must SPREAD its panels, not loop
+    # the nearest one (IE ch1 tail showed the same two crops 3x each)
+    usage: Dict[str, int] = {}
+    for seg, cuts in cuts_by_segment.items():
+        if seg in garbage:
+            continue
+        for c in cuts:
+            f = str(c.get("file"))
+            usage[f] = usage.get(f, 0) + 1
     # process in timeline order, refreshing the neighbor map after each
     # assignment — two garbage neighbors must never receive the same panel
     for seg in sorted(garbage, key=lambda s: seg_pos.get(s, 0)):
@@ -916,7 +925,10 @@ def substitute_garbage_sole_cuts(
                 if 0 <= j < len(order):
                     avoid |= files_by_seg.get(order[j], set())
         cand = [f for f in pool if f not in avoid] or pool
-        best = min(cand, key=lambda f: (abs(_scene_num(f) - n), _scene_num(f) < n))
+        best = min(cand, key=lambda f: (usage.get(f, 0),
+                                        abs(_scene_num(f) - n),
+                                        _scene_num(f) < n))
+        usage[best] = usage.get(best, 0) + 1
         dur = round(float(durations.get(seg) or cut.get("dur") or 0.0), 4)
         out[seg] = [{"file": best, "start": 0.0, "dur": dur}]
         files_by_seg[seg] = {best}
