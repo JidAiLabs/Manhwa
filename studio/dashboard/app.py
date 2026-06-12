@@ -278,12 +278,15 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         v_allowed, v_why = gates.voice_allowed(c, cid)
         has_preview = bool(ch["ep_dir"] and (
             Path(ch["ep_dir"]) / "render" / "voice_preview.mp3").exists())
+        qa_html = Path(ch["ep_dir"] or "") / "prep_qa.html"
+        qa_v = int(qa_html.stat().st_mtime) if (
+            ch["ep_dir"] and qa_html.exists()) else 0
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
                     qa_ok=gates.latest_qa_ok(c, cid),
                     render_allowed=allowed, render_block_reason=why,
                     voice_allowed=v_allowed, voice_block_reason=v_why,
-                    has_voice_preview=has_preview,
+                    has_voice_preview=has_preview, qa_v=qa_v,
                     cost=_chapter_costs(ch["ep_dir"]),
                     gallery=_gallery(ch["ep_dir"]), ep_rel=ep_rel)
 

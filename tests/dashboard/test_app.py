@@ -198,3 +198,22 @@ def test_rebuild_route_resets_and_enqueues(client):
                        ).fetchone()[0] == "detected"
     assert con.execute("SELECT type, chapter_id FROM job").fetchone() == \
         ("prepare", 1)
+
+
+def test_qa_report_link_is_cache_busted(client, tmp_path):
+    """prep_qa.html is a static file — without a version param browsers
+    show stale reports after rebuilds (user hit this on job 25)."""
+    c, con = client
+    ep = tmp_path / "ongoing" / "nano" / "ch1"
+    ep.mkdir(parents=True)
+    (ep / "prep_qa.html").write_text("<html>report</html>")
+    con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
+    con.commit()
+    import studio.dashboard.app as app_mod
+    old = app_mod.REPO
+    app_mod.REPO = tmp_path
+    try:
+        html = c.get("/chapter/1").text
+    finally:
+        app_mod.REPO = old
+    assert "prep_qa.html?v=" in html

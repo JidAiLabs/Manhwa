@@ -15,7 +15,7 @@
 <form class="inline" method="post" action="/approve">
 <input type="hidden" name="gate" value="voice"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
 <button class="green">approve story → start voiceover</button></form>{% endif %}
-{% if ep_rel %}<a href="/media/{{ ep_rel }}/prep_qa.html" style="color:var(--acc)">open QA report</a>{% endif %}
+{% if ep_rel %}<a href="/media/{{ ep_rel }}/prep_qa.html?v={{ qa_v }}" style="color:var(--acc)">open QA report</a>{% endif %}
 <form class="inline" method="post" action="/jobs">
 <input type="hidden" name="type" value="prepare"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
 <button class="ghost">prepare → QA</button></form>
