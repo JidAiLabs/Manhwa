@@ -253,12 +253,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                    "FROM chapter WHERE series_id=? ORDER BY number", (sid,))]
         for ch_row in chs:
             ch_row["url"] = _http_url(ch_row["url"])
-        title, series_url, autopilot = (c.execute(
-            "SELECT title, series_url, autopilot FROM series WHERE id=?",
-            (sid,)).fetchone() or ("?", "", 0))
+        title, series_url, autopilot, style = (c.execute(
+            "SELECT title, series_url, autopilot, narration_style "
+            "FROM series WHERE id=?", (sid,)).fetchone() or ("?", "", 0, None))
         return page("series_detail.html", request, sid=sid, title=title,
                     series_url=_http_url(series_url), chapters=chs,
-                    autopilot=bool(autopilot))
+                    autopilot=bool(autopilot),
+                    narration_style=style or "default")
 
     @app.get("/chapter/{cid}", response_class=HTMLResponse)
     def chapter_page(request: Request, cid: int):
@@ -442,6 +443,16 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         c.commit()
         jobs.enqueue(c, "prepare", chapter_id=cid, priority=50)
         return RedirectResponse(f"/chapter/{cid}", status_code=303)
+
+    @app.post("/series/{sid}/style")
+    def post_style(sid: int, style: str = Form(...)):
+        if style not in ("default", "off", "light", "full"):
+            return PlainTextResponse("invalid style", status_code=400)
+        c = con()
+        c.execute("UPDATE series SET narration_style=? WHERE id=?",
+                  (None if style == "default" else style, sid))
+        c.commit()
+        return RedirectResponse(f"/series/{sid}", status_code=303)
 
     @app.post("/series/{sid}/autopilot")
     def post_autopilot(sid: int):

@@ -1,3 +1,4 @@
+import os
 import tomllib
 from pathlib import Path
 from dataclasses import dataclass
@@ -76,5 +77,6 @@ def load(path: Path | None = None) -> Config:
         tts_python=t.get("python", ""),
         tts_kokoro_voice=t.get("kokoro_voice", "af_heart"),
         narration_source=m.get("narration_source", "gemini_verbatim"),
-        punchup=m.get("punchup", "full"),
+        punchup=(os.environ.get("STUDIO_PUNCHUP")
+                 or m.get("punchup", "full")),
     )

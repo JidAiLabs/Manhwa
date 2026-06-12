@@ -62,12 +62,28 @@ def _series_title(con: sqlite3.Connection, series_id: int) -> str:
     return r[0] if r else ""
 
 
-def _stream(cmd, log: TextIO, cwd: str = str(REPO)) -> int:
+def _stream(cmd, log: TextIO, cwd: str = str(REPO),
+            env: Optional[Dict[str, str]] = None) -> int:
     log.write("$ " + " ".join(str(c) for c in cmd) + "\n")
     log.flush()
     p = subprocess.Popen(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
-                         text=True)
+                         text=True, env=env)
     return p.wait()
+
+
+def _series_env(con: sqlite3.Connection,
+                series_id: Optional[int]) -> Optional[Dict[str, str]]:
+    """Per-series narration style rides into pipeline subprocesses as
+    STUDIO_PUNCHUP (config env override) — thread-safe across parallel
+    lanes, unlike mutating os.environ."""
+    if not series_id:
+        return None
+    r = con.execute("SELECT narration_style FROM series WHERE id=?",
+                    (series_id,)).fetchone()
+    style = (r[0] or "").strip() if r else ""
+    if style in ("off", "light", "full"):
+        return {**os.environ, "STUDIO_PUNCHUP": style}
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -157,7 +173,8 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
             raise RuntimeError(f"studio fetch exited {rc}")
         rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
                       "--chapters", str(int(ch["number"])),
-                      "--until", "scripted"], log)
+                      "--until", "scripted"], log,
+                     env=_series_env(con, ch["series_id"]))
         if rc != 0:
             raise RuntimeError(f"studio run exited {rc}")
     ch = _chapter(con, job["chapter_id"])  # ep_dir may have been set
@@ -189,7 +206,8 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         con.commit()
         rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
                       "--chapters", str(int(ch["number"])),
-                      "--until", "scripted"], log)
+                      "--until", "scripted"], log,
+                     env=_series_env(con, ch["series_id"]))
         if rc != 0:
             raise RuntimeError(f"studio run (heal) exited {rc}")
         _plan()
@@ -220,7 +238,8 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
                       series_id=ch["series_id"]):
         rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
                       "--chapters", str(int(ch["number"])),
-                      "--until", "planned"], log)
+                      "--until", "planned"], log,
+                     env=_series_env(con, ch["series_id"]))
         if rc != 0:
             raise RuntimeError(f"studio run exited {rc}")
     ch = _chapter(con, job["chapter_id"])
@@ -325,7 +344,8 @@ def _h_chain(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
                       series_id=ch["series_id"]):
         rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
                       "--chapters", str(int(ch["number"])),
-                      "--until", target], log)
+                      "--until", target], log,
+                     env=_series_env(con, ch["series_id"]))
         if rc != 0:
             raise RuntimeError(f"studio run exited {rc}")
 

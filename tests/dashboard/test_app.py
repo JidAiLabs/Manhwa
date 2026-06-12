@@ -217,3 +217,16 @@ def test_qa_report_link_is_cache_busted(client, tmp_path):
     finally:
         app_mod.REPO = old
     assert "prep_qa.html?v=" in html
+
+
+def test_narration_style_selector(client):
+    c, con = client
+    r = c.post("/series/1/style", data={"style": "light"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert con.execute("SELECT narration_style FROM series WHERE id=1"
+                       ).fetchone()[0] == "light"
+    assert 'value="light" selected' in c.get("/series/1").text
+    r = c.post("/series/1/style", data={"style": "evil"},
+               follow_redirects=False)
+    assert r.status_code == 400          # only off|light|full|default

@@ -127,7 +127,7 @@ def test_run_prep_and_qa_heal_aware_returns_instead_of_raising(
     ep = _seed_chapter(con, tmp_path)
     (ep / "prep_qa.json").write_text(json.dumps({"flags": [
         {"code": "narration_stale", "severity": "ERROR"}]}))
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log:
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
                         1 if any("prep_qa.py" in str(c) for c in cmd) else 0)
     ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
     log = open(tmp_path / "log.txt", "w")
@@ -141,7 +141,7 @@ def test_prepare_self_heals_stale_narration(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _seed_chapter(con, tmp_path)
     calls = []
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log:
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
                         (calls.append(" ".join(map(str, cmd))), 0)[1])
     qa_results = [{"narration_stale"}, set()]
     qa_calls = []
@@ -167,7 +167,7 @@ def test_prepare_heal_beats_incomplete_demotes_to_grouped(
         tmp_path, monkeypatch):
     con = _con(tmp_path)
     _seed_chapter(con, tmp_path)
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     qa_results = [{"beats_incomplete", "narration_stale"}, set()]
     monkeypatch.setattr(worker, "_run_prep_and_qa",
                         lambda c, ch, log, **kw: qa_results.pop(0))
@@ -181,7 +181,7 @@ def test_prepare_heal_beats_incomplete_demotes_to_grouped(
 def test_prepare_heal_gives_up_after_one_cycle(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _seed_chapter(con, tmp_path)
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     qa_results = [{"narration_stale"}, {"narration_stale"}]
     monkeypatch.setattr(worker, "_run_prep_and_qa",
                         lambda c, ch, log, **kw: qa_results.pop(0))
@@ -209,7 +209,7 @@ def test_autopilot_clean_report_advances_to_voice(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _autopilot_series(con, tmp_path, flags=[
         {"code": "flash_cut", "severity": "WARN"}])   # ordinary WARN ok
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
                         lambda c, ch, log, **kw: set())
     jobs.enqueue(con, "prepare", chapter_id=5)
@@ -226,7 +226,7 @@ def test_autopilot_blocked_by_semantic_mismatch(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _autopilot_series(con, tmp_path, flags=[
         {"code": "narration_mismatch", "severity": "WARN"}])
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
                         lambda c, ch, log, **kw: set())
     jobs.enqueue(con, "prepare", chapter_id=5)
@@ -241,7 +241,7 @@ def test_autopilot_blocked_by_semantic_mismatch(tmp_path, monkeypatch):
 def test_autopilot_off_changes_nothing(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _autopilot_series(con, tmp_path, autopilot=0, flags=[])
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
                         lambda c, ch, log, **kw: set())
     jobs.enqueue(con, "prepare", chapter_id=5)
@@ -255,7 +255,7 @@ def test_autopilot_voiceover_advances_to_render(tmp_path, monkeypatch):
     _autopilot_series(con, tmp_path, flags=[])
     from studio.dashboard import gates as g
     g.approve(con, "voice", chapter_id=5, note="autopilot")
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
                         lambda c, ch, log, **kw: set())
     jobs.enqueue(con, "voiceover", chapter_id=5)

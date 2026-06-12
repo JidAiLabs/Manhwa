@@ -95,6 +95,9 @@ def connect(path: Path | str) -> sqlite3.Connection:
     if "season" not in cols:
         con.execute("ALTER TABLE chapter ADD COLUMN season INTEGER")
     scols = {r[1] for r in con.execute("PRAGMA table_info(series)")}
+    if "narration_style" not in scols:
+        # per-series punch-up override: off|light|full (NULL = toml default)
+        con.execute("ALTER TABLE series ADD COLUMN narration_style TEXT")
     if "autopilot" not in scols:
         # manage-by-exception: spotless QA auto-advances voice/render gates
         con.execute("ALTER TABLE series ADD COLUMN autopilot INTEGER "

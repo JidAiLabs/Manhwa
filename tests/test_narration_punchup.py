@@ -164,3 +164,13 @@ def test_merge_is_idempotent_on_punched_files():
     out = npu.merge(beats, [], [])
     assert out["beats"][0]["narration_plain"] == "A web novel no one read."
     assert out["beats"][0]["narration"] == "A web novel no one read."
+
+
+def test_config_env_override_for_punchup(tmp_path, monkeypatch):
+    from studio.config import load
+    toml = tmp_path / "studio.toml"
+    toml.write_text("[models]\npunchup = \"full\"\n")
+    monkeypatch.setenv("STUDIO_PUNCHUP", "light")
+    assert load(toml).punchup == "light"
+    monkeypatch.delenv("STUDIO_PUNCHUP")
+    assert load(toml).punchup == "full"
