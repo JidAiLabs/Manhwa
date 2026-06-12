@@ -207,6 +207,10 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
                                   required=caption_words.get(gid)):
             b["narration"] = cand
             applied += 1
+        else:
+            # rejection RESTORES the grounded line — on an already-punched
+            # file the old punch must not survive a failed re-validation
+            b["narration"] = original
     out.setdefault("stats", {})["punchup_applied"] = applied
     return out
 

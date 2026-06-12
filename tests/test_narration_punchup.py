@@ -156,8 +156,11 @@ def test_caption_guard_is_per_scene_not_union():
 
 
 def test_merge_is_idempotent_on_punched_files():
+    """No valid candidate -> BOTH fields return to the grounded line; a
+    stale punch must never survive a failed re-validation."""
     beats = {"beats": [{"group_id": 1,
                         "narration": "PUNCHED: zero active players.",
                         "narration_plain": "A web novel no one read."}]}
     out = npu.merge(beats, [], [])
     assert out["beats"][0]["narration_plain"] == "A web novel no one read."
+    assert out["beats"][0]["narration"] == "A web novel no one read."
