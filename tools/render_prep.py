@@ -936,6 +936,52 @@ def substitute_garbage_sole_cuts(
     return out, subs
 
 
+def cap_repeats_with_holds(
+    cuts_by_segment: Dict[str, List[Dict[str, Any]]],
+    *,
+    durations: Dict[str, float],
+    order: Sequence[str],
+    exempt: Optional[set] = None,
+    cap: int = 2,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]]]:
+    """A panel may carry at most *cap* segments. Walking the timeline, cuts
+    whose file already showed *cap* times are dropped; a segment left with
+    nothing HOLDS the previous segment's last panel (held=True) — the
+    narrator keeps talking over a held image, the way a human editor covers
+    a starved tail, instead of looping panels (IE ch1 alternation). Holds
+    are intentional: QA exempts them. sys/doc files (*exempt*) never count."""
+    ex = exempt or set()
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    holds: List[Tuple[str, str]] = []
+    counts: Dict[str, int] = {}
+    prev_file: Optional[str] = None
+    for seg in order:
+        cuts = list(cuts_by_segment.get(seg) or [])
+        kept: List[Dict[str, Any]] = []
+        for c in cuts:
+            f = str(c.get("file"))
+            if f in ex or counts.get(f, 0) < cap:
+                kept.append(c)
+                counts[f] = counts.get(f, 0) + 1
+        if not kept and cuts:
+            if prev_file is None:
+                kept = [cuts[0]]            # nothing to hold yet
+                f0 = str(cuts[0].get("file"))
+                counts[f0] = counts.get(f0, 0) + 1
+            else:
+                dur = round(float(durations.get(seg) or sum(
+                    float(c.get("dur") or 0.0) for c in cuts)), 4)
+                kept = [{"file": prev_file, "start": 0.0, "dur": dur,
+                         "held": True}]
+                holds.append((seg, prev_file))
+        out[seg] = kept
+        if kept:
+            prev_file = str(kept[-1].get("file"))
+    for seg, cuts in cuts_by_segment.items():
+        out.setdefault(seg, list(cuts))
+    return out, holds
+
+
 # ---------------------------------------------------------------------------
 # plan rewrite (pure)
 # ---------------------------------------------------------------------------
@@ -1369,6 +1415,14 @@ def main() -> int:
             print(f"[ok] {seg}: garbage sole cut {old} -> SUBSTITUTED {new}")
         if not xdropped and not subs:
             break
+
+    # repeat cap: no panel carries a 3rd segment — hold the previous panel
+    # instead (the deterministic fix for starved tails; QA exempts holds)
+    cuts_by_segment, holds = cap_repeats_with_holds(
+        cuts_by_segment, durations=durations, order=order,
+        exempt=exempt_all, cap=2)
+    for seg, f in holds:
+        print(f"[ok] {seg}: repeat cap -> HOLDING previous panel {f}")
 
     shown = sorted({c["file"] for cs in cuts_by_segment.values() for c in cs})
 

@@ -566,3 +566,12 @@ def test_fragment_dangle_ignores_midline_and_long_quotes():
         [])
     assert [f["code"] for f in ok1] == []
     assert [f["code"] for f in ok2] == []
+
+
+def test_montage_and_repeat_checks_exempt_held_cuts():
+    held = {"file": "a.jpg", "start": 0.0, "dur": 4.0, "held": True}
+    tl = [_seg("g0001_p00", "x", ["a.jpg"]),
+          {"segment_id": "g0002_p00", "tts_text": "y", "cuts": [dict(held)]},
+          {"segment_id": "g0003_p00", "tts_text": "z", "cuts": [dict(held)]},
+          {"segment_id": "g0004_p00", "tts_text": "w", "cuts": [dict(held)]}]
+    assert pq.montage_flags({"timeline": tl}) == []

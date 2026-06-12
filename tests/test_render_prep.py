@@ -809,3 +809,39 @@ def test_substitution_spreads_usage_across_starved_pool():
     seq = [sorted(c["file"] for c in out[s_]) for s_ in order]
     for i in range(len(seq) - 2):
         assert not (seq[i] == seq[i + 1] == seq[i + 2]), seq
+
+
+def test_cap_repeats_holds_previous_panel():
+    """The 'so what?' fix: a 3rd show is dropped and the previous panel
+    HOLDS through the segment — narration continues, no loop, no dead-end
+    human review."""
+    cuts = {
+        "g1": [{"file": "A.jpg", "start": 0.0, "dur": 4.0}],
+        "g2": [{"file": "B.jpg", "start": 0.0, "dur": 4.0}],
+        "g3": [{"file": "A.jpg", "start": 0.0, "dur": 4.0}],
+        "g4": [{"file": "B.jpg", "start": 0.0, "dur": 4.0}],
+        "g5": [{"file": "A.jpg", "start": 0.0, "dur": 5.0}],   # 3rd A
+    }
+    order = ["g1", "g2", "g3", "g4", "g5"]
+    out, holds = rp.cap_repeats_with_holds(
+        cuts, durations={s: 4.0 for s in order} | {"g5": 5.0}, order=order)
+    assert holds == [("g5", "B.jpg")]
+    g5 = out["g5"][0]
+    assert g5["held"] is True and g5["file"] == "B.jpg" and g5["dur"] == 5.0
+    counts = {}
+    for s_ in order:
+        for c in out[s_]:
+            if not c.get("held"):
+                counts[c["file"]] = counts.get(c["file"], 0) + 1
+    assert max(counts.values()) <= 2
+
+
+def test_cap_repeats_exempts_sys_panels():
+    cuts = {f"g{i}": [{"file": "sys.jpg", "start": 0.0, "dur": 3.0}]
+            for i in range(1, 5)}
+    order = sorted(cuts)
+    out, holds = rp.cap_repeats_with_holds(
+        cuts, durations={s: 3.0 for s in order}, order=order,
+        exempt={"sys.jpg"})
+    assert holds == []
+    assert all(out[s][0]["file"] == "sys.jpg" for s in order)

@@ -448,7 +448,7 @@ def montage_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
         if it.get("branding"):
             continue
         files = [str(c.get("file") or "") for c in it.get("cuts") or []
-                 if c.get("file")]
+                 if c.get("file") and not c.get("held")]
         segs.append((str(it.get("segment_id") or ""), files))
     by_file: Dict[str, List[str]] = {}
     for sid, files in segs:
@@ -463,7 +463,10 @@ def montage_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
                 scene=f))
     for i in range(len(segs) - 3):
         window = segs[i:i + 4]
-        uniq = {f for _, files in window for f in files}
+        fresh = [files for _, files in window if files]
+        if len(fresh) < 3:
+            continue        # held stretches are intentional coverage
+        uniq = {f for files in fresh for f in files}
         if uniq and len(uniq) <= 2:
             flags.append(_flag(
                 "montage_degenerate", ERROR,
@@ -589,7 +592,7 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                                        "shown file absent from scene_dims — "
                                        "renderer cannot fit it",
                                        scene=f, segment_id=seg))
-                if not branding:
+                if not branding and not c.get("held"):
                     seen_parent_segments.setdefault(
                         parent_scene(f), set()).add(seg)
             dur = float(c.get("dur") or 0.0)
@@ -599,7 +602,7 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                                    f"{dur:.2f}s",
                                    scene=str(c.get("file") or ""),
                                    segment_id=seg))
-            if c.get("file") == prev_file:
+            if c.get("file") == prev_file and not c.get("held"):
                 flags.append(_flag("repeat_cut", WARN,
                                    "same file in consecutive cuts",
                                    scene=str(c.get("file")), segment_id=seg))
