@@ -138,3 +138,26 @@ def test_config_wires_punchup_default_full(tmp_path):
     assert load(toml).punchup == "full"
     toml.write_text("[models]\npunchup = \"off\"\n")
     assert load(toml).punchup == "off"
+
+
+def test_caption_guard_is_per_scene_not_union():
+    """A group with TWO captions must keep BOTH — union coverage is not
+    enough (job 23 regression: 'ON THE DAY I FINISHED...' dropped while
+    'BACK THEN...' survived)."""
+    req = [{"back", "then", "i", "had", "no", "idea"},
+           {"on", "the", "day", "i", "finished", "web", "novel"}]
+    orig = ("Back then, I had no idea... on the day I finished the web "
+            "novel, everything changed.")
+    keeps_one = "Back then, I had no idea what was coming for me at all."
+    assert npu.validate_line(orig, keeps_one, [], required=req) is False
+    keeps_both = ("Back then, I had no idea that the day I finished the "
+                  "web novel would flip everything.")
+    assert npu.validate_line(orig, keeps_both, [], required=req) is True
+
+
+def test_merge_is_idempotent_on_punched_files():
+    beats = {"beats": [{"group_id": 1,
+                        "narration": "PUNCHED: zero active players.",
+                        "narration_plain": "A web novel no one read."}]}
+    out = npu.merge(beats, [], [])
+    assert out["beats"][0]["narration_plain"] == "A web novel no one read."

@@ -136,19 +136,23 @@ def _caption_words_by_group(ep_dir: str,
                if s.get("recovered")}
     except Exception:
         pass
-    out: Dict[int, set] = {}
+    out: Dict[int, List[set]] = {}
     for b in beats_obj.get("beats") or []:
-        words: set = set()
+        sets: List[set] = []
         for sf in b.get("scene_files") or []:
             it = items.get(str(sf)) or {}
             if not (it.get("text_only") or str(sf) in rec):
                 continue
-            for w in re.sub(r"[^a-z0-9]+", " ",
-                            str(it.get("ocr_clean") or "").lower()).split():
-                if not w.isdigit() and w not in _UI_TOKENS:
-                    words.add(w)
-        if len(words) >= 4:
-            out[int(b.get("group_id") or 0)] = words
+            words = {w for w in re.sub(
+                r"[^a-z0-9]+", " ",
+                str(it.get("ocr_clean") or "").lower()).split()
+                if not w.isdigit() and w not in _UI_TOKENS}
+            # PER SCENE, matching prep_qa's caption_unvoiced — a group with
+            # two captions must keep BOTH, not 50% of their union
+            if len(words) >= 4:
+                sets.append(words)
+        if sets:
+            out[int(b.get("group_id") or 0)] = sets
     return out
 
 
@@ -159,9 +163,12 @@ def validate_line(original: str, punched: str,
     if not punched or not punched.strip():
         return False
     if required:
+        req_sets = ([required] if isinstance(required, (set, frozenset))
+                    else list(required))
         pwords = set(re.sub(r"[^a-z0-9]+", " ", punched.lower()).split())
-        if len(set(required) & pwords) / max(1, len(set(required))) < 0.5:
-            return False    # caption words paraphrased away
+        for rs in req_sets:
+            if rs and len(set(rs) & pwords) / max(1, len(set(rs))) < 0.5:
+                return False    # a caption paraphrased away
     ow, pw = _word_count(original), _word_count(punched)
     if ow >= 5 and not (0.6 * ow <= pw <= 1.5 * ow + 8):
         return False
@@ -193,7 +200,7 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
     applied = 0
     for b in out.get("beats") or []:
         gid = int(b.get("group_id") or 0)
-        original = str(b.get("narration") or "")
+        original = str(b.get("narration_plain") or b.get("narration") or "")
         b["narration_plain"] = original
         cand = by_gid.get(gid, "").replace("*", "")  # md emphasis -> TTS-safe
         if cand and validate_line(original, cand, cast_names,
@@ -275,9 +282,13 @@ def main() -> int:
             pass
 
     beats_obj = json.load(open(args.beats))
+    # idempotent: always punch from the GROUNDED line — re-running on an
+    # already-punched file must not punch the punch (closed-loop drift)
     lines = [{"group_id": int(b.get("group_id") or 0),
-              "narration": str(b.get("narration") or "")}
-             for b in beats_obj.get("beats") or [] if b.get("narration")]
+              "narration": str(b.get("narration_plain")
+                               or b.get("narration") or "")}
+             for b in beats_obj.get("beats") or []
+             if (b.get("narration_plain") or b.get("narration"))]
     cast_names = _cast_names(args.cast)
     prompt = build_prompt(lines, cast_names, args.humor, genre=args.genre)
 
