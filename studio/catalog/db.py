@@ -94,5 +94,10 @@ def connect(path: Path | str) -> sqlite3.Connection:
     cols = {r[1] for r in con.execute("PRAGMA table_info(chapter)")}
     if "season" not in cols:
         con.execute("ALTER TABLE chapter ADD COLUMN season INTEGER")
+    scols = {r[1] for r in con.execute("PRAGMA table_info(series)")}
+    if "autopilot" not in scols:
+        # manage-by-exception: spotless QA auto-advances voice/render gates
+        con.execute("ALTER TABLE series ADD COLUMN autopilot INTEGER "
+                    "NOT NULL DEFAULT 0")
     con.commit()
     return con

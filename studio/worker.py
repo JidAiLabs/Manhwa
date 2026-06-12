@@ -89,6 +89,25 @@ def _qa_error_codes(ep: Path) -> set:
             if f.get("severity") == "ERROR"}
 
 
+def _autopilot_clean(con: sqlite3.Connection, ch: Dict[str, Any]) -> bool:
+    """Autopilot advances ONLY on a spotless report: the series opted in,
+    zero ERRORs, and zero semantic narration_mismatch warnings. Anything
+    else waits for a human — manage by exception."""
+    r = con.execute("SELECT autopilot FROM series WHERE id=?",
+                    (ch["series_id"],)).fetchone()
+    if not (r and r[0]):
+        return False
+    try:
+        report = json.loads(
+            (Path(ch["ep_dir"] or "") / "prep_qa.json").read_text())
+    except Exception:
+        return False
+    flags = report.get("flags") or []
+    if any(f.get("severity") == "ERROR" for f in flags):
+        return False
+    return not any(f.get("code") == "narration_mismatch" for f in flags)
+
+
 def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
                      log: TextIO, *, branding: str = "both",
                      heal_aware: bool = False) -> set:
@@ -178,6 +197,12 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
             raise RuntimeError(
                 "narration still stale after one heal cycle — manual review "
                 f"needed ({sorted(codes & STALE_CODES)})")
+    if _autopilot_clean(con, ch) and not gates._has_approval(
+            con, "voice", chapter_id=ch["id"]):
+        log.write("[autopilot] QA spotless → story auto-approved, "
+                  "voiceover queued\n")
+        gates.approve(con, "voice", chapter_id=ch["id"], note="autopilot")
+        jobs.enqueue(con, "voiceover", chapter_id=ch["id"])
 
 
 def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
@@ -209,6 +234,12 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
                  "-safe", "0", "-i", str(lst), "-codec:a", "libmp3lame",
                  "-b:a", "96k", str(ep / "render" / "voice_preview.mp3")],
                 log)
+    if _autopilot_clean(con, ch) and not gates._has_approval(
+            con, "render", chapter_id=ch["id"]):
+        log.write("[autopilot] voiced QA spotless → render queued\n")
+        gates.approve(con, "render", chapter_id=ch["id"], note="autopilot")
+        jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
+                     payload={"branding": "both"})
 
 
 def _series_branding_dir(series_id: int) -> Path:

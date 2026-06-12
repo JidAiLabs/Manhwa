@@ -132,8 +132,9 @@ def _stage_timeline(con: sqlite3.Connection, ch: Dict[str, Any]) -> List[Dict[st
 
 def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
     rows = []
-    for sid, title, source, surl in con.execute(
-            "SELECT id, title, source, series_url FROM series ORDER BY id"):
+    for sid, title, source, surl, autopilot in con.execute(
+            "SELECT id, title, source, series_url, autopilot FROM series "
+            "ORDER BY id"):
         chs = con.execute(
             "SELECT status, season FROM chapter WHERE series_id=?",
             (sid,)).fetchall()
@@ -149,7 +150,8 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
         remaining = max(0, total - done)
         rows.append({
             "id": sid, "title": title, "source": source,
-            "url": _http_url(surl), "total": total,
+            "url": _http_url(surl), "autopilot": bool(autopilot),
+            "total": total,
             "done": done, "new": new, "seasons": seasons,
             "pct": (100 * done // total) if total else 0,
             "eta": eta.fmt_eta(eta.series_eta(con, sid, remaining)),
@@ -251,11 +253,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                    "FROM chapter WHERE series_id=? ORDER BY number", (sid,))]
         for ch_row in chs:
             ch_row["url"] = _http_url(ch_row["url"])
-        title, series_url = (c.execute(
-            "SELECT title, series_url FROM series WHERE id=?",
-            (sid,)).fetchone() or ("?", ""))
+        title, series_url, autopilot = (c.execute(
+            "SELECT title, series_url, autopilot FROM series WHERE id=?",
+            (sid,)).fetchone() or ("?", "", 0))
         return page("series_detail.html", request, sid=sid, title=title,
-                    series_url=_http_url(series_url), chapters=chs)
+                    series_url=_http_url(series_url), chapters=chs,
+                    autopilot=bool(autopilot))
 
     @app.get("/chapter/{cid}", response_class=HTMLResponse)
     def chapter_page(request: Request, cid: int):
@@ -426,6 +429,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def post_track(anilist_id: int):
         discovery.mark(con(), anilist_id, "tracked")
         return RedirectResponse("/discovery", status_code=303)
+
+    @app.post("/series/{sid}/autopilot")
+    def post_autopilot(sid: int):
+        c = con()
+        c.execute("UPDATE series SET autopilot = 1 - autopilot WHERE id=?",
+                  (sid,))
+        c.commit()
+        return RedirectResponse(f"/series/{sid}", status_code=303)
 
     @app.post("/discovery/{anilist_id}/add")
     def post_discovery_add(anilist_id: int, source: str = Form(...),

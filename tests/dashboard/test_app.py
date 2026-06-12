@@ -174,3 +174,15 @@ def test_unsafe_url_schemes_never_rendered(client):
     assert r.status_code == 400
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='add_series'"
                        ).fetchone()[0] == 0
+
+
+def test_autopilot_toggle_and_badge(client):
+    c, con = client
+    r = c.post("/series/1/autopilot", follow_redirects=False)
+    assert r.status_code == 303
+    assert con.execute("SELECT autopilot FROM series WHERE id=1"
+                       ).fetchone()[0] == 1
+    assert "autopilot" in c.get("/series/1").text.lower()
+    c.post("/series/1/autopilot", follow_redirects=False)   # toggles back
+    assert con.execute("SELECT autopilot FROM series WHERE id=1"
+                       ).fetchone()[0] == 0

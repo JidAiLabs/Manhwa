@@ -191,3 +191,81 @@ def test_prepare_heal_gives_up_after_one_cycle(tmp_path, monkeypatch):
     state, err = con.execute("SELECT state, error FROM job WHERE id=?",
                              (jid,)).fetchone()
     assert state == "failed" and "stale" in err
+
+
+# ---- autopilot: spotless QA advances without human clicks -------------------
+
+def _autopilot_series(con, tmp_path, *, autopilot=1, flags=()):
+    import json
+    ep = _seed_chapter(con, tmp_path)
+    con.execute("UPDATE series SET autopilot=? WHERE id=1", (autopilot,))
+    (ep / "prep_qa.json").write_text(json.dumps(
+        {"flags": [dict(f) for f in flags]}))
+    con.commit()
+    return ep
+
+
+def test_autopilot_clean_report_advances_to_voice(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, flags=[
+        {"code": "flash_cut", "severity": "WARN"}])   # ordinary WARN ok
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    n_appr = con.execute("SELECT COUNT(*) FROM approval WHERE gate='voice' "
+                         "AND chapter_id=5 AND note='autopilot'").fetchone()[0]
+    n_jobs = con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover' "
+                         "AND chapter_id=5").fetchone()[0]
+    assert (n_appr, n_jobs) == (1, 1)
+
+
+def test_autopilot_blocked_by_semantic_mismatch(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, flags=[
+        {"code": "narration_mismatch", "severity": "WARN"}])
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE chapter_id=5"
+                       ).fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover'"
+                       ).fetchone()[0] == 0
+
+
+def test_autopilot_off_changes_nothing(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, autopilot=0, flags=[])
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT COUNT(*) FROM approval").fetchone()[0] == 0
+
+
+def test_autopilot_voiceover_advances_to_render(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, flags=[])
+    from studio.dashboard import gates as g
+    g.approve(con, "voice", chapter_id=5, note="autopilot")
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "voiceover", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='voiceover'").fetchone()
+    assert state == "done", err
+    n_appr = con.execute("SELECT COUNT(*) FROM approval WHERE gate='render' "
+                         "AND chapter_id=5 AND note='autopilot'").fetchone()[0]
+    n_jobs = con.execute("SELECT COUNT(*) FROM job WHERE "
+                         "type='render_segment'").fetchone()[0]
+    assert (n_appr, n_jobs) == (1, 1)

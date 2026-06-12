@@ -7,6 +7,11 @@
 <button>prepare ALL chapters → QA reports</button></form>
 <span class="kv">fetch → panels → OCR → narration → estimated plan → prep → QA report, per chapter, no voiceover — review and approve as reports land</span>
 </div>
+<div class="row">
+<form class="inline" method="post" action="/series/{{ sid }}/autopilot">
+<button class="{{ 'green' if autopilot else 'ghost' }}">{{ '⚡ autopilot ON' if autopilot else 'autopilot OFF' }}</button></form>
+<span class="kv">{% if autopilot %}spotless QA (0 errors, 0 judge mismatches) auto-approves story → voiceover → render; flagged chapters stop and wait for you{% else %}every chapter waits for your manual story + voiceover approvals{% endif %}</span>
+</div>
 <table><tr><th>ch</th><th>label</th><th>status</th><th>season</th><th></th></tr>
 {% for c in chapters %}
 <tr><td>{{ c.number }}</td><td><a href="/chapter/{{ c.id }}" style="color:var(--acc)">{{ c.label }}</a>{% if c.url %} <a href="{{ c.url }}" target="_blank" rel="noopener" title="read this chapter on the source site" class="kv" style="text-decoration:none">↗</a>{% endif %}</td>
