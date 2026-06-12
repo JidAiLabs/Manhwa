@@ -242,6 +242,30 @@ def dedupe_overlapping_boxes(
 # -----------------------------
 # DHash for dedupe
 # -----------------------------
+def uncovered_spans(cw: int, chh: int, covered: List[List[int]],
+                    min_h: int, merge_gap: int = 12) -> List[List[int]]:
+    """Full-width boxes for vertical spans of a chunk not covered by any
+    panel box. YOLO's blind spot is text-only narrative caption cards
+    ("BACK THEN, I HAD NO IDEA.") — they must still become scenes; the
+    blank/edge gate downstream rejects genuinely empty gutters."""
+    ys = sorted([max(0, int(b[1])), min(chh, int(b[3]))] for b in covered)
+    merged: List[List[int]] = []
+    for y0, y1 in ys:
+        if merged and y0 <= merged[-1][1] + merge_gap:
+            merged[-1][1] = max(merged[-1][1], y1)
+        else:
+            merged.append([y0, y1])
+    gaps: List[List[int]] = []
+    cur = 0
+    for y0, y1 in merged:
+        if y0 - cur >= min_h:
+            gaps.append([0, cur, cw, y0])
+        cur = max(cur, y1)
+    if chh - cur >= min_h:
+        gaps.append([0, cur, cw, chh])
+    return gaps
+
+
 def dhash64(im: Image.Image) -> int:
     # 9x8 grayscale
     g = im.convert("L").resize((9, 8), Image.BILINEAR)
@@ -674,6 +698,13 @@ def main() -> int:
 
     ap.add_argument("--min-area-frac", type=float, default=0.002)
     ap.add_argument("--min-h-px", type=int, default=180)
+    ap.add_argument("--recover-gaps", dest="recover_gaps",
+                    action="store_true", default=True,
+                    help="emit uncovered chunk spans with content as scenes "
+                         "(YOLO misses text-only caption cards)")
+    ap.add_argument("--no-recover-gaps", dest="recover_gaps",
+                    action="store_false")
+    ap.add_argument("--recover-min-h-px", type=int, default=90)
     ap.add_argument("--min-w-px", type=int, default=240)
     # SP2 #2 over-segmentation: fold sliver bands shorter than this fraction of
     # the chapter's median SOURCE-PAGE height into their contiguous neighbor.
@@ -840,24 +871,36 @@ def main() -> int:
                 if dropped_n:
                     skipped_overlap += dropped_n
 
+            # interleave real panels with recovered uncovered spans in
+            # READING ORDER — sequential ids drive grouping order downstream
+            units: List[Tuple[int, Optional[int], List[int]]] = []
             for pidx, b in enumerate(boxes_norm):
                 if not (isinstance(b, list) and len(b) == 4):
                     continue
                 total_panels_in += 1
-
                 if kept_pidx is not None and pidx not in kept_pidx:
                     # already counted in skipped_overlap above
                     continue
+                units.append((padded_boxes[pidx][1], pidx, padded_boxes[pidx]))
+            if args.recover_gaps:
+                covered_now = [u[2] for u in units]
+                for gb in uncovered_spans(cw, chh, covered_now,
+                                          min_h=int(args.recover_min_h_px)):
+                    units.append((gb[1], None, gb))
+            units.sort(key=lambda u: u[0])
 
-                box_xyxy = padded_boxes[pidx]
-
-                # size guards
-                if (box_xyxy[3] - box_xyxy[1]) < int(args.min_h_px) or (box_xyxy[2] - box_xyxy[0]) < int(args.min_w_px):
+            for _, pidx, box_xyxy in units:
+                # size guards (recovered spans use their own height floor —
+                # caption cards run shorter than real panels)
+                min_h_eff = (int(args.recover_min_h_px) if pidx is None
+                             else int(args.min_h_px))
+                if (box_xyxy[3] - box_xyxy[1]) < min_h_eff or (box_xyxy[2] - box_xyxy[0]) < int(args.min_w_px):
                     skipped_small += 1
                     continue
 
-                # area guard
-                if area_px(box_xyxy) < int(args.min_area_frac * (cw * chh)):
+                # area guard (real panels only — a thin full-width card is
+                # exactly what recovery exists to keep)
+                if pidx is not None and area_px(box_xyxy) < int(args.min_area_frac * (cw * chh)):
                     skipped_small += 1
                     continue
 
@@ -866,14 +909,20 @@ def main() -> int:
                 # protected spans in crop coords
                 crop_local_spans = chunk_spans_to_crop_spans(chunk_spans, box_xyxy[1], box_xyxy[3])
 
-                # THE FIX: split first (pre-trim) if a merged crop contains big internal gutters
-                split_parts = split_crop_on_gutters(
-                    crop=crop,
-                    crop_box_in_chunk=box_xyxy,
-                    spans_local=crop_local_spans,
-                    gp=gp,
-                    min_h_px=int(args.min_h_px),
-                )
+                # THE FIX: split first (pre-trim) if a merged crop contains big
+                # internal gutters. Recovered spans are NOT re-split — a solid
+                # run inside a caption card reads as a "gutter" and would slice
+                # the card; the span is already bounded by real panels.
+                if pidx is None:
+                    split_parts = [(crop, box_xyxy, crop_local_spans)]
+                else:
+                    split_parts = split_crop_on_gutters(
+                        crop=crop,
+                        crop_box_in_chunk=box_xyxy,
+                        spans_local=crop_local_spans,
+                        gp=gp,
+                        min_h_px=int(args.min_h_px),
+                    )
 
                 for part_idx, (part_im, part_box, part_spans) in enumerate(split_parts):
                     # optional trim AFTER splitting
@@ -896,8 +945,14 @@ def main() -> int:
                     blank, edge = blank_score_and_edge_density(part_im)
                     is_blankish = (blank >= float(args.blank_threshold) and edge <= float(args.blank_max_edge))
 
-                    # if blankish and not saving narration, skip
-                    if args.skip_blank and is_blankish and not args.save_narration:
+                    # if blankish and not saving narration, skip. Recovered
+                    # spans ALWAYS drop blankish parts — recovery exists for
+                    # missed content, never for empty gutters.
+                    if pidx is None:
+                        if is_blankish:
+                            skipped_blank += 1
+                            continue
+                    elif args.skip_blank and is_blankish and not args.save_narration:
                         skipped_blank += 1
                         continue
 
@@ -929,7 +984,9 @@ def main() -> int:
                         panel_id = f"p{seq_id:06d}"
                         seq_id += 1
                     else:
-                        panel_id = f"c{cidx:04d}_p{pidx:04d}_{part_idx:02d}"
+                        panel_id = (f"c{cidx:04d}_p{pidx:04d}_{part_idx:02d}"
+                                    if pidx is not None else
+                                    f"c{cidx:04d}_gap_{part_idx:02d}")
 
                     out_name = f"{panel_id}.jpg"
                     out_path = os.path.join(args.out_dir, out_name)
@@ -945,7 +1002,10 @@ def main() -> int:
                             "chunk_w": cw,
                             "chunk_h": chh,
                             "chunk_global_y0": int(chunk_global_y0.get(cf, 0)),
-                            "panel_index_in_chunk": int(pidx),
+                            "panel_index_in_chunk": (int(pidx)
+                                                     if pidx is not None
+                                                     else -1),
+                            "recovered": pidx is None,
                             "part_index": int(part_idx),
                             "box_px_xyxy": [int(gx0), int(gy0), int(gx1), int(gy1)],
                             "box_norm": px_xyxy_to_norm([gx0, gy0, gx1, gy1], cw, chh),
@@ -977,6 +1037,7 @@ def main() -> int:
         "source_panels_manifest": os.path.abspath(args.panels_manifest),
         "out_dir": os.path.abspath(args.out_dir),
         "count_scenes": len(scenes),
+        "recovered_n": sum(1 for s in scenes if s.get("recovered")),
         "stats": {
             "written": int(written),
             "panels_in": int(total_panels_in),
