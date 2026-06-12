@@ -12,10 +12,25 @@
     rsync -a ~/repos/Manhwa/studio.db mini.local:~/repos/Manhwa/studio.db
     # 3. put YOUTUBE_API_KEY into keys/creds.env (it currently lives only in
     #    the old shell profile): echo 'YOUTUBE_API_KEY=...' >> keys/creds.env
+    # 4. PATHS: studio.db (chapter.ep_dir) and the ongoing/ manifests store
+    #    ABSOLUTE paths from the old host. After copying, rewrite the prefix
+    #    ON THE NEW HOST or every job fails with FileNotFoundError:
+    #    sqlite3 studio.db "UPDATE chapter SET ep_dir=REPLACE(ep_dir,
+    #      '/Users/<old>/repos/Manhwa','/Users/<new>/repos/Manhwa')
+    #      WHERE ep_dir LIKE '%/Users/<old>/%';"
+    #    find ongoing out -name '*.json' -exec grep -l '/Users/<old>/' {} + |
+    #      xargs sed -i '' 's|/Users/<old>/repos/Manhwa|/Users/<new>/repos/Manhwa|g'
 
 ## On the mini
     cd ~/repos/Manhwa && scripts/bootstrap_mac.sh      # brew, ollama+gemma, venvs, npm, tests
     scripts/launchd/install.sh <pick-a-secret-token>   # dashboard+worker as services
+    # macOS APPLICATION FIREWALL silently blackholes inbound to Homebrew
+    # Python (TCP connects, zero bytes back; only 127.0.0.1 exempt). Allow
+    # the EXACT Cellar binary and pin python so upgrades don't break it:
+    P=$(readlink -f $(brew --prefix python@3.12))/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python
+    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add "$P"
+    sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$P"
+    brew pin python@3.12
 
 ## Private tunnel (WireGuard, self-hosted — no third parties)
     # on the mini:  scripts/wireguard/setup.sh mini
