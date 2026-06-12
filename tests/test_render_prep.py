@@ -825,9 +825,12 @@ def test_cap_repeats_holds_previous_panel():
     order = ["g1", "g2", "g3", "g4", "g5"]
     out, holds = rp.cap_repeats_with_holds(
         cuts, durations={s: 4.0 for s in order} | {"g5": 5.0}, order=order)
-    assert holds == [("g5", "B.jpg")]
+    # nearby-repeat rule: A,B,A,B,A collapses the mid alternation into a
+    # held stretch, then ends on a FRESH panel — better than spacing loops
+    assert holds == [("g3", "B.jpg"), ("g4", "B.jpg")]
+    assert out["g3"][0]["held"] is True
     g5 = out["g5"][0]
-    assert g5["held"] is True and g5["file"] == "B.jpg" and g5["dur"] == 5.0
+    assert not g5.get("held") and g5["file"] == "A.jpg"
     counts = {}
     for s_ in order:
         for c in out[s_]:
@@ -845,3 +848,25 @@ def test_cap_repeats_exempts_sys_panels():
         exempt={"sys.jpg"})
     assert holds == []
     assert all(out[s][0]["file"] == "sys.jpg" for s in order)
+
+
+def test_judge_cut_visuals_drops_junk_keeps_good(tmp_path, monkeypatch):
+    import sys, types, json as _json
+    verdicts = {"bad.jpg": {"keep": False, "reason": "empty blanked bubbles"},
+                "good.jpg": {"keep": True, "reason": "character face"}}
+    calls = []
+
+    def fake_chat(**kw):
+        path = kw["messages"][0]["images"][0]
+        name = path.rsplit("/", 1)[-1]
+        calls.append(name)
+        return {"message": {"content": _json.dumps(verdicts[name])}}
+    fake = types.ModuleType("ollama_compat")
+    fake.chat = fake_chat
+    monkeypatch.setitem(sys.modules, "ollama_compat", fake)
+    for n in ("bad.jpg", "good.jpg", "sysy.jpg"):
+        (tmp_path / n).write_bytes(b"jpg")
+    junk = rp.judge_cut_visuals(["bad.jpg", "good.jpg", "sysy.jpg"],
+                                str(tmp_path), exempt={"sysy.jpg"})
+    assert set(junk) == {"bad.jpg"} and "bubbles" in junk["bad.jpg"]
+    assert "sysy.jpg" not in calls          # exempt never even judged

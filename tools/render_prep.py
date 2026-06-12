@@ -954,15 +954,18 @@ def cap_repeats_with_holds(
     out: Dict[str, List[Dict[str, Any]]] = {}
     holds: List[Tuple[str, str]] = []
     counts: Dict[str, int] = {}
+    last_idx: Dict[str, int] = {}
     prev_file: Optional[str] = None
-    for seg in order:
+    for i, seg in enumerate(order):
         cuts = list(cuts_by_segment.get(seg) or [])
         kept: List[Dict[str, Any]] = []
         for c in cuts:
             f = str(c.get("file"))
-            if f in ex or counts.get(f, 0) < cap:
+            near = f in last_idx and (i - last_idx[f]) <= 2
+            if f in ex or (counts.get(f, 0) < cap and not near):
                 kept.append(c)
                 counts[f] = counts.get(f, 0) + 1
+                last_idx[f] = i
         if not kept and cuts:
             if prev_file is None:
                 kept = [cuts[0]]            # nothing to hold yet
@@ -975,11 +978,58 @@ def cap_repeats_with_holds(
                          "held": True}]
                 holds.append((seg, prev_file))
         out[seg] = kept
-        if kept:
+        if kept and not kept[-1].get("held"):
             prev_file = str(kept[-1].get("file"))
     for seg, cuts in cuts_by_segment.items():
         out.setdefault(seg, list(cuts))
     return out, holds
+
+
+_JUNK_PROMPT = """You are a video editor's eye for a manhwa recap. This image
+is ONE cut that would appear on screen for several seconds.
+
+Is it a MEANINGFUL story visual (characters, faces, action, setting, system
+message, readable caption) — or JUNK that would look broken on screen (empty
+or blanked speech bubbles dominating the frame, a flat gradient or glow with
+no subject, a sliver fragment of art, leftover panel scraps)?
+Reply ONLY JSON: {"keep": true/false, "reason": "<short>"}"""
+
+
+def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
+                      exempt: Optional[set] = None,
+                      model: str = "gemma4:26b") -> Dict[str, str]:
+    """Per-cut VISUAL quality judge — the question no geometric rule fully
+    answers ('is this panel worth screen time?'). Returns {file: reason}
+    for junk cuts. Fail-soft: no ollama -> judges nothing. sys/doc exempt."""
+    ex = exempt or set()
+    junk: Dict[str, str] = {}
+    try:
+        import sys as _sys
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from ollama_compat import chat as _chat
+    except Exception:
+        return junk
+    for f in files:
+        if f in ex:
+            continue
+        path = os.path.join(clean_dir, f)
+        if not os.path.exists(path):
+            continue
+        try:
+            resp = _chat(model=model, think=False,
+                         messages=[{"role": "user", "content": _JUNK_PROMPT,
+                                    "images": [path]}],
+                         options={"temperature": 0, "num_predict": 150})
+            raw = str(resp["message"]["content"] or "")
+            m = re.search(r"\{.*\}", raw, re.S)
+            v = json.loads(m.group(0)) if m else {}
+            if v.get("keep") is False:
+                junk[f] = str(v.get("reason") or "")[:120]
+        except Exception:
+            continue
+    return junk
 
 
 # ---------------------------------------------------------------------------
@@ -1416,14 +1466,6 @@ def main() -> int:
         if not xdropped and not subs:
             break
 
-    # repeat cap: no panel carries a 3rd segment — hold the previous panel
-    # instead (the deterministic fix for starved tails; QA exempts holds)
-    cuts_by_segment, holds = cap_repeats_with_holds(
-        cuts_by_segment, durations=durations, order=order,
-        exempt=exempt_all, cap=2)
-    for seg, f in holds:
-        print(f"[ok] {seg}: repeat cap -> HOLDING previous panel {f}")
-
     shown = sorted({c["file"] for cs in cuts_by_segment.values() for c in cs})
 
     # 2+3. clean + trim shown scenes into scenes_clean/
@@ -1485,6 +1527,30 @@ def main() -> int:
         _write_part(fname, parts[0], doc=rich, sys_panel=sysf, blanked=blanked)
         print(f"[ok] {fname}: bubbles={len(boxes)} -> "
               f"{scene_dims[fname]['w']}x{scene_dims[fname]['h']}")
+
+    # AI visual judge on the CLEANED cuts (voids only exist post-blanking):
+    # junk (empty-bubble husks, flat glows, slivers) is DROPPED; the repeat
+    # cap then refills/holds. The judge that asks what no geometry can:
+    # "is this panel worth screen time?"
+    junk = judge_cut_visuals(
+        [f for f in shown
+         if not (scene_dims.get(f) or {}).get("sys")
+         and not (scene_dims.get(f) or {}).get("doc")],
+        clean_dir, exempt=exempt_all)
+    if junk:
+        for f, why in sorted(junk.items()):
+            print(f"[ok] visual judge: DROPPING {f} — {why}")
+        cuts_by_segment = {
+            seg: ([c for c in cs if str(c.get("file")) not in junk] or cs)
+            for seg, cs in cuts_by_segment.items()}
+
+    # repeat cap + holds (also covers segments emptied by the judge — their
+    # neighbor's panel holds while the narration continues)
+    cuts_by_segment, holds = cap_repeats_with_holds(
+        cuts_by_segment, durations=durations, order=order,
+        exempt=exempt_all, cap=2)
+    for seg, f in holds:
+        print(f"[ok] {seg}: repeat cap -> HOLDING previous panel {f}")
 
     # split scenes render as side-by-side pairs
     for cs in cuts_by_segment.values():

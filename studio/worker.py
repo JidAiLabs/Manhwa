@@ -94,7 +94,8 @@ def _series_env(con: sqlite3.Connection,
 # stages (prose is never edited in place): mechanical staleness re-scripts;
 # a dangling-fragment narration re-writes its beats once (the writer now
 # carries rolling context + fragment rules, so a re-roll usually lands).
-STALE_CODES = {"beats_incomplete", "narration_stale", "fragment_dangle"}
+STALE_CODES = {"beats_incomplete", "narration_stale", "fragment_dangle",
+               "caption_unvoiced"}
 
 
 def _qa_error_codes(ep: Path) -> set:

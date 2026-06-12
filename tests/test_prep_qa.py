@@ -575,3 +575,12 @@ def test_montage_and_repeat_checks_exempt_held_cuts():
           {"segment_id": "g0003_p00", "tts_text": "z", "cuts": [dict(held)]},
           {"segment_id": "g0004_p00", "tts_text": "w", "cuts": [dict(held)]}]
     assert pq.montage_flags({"timeline": tl}) == []
+
+
+def test_caption_check_skips_chrome_endcards():
+    beats = {"beats": [{"group_id": 9, "narration": "The story ends.",
+                        "scene_files": ["e.jpg"]}]}
+    vitems = {"e.jpg": {"recovered": True, "ocr_clean":
+              "THANKS FOR READING THIS CHAPTER ON OUR WEBSITE ELFTOON "
+              ". com DON'T FORGET TO JOIN OUR DISCORD"}}
+    assert pq.caption_unvoiced_flags(beats, vitems) == []

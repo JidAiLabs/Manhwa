@@ -419,6 +419,12 @@ def caption_unvoiced_flags(beats_obj: Dict[str, Any],
             if not (it.get("text_only") or it.get("recovered")):
                 continue
             txt = str(it.get("ocr_clean") or "")
+            try:
+                import scene_chrome as _sc
+                if _sc.is_chrome_scene({"ocr_clean": txt}):
+                    continue   # resurrected end-cards/plugs are not captions
+            except Exception:
+                pass
             # app-UI screens are text_only too — their button/counter noise
             # ("READ EPISODE", "VIEWS: 1") is not monologue; don't demand it
             cwords = {w for w in _norm_narr(txt).split()
