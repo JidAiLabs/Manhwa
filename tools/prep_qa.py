@@ -322,6 +322,9 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
     flags: List[Dict[str, Any]] = []
     timeline = plan.get("timeline") or []
     dims = plan.get("scene_dims") or {}
+    # step-1 plans are built WITHOUT voiceover (timeline estimates durations
+    # from word counts) — audio cannot exist yet and must not flag as ERROR
+    voiced_plan = bool(plan.get("source_tts_index"))
 
     if timeline and timeline[0].get("branding"):
         flags.append(_flag("no_cold_open", WARN,
@@ -394,9 +397,15 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
         if not branding:
             audio = item.get("tts_audio")
             if not audio or not audio_exists(str(audio)):
-                flags.append(_flag("missing_audio", ERROR,
-                                   f"tts_audio missing on disk: {audio}",
-                                   segment_id=seg))
+                if voiced_plan:
+                    flags.append(_flag("missing_audio", ERROR,
+                                       f"tts_audio missing on disk: {audio}",
+                                       segment_id=seg))
+                else:
+                    flags.append(_flag("estimate_plan", INFO,
+                                       "pre-voiceover plan: timing estimated, "
+                                       "audio comes after story approval",
+                                       segment_id=seg))
 
     for parent, segs in seen_parent_segments.items():
         if len(segs) > 1:

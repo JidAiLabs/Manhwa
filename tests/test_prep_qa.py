@@ -266,6 +266,7 @@ def test_plan_flags_missing_file_dims_audio_and_flash_cut():
     items = [_item("g0001_p00", ["p000001.jpg", "p000404.jpg"])]
     items[0]["cuts"][1]["dur"] = 0.8                       # flash cut
     plan = _plan(items)
+    plan["source_tts_index"] = "/x/tts/tts_index.json"     # voiced plan
     plan["scene_dims"] = {"p000001.jpg": {"w": 100, "h": 100, "doc": False}}
     fl = pq.plan_flags(plan, clean_files={"p000001.jpg"},
                        audio_exists=lambda p: False)
@@ -368,3 +369,22 @@ def test_cross_dup_flag_for_consecutive_near_identical_cuts():
     assert any(f["code"] == "cross_dup" and f["severity"] == "ERROR"
                and f["scene"] == "b.jpg" for f in fl)
     assert not any(f.get("scene") == "c.jpg" for f in fl)
+
+
+def test_missing_audio_is_info_on_estimate_plans():
+    # step-1 plans are built WITHOUT voiceover (duration estimates): audio
+    # cannot exist yet — that's the designed state, not a defect
+    items = [_item("g0001_p00", ["p000001.jpg"])]
+    del items[0]["tts_audio"]
+    plan = _plan(items)                      # no source_tts_index -> estimate
+    plan["scene_dims"] = {"p000001.jpg": {"w": 9, "h": 9, "doc": False}}
+    fl = pq.plan_flags(plan, clean_files={"p000001.jpg"},
+                       audio_exists=lambda p: False)
+    assert not [f for f in fl if f["code"] == "missing_audio"
+                and f["severity"] == "ERROR"]
+    # voiced plans still enforce hard
+    plan["source_tts_index"] = "/x/tts/tts_index.json"
+    fl2 = pq.plan_flags(plan, clean_files={"p000001.jpg"},
+                        audio_exists=lambda p: False)
+    assert any(f["code"] == "missing_audio" and f["severity"] == "ERROR"
+               for f in fl2)
