@@ -17,10 +17,19 @@
     cd ~/repos/Manhwa && scripts/bootstrap_mac.sh      # brew, ollama+gemma, venvs, npm, tests
     scripts/launchd/install.sh <pick-a-secret-token>   # dashboard+worker as services
 
+## Private tunnel (WireGuard, self-hosted — no third parties)
+    # on the mini:  scripts/wireguard/setup.sh mini
+    # on the Air:   scripts/wireguard/setup.sh air
+    # paste each machine's printed [Peer] block into the other's wg0.conf,
+    # then on both: sudo wg-quick up wg0
+    # Bind the dashboard to the TUNNEL ONLY (unreachable from LAN/Wi-Fi):
+    #   studio dashboard --host 10.88.0.1
+    #   (in launchd: change --host 0.0.0.0 -> 10.88.0.1 in the plist)
+
 ## From the MacBook Air
-    open http://mini.local:8170/login   # enter the token in the form (POST; never in the URL)
-    # away from home: install Tailscale on both machines and use the mini's
-    # tailnet name instead of mini.local — same token gate applies.
+    open http://10.88.0.1:8170/login    # through the tunnel; enter the token
+    # roaming: forward UDP 51820 on the home router to the mini (or DDNS)
+    # and set that as Endpoint in the Air's wg0.conf — no other changes.
 
 ## Notes
 - 64 GB means Gemma (17 GB) stays resident next to Qwen + renders; later the
