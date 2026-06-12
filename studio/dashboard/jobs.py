@@ -8,6 +8,7 @@ running, so exactly one pipeline stage owns the machine at a time.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,15 @@ LANES = {
     "prepare": "gpu", "voiceover": "gpu", "qa_scan": "gpu", "chain": "gpu",
     "render_segment": "cpu", "branding_segments": "cpu", "concat": "cpu",
     "refresh": "api", "discovery_scan": "api", "add_series": "api",
+}
+
+# parallel width per lane (64GB mini): two gpu jobs overlap one chapter's
+# Gemma minutes with another's OCR/CPU minutes — ollama serializes its own
+# requests so the GPU never thrashes. Renders stay exclusive on cpu.
+LANE_WIDTH = {
+    "gpu": int(os.environ.get("STUDIO_GPU_WIDTH", "2")),
+    "cpu": int(os.environ.get("STUDIO_CPU_WIDTH", "1")),
+    "api": int(os.environ.get("STUDIO_API_WIDTH", "2")),
 }
 
 
@@ -64,16 +74,19 @@ def claim_next(con: sqlite3.Connection,
         running = con.execute(
             f"SELECT COUNT(*) FROM job WHERE state='running' AND type IN "
             f"({qs})", types).fetchone()[0]
-        if running:
+        if running >= LANE_WIDTH.get(lane, 1):
             return None
         r = con.execute(
             f"SELECT {_COLS} FROM job WHERE state='queued' AND type IN "
             f"({qs}) ORDER BY priority, id LIMIT 1", types).fetchone()
     if not r:
         return None
-    con.execute("UPDATE job SET state='running', started_at=datetime('now') "
-                "WHERE id=? AND state='queued'", (r[0],))
+    cur = con.execute(
+        "UPDATE job SET state='running', started_at=datetime('now') "
+        "WHERE id=? AND state='queued'", (r[0],))
     con.commit()
+    if cur.rowcount == 0:
+        return None     # a sibling lane thread won the claim race
     r2 = con.execute(f"SELECT {_COLS} FROM job WHERE id=?", (r[0],)).fetchone()
     return _row(r2)
 

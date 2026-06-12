@@ -494,11 +494,24 @@ def _heartbeat(con: sqlite3.Connection) -> None:
     con.commit()
 
 
+def requeue_orphans(con: sqlite3.Connection) -> int:
+    """Jobs left 'running' by a dead worker process would block their lane
+    forever — at boot (one worker per host) they all go back to queued."""
+    cur = con.execute("UPDATE job SET state='queued', started_at=NULL "
+                      "WHERE state='running' AND type!='heartbeat'")
+    con.commit()
+    return cur.rowcount
+
+
 def main(db_path: str = "studio.db") -> int:
     from studio.catalog.db import connect
     con = connect(db_path)
     import threading
-    print(f"[worker] lanes gpu|cpu|api on {db_path} — ctrl-c to stop")
+    orphans = requeue_orphans(con)
+    if orphans:
+        print(f"[worker] requeued {orphans} orphaned running job(s)")
+    widths = dict(jobs.LANE_WIDTH)
+    print(f"[worker] lanes {widths} on {db_path} — ctrl-c to stop")
 
     def lane_loop(lane: str) -> None:
         lcon = connect(db_path)
@@ -507,10 +520,12 @@ def main(db_path: str = "studio.db") -> int:
                 time.sleep(2)
 
     try:
-        for lane in ("cpu", "api"):
-            threading.Thread(target=lane_loop, args=(lane,),
-                             daemon=True).start()
-        while True:                      # gpu lane on the main thread
+        for lane, width in widths.items():
+            extra = width - 1 if lane == "gpu" else width
+            for _ in range(max(0, extra)):
+                threading.Thread(target=lane_loop, args=(lane,),
+                                 daemon=True).start()
+        while True:                      # gpu slot #1 on the main thread
             _heartbeat(con)
             if not run_once(con, lane="gpu"):
                 time.sleep(2)

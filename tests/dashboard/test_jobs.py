@@ -58,20 +58,42 @@ def test_queue_view_keeps_recent_finished_jobs(tmp_path):
     assert any(r["id"] == a and r["state"] == "done" for r in view)
 
 
-def test_lane_claims_run_in_parallel_but_serial_within_lane(tmp_path):
-    """Assembly line: gpu (prepare/voice), cpu (render/concat), api lanes
-    each run ONE job — three jobs total can be active simultaneously."""
+def test_lane_claims_respect_per_lane_width(tmp_path):
+    """Assembly line with WIDTH: gpu runs 2 jobs at once (Gemma time of one
+    chapter overlaps OCR/CPU time of another), cpu stays exclusive."""
     con = _con(tmp_path)
     g = jobs.enqueue(con, "voiceover", chapter_id=1)
     c = jobs.enqueue(con, "render_segment", chapter_id=2)
     a = jobs.enqueue(con, "refresh", series_id=1)
     g2 = jobs.enqueue(con, "prepare", chapter_id=3)
+    g3 = jobs.enqueue(con, "prepare", chapter_id=4)
     assert jobs.claim_next(con, lane="gpu")["id"] == g
-    assert jobs.claim_next(con, lane="gpu") is None        # gpu busy
+    assert jobs.claim_next(con, lane="gpu")["id"] == g2    # width 2
+    assert jobs.claim_next(con, lane="gpu") is None        # gpu full
     assert jobs.claim_next(con, lane="cpu")["id"] == c     # cpu free
     assert jobs.claim_next(con, lane="api")["id"] == a
     jobs.finish(con, g, ok=True)
-    assert jobs.claim_next(con, lane="gpu")["id"] == g2
+    assert jobs.claim_next(con, lane="gpu")["id"] == g3
+
+
+def test_claim_race_lost_returns_none(tmp_path):
+    con = _con(tmp_path)
+    j = jobs.enqueue(con, "prepare", chapter_id=1)
+    con.execute("UPDATE job SET state='running' WHERE id=?", (j,))
+    con.commit()                       # sibling thread won the claim
+    assert jobs.claim_next(con, lane="gpu") is None
+
+
+def test_orphan_requeue_at_boot(tmp_path):
+    from studio import worker
+    con = _con(tmp_path)
+    j = jobs.enqueue(con, "prepare", chapter_id=1)
+    con.execute("UPDATE job SET state='running' WHERE id=?", (j,))
+    con.commit()                       # worker died mid-job
+    n = worker.requeue_orphans(con)
+    assert n == 1
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (j,)).fetchone()[0] == "queued"
 
 
 def test_legacy_claim_without_lane_is_fully_serial(tmp_path):
