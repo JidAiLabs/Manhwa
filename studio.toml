@@ -15,8 +15,11 @@ sleep = 2.0
 [models]
 # LLM models per stage (cost-tunable). Swap to cheaper tiers freely; the
 # usage_cost logger reports exact tokens + $ per run so quality/cost is A/B-able.
-# beats: Gemini multimodal (sends panel images). flash-lite is ~5x cheaper than flash.
-beats_model = "gemini-2.5-flash"
+# beats: the writer. CONFIRMED 2026-06-12: local Gemma 4 via Ollama ($0,
+# ~55s/group on MPS; A/B'd vs Flash — 0 parse errors, 79% selection agreement).
+# Flash remains one config flip away: backend="vertex", model="gemini-2.5-flash".
+beats_backend = "ollama"
+beats_model = "gemma4:26b"
 # script: OpenAI. gpt-4.1-mini is API-deprecating 2026-10-14; gpt-5-nano is ~5x cheaper.
 script_model = "gpt-5-nano"
 

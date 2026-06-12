@@ -91,7 +91,9 @@ def main() -> int:
     ap.add_argument("--series-title", default="",
                     help="INTERNAL ban-list only — the licensed name must "
                          "never appear in the output")
-    ap.add_argument("--model", default="gemini-2.5-flash")
+    ap.add_argument("--model", default="gemma4:26b")
+    ap.add_argument("--backend", choices=["vertex", "ollama"],
+                    default="ollama")
     ap.add_argument("--location", default="us-central1")
     ap.add_argument("--out", default="",
                     help="default <episode>/render/youtube_meta.json")
@@ -105,18 +107,31 @@ def main() -> int:
     with open(bp, "r", encoding="utf-8") as f:
         digest = chapter_digest(json.load(f))
 
-    from thumbnail_gen import _make_client
     meta: Optional[Dict[str, Any]] = None
-    for kind, client in _make_client(args.location):
+    if args.backend == "ollama":
         try:
-            resp = client.models.generate_content(
-                model=args.model,
-                contents=[build_meta_prompt(digest, args.series_title)])
-            meta = extract_json(resp.text or "")
-            if meta and meta.get("title"):
-                break
+            import ollama
+            resp = ollama.chat(model=args.model, think=False,
+                               messages=[{"role": "user", "content":
+                                          build_meta_prompt(digest,
+                                                            args.series_title)}],
+                               options={"temperature": 0.8,
+                                        "num_predict": 1200})
+            meta = extract_json(resp["message"]["content"] or "")
         except Exception as e:
-            print(f"[warn] {kind}/{args.model}: {e}")
+            print(f"[warn] ollama/{args.model}: {e}")
+    if not meta:
+        from thumbnail_gen import _make_client
+        for kind, client in _make_client(args.location):
+            try:
+                resp = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[build_meta_prompt(digest, args.series_title)])
+                meta = extract_json(resp.text or "")
+                if meta and meta.get("title"):
+                    break
+            except Exception as e:
+                print(f"[warn] {kind}: {e}")
     if not meta:
         print("[err] no usable metadata returned")
         return 1

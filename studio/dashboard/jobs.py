@@ -14,6 +14,18 @@ from typing import Any, Dict, List, Optional
 _COLS = ("id, type, series_id, chapter_id, bundle_id, payload_json, state, "
          "priority, created_at, started_at, finished_at, log_path, error")
 
+# assembly-line lanes: stages occupy different resources, so one job may run
+# PER LANE simultaneously (prepare ch N+1 on gpu while render ch N-1 on cpu)
+LANES = {
+    "prepare": "gpu", "voiceover": "gpu", "qa_scan": "gpu", "chain": "gpu",
+    "render_segment": "cpu", "branding_segments": "cpu", "concat": "cpu",
+    "refresh": "api", "discovery_scan": "api", "add_series": "api",
+}
+
+
+def _lane_types(lane: str):
+    return [t for t, l in LANES.items() if l == lane]
+
 
 def _row(r) -> Dict[str, Any]:
     d = dict(zip([c.strip() for c in _COLS.split(",")], r))
@@ -33,15 +45,30 @@ def enqueue(con: sqlite3.Connection, type: str, *, series_id: Optional[int] = No
     return int(cur.lastrowid)
 
 
-def claim_next(con: sqlite3.Connection) -> Optional[Dict[str, Any]]:
-    running = con.execute(
-        "SELECT COUNT(*) FROM job WHERE state='running' AND type!='heartbeat'"
-    ).fetchone()[0]
-    if running:
-        return None
-    r = con.execute(
-        f"SELECT {_COLS} FROM job WHERE state='queued' "
-        "ORDER BY priority, id LIMIT 1").fetchone()
+def claim_next(con: sqlite3.Connection,
+               lane: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """No lane: fully serial (legacy). With a lane: one running job per lane
+    — the serial-GPU guarantee holds inside each resource."""
+    if lane is None:
+        running = con.execute(
+            "SELECT COUNT(*) FROM job WHERE state='running' AND "
+            "type!='heartbeat'").fetchone()[0]
+        if running:
+            return None
+        r = con.execute(
+            f"SELECT {_COLS} FROM job WHERE state='queued' "
+            "ORDER BY priority, id LIMIT 1").fetchone()
+    else:
+        types = _lane_types(lane)
+        qs = ",".join("?" for _ in types)
+        running = con.execute(
+            f"SELECT COUNT(*) FROM job WHERE state='running' AND type IN "
+            f"({qs})", types).fetchone()[0]
+        if running:
+            return None
+        r = con.execute(
+            f"SELECT {_COLS} FROM job WHERE state='queued' AND type IN "
+            f"({qs}) ORDER BY priority, id LIMIT 1", types).fetchone()
     if not r:
         return None
     con.execute("UPDATE job SET state='running', started_at=datetime('now') "

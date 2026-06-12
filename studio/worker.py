@@ -385,9 +385,10 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
 
 
 def run_once(con: sqlite3.Connection, *, handlers=None,
-             log_dir: str = "logs/jobs") -> bool:
+             log_dir: str = "logs/jobs",
+             lane: "str | None" = None) -> bool:
     handlers = HANDLERS if handlers is None else handlers
-    job = jobs.claim_next(con)
+    job = jobs.claim_next(con, lane=lane)
     if not job:
         return False
     os.makedirs(log_dir, exist_ok=True)
@@ -420,11 +421,22 @@ def _heartbeat(con: sqlite3.Connection) -> None:
 def main(db_path: str = "studio.db") -> int:
     from studio.catalog.db import connect
     con = connect(db_path)
-    print(f"[worker] serial queue on {db_path} — ctrl-c to stop")
-    try:
+    import threading
+    print(f"[worker] lanes gpu|cpu|api on {db_path} — ctrl-c to stop")
+
+    def lane_loop(lane: str) -> None:
+        lcon = connect(db_path)
         while True:
+            if not run_once(lcon, lane=lane):
+                time.sleep(2)
+
+    try:
+        for lane in ("cpu", "api"):
+            threading.Thread(target=lane_loop, args=(lane,),
+                             daemon=True).start()
+        while True:                      # gpu lane on the main thread
             _heartbeat(con)
-            if not run_once(con):
+            if not run_once(con, lane="gpu"):
                 time.sleep(2)
     except KeyboardInterrupt:
         print("\n[worker] stopped")

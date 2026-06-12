@@ -138,15 +138,16 @@ def main() -> int:
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"))
     ap.add_argument("--model", default="gemini-2.5-flash")
+    ap.add_argument("--backend", choices=["vertex", "ollama"], default="vertex")
     ap.add_argument("--max-images", type=int, default=24)
     args = ap.parse_args()
 
     project = args.project
-    if not project:
+    if args.backend == "vertex" and not project:
         keys = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
         if keys and os.path.exists(keys):
             project = json.loads(open(keys).read()).get("project_id", "")
-    if not project:
+    if args.backend == "vertex" and not project:
         raise SystemExit("No --project and could not derive project_id from GOOGLE_APPLICATION_CREDENTIALS")
 
     vision = _load(args.vision_manifest)
@@ -162,17 +163,43 @@ def main() -> int:
         if ip is not None:
             parts.append(ip)
 
-    client = genai.Client(vertexai=True, project=project, location=args.location)
-    resp = client.models.generate_content(
-        model=args.model,
-        contents=[types.Content(role="user", parts=parts)],
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_schema=CAST_SCHEMA,
-        ),
-    )
-    cast = json.loads(resp.text)
+    if args.backend == "ollama":
+        import ollama
+        text_blobs = [SYSTEM,
+                      "ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n"
+                      + "\n".join(ocr),
+                      f"\n{len(images)} sample panels follow:"]
+        import re as _re
+
+        def _lower_types(o):
+            if isinstance(o, dict):
+                return {k: (v.lower() if k == "type" and isinstance(v, str)
+                            else _lower_types(v))
+                        for k, v in o.items() if k != "propertyOrdering"}
+            if isinstance(o, list):
+                return [_lower_types(x) for x in o]
+            return o
+
+        resp = ollama.chat(
+            model=args.model,
+            messages=[{"role": "user", "content": "\n".join(text_blobs),
+                       "images": [str(pth) for pth in images]}],
+            format=_lower_types(CAST_SCHEMA), think=False,
+            options={"temperature": 0.2, "num_ctx": 16384,
+                     "num_predict": 2400})
+        cast = json.loads(resp["message"]["content"])
+    else:
+        client = genai.Client(vertexai=True, project=project, location=args.location)
+        resp = client.models.generate_content(
+            model=args.model,
+            contents=[types.Content(role="user", parts=parts)],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                response_schema=CAST_SCHEMA,
+            ),
+        )
+        cast = json.loads(resp.text)
     cast["_meta"] = {"model": args.model, "images_used": len(images), "ocr_lines": len(ocr)}
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(cast, f, ensure_ascii=False, indent=2)

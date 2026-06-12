@@ -192,19 +192,25 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         # One Gemini call → chapter cast registry (manifest.cast.json) so the
         # narration names the same character consistently. Skipped when the
         # file exists, so a beated retry never re-pays for it.
-        _run_tool("cast_builder.py",
-                  ["--groups-manifest", str(p["groups"]),
-                   "--vision-manifest", str(p["vision"]),
-                   "--out", str(p["cast"]),
-                   "--project", project, "--location", location,
-                   "--model", cfg.beats_model])
+        cast_args = ["--groups-manifest", str(p["groups"]),
+                     "--vision-manifest", str(p["vision"]),
+                     "--out", str(p["cast"]),
+                     "--project", project, "--location", location,
+                     "--model", cfg.beats_model]
+        if cfg.beats_backend == "ollama":
+            cast_args += ["--backend", "ollama"]
+        _run_tool("cast_builder.py", cast_args)
+    beats_args = ["--groups-manifest", str(p["groups"]),
+                  "--vision-manifest", str(p["vision"]),
+                  "--out", str(p["beats"]),
+                  "--project", project, "--location", location,
+                  "--model", cfg.beats_model,
+                  "--cast", str(p["cast"])]
+    if cfg.beats_backend == "ollama":
+        beats_args += ["--backend", "ollama",
+                       "--ollama-model", cfg.beats_model]
     _run_tool("gemini_narrative_pass.py",
-              ["--groups-manifest", str(p["groups"]),
-               "--vision-manifest", str(p["vision"]),
-               "--out", str(p["beats"]),
-               "--project", project, "--location", location,
-               "--model", cfg.beats_model,
-               "--cast", str(p["cast"]),
+              beats_args + [
                # Send enough panels per group that the scene_selection
                # (keep/redundant) judgment can see every candidate — otherwise an
                # unseen panel defaults to 'keep' and same-moment dups survive.

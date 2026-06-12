@@ -190,7 +190,7 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--cast", default="")
     ap.add_argument("--backend", choices=["vertex", "ollama"],
-                    default="vertex")
+                    default="ollama")
     ap.add_argument("--model", default="gemini-2.5-flash")
     ap.add_argument("--ollama-model", default="gemma4:26b")
     ap.add_argument("--project", default="")
