@@ -384,6 +384,45 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
     return flags
 
 
+def montage_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Cross-segment visual degeneracy — the class the per-segment checks
+    (and the per-segment LLM judge) cannot see: one panel carrying many
+    segments, or a long stretch alternating between a tiny set of images.
+    Regression source: Episode 2 showed 6 segments cycling 2 mangled crops
+    after the phone panels were sliced and dropped upstream."""
+    flags: List[Dict[str, Any]] = []
+    segs: List[Any] = []
+    for it in (plan or {}).get("timeline") or []:
+        if it.get("branding"):
+            continue
+        files = [str(c.get("file") or "") for c in it.get("cuts") or []
+                 if c.get("file")]
+        segs.append((str(it.get("segment_id") or ""), files))
+    by_file: Dict[str, List[str]] = {}
+    for sid, files in segs:
+        for f in set(files):
+            by_file.setdefault(f, []).append(sid)
+    for f, sids in sorted(by_file.items()):
+        if len(sids) >= 3:
+            flags.append(_flag(
+                "visual_loop", ERROR,
+                f"same panel carries {len(sids)} segments "
+                f"({', '.join(sids[:4])}…) — panels were lost upstream",
+                scene=f))
+    for i in range(len(segs) - 3):
+        window = segs[i:i + 4]
+        uniq = {f for _, files in window for f in files}
+        if uniq and len(uniq) <= 2:
+            flags.append(_flag(
+                "montage_degenerate", ERROR,
+                f"segments {window[0][0]}…{window[-1][0]} draw on only "
+                f"{len(uniq)} unique panels — the montage is starved; "
+                "check dropped/missed panels upstream",
+                segment_id=window[0][0]))
+            break
+    return flags
+
+
 _SEM_PROMPT = """You are a QA judge for a manhwa recap video. The attached \
 image is the panel shown on screen while the narrator reads this line:
 
@@ -707,6 +746,7 @@ def main() -> int:
     flags.extend(alignment_flags(plan, _load_manifest("manifest.beats.json"),
                                  _load_manifest("manifest.groups.json"),
                                  _load_manifest("manifest.script.json")))
+    flags.extend(montage_flags(plan))
     if args.semantic:
         flags.extend(semantic_alignment_flags(plan, clean_dir,
                                               model=args.semantic_model))

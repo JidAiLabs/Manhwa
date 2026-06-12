@@ -470,3 +470,29 @@ def test_semantic_judge_skips_without_ollama(monkeypatch):
     fl = pq.semantic_alignment_flags(plan, "/nonexistent")
     assert [f["code"] for f in fl] == ["semantic_skipped"]
     assert fl[0]["severity"] == pq.INFO
+
+
+# ---- montage degeneracy (user screenshot: 6 segments cycling 2 crops) -------
+
+def test_montage_flags_degenerate_loop():
+    tl = []
+    for i in range(6):
+        f = "a.jpg" if i % 2 == 0 else "b.jpg"
+        tl.append(_seg(f"g{i+1:04d}_p00", f"line {i}", [f]))
+    fl = pq.montage_flags({"timeline": tl})
+    codes = {f["code"] for f in fl}
+    assert "visual_loop" in codes and "montage_degenerate" in codes
+    assert all(f["severity"] == pq.ERROR for f in fl)
+
+
+def test_montage_flags_quiet_on_healthy_plan():
+    tl = [_seg(f"g{i+1:04d}_p00", "x", [f"p{i}.jpg", f"q{i}.jpg"])
+          for i in range(6)]
+    assert pq.montage_flags({"timeline": tl}) == []
+
+
+def test_montage_flags_tolerates_single_reshow():
+    tl = [_seg("g0001_p00", "x", ["a.jpg", "b.jpg"]),
+          _seg("g0002_p00", "y", ["c.jpg"]),
+          _seg("g0003_p00", "z", ["a.jpg", "d.jpg"])]   # one re-show is fine
+    assert pq.montage_flags({"timeline": tl}) == []
