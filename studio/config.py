@@ -26,6 +26,10 @@ class Config:
                                              # (voice the image-grounded beats
                                              # narration verbatim — A/B winner,
                                              # no OpenAI) | "legacy" | "openai_polish"
+    punchup: str = "full"                   # persona pass over beats narration:
+                                             # "full" | "light" | "off"
+                                             # (grounded line kept as
+                                             # narration_plain; captions protected)
 
 def load_creds_env(path: Path | None = None) -> None:
     """Load KEY=VALUE lines from keys/creds.env into os.environ.
@@ -72,4 +76,5 @@ def load(path: Path | None = None) -> Config:
         tts_python=t.get("python", ""),
         tts_kokoro_voice=t.get("kokoro_voice", "af_heart"),
         narration_source=m.get("narration_source", "gemini_verbatim"),
+        punchup=m.get("punchup", "full"),
     )

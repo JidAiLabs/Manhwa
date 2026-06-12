@@ -22,6 +22,10 @@ beats_backend = "ollama"
 beats_model = "gemma4:26b"
 # script: OpenAI. gpt-4.1-mini is API-deprecating 2026-10-14; gpt-5-nano is ~5x cheaper.
 script_model = "gpt-5-nano"
+# punchup: genre-aware persona pass over the grounded beats (channel voice).
+# "full" | "light" | "off". Grounded line survives as narration_plain;
+# caption-bearing groups reject rewrites that drop the caption words.
+punchup = "full"
 
 [tts]
 # voiced backend: "qwen" (local MPS, LOCKED narrator clone — production) |

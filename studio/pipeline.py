@@ -216,6 +216,21 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                # unseen panel defaults to 'keep' and same-moment dups survive.
                # Cheap (a few extra images/chapter); groups average ~3 scenes.
                "--max-images-per-group", "6"])
+    if (cfg.punchup or "off") != "off":
+        # persona pass over the grounded beats, in place: narration gets the
+        # channel voice, narration_plain keeps the grounded line, and groups
+        # carrying captions reject rewrites that drop the caption words.
+        punch_args = ["--beats", str(p["beats"]), "--out", str(p["beats"]),
+                      "--cast", str(p["cast"]),
+                      "--episode-dir", str(ep_dir),
+                      "--humor", cfg.punchup]
+        if cfg.beats_backend == "ollama":
+            punch_args += ["--backend", "ollama",
+                           "--ollama-model", cfg.beats_model]
+        else:
+            punch_args += ["--backend", "vertex", "--model", cfg.beats_model,
+                           "--project", project, "--location", location]
+        _run_tool("narration_punchup.py", punch_args)
 
 
 def _stage_scripted(ep_dir: Path, cfg: Config) -> None:

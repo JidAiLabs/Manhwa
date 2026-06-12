@@ -115,11 +115,53 @@ def _word_count(s: str) -> int:
     return len(re.findall(r"[\w']+", s))
 
 
+_UI_TOKENS = {"read", "ep", "episode", "episodes", "comments", "comment",
+              "views", "view", "likes", "like", "subscribe", "next", "prev",
+              "previous", "tap", "menu", "notice", "unread"}
+
+
+def _caption_words_by_group(ep_dir: str,
+                            beats_obj: Dict[str, Any]) -> Dict[int, set]:
+    """Per-group caption word sets (text_only/recovered panels, UI tokens
+    stripped) — the punch pass must never paraphrase the monologue away."""
+    try:
+        v = json.load(open(os.path.join(ep_dir, "manifest.vision.json")))
+        items = {str(i.get("scene_file")): i for i in v.get("items") or []}
+    except Exception:
+        return {}
+    rec: set = set()
+    try:
+        sc = json.load(open(os.path.join(ep_dir, "manifest.scenes.json")))
+        rec = {str(s.get("out_file")) for s in sc.get("scenes") or []
+               if s.get("recovered")}
+    except Exception:
+        pass
+    out: Dict[int, set] = {}
+    for b in beats_obj.get("beats") or []:
+        words: set = set()
+        for sf in b.get("scene_files") or []:
+            it = items.get(str(sf)) or {}
+            if not (it.get("text_only") or str(sf) in rec):
+                continue
+            for w in re.sub(r"[^a-z0-9]+", " ",
+                            str(it.get("ocr_clean") or "").lower()).split():
+                if not w.isdigit() and w not in _UI_TOKENS:
+                    words.add(w)
+        if len(words) >= 4:
+            out[int(b.get("group_id") or 0)] = words
+    return out
+
+
 def validate_line(original: str, punched: str,
-                  cast_names: List[str]) -> bool:
+                  cast_names: List[str], *,
+                  required: Any = None) -> bool:
     """Reject rewrites that break the grounding contract."""
     if not punched or not punched.strip():
         return False
+    if required:
+        pwords = set(re.sub(r"[^a-z0-9]+", " ", punched.lower()).split())
+        if len(set(required) & pwords) / max(1, len(set(required))) < 0.5:
+            return False    # caption words paraphrased away
     ow, pw = _word_count(original), _word_count(punched)
     if ow >= 5 and not (0.6 * ow <= pw <= 1.5 * ow + 8):
         return False
@@ -139,11 +181,14 @@ def validate_line(original: str, punched: str,
 
 
 def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
-          cast_names: List[str]) -> Dict[str, Any]:
+          cast_names: List[str],
+          caption_words: Any = None) -> Dict[str, Any]:
     """Apply validated rewrites; keep the grounded original otherwise.
-    The original always survives as beat['narration_plain']."""
+    The original always survives as beat['narration_plain']; groups whose
+    panels carry captions reject any rewrite that drops the caption words."""
     by_gid = {int(p.get("group_id") or 0): str(p.get("narration") or "")
               for p in punched if isinstance(p, dict)}
+    caption_words = caption_words or {}
     out = json.loads(json.dumps(beats_obj))
     applied = 0
     for b in out.get("beats") or []:
@@ -151,7 +196,8 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
         original = str(b.get("narration") or "")
         b["narration_plain"] = original
         cand = by_gid.get(gid, "").replace("*", "")  # md emphasis -> TTS-safe
-        if cand and validate_line(original, cand, cast_names):
+        if cand and validate_line(original, cand, cast_names,
+                                  required=caption_words.get(gid)):
             b["narration"] = cand
             applied += 1
     out.setdefault("stats", {})["punchup_applied"] = applied
@@ -159,14 +205,27 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
 
 
 def _extract_json_array(text: str) -> List[Dict[str, Any]]:
-    m = re.search(r"\[.*\]", text, re.S)
-    if not m:
-        return []
-    try:
-        v = json.loads(m.group(0))
-        return v if isinstance(v, list) else []
-    except Exception:
-        return []
+    """Tolerant of code fences, leading prose, trailing junk, and a
+    truncated tail (salvages every complete object). A strict regex here
+    silently discarded 11 good punched lines once — never again."""
+    t = re.sub(r"```(?:json)?", " ", text or "")
+    m = re.search(r"\[.*\]", t, re.S)
+    if m:
+        try:
+            v = json.loads(m.group(0))
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+        except Exception:
+            pass
+    out: List[Dict[str, Any]] = []
+    for om in re.finditer(r"\{[^{}]*\}", t):
+        try:
+            d = json.loads(om.group(0))
+        except Exception:
+            continue
+        if isinstance(d, dict) and "group_id" in d:
+            out.append(d)
+    return out
 
 
 def _cast_names(cast_path: str) -> List[str]:
@@ -188,6 +247,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--beats", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--episode-dir", default="",
+                    help="enables caption protection (vision+scenes manifests)")
     ap.add_argument("--cast", default="")
     ap.add_argument("--backend", choices=["vertex", "ollama"],
                     default="ollama")
@@ -241,7 +302,9 @@ def main() -> int:
         raw = resp.text or ""
 
     punched = _extract_json_array(raw)
-    out = merge(beats_obj, punched, cast_names)
+    cap_words = (_caption_words_by_group(args.episode_dir, beats_obj)
+                 if args.episode_dir else {})
+    out = merge(beats_obj, punched, cast_names, caption_words=cap_words)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
     n = out["stats"]["punchup_applied"]

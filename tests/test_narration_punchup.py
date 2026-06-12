@@ -94,3 +94,47 @@ def test_genre_key_mapping():
     assert npu.genre_key("modern apocalypse regression") == "modern"
     assert npu.genre_key("Sci-Fi, Reincarnation, System") == "system"
     assert npu.genre_key("shoujo romance") == "generic"
+
+
+# ---- parser resilience + caption protection (wired into beated stage) -------
+
+def test_extract_json_array_fenced_and_truncated():
+    raw = ('```json\n[{"group_id": 1, "narration": "a"},\n'
+           '{"group_id": 2, "narration": "b"},\n{"group_id": 3, "narr')
+    arr = npu._extract_json_array(raw)
+    assert [d["group_id"] for d in arr] == [1, 2]
+    raw2 = 'noise ```json [ {"group_id": 3, "narration": "c"} ] ``` tail'
+    assert npu._extract_json_array(raw2)[0]["group_id"] == 3
+
+
+def test_validate_line_protects_caption_words():
+    req = {"only", "person", "knew", "world", "going", "end"}
+    orig = ("He became the only person who knew how the world was "
+            "going to end.")
+    assert npu.validate_line(
+        orig, "Spoiler: he basically pre-read the apocalypse patch notes.",
+        [], required=req) is False
+    assert npu.validate_line(
+        orig, "And just like that, he became the only person who knew how "
+        "the world was going to end.", [], required=req) is True
+
+
+def test_merge_keeps_grounded_original_for_caption_groups():
+    beats = {"beats": [{"group_id": 9, "narration":
+                        "He became the only person who knew how the world "
+                        "was going to end."}]}
+    punched = [{"group_id": 9, "narration":
+                "Spoiler: he pre-read the apocalypse patch notes."}]
+    out = npu.merge(beats, punched, [], caption_words={
+        9: {"only", "person", "knew", "world", "going", "end"}})
+    assert out["beats"][0]["narration"].startswith("He became the only")
+    assert out["stats"]["punchup_applied"] == 0
+
+
+def test_config_wires_punchup_default_full(tmp_path):
+    from studio.config import load
+    toml = tmp_path / "studio.toml"
+    toml.write_text("")
+    assert load(toml).punchup == "full"
+    toml.write_text("[models]\npunchup = \"off\"\n")
+    assert load(toml).punchup == "off"
