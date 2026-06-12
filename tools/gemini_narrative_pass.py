@@ -191,7 +191,8 @@ def _call_model(
         images = [p for p in image_paths if p and os.path.exists(p)]
         if images:
             msg["images"] = images
-        resp = ollama.chat(
+        from ollama_compat import chat as _ollama_chat
+        resp = _ollama_chat(
             model=model,
             messages=[{"role": "system", "content": system_instruction}, msg],
             format=_schema_to_json_schema(response_schema),

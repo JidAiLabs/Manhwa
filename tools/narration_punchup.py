@@ -221,12 +221,13 @@ def main() -> int:
     prompt = build_prompt(lines, cast_names, args.humor, genre=args.genre)
 
     if args.backend == "ollama":
-        import ollama
-        resp = ollama.chat(model=args.ollama_model,
-                           messages=[{"role": "user", "content": prompt}],
-                           think=False,
-                           options={"temperature": 0.7, "num_ctx": 32768,
-                                    "num_predict": 8192})
+        import ollama  # noqa: F401 — availability probe
+        from ollama_compat import chat as _ollama_chat
+        resp = _ollama_chat(model=args.ollama_model,
+                            messages=[{"role": "user", "content": prompt}],
+                            think=False,
+                            options={"temperature": 0.7, "num_ctx": 32768,
+                                     "num_predict": 8192})
         raw = (resp.get("message") or {}).get("content") or ""
     else:
         from thumbnail_gen import _make_client  # self-heals stale cred paths

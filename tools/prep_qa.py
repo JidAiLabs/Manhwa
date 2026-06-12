@@ -422,7 +422,8 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
         if not os.path.exists(path):
             continue
         try:
-            resp = ollama.chat(
+            from ollama_compat import chat as _ollama_chat
+            resp = _ollama_chat(
                 model=model, think=False,
                 messages=[{"role": "user",
                            "content": _SEM_PROMPT.format(text=text[:400]),

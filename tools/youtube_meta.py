@@ -110,13 +110,14 @@ def main() -> int:
     meta: Optional[Dict[str, Any]] = None
     if args.backend == "ollama":
         try:
-            import ollama
-            resp = ollama.chat(model=args.model, think=False,
-                               messages=[{"role": "user", "content":
-                                          build_meta_prompt(digest,
-                                                            args.series_title)}],
-                               options={"temperature": 0.8,
-                                        "num_predict": 1200})
+            import ollama  # noqa: F401 — availability probe
+            from ollama_compat import chat as _ollama_chat
+            resp = _ollama_chat(model=args.model, think=False,
+                                messages=[{"role": "user", "content":
+                                           build_meta_prompt(digest,
+                                                             args.series_title)}],
+                                options={"temperature": 0.8,
+                                         "num_predict": 1200})
             meta = extract_json(resp["message"]["content"] or "")
         except Exception as e:
             print(f"[warn] ollama/{args.model}: {e}")

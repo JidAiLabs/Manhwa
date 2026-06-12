@@ -7,8 +7,12 @@ cd "$(dirname "$0")/.."
 echo "== brew deps"
 brew install -q ffmpeg espeak-ng ollama node python@3.12 || true
 
+echo "== ollama service (RESTART is load-bearing: a pre-existing server keeps"
+echo "   running the OLD binary after brew upgrades it — gemma4 then hangs)"
+brew services restart ollama; sleep 3
+curl -s -m 5 http://127.0.0.1:11434/api/version || { echo "ollama not up"; exit 1; }
+
 echo "== ollama model (17GB, one-time)"
-(pgrep -x ollama >/dev/null || (nohup ollama serve > /tmp/ollama.log 2>&1 &)); sleep 3
 ollama list | grep -q gemma4:26b || ollama pull gemma4:26b
 
 echo "== python venvs (exact lockfiles)"

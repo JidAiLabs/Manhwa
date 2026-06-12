@@ -180,7 +180,12 @@ def main() -> int:
                 return [_lower_types(x) for x in o]
             return o
 
-        resp = ollama.chat(
+        import sys as _sys
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from ollama_compat import chat as _ollama_chat
+        resp = _ollama_chat(
             model=args.model,
             messages=[{"role": "user", "content": "\n".join(text_blobs),
                        "images": [str(pth) for pth in images]}],
