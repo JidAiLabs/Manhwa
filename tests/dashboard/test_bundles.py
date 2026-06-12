@@ -61,3 +61,23 @@ def test_projected_runtime_uses_plans_with_eta_fallback(tmp_path):
     total = bundles.projected_runtime_sec(
         con, bid, plan_loader=lambda cid: durs.get(cid))
     assert total > 600 + 540             # + estimated ch3 + intro/outro
+
+
+def test_wrap_with_branding_prepends_and_appends_when_present():
+    segs = ["/a/ch1.mp4", "/a/ch2.mp4"]
+    out = bundles.wrap_with_branding(
+        segs, "/b/intro.mp4", "/b/outro.mp4",
+        exists=lambda p: True)
+    assert out == ["/b/intro.mp4", "/a/ch1.mp4", "/a/ch2.mp4", "/b/outro.mp4"]
+    # missing branding files -> plain segments (graceful)
+    assert bundles.wrap_with_branding(segs, "/b/i.mp4", "/b/o.mp4",
+                                      exists=lambda p: False) == segs
+
+
+def test_branding_intro_plan_shape():
+    plan = bundles.branding_intro_plan("thumb.jpg", 800, 450, intro_dur=7.0)
+    item = plan["timeline"][0]
+    assert item["branding"] == "intro"
+    assert item["cuts"][0]["file"] == "thumb.jpg"
+    assert plan["scene_dims"]["thumb.jpg"]["w"] == 800
+    assert plan["total_duration_sec"] == item["duration_sec"] > 7.0

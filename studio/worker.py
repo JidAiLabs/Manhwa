@@ -166,6 +166,57 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
                 log)
 
 
+def _series_branding_dir(series_id: int) -> Path:
+    return REPO / "assets" / "branding" / "series" / str(series_id)
+
+
+def _h_branding_segments(con: sqlite3.Connection, job: Dict[str, Any],
+                         log: TextIO) -> None:
+    """Render the per-series standalone intro.mp4/outro.mp4 ONCE (intro
+    overlay held over the series thumbnail; outro end-card draws itself).
+    Afterwards every video at every granularity is a pure concat."""
+    import shutil as _sh
+
+    import cv2
+
+    from studio.dashboard import bundles as _b
+    sid = job["series_id"]
+    row = con.execute("SELECT ep_dir FROM chapter WHERE series_id=? AND "
+                      "ep_dir IS NOT NULL LIMIT 1", (sid,)).fetchone()
+    if not row:
+        raise RuntimeError("series has no processed chapter to source the "
+                           "thumbnail from")
+    thumb = Path(row[0]) / "render" / "thumbnail.png"
+    if not thumb.exists():
+        raise RuntimeError(f"series thumbnail missing: {thumb} — generate "
+                           "it first (tools/thumbnail_gen.py)")
+    bdir = _series_branding_dir(sid)
+    bdir.mkdir(parents=True, exist_ok=True)
+    _sh.copy(thumb, bdir / "thumb.jpg")
+    img = cv2.imread(str(bdir / "thumb.jpg"))
+    h, w = img.shape[:2]
+    intro_wav = REPO / "assets" / "branding" / "origin-power" / "intro.wav"
+    outro_wav = REPO / "assets" / "branding" / "origin-power" / "outro.wav"
+    import wave
+
+    def _dur(p):
+        with wave.open(str(p)) as f:
+            return f.getnframes() / f.getframerate()
+
+    iplan = _b.branding_intro_plan("thumb.jpg", w, h, intro_dur=_dur(intro_wav))
+    oplan = _b.branding_outro_plan(outro_dur=_dur(outro_wav))
+    (bdir / "intro.plan.json").write_text(json.dumps(iplan))
+    (bdir / "outro.plan.json").write_text(json.dumps(oplan))
+    for name, plan in (("intro", "intro.plan.json"), ("outro", "outro.plan.json")):
+        rc = _stream(["npx", "remotion", "render", "src/index.ts",
+                      "RecapVideo", str(bdir / f"{name}.mp4"),
+                      f"--props={bdir / plan}", f"--public-dir={bdir}",
+                      "--concurrency=8", "--crf=22"], log,
+                     cwd=str(REPO / "remotion"))
+        if rc != 0:
+            raise RuntimeError(f"remotion {name} exited {rc}")
+
+
 def _h_add_series(con: sqlite3.Connection, job: Dict[str, Any],
                   log: TextIO) -> None:
     src = job["payload"].get("source", "")
@@ -226,7 +277,10 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
     if not allowed:
         raise RuntimeError(f"render blocked: {why}")
     ch = _chapter(con, job["chapter_id"])
-    branding = job["payload"].get("branding", "both")
+    bdir = _series_branding_dir(ch["series_id"])
+    has_branding_segs = (bdir / "intro.mp4").exists()
+    branding = job["payload"].get("branding") or (
+        "none" if has_branding_segs else "both")
     ep = Path(ch["ep_dir"] or "")
     with record_stage(con, chapter_id=ch["id"], stage="render_segment",
                       series_id=ch["series_id"]):
@@ -247,6 +301,18 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
                      log, cwd=str(REPO / "remotion"))
         if rc != 0:
             raise RuntimeError(f"remotion exited {rc}")
+        if branding == "none" and has_branding_segs:
+            # the chapter's standalone SINGLE video = intro + segment + outro
+            single = ep / "render" / "single.mp4"
+            segs = bundles.wrap_with_branding(
+                [str(out)], str(bdir / "intro.mp4"), str(bdir / "outro.mp4"))
+            lst = ep / "render" / "single_concat.txt"
+            lst.write_text("".join(f"file '{s_}'\n" for s_ in segs))
+            rc = _stream(["ffmpeg", "-y", "-loglevel", "error", "-f",
+                          "concat", "-safe", "0", "-i", str(lst), "-c",
+                          "copy", str(single)], log)
+            if rc != 0:
+                raise RuntimeError(f"single concat exited {rc}")
         con.execute("UPDATE chapter SET status='rendered' WHERE id=?",
                     (ch["id"],))
         con.commit()
@@ -265,6 +331,12 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
         if not found:
             raise RuntimeError(f"chapter {cid} has no rendered segment")
         segs.append(str(found[0]))
+    srow = con.execute("SELECT series_id FROM bundle WHERE id=?",
+                       (bid,)).fetchone()
+    bdir = _series_branding_dir(srow[0]) if srow else None
+    if bdir is not None:
+        segs = bundles.wrap_with_branding(
+            segs, str(bdir / "intro.mp4"), str(bdir / "outro.mp4"))
     out_dir = REPO / "dist" / f"bundle_{bid}"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "bundle.mp4"
@@ -303,6 +375,7 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
     "prepare": _h_prepare,
     "voiceover": _h_voiceover,
     "add_series": _h_add_series,
+    "branding_segments": _h_branding_segments,
     "chain": _h_chain,
     "qa_scan": _h_qa_scan,
     "render_segment": _h_render_segment,
