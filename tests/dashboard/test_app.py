@@ -230,3 +230,25 @@ def test_narration_style_selector(client):
     r = c.post("/series/1/style", data={"style": "evil"},
                follow_redirects=False)
     assert r.status_code == 400          # only off|light|full|default
+
+
+def test_drop_panel_button_bans_file_and_requeues(client, tmp_path):
+    """Operator contract: see a bad visual -> click X -> panel banned in
+    manual_drops.json -> prepare auto-queued."""
+    import json as _json
+    c, con = client
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
+    con.commit()
+    r = c.post("/chapter/1/drop", data={"file": "p000031.jpg"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert _json.loads((ep / "manual_drops.json").read_text()) == \
+        ["p000031.jpg"]
+    c.post("/chapter/1/drop", data={"file": "p000031.jpg"},
+           follow_redirects=False)        # idempotent
+    assert _json.loads((ep / "manual_drops.json").read_text()) == \
+        ["p000031.jpg"]
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='prepare'"
+                       ).fetchone()[0] == 2

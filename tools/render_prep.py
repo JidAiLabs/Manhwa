@@ -988,10 +988,14 @@ def cap_repeats_with_holds(
 _JUNK_PROMPT = """You are a video editor's eye for a manhwa recap. This image
 is ONE cut that would appear on screen for several seconds.
 
-Is it a MEANINGFUL story visual (characters, faces, action, setting, system
-message, readable caption) — or JUNK that would look broken on screen (empty
-or blanked speech bubbles dominating the frame, a flat gradient or glow with
-no subject, a sliver fragment of art, leftover panel scraps)?
+IMPORTANT: every word in text boxes/bubbles is ALREADY READ ALOUD by the
+narrator — text alone never justifies screen time. Judge the ARTWORK.
+
+Is the artwork a MEANINGFUL story visual (characters, faces, action,
+setting, a styled system-message card) — or JUNK that would look broken on
+screen (empty/blanked speech bubbles dominating the frame, a flat gradient/
+curtain/glow with no drawn subject even if a small text box sits on it, a
+sliver fragment, leftover panel scraps)?
 Reply ONLY JSON: {"keep": true/false, "reason": "<short>"}"""
 
 
@@ -1537,6 +1541,15 @@ def main() -> int:
          if not (scene_dims.get(f) or {}).get("sys")
          and not (scene_dims.get(f) or {}).get("doc")],
         clean_dir, exempt=exempt_all)
+    # operator drops: one click on the dashboard bans a panel for good
+    mdp = os.path.join(args.episode_dir, "manual_drops.json")
+    if os.path.exists(mdp):
+        try:
+            with open(mdp, "r", encoding="utf-8") as fh:
+                for f in json.load(fh) or []:
+                    junk[str(f)] = "operator drop (dashboard)"
+        except Exception:
+            pass
     if junk:
         for f, why in sorted(junk.items()):
             print(f"[ok] visual judge: DROPPING {f} — {why}")

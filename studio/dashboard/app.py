@@ -434,6 +434,28 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         discovery.mark(con(), anilist_id, "tracked")
         return RedirectResponse("/discovery", status_code=303)
 
+    @app.post("/chapter/{cid}/drop")
+    def post_drop(cid: int, file: str = Form(...)):
+        # the operator's button: ban this panel from the chapter and
+        # re-prepare automatically — see a bad visual, click, done
+        c = con()
+        r = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
+                      (cid,)).fetchone()
+        if not (r and r[0]):
+            return PlainTextResponse("chapter has no episode dir",
+                                     status_code=400)
+        safe = os.path.basename(file)
+        mdp = Path(r[0]) / "manual_drops.json"
+        try:
+            drops = json.loads(mdp.read_text()) if mdp.exists() else []
+        except Exception:
+            drops = []
+        if safe not in drops:
+            drops.append(safe)
+            mdp.write_text(json.dumps(drops, indent=1))
+        jobs.enqueue(c, "prepare", chapter_id=cid, priority=30)
+        return RedirectResponse(f"/chapter/{cid}", status_code=303)
+
     @app.post("/chapter/{cid}/rebuild")
     def post_rebuild(cid: int):
         # force the chapter back through scene materialization so shipped
