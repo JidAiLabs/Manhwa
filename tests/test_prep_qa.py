@@ -584,3 +584,19 @@ def test_caption_check_skips_chrome_endcards():
               "THANKS FOR READING THIS CHAPTER ON OUR WEBSITE ELFTOON "
               ". com DON'T FORGET TO JOIN OUR DISCORD"}}
     assert pq.caption_unvoiced_flags(beats, vitems) == []
+
+
+def test_caption_paraphrase_arbitration_downgrades_to_warn():
+    beats = {"beats": [{"group_id": 3, "narration":
+                        "He regards her as his very first friend here.",
+                        "scene_files": ["c.jpg"]}]}
+    vitems = {"c.jpg": {"text_only": True, "ocr_clean":
+              "THIS GIRL IS MY FIRST FRIEND IN THIS WORLD, BUT AT THIS "
+              "MOMENT, I HAVE NO CHOICE"}}
+    fl = pq.caption_unvoiced_flags(beats, vitems,
+                                   arbitrate=lambda cap, narr: True)
+    assert [f["code"] for f in fl] == ["caption_paraphrased"]
+    assert fl[0]["severity"] == pq.WARN
+    fl2 = pq.caption_unvoiced_flags(beats, vitems,
+                                    arbitrate=lambda cap, narr: False)
+    assert [f["code"] for f in fl2] == ["caption_unvoiced"]

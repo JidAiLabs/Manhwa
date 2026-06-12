@@ -405,8 +405,9 @@ _UI_TOKENS = {"read", "ep", "episode", "episodes", "comments", "comment",
 def caption_unvoiced_flags(beats_obj: Dict[str, Any],
                            vitems: Dict[str, Dict[str, Any]],
                            *, min_words: int = 4,
-                           min_coverage: float = 0.5
-                           ) -> List[Dict[str, Any]]:
+                           min_coverage: float = 0.5,
+                           arbitrate: Optional[Callable[[str, str], bool]]
+                           = None) -> List[Dict[str, Any]]:
     """User contract: showing caption boxes is optional, VOICING them is
     mandatory — text-only/recovered panels carry the author's monologue
     ('ON THE DAY I FINISHED THE WEB NOVEL...') and their content must be
@@ -433,6 +434,15 @@ def caption_unvoiced_flags(beats_obj: Dict[str, Any],
                 continue
             cov = len(cwords & nwords) / max(1, len(cwords))
             if cov < min_coverage:
+                narr = str(b.get("narration") or "")
+                if arbitrate is not None and arbitrate(txt, narr):
+                    flags.append(_flag(
+                        "caption_paraphrased", WARN,
+                        f"caption carried by PARAPHRASE (judge-accepted, "
+                        f"{int(cov * 100)}% literal): {txt[:70]!r}",
+                        scene=str(sf),
+                        segment_id=f"g{int(b.get('group_id') or 0):04d}"))
+                    continue
                 flags.append(_flag(
                     "caption_unvoiced", ERROR,
                     f"caption text missing from narration "
@@ -818,8 +828,26 @@ def main() -> int:
                                  _load_manifest("manifest.groups.json"),
                                  _load_manifest("manifest.script.json")))
     flags.extend(montage_flags(plan))
+
+    def _judge_caption_carried(caption: str, narration: str) -> bool:
+        try:
+            from ollama_compat import chat as _chat
+            resp = _chat(model=args.semantic_model, think=False, messages=[{
+                "role": "user", "content":
+                "CAPTION on the page: " + caption[:300] + "\n"
+                "NARRATION spoken: " + narration[:400] + "\n"
+                "Does the narration carry the caption's full meaning "
+                "(paraphrase OK)? Reply ONLY JSON: {\"carried\": true/false}"}],
+                options={"temperature": 0, "num_predict": 60})
+            m = re.search(r"\{.*\}", str(resp["message"]["content"] or ""),
+                          re.S)
+            return bool(m and json.loads(m.group(0)).get("carried") is True)
+        except Exception:
+            return False
+
     flags.extend(caption_unvoiced_flags(
-        _load_manifest("manifest.beats.json"), vitems))
+        _load_manifest("manifest.beats.json"), vitems,
+        arbitrate=_judge_caption_carried if args.semantic else None))
     if args.semantic:
         flags.extend(semantic_alignment_flags(plan, clean_dir,
                                               model=args.semantic_model))
