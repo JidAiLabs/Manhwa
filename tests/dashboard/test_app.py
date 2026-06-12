@@ -186,3 +186,15 @@ def test_autopilot_toggle_and_badge(client):
     c.post("/series/1/autopilot", follow_redirects=False)   # toggles back
     assert con.execute("SELECT autopilot FROM series WHERE id=1"
                        ).fetchone()[0] == 0
+
+
+def test_rebuild_route_resets_and_enqueues(client):
+    """Shipped stage-code fixes only apply when the stage re-runs — the
+    rebuild button demotes to 'detected' and queues a fresh prepare."""
+    c, con = client
+    r = c.post("/chapter/1/rebuild", follow_redirects=False)
+    assert r.status_code == 303
+    assert con.execute("SELECT status FROM chapter WHERE id=1"
+                       ).fetchone()[0] == "detected"
+    assert con.execute("SELECT type, chapter_id FROM job").fetchone() == \
+        ("prepare", 1)

@@ -19,6 +19,8 @@
 <form class="inline" method="post" action="/jobs">
 <input type="hidden" name="type" value="prepare"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
 <button class="ghost">prepare → QA</button></form>
+<form class="inline" method="post" action="/chapter/{{ ch.id }}/rebuild" onsubmit="return confirm('Re-run from panel detection? Scenes, narration and plan are rebuilt with the latest pipeline fixes.')">
+<button class="ghost" title="apply shipped pipeline fixes — re-runs scenes → OCR → narration → plan → QA">rebuild from panels</button></form>
 </div>
 
 <h2>Step 2 — voiceover approval <small>(listen, then approve — the video renders automatically)</small></h2>

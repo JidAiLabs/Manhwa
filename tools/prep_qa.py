@@ -384,6 +384,37 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
     return flags
 
 
+def caption_unvoiced_flags(beats_obj: Dict[str, Any],
+                           vitems: Dict[str, Dict[str, Any]],
+                           *, min_words: int = 4,
+                           min_coverage: float = 0.5
+                           ) -> List[Dict[str, Any]]:
+    """User contract: showing caption boxes is optional, VOICING them is
+    mandatory — text-only/recovered panels carry the author's monologue
+    ('ON THE DAY I FINISHED THE WEB NOVEL...') and their content must be
+    woven into that group's narration."""
+    flags: List[Dict[str, Any]] = []
+    for b in (beats_obj or {}).get("beats") or []:
+        nwords = set(_norm_narr(b.get("narration") or "").split())
+        for sf in b.get("scene_files") or []:
+            it = vitems.get(str(sf)) or {}
+            if not (it.get("text_only") or it.get("recovered")):
+                continue
+            txt = str(it.get("ocr_clean") or "")
+            cwords = set(_norm_narr(txt).split())
+            if len(cwords) < min_words:
+                continue
+            cov = len(cwords & nwords) / max(1, len(cwords))
+            if cov < min_coverage:
+                flags.append(_flag(
+                    "caption_unvoiced", ERROR,
+                    f"caption text missing from narration "
+                    f"({int(cov * 100)}% word coverage): {txt[:70]!r}",
+                    scene=str(sf),
+                    segment_id=f"g{int(b.get('group_id') or 0):04d}"))
+    return flags
+
+
 def montage_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Cross-segment visual degeneracy — the class the per-segment checks
     (and the per-segment LLM judge) cannot see: one panel carrying many
@@ -731,6 +762,16 @@ def main() -> int:
                     "text_coverage": it.get("text_coverage"),
                     "n_words": len((it.get("vision") or {}).get("ocr_words") or []),
                 }
+    sp_ = os.path.join(ep, "manifest.scenes.json")
+    if os.path.exists(sp_):
+        try:
+            with open(sp_, "r", encoding="utf-8") as f:
+                for sc in json.load(f).get("scenes") or []:
+                    if sc.get("recovered"):
+                        vitems.setdefault(str(sc.get("out_file") or ""),
+                                          {})["recovered"] = True
+        except Exception:
+            pass
 
     flags: List[Dict[str, Any]] = plan_flags(
         plan, clean_files=clean_files, audio_exists=os.path.exists)
@@ -747,6 +788,8 @@ def main() -> int:
                                  _load_manifest("manifest.groups.json"),
                                  _load_manifest("manifest.script.json")))
     flags.extend(montage_flags(plan))
+    flags.extend(caption_unvoiced_flags(
+        _load_manifest("manifest.beats.json"), vitems))
     if args.semantic:
         flags.extend(semantic_alignment_flags(plan, clean_dir,
                                               model=args.semantic_model))

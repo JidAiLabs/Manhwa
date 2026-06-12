@@ -496,3 +496,36 @@ def test_montage_flags_tolerates_single_reshow():
           _seg("g0002_p00", "y", ["c.jpg"]),
           _seg("g0003_p00", "z", ["a.jpg", "d.jpg"])]   # one re-show is fine
     assert pq.montage_flags({"timeline": tl}) == []
+
+
+# ---- caption voicing contract: showing optional, VOICING mandatory ----------
+
+def test_caption_unvoiced_flags_fire_and_clear():
+    beats = {"beats": [{"group_id": 5, "narration":
+        "On the day he finished the web novel, everything changed.",
+        "scene_files": ["c.jpg", "d.jpg"]}]}
+    vitems = {"c.jpg": {"text_only": True,
+                        "ocr_clean": "ON THE DAY I FINISHED THE WEB NOVEL..."},
+              "d.jpg": {"recovered": True, "ocr_clean":
+                        "I BECAME THE ONLY PERSON WHO KNEW HOW THE WORLD "
+                        "WAS GOING TO END."}}
+    fl = pq.caption_unvoiced_flags(beats, vitems)
+    assert [f["code"] for f in fl] == ["caption_unvoiced"]
+    assert fl[0]["scene"] == "d.jpg" and fl[0]["severity"] == pq.ERROR
+    assert fl[0]["segment_id"] == "g0005"
+
+
+def test_caption_unvoiced_ignores_art_panels_and_short_text():
+    beats = {"beats": [{"group_id": 1, "narration": "x",
+                        "scene_files": ["a.jpg", "b.jpg"]}]}
+    vitems = {"a.jpg": {"text_only": False,
+                        "ocr_clean": "WHO THE HELL ARE YOU TO SAY THAT"},
+              "b.jpg": {"text_only": True, "ocr_clean": "THE END"}}
+    assert pq.caption_unvoiced_flags(beats, vitems) == []
+
+
+def test_caption_rule_in_writer_prompt():
+    src = (Path(__file__).resolve().parent.parent / "tools"
+           / "gemini_narrative_pass.py").read_text()
+    assert "NARRATIVE CAPTIONS ARE NOT CHROME" in src
+    assert "STORY'S VOICE" in src

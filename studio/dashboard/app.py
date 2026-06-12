@@ -430,6 +430,16 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         discovery.mark(con(), anilist_id, "tracked")
         return RedirectResponse("/discovery", status_code=303)
 
+    @app.post("/chapter/{cid}/rebuild")
+    def post_rebuild(cid: int):
+        # force the chapter back through scene materialization so shipped
+        # stage fixes actually apply (resume-by-status never re-runs them)
+        c = con()
+        c.execute("UPDATE chapter SET status='detected' WHERE id=?", (cid,))
+        c.commit()
+        jobs.enqueue(c, "prepare", chapter_id=cid, priority=50)
+        return RedirectResponse(f"/chapter/{cid}", status_code=303)
+
     @app.post("/series/{sid}/autopilot")
     def post_autopilot(sid: int):
         c = con()
