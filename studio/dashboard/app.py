@@ -124,8 +124,8 @@ def _stage_timeline(con: sqlite3.Connection, ch: Dict[str, Any]) -> List[Dict[st
 
 def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
     rows = []
-    for sid, title, source in con.execute(
-            "SELECT id, title, source FROM series ORDER BY id"):
+    for sid, title, source, surl in con.execute(
+            "SELECT id, title, source, series_url FROM series ORDER BY id"):
         chs = con.execute(
             "SELECT status, season FROM chapter WHERE series_id=?",
             (sid,)).fetchall()
@@ -140,7 +140,8 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             (sid,)).fetchone()[0]
         remaining = max(0, total - done)
         rows.append({
-            "id": sid, "title": title, "source": source, "total": total,
+            "id": sid, "title": title, "source": source, "url": surl,
+            "total": total,
             "done": done, "new": new, "seasons": seasons,
             "pct": (100 * done // total) if total else 0,
             "eta": eta.fmt_eta(eta.series_eta(con, sid, remaining)),
@@ -236,24 +237,25 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def series_detail(request: Request, sid: int):
         c = con()
         chs = [dict(zip(("id", "number", "label", "status", "season",
-                         "ep_dir"), r))
+                         "ep_dir", "url"), r))
                for r in c.execute(
-                   "SELECT id, number, label, status, season, ep_dir FROM "
-                   "chapter WHERE series_id=? ORDER BY number", (sid,))]
-        title = (c.execute("SELECT title FROM series WHERE id=?",
-                           (sid,)).fetchone() or ["?"])[0]
+                   "SELECT id, number, label, status, season, ep_dir, url "
+                   "FROM chapter WHERE series_id=? ORDER BY number", (sid,))]
+        title, series_url = (c.execute(
+            "SELECT title, series_url FROM series WHERE id=?",
+            (sid,)).fetchone() or ("?", ""))
         return page("series_detail.html", request, sid=sid, title=title,
-                    chapters=chs)
+                    series_url=series_url, chapters=chs)
 
     @app.get("/chapter/{cid}", response_class=HTMLResponse)
     def chapter_page(request: Request, cid: int):
         c = con()
-        r = c.execute("SELECT id, series_id, number, label, status, ep_dir "
-                      "FROM chapter WHERE id=?", (cid,)).fetchone()
+        r = c.execute("SELECT id, series_id, number, label, status, ep_dir, "
+                      "url FROM chapter WHERE id=?", (cid,)).fetchone()
         if not r:
             return HTMLResponse("chapter not found", status_code=404)
         ch = dict(zip(("id", "series_id", "number", "label", "status",
-                       "ep_dir"), r))
+                       "ep_dir", "url"), r))
         title = (c.execute("SELECT title FROM series WHERE id=?",
                            (ch["series_id"],)).fetchone() or ["?"])[0]
         ep_rel = (Path(ch["ep_dir"]).resolve().relative_to(

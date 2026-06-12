@@ -138,3 +138,17 @@ def test_token_auth_when_env_set(client, monkeypatch, tmp_path):
 def test_no_token_env_means_open(client):
     c, _ = client
     assert c.get("/").status_code == 200
+
+
+def test_real_manhwa_links_on_pages(client):
+    """Series board, series detail, chapter header, and discovery rows all
+    link out to the real reader pages (series_url / chapter.url / AniList)."""
+    c, con = client
+    assert 'href="u"' in c.get("/series").text
+    assert 'href="u"' in c.get("/series/1").text
+    assert 'href="u1"' in c.get("/chapter/1").text
+    con.execute("INSERT INTO discovery_title (anilist_id, title, trend_score,"
+                " chapters, status, meta_json) VALUES "
+                "(77,'Solo Farming',90,120,'candidate','{}')")
+    con.commit()
+    assert "anilist.co/manga/77" in c.get("/discovery").text

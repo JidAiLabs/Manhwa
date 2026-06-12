@@ -2,7 +2,7 @@
 <h2>Series board</h2>
 <table><tr><th>series</th><th>source</th><th>progress</th><th>seasons</th><th>new</th><th>est. finish</th><th>wall spent</th><th></th></tr>
 {% for s in series %}
-<tr><td><b>{{ s.title }}</b></td><td>{{ s.source }}</td>
+<tr><td><b>{{ s.title }}</b>{% if s.url %} <a href="{{ s.url }}" target="_blank" rel="noopener" title="read on {{ s.source }}" style="color:var(--acc);text-decoration:none">↗</a>{% endif %}</td><td>{{ s.source }}</td>
 <td><span class="bar"><i style="width:{{ s.pct }}%"></i></span> <span class="kv">{{ s.done }}/{{ s.total }}</span></td>
 <td class="kv">{% if s.seasons %}{{ s.seasons|join(', ') }}{% else %}—{% endif %}</td>
 <td>{% if s.new %}<span class="b new">+{{ s.new }}</span>{% else %}—{% endif %}</td>

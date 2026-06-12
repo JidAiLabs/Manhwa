@@ -9,7 +9,7 @@
 <table><tr><th>title / summary</th><th>trend</th><th>ch</th><th>YouTube coverage</th><th>sources found</th><th>status</th></tr>
 {% for t in titles %}
 <tr {% if t.opportunity %}style="outline:1px solid var(--ok)"{% endif %}>
-<td style="max-width:430px"><b>{{ t.title }}</b>{% if t.opportunity %} <span class="b ok">OPPORTUNITY</span>{% endif %}
+<td style="max-width:430px"><b><a href="https://anilist.co/manga/{{ t.anilist_id }}" target="_blank" rel="noopener" title="open on AniList" style="color:var(--tx);text-decoration:none">{{ t.title }}</a></b> <a href="https://anilist.co/manga/{{ t.anilist_id }}" target="_blank" rel="noopener" class="kv" style="text-decoration:none">↗</a>{% if t.opportunity %} <span class="b ok">OPPORTUNITY</span>{% endif %}
 {% if t.meta.genres %}<div class="kv">{{ t.meta.genres|join(' · ') }}{% if t.meta.status %} · {{ t.meta.status|lower }}{% endif %}</div>{% endif %}
 {% if t.meta.description %}<div class="kv" style="margin-top:4px">{{ t.meta.description[:220] }}{% if t.meta.description|length > 220 %}…{% endif %}</div>{% endif %}</td>
 <td class="kv">▲ {{ t.trend_score|int }}</td>
@@ -24,6 +24,7 @@
 <input type="hidden" name="source" value="{{ source }}">
 <input type="hidden" name="url" value="{{ hit.url }}">
 <button class="ghost" title="{{ hit.title }} ({{ hit.score }})">add from {{ source }}</button></form>
+<a href="{{ hit.url }}" target="_blank" rel="noopener" title="read on {{ source }}: {{ hit.title }}" class="kv" style="text-decoration:none">↗ {{ source }}</a>
 {% endfor %}
 {% elif t.status in ('candidate','tracked') %}
 <form class="inline" method="post" action="/discovery/{{ t.anilist_id }}/add">
