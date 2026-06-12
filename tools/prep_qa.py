@@ -384,6 +384,11 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
     return flags
 
 
+_UI_TOKENS = {"read", "ep", "episode", "episodes", "comments", "comment",
+              "views", "view", "likes", "like", "subscribe", "next", "prev",
+              "previous", "tap", "menu", "notice", "unread"}
+
+
 def caption_unvoiced_flags(beats_obj: Dict[str, Any],
                            vitems: Dict[str, Dict[str, Any]],
                            *, min_words: int = 4,
@@ -401,7 +406,10 @@ def caption_unvoiced_flags(beats_obj: Dict[str, Any],
             if not (it.get("text_only") or it.get("recovered")):
                 continue
             txt = str(it.get("ocr_clean") or "")
-            cwords = set(_norm_narr(txt).split())
+            # app-UI screens are text_only too — their button/counter noise
+            # ("READ EPISODE", "VIEWS: 1") is not monologue; don't demand it
+            cwords = {w for w in _norm_narr(txt).split()
+                      if not w.isdigit() and w not in _UI_TOKENS}
             if len(cwords) < min_words:
                 continue
             cov = len(cwords & nwords) / max(1, len(cwords))

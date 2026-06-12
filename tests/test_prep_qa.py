@@ -529,3 +529,13 @@ def test_caption_rule_in_writer_prompt():
            / "gemini_narrative_pass.py").read_text()
     assert "NARRATIVE CAPTIONS ARE NOT CHROME" in src
     assert "STORY'S VOICE" in src
+
+
+def test_caption_unvoiced_skips_app_ui_screens():
+    beats = {"beats": [{"group_id": 2, "narration":
+        "He scrolls Three Ways to Survive the Apocalypse on his phone.",
+        "scene_files": ["ui.jpg"]}]}
+    vitems = {"ui.jpg": {"text_only": True, "ocr_clean":
+        "THREE WAYS TO SURVIVE THE APOCALYPSE READ EPISODE 1389 "
+        "COMMENTS : 1 VIEWS : 1 READ EP"}}
+    assert pq.caption_unvoiced_flags(beats, vitems) == []
