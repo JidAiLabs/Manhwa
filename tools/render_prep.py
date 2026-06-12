@@ -961,7 +961,9 @@ def cap_repeats_with_holds(
         kept: List[Dict[str, Any]] = []
         for c in cuts:
             f = str(c.get("file"))
-            near = f in last_idx and (i - last_idx[f]) <= 2
+            # radius 3 matches QA's 4-segment degenerate window — a repeat
+            # inside it holds instead, so starved windows self-cover
+            near = f in last_idx and (i - last_idx[f]) <= 3
             if f in ex or (counts.get(f, 0) < cap and not near):
                 kept.append(c)
                 counts[f] = counts.get(f, 0) + 1
