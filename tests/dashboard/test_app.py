@@ -117,3 +117,23 @@ def test_discovery_add_creates_job_and_marks(client):
                        ).fetchone()[0] == "in_production"
     t, payload = con.execute("SELECT type, payload_json FROM job").fetchone()
     assert t == "add_series" and "asura" in payload
+
+
+def test_token_auth_when_env_set(client, monkeypatch, tmp_path):
+    from studio.catalog.db import connect as _c
+    from studio.dashboard.app import create_app
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("STUDIO_DASH_TOKEN", "sekret")
+    db = tmp_path / "t.db"
+    _c(db)
+    c = TestClient(create_app(db_path=str(db)))
+    assert c.get("/").status_code == 401              # locked
+    r = c.get("/login?token=wrong", follow_redirects=False)
+    assert c.get("/").status_code == 401
+    c.get("/login?token=sekret", follow_redirects=False)
+    assert c.get("/").status_code == 200              # cookie set
+
+
+def test_no_token_env_means_open(client):
+    c, _ = client
+    assert c.get("/").status_code == 200

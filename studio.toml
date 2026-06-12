@@ -7,7 +7,7 @@ base_url = "https://elftoon.com"
 
 [detect]
 backend = "yolo"
-yolo_weights = "/Users/anka/webtoon-ai/runs/detect/webtoon/yolo26_musgd_run/weights/best.pt"
+yolo_weights = "assets/models/webtoon_panels.pt"   # in-repo copy (migration-proof)
 
 [gallerydl]
 sleep = 2.0

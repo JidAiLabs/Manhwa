@@ -150,6 +150,29 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
 
 def create_app(db_path: str = "studio.db") -> FastAPI:
     app = FastAPI(title="OriginPower Studio")
+
+    # optional shared-secret gate for LAN/remote access: set
+    # STUDIO_DASH_TOKEN on the host, then open /login?token=<value> once
+    # per browser. Off when the env var is unset (localhost-only use).
+    @app.middleware("http")
+    async def _token_gate(request: Request, call_next):
+        token = os.environ.get("STUDIO_DASH_TOKEN", "")
+        if token:
+            path = request.url.path
+            if not (path.startswith("/static") or path.startswith("/login")):
+                if request.cookies.get("studio_token") != token:
+                    return PlainTextResponse(
+                        "locked — open /login?token=<your token>",
+                        status_code=401)
+        return await call_next(request)
+
+    @app.get("/login")
+    def login(token: str = ""):
+        resp = RedirectResponse("/", status_code=303)
+        if token and token == os.environ.get("STUDIO_DASH_TOKEN", ""):
+            resp.set_cookie("studio_token", token, httponly=True,
+                            max_age=60 * 60 * 24 * 90)
+        return resp
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     app.mount("/static", StaticFiles(directory=str(HERE / "static")),
               name="static")

@@ -269,7 +269,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     import uvicorn
 
     from studio.dashboard.app import create_app
-    uvicorn.run(create_app(db_path=args.db), host="127.0.0.1", port=args.port)
+    uvicorn.run(create_app(db_path=args.db), host=args.host, port=args.port)
     return 0
 
 
@@ -384,6 +384,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # dashboard / worker
     p_dash = sub.add_parser("dashboard", help="Run the control dashboard UI")
     p_dash.add_argument("--port", type=int, default=8170)
+    p_dash.add_argument("--host", default="127.0.0.1",
+                        help="0.0.0.0 for LAN access (pair with "
+                             "STUDIO_DASH_TOKEN)")
     p_dash.add_argument("--db", default="studio.db")
     p_worker = sub.add_parser("worker", help="Run the job queue executor")
     p_worker.add_argument("--db", default="studio.db")

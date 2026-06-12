@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.originpower.dashboard</string>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>ProgramArguments</key><array>
+    <string>__REPO__/.eval_venv/bin/python</string>
+    <string>-m</string><string>studio</string><string>dashboard</string>
+    <string>--host</string><string>0.0.0.0</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>STUDIO_DASH_TOKEN</key><string>__TOKEN__</string>
+  </dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__REPO__/logs/dashboard.log</string>
+  <key>StandardErrorPath</key><string>__REPO__/logs/dashboard.log</string>
+</dict></plist>

@@ -1080,7 +1080,9 @@ def main() -> int:
                     help="cuts whose CLEANED panel has less edge detail than "
                          "this are dropped (empty-bubble husks)")
     ap.add_argument("--panel-weights",
-                    default="/Users/anka/webtoon-ai/runs/detect/webtoon/yolo26_musgd_run/weights/best.pt",
+                    default=os.path.join(os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__))), "assets", "models",
+                        "webtoon_panels.pt"),
                     help="trained webtoon YOLO — its system_box class protects "
                          "system-message panels from the bubble gate/blanking")
     ap.add_argument("--branding-dir",

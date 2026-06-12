@@ -59,7 +59,9 @@ def load(path: Path | None = None) -> Config:
     t = data.get("tts", {})
     return Config(
         sites=sites,
-        yolo_weights=Path(d.get("yolo_weights", "")).expanduser(),
+        yolo_weights=(lambda _w: _w if _w.is_absolute()
+                      else REPO_ROOT / _w)(
+            Path(d.get("yolo_weights", "")).expanduser()),
         detect_backend=d.get("backend", "yolo"),
         gallerydl_sleep=float(g.get("sleep", 2.0)),
         beats_model=m.get("beats_model", "gemini-2.5-flash"),
