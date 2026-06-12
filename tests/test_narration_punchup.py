@@ -61,7 +61,36 @@ def test_merge_applies_valid_keeps_original_otherwise():
 
 def test_prompt_contains_persona_and_rules():
     p = npu.build_prompt([{"group_id": 1, "narration": ORIG}],
-                         ["Prince Cheon"], "full")
+                         ["Prince Cheon"], "full", genre="murim")
     for needle in ("zip code", "NEVER invent", "Prince Cheon",
                    "JSON array", "HUMOR=full"):
         assert needle in p
+
+
+def test_genre_addons_change_the_comedy_axis():
+    murim = npu.build_prompt([{"group_id": 1, "narration": "x"}], [],
+                             "full", genre="murim")
+    modern = npu.build_prompt([{"group_id": 1, "narration": "x"}], [],
+                              "full", genre="modern apocalypse thriller")
+    system = npu.build_prompt([{"group_id": 1, "narration": "x"}], [],
+                              "full", genre="reincarnation system fantasy")
+    # murim keeps the ancient-world anachronism engine
+    assert "ancient setting" in murim and "sect" in murim
+    # modern settings must NOT be told to use ancient-world anachronisms —
+    # the world IS modern; contrast axis is mundane vs apocalypse
+    assert "ancient setting" not in modern
+    assert "mundane" in modern
+    # system/regression: tutorial/newbie framing
+    assert "tutorial" in system
+    # unknown genre falls back to the neutral persona only
+    generic = npu.build_prompt([{"group_id": 1, "narration": "x"}], [],
+                               "full", genre="")
+    assert "ancient setting" not in generic
+
+
+def test_genre_key_mapping():
+    assert npu.genre_key("Murim martial arts action") == "murim"
+    assert npu.genre_key("wuxia cultivation") == "murim"
+    assert npu.genre_key("modern apocalypse regression") == "modern"
+    assert npu.genre_key("Sci-Fi, Reincarnation, System") == "system"
+    assert npu.genre_key("shoujo romance") == "generic"

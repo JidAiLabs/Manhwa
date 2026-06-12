@@ -31,27 +31,27 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
-STYLE_GUIDE = """You are the narrator persona of a top manhwa recap channel.
+BASE_PERSONA = """You are the narrator persona of a top manhwa recap channel.
 Voice: internet-native, dry, confident, a little sarcastic — a sharp friend
 recapping the story, not a movie trailer.
 
-TECHNIQUES (use 1-2 per line, vary them, never force all at once):
+GENRE-NEUTRAL TECHNIQUES (use 1-2 per line, vary them, never force all):
 - gamer/RPG framing: stats, XP, side quest, boss fight, NPC, build,
   speedrun, loot, aggro ("free XP", "that's a boss-fight invitation")
-- modern-life anachronisms inside the ancient setting ("punched into a
-  different zip code", "he doesn't read the HR reports on his enforcers",
-  "administrative speak for corporate takeover")
 - audience intimacy: "our guy", "our boy", "look at his face"
 - comedic hyperbole on impacts ("coughing up half his internal organs")
 - punchy standalone fragments for beats: "Total silence." "Deal." "He's in."
 - snark at villain logic ("he's definitely not taking his own supply")
 - meta-narration ("the stealth mission is officially an action movie now")
+- vary line openings; filler openers like "Okay, so" at most ONCE per
+  chapter, never on consecutive lines
 
 HARD RULES:
 - NEVER invent events, objects, dialogue, or names not present in the
   original line. You restyle facts; you do not add them.
 - Keep every character name EXACTLY as written (the cast list is law).
-- Keep the original meaning and emotional turn of the line.
+- Keep the original meaning and emotional turn of the line — an injured
+  character stays injured, a defeat stays a defeat.
 - Similar length: between 60% and 150% of the original word count.
 - No publication chrome: never mention chapters, episodes, sites, scans,
   views, or the series' real title.
@@ -59,13 +59,49 @@ HARD RULES:
 - HUMOR=light means: one light touch per line at most, keep drama lines
   dramatic. HUMOR=full means: the reference-transcript density."""
 
+# The comedy AXIS is genre-specific: a murim joke misfires in modern Seoul.
+GENRE_ADDONS = {
+    "murim": """GENRE: murim/wuxia (ancient martial world).
+Comedy axis = the gap between the ancient setting and modern concepts:
+modern-life anachronisms land hardest here ("punched into a different zip code", "he doesn't read the HR reports on his enforcers", "sect politics =
+corporate org-chart drama"). Cultivation/qi/sect jargon is fair game for
+snark ("30 years of qi per pill — supplements have gotten serious").""",
+    "modern": """GENRE: modern-world (apocalypse/hunter/regression in a
+contemporary setting). The world ALREADY has phones and subways — ancient-
+setting anachronism jokes do NOT apply. Comedy axis = mundane daily life vs
+supernatural stakes ("the apocalypse started before his commute ended",
+"monster attacks and his first thought is the deposit on his flat"). If the
+protagonist knows the story/future, lean on reader/meta jokes ("he has the
+walkthrough; everyone else is playing blind").""",
+    "system": """GENRE: system/reincarnation/regression with game windows.
+Comedy axis = treating life as a game UI played absurdly well: tutorial and
+newbie framing ("skipping the tutorial", "day-one patch notes"), absurd
+contrast between the protagonist's situation and power ("a literal infant
+grinding stat points"), deadpan quest-log narration of dramatic moments.""",
+}
+
+
+def genre_key(genre_text: str) -> str:
+    g = (genre_text or "").lower()
+    if any(k in g for k in ("murim", "wuxia", "martial", "cultivat")):
+        return "murim"
+    # the SETTING governs the anachronism axis: a modern-world regression
+    # story jokes about commutes, not ancient sects
+    if any(k in g for k in ("modern", "apocalypse", "hunter", "urban")):
+        return "modern"
+    if any(k in g for k in ("system", "reincarnat", "regress", "rebirth")):
+        return "system"
+    return "generic"
+
 
 def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
-                 humor: str) -> str:
+                 humor: str, genre: str = "") -> str:
     payload = [{"group_id": l["group_id"], "narration": l["narration"]}
                for l in lines]
     cast = ", ".join(cast_names) if cast_names else "(none listed)"
-    return (f"{STYLE_GUIDE}\n\nHUMOR={humor}\nCAST NAMES (verbatim): {cast}\n\n"
+    addon = GENRE_ADDONS.get(genre_key(genre), "")
+    guide = BASE_PERSONA + ("\n\n" + addon if addon else "")
+    return (f"{guide}\n\nHUMOR={humor}\nCAST NAMES (verbatim): {cast}\n\n"
             "Rewrite EVERY line below in the persona. Return ONLY a JSON "
             "array of objects {\"group_id\": int, \"narration\": str} — same "
             "group_ids, same order, no commentary.\n\nLINES:\n"
@@ -114,7 +150,7 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
         gid = int(b.get("group_id") or 0)
         original = str(b.get("narration") or "")
         b["narration_plain"] = original
-        cand = by_gid.get(gid, "")
+        cand = by_gid.get(gid, "").replace("*", "")  # md emphasis -> TTS-safe
         if cand and validate_line(original, cand, cast_names):
             b["narration"] = cand
             applied += 1
@@ -160,14 +196,29 @@ def main() -> int:
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="us-central1")
     ap.add_argument("--humor", choices=["full", "light"], default="full")
+    ap.add_argument("--genre", default="",
+                    help="series genre text (murim/modern/system axes); "
+                         "auto-read from --script section_genre_mode if given")
+    ap.add_argument("--script", default="",
+                    help="manifest.script.json for genre auto-detection")
     args = ap.parse_args()
+    if not args.genre and args.script and os.path.exists(args.script):
+        try:
+            sc = json.load(open(args.script))
+            modes = [str(x.get("section_genre_mode") or "")
+                     for x in sc.get("sections") or []]
+            modes = [m for m in modes if m and m != "unknown"]
+            if modes:
+                args.genre = max(set(modes), key=modes.count)
+        except Exception:
+            pass
 
     beats_obj = json.load(open(args.beats))
     lines = [{"group_id": int(b.get("group_id") or 0),
               "narration": str(b.get("narration") or "")}
              for b in beats_obj.get("beats") or [] if b.get("narration")]
     cast_names = _cast_names(args.cast)
-    prompt = build_prompt(lines, cast_names, args.humor)
+    prompt = build_prompt(lines, cast_names, args.humor, genre=args.genre)
 
     if args.backend == "ollama":
         import ollama
