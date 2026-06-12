@@ -128,10 +128,11 @@ def test_token_auth_when_env_set(client, monkeypatch, tmp_path):
     _c(db)
     c = TestClient(create_app(db_path=str(db)))
     assert c.get("/").status_code == 401              # locked
-    r = c.get("/login?token=wrong", follow_redirects=False)
+    assert "form" in c.get("/login").text             # GET shows the form
+    c.post("/login", data={"token": "wrong"}, follow_redirects=False)
     assert c.get("/").status_code == 401
-    c.get("/login?token=sekret", follow_redirects=False)
-    assert c.get("/").status_code == 200              # cookie set
+    c.post("/login", data={"token": "sekret"}, follow_redirects=False)
+    assert c.get("/").status_code == 200              # cookie set (POST only)
 
 
 def test_no_token_env_means_open(client):

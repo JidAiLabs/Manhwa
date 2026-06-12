@@ -18,7 +18,7 @@
     scripts/launchd/install.sh <pick-a-secret-token>   # dashboard+worker as services
 
 ## From the MacBook Air
-    open http://mini.local:8170/login?token=<that token>
+    open http://mini.local:8170/login   # enter the token in the form (POST; never in the URL)
     # away from home: install Tailscale on both machines and use the mini's
     # tailnet name instead of mini.local — same token gate applies.
 

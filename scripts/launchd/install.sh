@@ -11,4 +11,4 @@ for name in dashboard worker; do
   launchctl unload "$plist" 2>/dev/null || true
   launchctl load "$plist"
 done
-echo "services up: http://$(hostname -s).local:8170/login?token=$TOKEN"
+echo "services up: open http://$(hostname -s).local:8170/login and enter your token"

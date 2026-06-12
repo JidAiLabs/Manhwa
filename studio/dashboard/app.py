@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets as _secrets
 import shutil
 import sqlite3
 import time
@@ -160,17 +161,31 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         if token:
             path = request.url.path
             if not (path.startswith("/static") or path.startswith("/login")):
-                if request.cookies.get("studio_token") != token:
+                cookie = request.cookies.get("studio_token") or ""
+                if not _secrets.compare_digest(cookie, token):
                     return PlainTextResponse(
-                        "locked — open /login?token=<your token>",
+                        "locked — open /login and enter the token",
                         status_code=401)
         return await call_next(request)
 
-    @app.get("/login")
-    def login(token: str = ""):
+    @app.get("/login", response_class=HTMLResponse)
+    def login_form():
+        # token travels in a POST body, never in a URL (history/logs/referer)
+        return HTMLResponse(
+            '<form method="post" action="/login" '
+            'style="margin:20vh auto;width:280px;font-family:sans-serif">'
+            '<input type="password" name="token" placeholder="dashboard '
+            'token" autofocus style="width:100%;padding:8px">'
+            '<button style="margin-top:8px;width:100%;padding:8px">'
+            'unlock</button></form>')
+
+    @app.post("/login")
+    def login(token: str = Form("")):
         resp = RedirectResponse("/", status_code=303)
-        if token and token == os.environ.get("STUDIO_DASH_TOKEN", ""):
+        expected = os.environ.get("STUDIO_DASH_TOKEN", "")
+        if token and expected and _secrets.compare_digest(token, expected):
             resp.set_cookie("studio_token", token, httponly=True,
+                            samesite="strict",
                             max_age=60 * 60 * 24 * 90)
         return resp
     templates = Jinja2Templates(directory=str(HERE / "templates"))
