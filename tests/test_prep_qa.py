@@ -388,3 +388,85 @@ def test_missing_audio_is_info_on_estimate_plans():
                         audio_exists=lambda p: False)
     assert any(f["code"] == "missing_audio" and f["severity"] == "ERROR"
                for f in fl2)
+
+
+# ---- narration<->image alignment (stale-manifest class + semantic judge) ----
+
+def _seg(seg_id, text, files):
+    return {"segment_id": seg_id, "tts_text": text,
+            "cuts": [{"file": f, "duration_sec": 4.0} for f in files]}
+
+
+def test_alignment_clean_verbatim_passes():
+    plan = {"timeline": [_seg("g0001_p00", "[excited] The FOG drifts!",
+                              ["a.jpg"])]}
+    beats = {"beats": [{"group_id": 1, "narration": "The fog drifts."}]}
+    groups = {"shots": [{"group_id": 1}]}
+    script = {"narration_source": "gemini_verbatim"}
+    assert pq.alignment_flags(plan, beats, groups, script) == []
+
+
+def test_alignment_flags_beats_incomplete():
+    beats = {"beats": [{"group_id": 1, "narration": "x"}]}
+    groups = {"shots": [{"group_id": 1}, {"group_id": 2}, {"group_id": 3}]}
+    fl = pq.alignment_flags({"timeline": []}, beats, groups,
+                            {"narration_source": "gemini_verbatim"})
+    assert [f["code"] for f in fl] == ["beats_incomplete"]
+    assert fl[0]["severity"] == pq.ERROR
+
+
+def test_alignment_flags_narration_stale():
+    plan = {"timeline": [_seg(
+        "g0002_p01",
+        "A screen displays the webnovel, episode after episode of it.",
+        ["b.jpg"])]}
+    beats = {"beats": [{"group_id": 2, "narration":
+                        "The train rattles along; he stares at his phone."}]}
+    groups = {"shots": [{"group_id": 2}]}
+    fl = pq.alignment_flags(plan, beats, groups,
+                            {"narration_source": "gemini_verbatim"})
+    assert [f["code"] for f in fl] == ["narration_stale"]
+    assert fl[0]["severity"] == pq.ERROR and fl[0]["segment_id"] == "g0002_p01"
+
+
+def test_alignment_skips_nonverbatim_script():
+    plan = {"timeline": [_seg("g0001_p00", "totally different words",
+                              ["a.jpg"])]}
+    beats = {"beats": [{"group_id": 1, "narration": "the original line"}]}
+    groups = {"shots": [{"group_id": 1}]}
+    assert pq.alignment_flags(plan, beats, groups,
+                              {"narration_source": "legacy"}) == []
+
+
+def test_semantic_judge_flags_mismatch(monkeypatch, tmp_path):
+    import sys, types
+    fake = types.ModuleType("ollama")
+    fake.chat = lambda **kw: {"message": {"content":
+        '{"match": false, "confidence": 85, "reason": "image shows a dragon"}'}}
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    (tmp_path / "a.jpg").write_bytes(b"jpg")
+    plan = {"timeline": [_seg("g0001_p00", "impressive statistics",
+                              ["a.jpg"])]}
+    fl = pq.semantic_alignment_flags(plan, str(tmp_path))
+    assert [f["code"] for f in fl] == ["narration_mismatch"]
+    assert fl[0]["severity"] == pq.WARN and "dragon" in fl[0]["detail"]
+
+
+def test_semantic_judge_match_is_quiet(monkeypatch, tmp_path):
+    import sys, types
+    fake = types.ModuleType("ollama")
+    fake.chat = lambda **kw: {"message": {"content":
+        '{"match": true, "confidence": 95, "reason": "ok"}'}}
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    (tmp_path / "a.jpg").write_bytes(b"jpg")
+    plan = {"timeline": [_seg("g0001_p00", "statistics", ["a.jpg"])]}
+    assert pq.semantic_alignment_flags(plan, str(tmp_path)) == []
+
+
+def test_semantic_judge_skips_without_ollama(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "ollama", None)
+    plan = {"timeline": [_seg("g0001_p00", "x", ["a.jpg"])]}
+    fl = pq.semantic_alignment_flags(plan, "/nonexistent")
+    assert [f["code"] for f in fl] == ["semantic_skipped"]
+    assert fl[0]["severity"] == pq.INFO

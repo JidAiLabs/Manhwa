@@ -317,6 +317,133 @@ def narration_flags(segment_id: str, narration: str,
     return flags
 
 
+# ---------------------------------------------------------------------------
+# narration <-> image alignment (stale-manifest class + semantic judge)
+# ---------------------------------------------------------------------------
+
+_MOOD_TAG_RE = re.compile(r"\[[a-z][a-z _-]{1,18}\]", re.I)
+_NORM_NARR_RE = re.compile(r"[^a-z0-9]+")
+_SEG_GROUP_RE = re.compile(r"g(\d{4})_p\d+$")
+
+
+def _norm_narr(s: str) -> str:
+    return _NORM_NARR_RE.sub(" ", _MOOD_TAG_RE.sub(" ", s or "").lower()
+                             ).strip()
+
+
+def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
+                    groups_obj: Dict[str, Any], script_obj: Dict[str, Any],
+                    *, min_sim: float = 0.55) -> List[Dict[str, Any]]:
+    """The stale-manifest failure class: beats that no longer cover every
+    group (interrupted re-run), and verbatim plan text that diverged from the
+    beat narration it was copied from (script.json older than beats.json).
+    Both are mechanical staleness — the worker may self-heal by re-running
+    the beated/scripted stages; prose is never rewritten by a judge."""
+    flags: List[Dict[str, Any]] = []
+    bn: Dict[int, str] = {}
+    for b in (beats_obj or {}).get("beats") or []:
+        try:
+            bn[int(b.get("group_id"))] = str(b.get("narration") or "")
+        except (TypeError, ValueError):
+            continue
+    gids = set()
+    for sh in (groups_obj or {}).get("shots") or []:
+        try:
+            gids.add(int(sh.get("group_id")))
+        except (TypeError, ValueError):
+            continue
+    missing = sorted(g for g in gids if g not in bn)
+    if missing:
+        flags.append(_flag(
+            "beats_incomplete", ERROR,
+            f"beats cover {len(bn)}/{len(gids)} groups — missing group_ids "
+            f"{missing[:8]} — re-run the beated stage (resume), then "
+            "re-script"))
+    if str((script_obj or {}).get("narration_source")) != "gemini_verbatim":
+        return flags        # non-verbatim text legitimately diverges
+    from difflib import SequenceMatcher
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        seg = str(item.get("segment_id") or "")
+        m = _SEG_GROUP_RE.match(seg)
+        if not m:
+            continue
+        narr = bn.get(int(m.group(1)))
+        a, b = _norm_narr(item.get("tts_text") or ""), _norm_narr(narr or "")
+        if not a or not b:
+            continue
+        sim = SequenceMatcher(None, a, b).ratio()
+        if sim < min_sim:
+            flags.append(_flag(
+                "narration_stale", ERROR,
+                f"plan text diverges from this group's beat narration "
+                f"(sim {sim:.2f}) — script.json predates "
+                "manifest.beats.json; re-run the scripted stage",
+                segment_id=seg))
+    return flags
+
+
+_SEM_PROMPT = """You are a QA judge for a manhwa recap video. The attached \
+image is the panel shown on screen while the narrator reads this line:
+
+NARRATION: {text}
+
+Does the narration plausibly belong with this panel (same scene, characters, \
+or on-screen content)? Narration may add story context, but it must not \
+describe a clearly different panel.
+Reply ONLY JSON: {{"match": true/false, "confidence": 0-100, \
+"reason": "<short>"}}"""
+
+
+def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
+                             model: str = "gemma4:26b",
+                             min_confidence: int = 60
+                             ) -> List[Dict[str, Any]]:
+    """Gemma vision-judge per shown segment: does the narration describe the
+    panel? WARN-level by design — a judge flags for human review, it never
+    blocks or rewrites prose (closed-loop regen degrades good lines)."""
+    try:
+        import ollama  # local + free; absent on boxes without the stack
+    except ImportError:
+        return [_flag("semantic_skipped", INFO,
+                      "ollama not importable — semantic judge skipped")]
+    flags: List[Dict[str, Any]] = []
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        seg = str(item.get("segment_id") or "")
+        text = (item.get("tts_text") or "").strip()
+        cuts = item.get("cuts") or []
+        if not text or not cuts:
+            continue
+        f0 = str(cuts[0].get("file") or "")
+        path = os.path.join(clean_dir, f0)
+        if not os.path.exists(path):
+            continue
+        try:
+            resp = ollama.chat(
+                model=model, think=False,
+                messages=[{"role": "user",
+                           "content": _SEM_PROMPT.format(text=text[:400]),
+                           "images": [path]}],
+                options={"temperature": 0, "num_predict": 200})
+            raw = str(resp["message"]["content"] or "")
+            m = re.search(r"\{.*\}", raw, re.S)
+            v = json.loads(m.group(0)) if m else {}
+        except Exception as e:                          # noqa: BLE001
+            flags.append(_flag("semantic_error", INFO,
+                               f"judge failed: {e}", segment_id=seg))
+            continue
+        if (v.get("match") is False
+                and int(v.get("confidence") or 0) >= min_confidence):
+            flags.append(_flag(
+                "narration_mismatch", WARN,
+                f"judge: {str(v.get('reason') or '')[:160]}",
+                scene=f0, segment_id=seg))
+    return flags
+
+
 def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                audio_exists: Callable[[str], bool]) -> List[Dict[str, Any]]:
     flags: List[Dict[str, Any]] = []
@@ -538,6 +665,10 @@ def main() -> int:
     ap.add_argument("--bubble-conf", type=float, default=0.20)
     ap.add_argument("--out-json", default="")
     ap.add_argument("--out-html", default="")
+    ap.add_argument("--semantic", action="store_true",
+                    help="Gemma vision-judge: narration vs shown panel per "
+                         "segment (WARN-level)")
+    ap.add_argument("--semantic-model", default="gemma4:26b")
     args = ap.parse_args()
 
     ep = args.episode_dir.rstrip("/")
@@ -563,6 +694,21 @@ def main() -> int:
 
     flags: List[Dict[str, Any]] = plan_flags(
         plan, clean_files=clean_files, audio_exists=os.path.exists)
+
+    def _load_manifest(name: str) -> Dict[str, Any]:
+        p = os.path.join(ep, name)
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    flags.extend(alignment_flags(plan, _load_manifest("manifest.beats.json"),
+                                 _load_manifest("manifest.groups.json"),
+                                 _load_manifest("manifest.script.json")))
+    if args.semantic:
+        flags.extend(semantic_alignment_flags(plan, clean_dir,
+                                              model=args.semantic_model))
 
     detector = None
     if not args.no_detector:

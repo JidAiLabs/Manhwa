@@ -74,9 +74,27 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO)) -> int:
 # handlers
 # --------------------------------------------------------------------------
 
+# codes prep_qa emits for MECHANICAL staleness (script.json older than
+# beats.json / beats missing groups) — the only class the worker may
+# self-heal, by re-running pipeline stages. Prose is never auto-rewritten.
+STALE_CODES = {"beats_incomplete", "narration_stale"}
+
+
+def _qa_error_codes(ep: Path) -> set:
+    try:
+        report = json.loads((Path(ep) / "prep_qa.json").read_text())
+    except Exception:
+        return set()
+    return {f.get("code") for f in report.get("flags") or []
+            if f.get("severity") == "ERROR"}
+
+
 def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
-                     log: TextIO, *, branding: str = "both") -> None:
-    """render_prep + prep_qa for a chapter; records the qa_scan stage."""
+                     log: TextIO, *, branding: str = "both",
+                     heal_aware: bool = False) -> set:
+    """render_prep + prep_qa for a chapter; records the qa_scan stage.
+    Returns the ERROR flag codes. heal_aware=True lets the caller handle
+    stale-narration codes instead of failing the job outright."""
     ep = Path(ch["ep_dir"] or "")
     title = _series_title(con, ch["series_id"])
     with record_stage(con, chapter_id=ch["id"], stage="prepped",
@@ -90,16 +108,19 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
             raise RuntimeError(f"render_prep exited {rc}")
     t0 = time.time()
     rc = _stream([PY, str(REPO / "tools" / "prep_qa.py"),
-                  "--episode-dir", str(ep), "--series-title", title], log)
+                  "--episode-dir", str(ep), "--series-title", title,
+                  "--semantic"], log)
     con.execute(
         "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
         "meta_json) VALUES (?,?,?,?, json_object('series_id', ?))",
         (ch["id"], "qa_scan", round(time.time() - t0, 2),
          1 if rc == 0 else 0, ch["series_id"]))
     con.commit()
-    if rc != 0:
+    codes = _qa_error_codes(ep)
+    if rc != 0 and not (heal_aware and codes & STALE_CODES):
         raise RuntimeError("prep-QA found ERROR-severity flags — open the "
                            f"report in {ep}")
+    return codes
 
 
 def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
@@ -121,18 +142,42 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
             raise RuntimeError(f"studio run exited {rc}")
     ch = _chapter(con, job["chapter_id"])  # ep_dir may have been set
     ep = Path(ch["ep_dir"] or "")
-    with record_stage(con, chapter_id=ch["id"], stage="planned",
-                      series_id=ch["series_id"]):
-        rc = _stream([PY, str(REPO / "tools" / "timeline_planner.py"),
-                      "--groups", str(ep / "manifest.groups.json"),
-                      "--beats", str(ep / "manifest.beats.json"),
-                      "--script", str(ep / "manifest.script.json"),
-                      "--vision", str(ep / "manifest.vision.json"),
-                      "--out", str(ep / "render.plan.json"),
-                      "--mode", "narrated", "--min-cut-sec", "3.5"], log)
+
+    def _plan() -> None:
+        with record_stage(con, chapter_id=ch["id"], stage="planned",
+                          series_id=ch["series_id"]):
+            rc = _stream([PY, str(REPO / "tools" / "timeline_planner.py"),
+                          "--groups", str(ep / "manifest.groups.json"),
+                          "--beats", str(ep / "manifest.beats.json"),
+                          "--script", str(ep / "manifest.script.json"),
+                          "--vision", str(ep / "manifest.vision.json"),
+                          "--out", str(ep / "render.plan.json"),
+                          "--mode", "narrated", "--min-cut-sec", "3.5"], log)
+            if rc != 0:
+                raise RuntimeError(f"timeline_planner exited {rc}")
+
+    _plan()
+    codes = _run_prep_and_qa(con, ch, log, heal_aware=True)
+    if codes & STALE_CODES:
+        # mechanical staleness (script older than beats / beats missing
+        # groups): re-run the writing chain ONCE, then re-QA. Never loop.
+        demote = ("grouped" if "beats_incomplete" in codes else "beated")
+        log.write(f"[heal] stale narration chain {sorted(codes)} → "
+                  f"status={demote}, re-running beated/scripted once\n")
+        con.execute("UPDATE chapter SET status=? WHERE id=?",
+                    (demote, ch["id"]))
+        con.commit()
+        rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
+                      "--chapters", str(int(ch["number"])),
+                      "--until", "scripted"], log)
         if rc != 0:
-            raise RuntimeError(f"timeline_planner exited {rc}")
-    _run_prep_and_qa(con, ch, log)
+            raise RuntimeError(f"studio run (heal) exited {rc}")
+        _plan()
+        codes = _run_prep_and_qa(con, ch, log, heal_aware=True)
+        if codes & STALE_CODES:
+            raise RuntimeError(
+                "narration still stale after one heal cycle — manual review "
+                f"needed ({sorted(codes & STALE_CODES)})")
 
 
 def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],

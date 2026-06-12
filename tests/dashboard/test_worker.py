@@ -93,3 +93,101 @@ def test_chain_past_scripted_requires_voice_approval(tmp_path):
     state, err = con.execute("SELECT state, error FROM job WHERE id=?",
                              (jid,)).fetchone()
     assert state == "failed" and "narration" in err
+
+
+# ---- stale-narration self-heal (mechanical heal only; prose never judged) --
+
+def _seed_chapter(con, tmp_path, status="voiced_failed"):
+    ep = tmp_path / "ep"
+    ep.mkdir(exist_ok=True)
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (1,'asura','https://x','s','S','t')")
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at) VALUES (5,1,1,'Ch 1',"
+                "'https://x/1',?,?,'t')", (status, str(ep)))
+    con.commit()
+    return ep
+
+
+def test_qa_error_codes_reads_report(tmp_path):
+    import json
+    ep = tmp_path
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "narration_stale", "severity": "ERROR"},
+        {"code": "flash_cut", "severity": "WARN"}]}))
+    assert worker._qa_error_codes(ep) == {"narration_stale"}
+    assert worker._qa_error_codes(tmp_path / "nope") == set()
+
+
+def test_run_prep_and_qa_heal_aware_returns_instead_of_raising(
+        tmp_path, monkeypatch):
+    import json
+    import pytest
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "narration_stale", "severity": "ERROR"}]}))
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log:
+                        1 if any("prep_qa.py" in str(c) for c in cmd) else 0)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    log = open(tmp_path / "log.txt", "w")
+    codes = worker._run_prep_and_qa(con, ch, log, heal_aware=True)
+    assert codes == {"narration_stale"}
+    with pytest.raises(RuntimeError):
+        worker._run_prep_and_qa(con, ch, log, heal_aware=False)
+
+
+def test_prepare_self_heals_stale_narration(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _seed_chapter(con, tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log:
+                        (calls.append(" ".join(map(str, cmd))), 0)[1])
+    qa_results = [{"narration_stale"}, set()]
+    qa_calls = []
+
+    def fake_qa(c, ch, log, **kw):
+        qa_calls.append(1)
+        return qa_results.pop(0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa", fake_qa)
+    jid = jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (jid,)).fetchone()
+    assert state == "done", err
+    assert len(qa_calls) == 2
+    assert con.execute("SELECT status FROM chapter WHERE id=5"
+                       ).fetchone()[0] == "beated"
+    assert sum("--until scripted" in c for c in calls) >= 2
+    assert sum("timeline_planner.py" in c for c in calls) >= 2
+
+
+def test_prepare_heal_beats_incomplete_demotes_to_grouped(
+        tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _seed_chapter(con, tmp_path)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    qa_results = [{"beats_incomplete", "narration_stale"}, set()]
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: qa_results.pop(0))
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT status FROM chapter WHERE id=5"
+                       ).fetchone()[0] == "grouped"
+
+
+def test_prepare_heal_gives_up_after_one_cycle(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _seed_chapter(con, tmp_path)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log: 0)
+    qa_results = [{"narration_stale"}, {"narration_stale"}]
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: qa_results.pop(0))
+    jid = jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (jid,)).fetchone()
+    assert state == "failed" and "stale" in err
