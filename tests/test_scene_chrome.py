@@ -170,3 +170,13 @@ def test_long_dialogue_using_title_word_not_chrome():
     item = {"ocr_clean": "HE FELT TRULY OMNISCIENT FOR ONE MOMENT TODAY AFTER READING EVERY SINGLE PAGE",
             "text_only": False, "text_coverage": 0.2}
     assert sc.is_chrome_scene(item, series_title="Omniscient Reader") is False
+
+
+def test_korean_staff_credits_are_chrome():
+    """The 나노마신 title card (Nano Machine, user report): hangul credits
+    escaped every Latin-pattern rule."""
+    assert _is("나노마신 喇勞魔神 그림 : 금강불괴 | 각색 : 현철무 | 원작 : 한중월야") is True
+
+
+def test_single_korean_role_word_is_not_chrome():
+    assert _is("그림 속의 검은 그림자가 움직인다") is False   # story prose using 그림

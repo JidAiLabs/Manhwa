@@ -402,6 +402,11 @@ def main() -> int:
         "      SENTENCE that continues on the next panel/group. NEVER quote the stub\n"
         "      as a standalone thought — write narration that flows INTO the\n"
         "      continuation (end your line mid-momentum so the next beat completes it).\n"
+        "    - CONTINUITY: INPUT_JSON.previous_narration holds the line(s) the narrator\n"
+        "      JUST SPOKE. Continue that flow: never re-introduce characters or\n"
+        "      re-describe the setting already established, never start with the same\n"
+        "      opening words as the previous line, and if the previous line ended\n"
+        "      mid-thought, your first words must complete it.\n"
         "\n"
         "{CAST_BLOCK}"
         "ALSO judge each panel for the recap video (scene_selection, one entry per scene_file):\n"
@@ -536,6 +541,13 @@ def main() -> int:
             regenerated += 1
 
         payload = _pack_group_payload(g, vision_by_file)
+        # rolling context: the last spoken lines ride along so each beat
+        # CONTINUES the story instead of re-opening it (and completes any
+        # fragment the previous caption left hanging)
+        prev = [str(b.get("narration") or "")
+                for b in beats_out[-2:] if b.get("narration")]
+        if prev:
+            payload["previous_narration"] = prev
         img_paths = _select_images_for_group(payload, vision_by_file, args.max_images_per_group)
 
         beat: Optional[Dict[str, Any]] = None

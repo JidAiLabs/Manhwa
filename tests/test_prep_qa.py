@@ -539,3 +539,9 @@ def test_caption_unvoiced_skips_app_ui_screens():
         "THREE WAYS TO SURVIVE THE APOCALYPSE READ EPISODE 1389 "
         "COMMENTS : 1 VIEWS : 1 READ EP"}}
     assert pq.caption_unvoiced_flags(beats, vitems) == []
+
+
+def test_continuity_context_in_writer():
+    src = (Path(__file__).resolve().parent.parent / "tools"
+           / "gemini_narrative_pass.py").read_text()
+    assert "previous_narration" in src and "CONTINUITY" in src

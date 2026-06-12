@@ -55,6 +55,9 @@ _MARKER_RE = re.compile(
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
+_KR_CREDITS_RE = re.compile(r"그림|각색|원작|작가|연출")
+
+
 def _norm_words(s: str) -> list:
     return _WORD_RE.findall((s or "").lower())
 
@@ -98,6 +101,13 @@ def is_chrome_scene(
             return True
 
     if _CREDITS_RE.search(ocr):
+        return True
+
+    # Korean staff credits on title/end cards (그림=art, 각색=adaptation,
+    # 원작=original, 작가=author, 연출=direction) — the Latin credit regexes
+    # are blind to hangul, which let the 나노마신 title card through. Two
+    # distinct roles on one card = credits, certainly chrome.
+    if len(set(_KR_CREDITS_RE.findall(ocr))) >= 2:
         return True
 
     hard_hits = sum(1 for _ in _SITE_HARD_RE.finditer(ocr))
