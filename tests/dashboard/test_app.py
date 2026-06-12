@@ -13,10 +13,11 @@ def client(tmp_path):
     db = tmp_path / "s.db"
     con = connect(db)
     con.execute("INSERT INTO series (id, source, series_url, slug, title, "
-                "added_at) VALUES (1,'asura','u','nano','Nano Machine','t')")
+                "added_at) VALUES (1,'asura','https://asura.example/nano',"
+                "'nano','Nano Machine','t')")
     con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
-                "status, updated_at, season) VALUES "
-                "(1,1,1,'Chapter 1','u1','planned','t',1)")
+                "status, updated_at, season) VALUES (1,1,1,'Chapter 1',"
+                "'https://asura.example/nano/ch1','planned','t',1)")
     con.commit()
     return TestClient(create_app(db_path=str(db))), con
 
@@ -144,11 +145,32 @@ def test_real_manhwa_links_on_pages(client):
     """Series board, series detail, chapter header, and discovery rows all
     link out to the real reader pages (series_url / chapter.url / AniList)."""
     c, con = client
-    assert 'href="u"' in c.get("/series").text
-    assert 'href="u"' in c.get("/series/1").text
-    assert 'href="u1"' in c.get("/chapter/1").text
+    assert 'href="https://asura.example/nano"' in c.get("/series").text
+    assert 'href="https://asura.example/nano"' in c.get("/series/1").text
+    assert ('href="https://asura.example/nano/ch1"'
+            in c.get("/chapter/1").text)
     con.execute("INSERT INTO discovery_title (anilist_id, title, trend_score,"
                 " chapters, status, meta_json) VALUES "
                 "(77,'Solo Farming',90,120,'candidate','{}')")
     con.commit()
     assert "anilist.co/manga/77" in c.get("/discovery").text
+
+
+def test_unsafe_url_schemes_never_rendered(client):
+    """Scraped/stored URLs are untrusted: javascript:/data: schemes must
+    never reach an href, and manual discovery-add must reject them."""
+    c, con = client
+    con.execute("UPDATE series SET series_url='javascript:alert(1)'")
+    con.execute("UPDATE chapter SET url='javascript:alert(2)'")
+    con.execute("INSERT INTO discovery_title (anilist_id, title, trend_score,"
+                " chapters, status, meta_json) VALUES (88,'Evil',95,10,"
+                "'candidate','{\"links\":{\"asura\":{\"url\":"
+                "\"javascript:alert(3)\",\"title\":\"x\",\"score\":0.9}}}')")
+    con.commit()
+    for path in ("/series", "/series/1", "/chapter/1", "/discovery"):
+        assert "javascript:" not in c.get(path).text, path
+    r = c.post("/discovery/88/add", data={"source": "asura",
+               "url": "javascript:alert(4)"}, follow_redirects=False)
+    assert r.status_code == 400
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='add_series'"
+                       ).fetchone()[0] == 0

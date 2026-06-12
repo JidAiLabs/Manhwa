@@ -34,6 +34,14 @@ TIMELINE = ["fetched", "stitched", "detected", "scened", "visioned",
             "qa_scan", "render_segment"]
 
 
+def _http_url(u: Optional[str]) -> Optional[str]:
+    """Stored/scraped URLs are untrusted (sources are external sites) —
+    only http(s) may ever reach an href; javascript:/data: etc. become None."""
+    if isinstance(u, str) and u.lower().startswith(("http://", "https://")):
+        return u
+    return None
+
+
 def _status_idx(status: str) -> int:
     try:
         return STATUS_ORDER.index(status)
@@ -140,8 +148,8 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             (sid,)).fetchone()[0]
         remaining = max(0, total - done)
         rows.append({
-            "id": sid, "title": title, "source": source, "url": surl,
-            "total": total,
+            "id": sid, "title": title, "source": source,
+            "url": _http_url(surl), "total": total,
             "done": done, "new": new, "seasons": seasons,
             "pct": (100 * done // total) if total else 0,
             "eta": eta.fmt_eta(eta.series_eta(con, sid, remaining)),
@@ -241,11 +249,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                for r in c.execute(
                    "SELECT id, number, label, status, season, ep_dir, url "
                    "FROM chapter WHERE series_id=? ORDER BY number", (sid,))]
+        for ch_row in chs:
+            ch_row["url"] = _http_url(ch_row["url"])
         title, series_url = (c.execute(
             "SELECT title, series_url FROM series WHERE id=?",
             (sid,)).fetchone() or ("?", ""))
         return page("series_detail.html", request, sid=sid, title=title,
-                    series_url=series_url, chapters=chs)
+                    series_url=_http_url(series_url), chapters=chs)
 
     @app.get("/chapter/{cid}", response_class=HTMLResponse)
     def chapter_page(request: Request, cid: int):
@@ -256,6 +266,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             return HTMLResponse("chapter not found", status_code=404)
         ch = dict(zip(("id", "series_id", "number", "label", "status",
                        "ep_dir", "url"), r))
+        ch["url"] = _http_url(ch["url"])
         title = (c.execute("SELECT title FROM series WHERE id=?",
                            (ch["series_id"],)).fetchone() or ["?"])[0]
         ep_rel = (Path(ch["ep_dir"]).resolve().relative_to(
@@ -419,6 +430,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     @app.post("/discovery/{anilist_id}/add")
     def post_discovery_add(anilist_id: int, source: str = Form(...),
                            url: str = Form(...)):
+        if not _http_url(url):
+            return PlainTextResponse("invalid url scheme", status_code=400)
         c = con()
         discovery.mark(c, anilist_id, "in_production")
         jobs.enqueue(c, "add_series", payload={"source": source, "url": url})

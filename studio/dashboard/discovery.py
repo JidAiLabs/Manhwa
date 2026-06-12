@@ -234,6 +234,11 @@ def listing(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             d["meta"] = json.loads(d.pop("meta_json") or "{}")
         except Exception:
             d["meta"] = {}
+        # scraped link URLs are untrusted — only http(s) may reach the UI
+        d["meta"]["links"] = {
+            s: h for s, h in (d["meta"].get("links") or {}).items()
+            if isinstance(h, dict) and str(h.get("url", "")).lower()
+            .startswith(("http://", "https://"))}
         d["opportunity"] = opportunity(d)
         out.append(d)
     return out
