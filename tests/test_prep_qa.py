@@ -545,3 +545,24 @@ def test_continuity_context_in_writer():
     src = (Path(__file__).resolve().parent.parent / "tools"
            / "gemini_narrative_pass.py").read_text()
     assert "previous_narration" in src and "CONTINUITY" in src
+
+
+def test_fragment_dangle_flags_trailing_stub():
+    fl = pq.narration_flags(
+        "g0009_p02",
+        'Our protagonist is smirking, stuck on one realization: "And I..."',
+        [])
+    assert [f["code"] for f in fl] == ["fragment_dangle"]
+    assert fl[0]["severity"] == pq.ERROR
+
+
+def test_fragment_dangle_ignores_midline_and_long_quotes():
+    ok1 = pq.narration_flags(
+        "g0011_p04",
+        "He reads about 'the ending...' and realizes what it means.", [])
+    ok2 = pq.narration_flags(
+        "g0002_p00",
+        'She whispers: "I have waited ten years for this moment to come..."',
+        [])
+    assert [f["code"] for f in ok1] == []
+    assert [f["code"] for f in ok2] == []

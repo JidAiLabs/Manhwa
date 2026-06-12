@@ -294,6 +294,13 @@ def narration_flags(segment_id: str, narration: str,
     quoting a BLANKED bubble is the design (it replaces the text)."""
     flags: List[Dict[str, Any]] = []
     text = narration or ""
+    dm = _DANGLING_QUOTE_RE.search(text)
+    if dm and len(dm.group(1).replace("...", " ").split()) <= 3:
+        flags.append(_flag(
+            "fragment_dangle", ERROR,
+            f"narration ENDS on a dangling quoted stub ({dm.group(1)!r}) — "
+            "the thought must flow into the next line, not hang",
+            segment_id=segment_id))
     m = _CHROME_NARR_RE.search(text)
     if m:
         flags.append(_flag("chrome_narration", WARN,
@@ -320,6 +327,12 @@ def narration_flags(segment_id: str, narration: str,
 # ---------------------------------------------------------------------------
 # narration <-> image alignment (stale-manifest class + semantic judge)
 # ---------------------------------------------------------------------------
+
+# narration ENDING on a short quoted stub trailing into '...' — half a
+# sentence presented as a complete thought ("And I..." regression)
+_DANGLING_QUOTE_RE = re.compile(
+    r'[:,]?\s*["‘’“”\']([^"‘’“”\']'
+    r'{1,40}\.\.\.)["‘’“”\']\s*$')
 
 _MOOD_TAG_RE = re.compile(r"\[[a-z][a-z _-]{1,18}\]", re.I)
 _NORM_NARR_RE = re.compile(r"[^a-z0-9]+")

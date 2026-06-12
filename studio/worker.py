@@ -74,10 +74,11 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO)) -> int:
 # handlers
 # --------------------------------------------------------------------------
 
-# codes prep_qa emits for MECHANICAL staleness (script.json older than
-# beats.json / beats missing groups) — the only class the worker may
-# self-heal, by re-running pipeline stages. Prose is never auto-rewritten.
-STALE_CODES = {"beats_incomplete", "narration_stale"}
+# codes prep_qa emits that the worker may self-heal by re-running pipeline
+# stages (prose is never edited in place): mechanical staleness re-scripts;
+# a dangling-fragment narration re-writes its beats once (the writer now
+# carries rolling context + fragment rules, so a re-roll usually lands).
+STALE_CODES = {"beats_incomplete", "narration_stale", "fragment_dangle"}
 
 
 def _qa_error_codes(ep: Path) -> set:
