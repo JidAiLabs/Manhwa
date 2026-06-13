@@ -1317,11 +1317,40 @@ def main() -> int:
         return doc_like(text_score.get(fname, 0.0), len(words), words,
                         speech_shaped_boxes(_boxes(fname), panel_w))
 
+    def _is_title_card(fname: str) -> bool:
+        """Styled title/system card (SKY CORPORATION., LIN ZICHEN - AGE: 3
+        YEARS) — short mostly-caps phrase on a flat (white/black) frame. These
+        are story beats: the timeline protects them from the LLM's 'redundant'
+        verdict, and render_prep must NOT then drop them as low-art text.
+        Same signal as prep_qa/timeline_planner."""
+        vit = vision_item.get(fname, {})
+        ocr = str(vit.get("ocr_clean") or "").strip()
+        if not ocr or "..." in ocr or any(c in ocr for c in "~!?"):
+            return False
+        words = [w for w in re.split(r"[^A-Za-z0-9']+", ocr)
+                 if any(c.isalpha() for c in w)]
+        letters = [c for c in ocr if c.isalpha()]
+        if not (2 <= len(words) <= 8) or not letters:
+            return False
+        if sum(c.isupper() for c in letters) / len(letters) < 0.8:
+            return False
+        if float(vit.get("text_coverage") or 0.0) >= 0.20:
+            return False
+        img = _img(fname)
+        if img is None:
+            return False
+        g = img.mean(axis=2)
+        return float(((g > 235) | (g < 25)).mean()) >= 0.6
+
     def _cleaned(fname: str) -> Tuple[Optional[np.ndarray], List[Tuple[int, int, int, int]]]:
         if fname not in cleaned_cache:
             img = _img(fname)
             if img is None:
                 cleaned_cache[fname] = (None, [])
+            elif _is_title_card(fname) and fname not in speech_files:
+                # title/system card: the styled text IS the content (SKY
+                # CORPORATION, age cards) — never blank it
+                cleaned_cache[fname] = (img.copy(), [])
             elif _text_rich(fname) and fname not in speech_files:
                 # DOCUMENT panel (word-rich, no speech per Gemini): its
                 # document text IS the content and must survive — but a
@@ -1419,6 +1448,11 @@ def main() -> int:
                         # document panels' text IS the story content — text
                         # dominance must never drop them (ORV novel-app page)
                         exempt.add(f)
+                    if _is_title_card(f):
+                        # styled title/system card (SKY CORPORATION, age cards)
+                        # — a story beat the timeline protected; never drop it
+                        # as low-art text here
+                        exempt.add(f)
                 cov[f] = score
             new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)
             dropped = list(dropped) + bdropped
@@ -1513,7 +1547,8 @@ def main() -> int:
         rich = _text_rich(fname)
         orig = _img(fname)
         sysf = bool(orig is not None
-                    and bubble_coverage(orig.shape, _sys_boxes(fname)) >= 0.02)
+                    and bubble_coverage(orig.shape, _sys_boxes(fname)) >= 0.02
+                    or _is_title_card(fname))   # title cards are sys-protected
         blanked = bool(boxes) or (not rich and not sysf
                                   and bool(word_boxes_by_file.get(fname)))
         parts, pinfo = select_panel_crops(img, boxes, text_rich=rich,
