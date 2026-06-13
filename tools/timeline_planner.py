@@ -570,6 +570,7 @@ def build_cuts(
     *,
     min_cut_sec: float,
     selection: Optional[List[Dict[str, Any]]] = None,
+    protected: Optional["set"] = None,
 ) -> List[Dict[str, Any]]:
     """
     Create deterministic montage plan across scene_files:
@@ -596,7 +597,7 @@ def build_cuts(
         # selection scene_file values are basenames (from beats); match in kind.
         sel = [{**e, "scene_file": os.path.basename(str(e.get("scene_file") or ""))}
                for e in selection]
-        files = choose_kept_scenes(files, sel, kmax)
+        files = choose_kept_scenes(files, sel, kmax, protected=protected)
     else:
         files = files[: min(len(files), kmax)]
     k = len(files)
@@ -609,6 +610,51 @@ def build_cuts(
         cuts.append({"file": f, "start": round(t, 3), "dur": round(float(dur), 3)})
         t += per
     return cuts
+
+
+def protected_card_files(vision_path: str, scene_dirs: List[str]) -> "set":
+    """Title/system cards (SKY CORPORATION., STARTING ACTIVATION.) — short
+    mostly-uppercase phrases centered on a flat (white/black) frame. They are
+    story beats and must survive the LLM's non-deterministic 'redundant'
+    verdict and the husk filter. Mirrors prep_qa._is_title_card; the flat-frame
+    test separates a real card from caps dialogue/SFX on textured art."""
+    out: set = set()
+    if not vision_path or not os.path.exists(vision_path):
+        return out
+    try:
+        with open(vision_path, "r", encoding="utf-8") as fh:
+            items = json.load(fh).get("items") or []
+    except Exception:
+        return out
+    import re as _re
+    import cv2  # lazy — keeps timeline_planner importable without the CV stack
+    for it in items:
+        f = os.path.basename(str(it.get("scene_file") or ""))
+        ocr = str(it.get("ocr_clean") or "").strip()
+        if not f or it.get("text_only") or "..." in ocr \
+                or any(ch in ocr for ch in "~!?"):
+            continue
+        words = [w for w in _re.split(r"[^A-Za-z0-9']+", ocr)
+                 if any(c.isalpha() for c in w)]
+        letters = [c for c in ocr if c.isalpha()]
+        if not (2 <= len(words) <= 8) or not letters:
+            continue
+        if sum(c.isupper() for c in letters) / len(letters) < 0.8:
+            continue
+        if float(it.get("text_coverage") or 0.0) >= 0.20:
+            continue
+        img = None
+        for d in scene_dirs:
+            p = os.path.join(d, f) if d else ""
+            if p and os.path.exists(p):
+                img = cv2.imread(p)
+                break
+        if img is None:
+            continue
+        g = img.mean(axis=2)
+        if float(((g > 235) | (g < 25)).mean()) >= 0.6:
+            out.add(f)
+    return out
 
 
 # -----------------------------
@@ -683,6 +729,14 @@ def main() -> int:
     time_cursor = 0.0
     dropped_summary: List[Dict[str, Any]] = []
 
+    # title/system cards are mandatory story beats — protect them from the
+    # husk filter and the LLM's 'redundant' verdict (which is non-deterministic;
+    # SKY CORPORATION was kept on one host, dropped on another)
+    protected_cards = protected_card_files(
+        args.vision, [args.clean_scene_dir, args.raw_scene_dir])
+    if protected_cards:
+        print(f"[plan] protected title/system cards: {sorted(protected_cards)}")
+
     for gobj in groups:
         group_id = int(gobj.get("group_id") or gobj.get("shot_id") or 0)
         shot_id = int(gobj.get("shot_id") or group_id or 0)
@@ -709,7 +763,9 @@ def main() -> int:
             )
             if dropped:
                 dropped_summary.append({"group_id": group_id, "dropped": dropped})
-            scene_files = kept  # basenames only now
+            # never let the husk filter drop a mandatory title/system card
+            keep_set = set(kept) | (protected_cards & set(scene_files))
+            scene_files = [f for f in scene_files if f in keep_set]  # orig order
 
         beat = beats_by_gid.get(group_id, {"group_id": group_id})
         mood_words = _norm_words(beat.get("mood_words") or [])
@@ -785,6 +841,7 @@ def main() -> int:
                         scene_files, dur,
                         min_cut_sec=float(args.min_cut_sec),
                         selection=beat.get("scene_selection"),
+                        protected=protected_cards,
                     )
 
             item: Dict[str, Any] = {

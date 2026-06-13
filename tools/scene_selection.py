@@ -74,6 +74,8 @@ def choose_kept_scenes(
     scene_files: List[str],
     selection: List[Dict[str, Any]] | None,
     max_keep: int,
+    *,
+    protected: "set[str] | None" = None,
 ) -> List[str]:
     """Pick which panels to show, DROPPING ``redundant`` panels entirely.
 
@@ -83,17 +85,34 @@ def choose_kept_scenes(
     in to fill the time budget. Shows up to *max_keep* ``keep`` panels in original
     order. If a shot has NO keepers (all redundant), it falls back to the first
     *max_keep* panels so the shot is never empty.
+
+    *protected* files (title/system cards — SKY CORPORATION) are story beats that
+    must NEVER be dropped, even when the LLM scene-selection marks them redundant
+    (its verdict is non-deterministic — the same card is kept on one run, dropped
+    on another). They are always kept, ahead of the *max_keep* budget.
     """
     if not scene_files:
         return []
+    prot = protected or set()
     role_by_file: Dict[str, str] = {
         str(e.get("scene_file")): str(e.get("role") or "keep")
         for e in (selection or [])
     }
-    keepers = [sf for sf in scene_files if role_by_file.get(sf, "keep") == "keep"]
+    keepers = [sf for sf in scene_files
+               if sf in prot or role_by_file.get(sf, "keep") == "keep"]
 
     n = max(1, int(max_keep))
-    chosen = (keepers or scene_files)[:n]
+    # mandatory cards are kept ALL; other keepers fill the remaining budget,
+    # preserving original order across the union
+    must = [sf for sf in scene_files if sf in prot]
+    chosen = [sf for sf in (keepers or scene_files)
+              if sf in must][:len(must)]
+    for sf in (keepers or scene_files):
+        if len(chosen) >= max(n, len(must)):
+            break
+        if sf not in chosen:
+            chosen.append(sf)
+    chosen = [sf for sf in scene_files if sf in chosen]   # restore order
     if not chosen:
         chosen = scene_files[:1]
     return chosen
