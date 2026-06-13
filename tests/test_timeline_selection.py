@@ -49,3 +49,15 @@ def test_build_cuts_all_redundant_still_shows_one():
     sel = _sel({"a.jpg": "redundant", "b.jpg": "redundant"})
     cuts = tp.build_cuts(["a.jpg", "b.jpg"], 2.0, min_cut_sec=3.5, selection=sel)
     assert len(cuts) == 1                                # never an empty shot
+
+
+# ---- filler-beat drop (build #3) -------------------------------------------
+
+def test_is_filler_narration():
+    assert tp.is_filler_narration("")
+    assert tp.is_filler_narration("   ")
+    assert tp.is_filler_narration("The scene continues.")
+    assert tp.is_filler_narration("the story continues")
+    assert tp.is_filler_narration("To be continued")
+    assert not tp.is_filler_narration("Prince Cheon flees the dark forest.")
+    assert not tp.is_filler_narration("The reason she's special is because...")

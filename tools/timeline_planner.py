@@ -612,6 +612,20 @@ def build_cuts(
     return cuts
 
 
+_FILLER_NARRATION_RE = re.compile(
+    r"^\s*(the\s+(scene|story)\s+continues|to\s+be\s+continued|continues?)\.?\s*$",
+    re.I)
+
+
+def is_filler_narration(text: str) -> bool:
+    """A beat that yielded no real story line — empty, or the
+    'The scene continues.' placeholder the script stage emits when the beat
+    narration was empty. Such a segment must not be voiced over a stand-in
+    panel; the beat is dropped from the timeline instead."""
+    t = (text or "").strip()
+    return (not t) or bool(_FILLER_NARRATION_RE.match(t))
+
+
 def protected_card_files(vision_path: str, scene_dirs: List[str]) -> "set":
     """Title/system cards (SKY CORPORATION., STARTING ACTIVATION.) — short
     mostly-uppercase phrases centered on a flat (white/black) frame. They are
@@ -789,6 +803,13 @@ def main() -> int:
         for segment_id, srow in segments:
             paragraph = _safe_str(srow.get("paragraph")) if srow else ""
             delivery_tag = _safe_str(srow.get("delivery_tag")) if srow else ""
+
+            # a degenerate beat (empty narration → "The scene continues."
+            # placeholder) is dropped: never voice filler over a stand-in panel
+            if args.mode == "narrated" and is_filler_narration(paragraph):
+                dropped_summary.append({"group_id": group_id,
+                                        "dropped_filler_segment": segment_id})
+                continue
 
             tts_text = paragraph if args.mode == "narrated" else ""
             if delivery_tag and tts_text:
