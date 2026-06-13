@@ -588,6 +588,110 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
     return flags
 
 
+# ---------------------------------------------------------------------------
+# story-level QA: the checks the per-panel passes cannot see — does each
+# segment tell a real beat (not filler), does the shown art belong to THIS
+# beat (not a story-blind stand-in), and did a mandatory title/system card
+# get dropped? These flag the failures the user caught the QA missing.
+# ---------------------------------------------------------------------------
+
+_FILLER_RE = re.compile(
+    r"^\s*(the\s+(scene|story)\s+continues|to\s+be\s+continued|continues?)\.?\s*$",
+    re.I)
+
+
+def _is_title_card(ocr: str, vit: Dict[str, Any]) -> bool:
+    """A styled title/system card (SKY CORPORATION., STARTING ACTIVATION.) —
+    a short, mostly-uppercase phrase CENTERED ON A FLAT FRAME. The flat-frame
+    test (*flat_frac*: fraction of near-white/near-black pixels, set by main()
+    from the image) is what separates a real card from all-caps dialogue or a
+    screamed SFX sitting on textured artwork — caps text alone cannot."""
+    ocr = (ocr or "").strip()
+    # dialogue & SFX live on flat gutters too — they carry ~ ! ? or trailing
+    # ellipses; a title/system card is a clean declarative name/phrase
+    if "..." in ocr or any(ch in ocr for ch in "~!?"):
+        return False
+    words = [w for w in re.split(r"[^A-Za-z0-9']+", ocr) if any(c.isalpha() for c in w)]
+    if not (2 <= len(words) <= 8):     # 1-word = SFX gibberish; long = a page
+        return False
+    letters = [c for c in ocr if c.isalpha()]
+    caps = sum(c.isupper() for c in letters) / len(letters)
+    return (caps >= 0.8
+            and float(vit.get("flat_frac") or 0.0) >= 0.6
+            and float(vit.get("text_coverage") or 0.0) < 0.20
+            and not vit.get("text_only"))
+
+
+def _base_scene(f: str) -> str:
+    """split halves (p044_a.jpg/p044_b.jpg) trace back to one source panel."""
+    return re.sub(r"_[ab](\.[a-z]+)$", r"\1", str(f or ""))
+
+
+def story_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
+                vitems: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    flags: List[Dict[str, Any]] = []
+    bn: Dict[int, str] = {}
+    bfiles: Dict[int, set] = {}
+    for b in (beats_obj or {}).get("beats") or []:
+        try:
+            gid = int(b.get("group_id"))
+        except (TypeError, ValueError):
+            continue
+        bn[gid] = str(b.get("narration") or "")
+        bfiles[gid] = {str(f) for f in (b.get("scene_files") or [])}
+
+    shown_all: set = set()
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        for c in item.get("cuts") or []:
+            for f in (c.get("file"), c.get("file2")):
+                if f:
+                    shown_all.add(_base_scene(f))
+
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        seg = str(item.get("segment_id") or "")
+        m = _SEG_GROUP_RE.match(seg)
+        gid = int(m.group(1)) if m else None
+        text = (item.get("tts_text") or "").strip()
+        cuts = item.get("cuts") or []
+
+        # 1. filler / empty narration — the beat produced no real story line
+        if not text or _FILLER_RE.match(text):
+            flags.append(_flag(
+                "filler_narration", ERROR,
+                f"narration is empty/filler ({text[:40]!r}) — the beat carries "
+                "no story; drop or re-roll the beat instead of voicing a "
+                "placeholder", segment_id=seg))
+
+        # 2. substituted/mismatched panel — none of the shown art belongs to
+        # this beat (its real panel was dropped and a stand-in put on screen)
+        intended = bfiles.get(gid) if gid is not None else None
+        if intended:
+            shown = {_base_scene(c.get("file")) for c in cuts if c.get("file")}
+            if shown and not (shown & intended):
+                held = any(c.get("held") for c in cuts)
+                flags.append(_flag(
+                    "panel_substituted", WARN if held else ERROR,
+                    f"shown {sorted(shown)} is NONE of this beat's panels "
+                    f"{sorted(intended)} — intended art dropped, "
+                    + ("held stand-in" if held else "silent swap"),
+                    segment_id=seg))
+
+    # 3. dropped system/title card — these are story beats, never droppable
+    for f, vit in (vitems or {}).items():
+        if _base_scene(f) not in shown_all and _is_title_card(
+                str(vit.get("ocr_clean") or ""), vit):
+            flags.append(_flag(
+                "system_card_dropped", ERROR,
+                f"title/system card {f} ({str(vit.get('ocr_clean') or '')[:30]!r}) "
+                "was dropped before render — it is a story beat and must show",
+                scene=str(f)))
+    return flags
+
+
 def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                audio_exists: Callable[[str], bool]) -> List[Dict[str, Any]]:
     flags: List[Dict[str, Any]] = []
@@ -857,10 +961,23 @@ def main() -> int:
         except Exception:
             return {}
 
+    # flat-frame fraction for the dropped-title-card detector — read the source
+    # scene only for short-caps candidates (skips the full-image sweep)
+    scenes_dir = os.path.join(ep, "scenes")
+    for f, vit in vitems.items():
+        ocr = str(vit.get("ocr_clean") or "")
+        if 1 <= len(ocr.split()) <= 10 and not vit.get("text_only"):
+            sp = os.path.join(scenes_dir, f)
+            im = cv2.imread(sp) if os.path.exists(sp) else None
+            if im is not None:
+                g = im.mean(axis=2)
+                vit["flat_frac"] = float(((g > 235) | (g < 25)).mean())
+
     flags.extend(alignment_flags(plan, _load_manifest("manifest.beats.json"),
                                  _load_manifest("manifest.groups.json"),
                                  _load_manifest("manifest.script.json")))
     flags.extend(montage_flags(plan))
+    flags.extend(story_flags(plan, _load_manifest("manifest.beats.json"), vitems))
 
     def _judge_caption_carried(caption: str, narration: str) -> bool:
         try:

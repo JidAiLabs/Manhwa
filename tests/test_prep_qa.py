@@ -557,6 +557,70 @@ def test_semantic_judge_considers_split_half_file2(monkeypatch, tmp_path):
     assert pq.semantic_alignment_flags(plan, str(tmp_path)) == []
 
 
+# ---- story-level QA: filler narration, substituted panels, dropped cards ----
+
+def _beats(items):
+    return {"beats": items}
+
+
+def test_story_flags_filler_and_empty_narration():
+    plan = {"timeline": [
+        _item("g0001_p00", ["p000001.jpg"], tts_text="A real opening line."),
+        _item("g0002_p01", ["p000002.jpg"], tts_text="The scene continues."),
+        _item("g0003_p02", ["p000003.jpg"], tts_text="   "),
+    ]}
+    beats = _beats([
+        {"group_id": 1, "narration": "A real opening line.", "scene_files": ["p000001.jpg"]},
+        {"group_id": 2, "narration": "", "scene_files": ["p000002.jpg"]},
+        {"group_id": 3, "narration": "", "scene_files": ["p000003.jpg"]},
+    ])
+    fl = pq.story_flags(plan, beats, {})
+    filler = [f for f in fl if f["code"] == "filler_narration"]
+    assert {f["segment_id"] for f in filler} == {"g0002_p01", "g0003_p02"}
+    assert all(f["severity"] == pq.ERROR for f in filler)
+
+
+def test_story_flags_substituted_panel_mismatch():
+    # g0061: beat's intended panel p000094 was dropped; a stand-in is shown.
+    plan = {"timeline": [
+        _item("g0061_p00", ["p000089.jpg"], tts_text="The reason she's special is because..."),
+        _item("g0062_p01", ["p000088.jpg"], tts_text="A faint aura, not human.", held=True),
+    ]}
+    # mark g0062's cut as held (stand-in)
+    plan["timeline"][1]["cuts"][0]["held"] = True
+    beats = _beats([
+        {"group_id": 61, "narration": "...", "scene_files": ["p000094.jpg"]},
+        {"group_id": 62, "narration": "...", "scene_files": ["p000095.jpg"]},
+    ])
+    fl = pq.story_flags(plan, beats, {})
+    sub = {f["segment_id"]: f["severity"] for f in fl if f["code"] == "panel_substituted"}
+    assert sub.get("g0061_p00") == pq.ERROR     # silent swap (not held)
+    assert sub.get("g0062_p01") == pq.WARN      # held stand-in is softer
+
+
+def test_story_flags_dropped_system_card():
+    plan = {"timeline": [_item("g0001_p00", ["p000005.jpg"], tts_text="ok")]}
+    vitems = {
+        # clean flat-frame title card → flagged
+        "p000113.jpg": {"ocr_clean": "SKY CORPORATION.", "text_only": False,
+                        "text_coverage": 0.09, "flat_frac": 0.88},
+        # all-caps SFX on textured art (low flat_frac) → NOT a card, not flagged
+        "p000099.jpg": {"ocr_clean": "ACK!!! KEUACK KKK!!!", "text_only": False,
+                        "text_coverage": 0.04, "flat_frac": 0.12},
+    }
+    fl = pq.story_flags(plan, _beats([]), vitems)
+    cards = [f for f in fl if f["code"] == "system_card_dropped"]
+    assert [f["scene"] for f in cards] == ["p000113.jpg"]   # only the real card
+    assert cards[0]["severity"] == pq.ERROR
+
+
+def test_story_flags_quiet_on_healthy_plan():
+    plan = {"timeline": [_item("g0001_p00", ["p000001.jpg"], tts_text="A good line.")]}
+    beats = _beats([{"group_id": 1, "narration": "A good line.",
+                     "scene_files": ["p000001.jpg"]}])
+    assert pq.story_flags(plan, beats, {}) == []
+
+
 # ---- montage degeneracy (user screenshot: 6 segments cycling 2 crops) -------
 
 def test_montage_flags_degenerate_loop():
