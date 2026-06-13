@@ -878,61 +878,53 @@ def substitute_garbage_sole_cuts(
     min_cov: float = 0.99,
     order: Optional[Sequence[str]] = None,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str, str]]]:
-    """Never ship hard garbage as a segment's only visual.
+    """A segment whose ONLY cut is hard garbage (chrome cover, husk, cross-seg
+    duplicate — score >= *min_cov*, not *exempt*) must never ship that garbage.
 
-    The never-empty rule keeps a segment's least-bad cut, which for sole-cut
-    segments means chrome covers / unrecoverable husks still reach the screen
-    (the IE elftoon cover cold-open). Such survivors (score >= *min_cov*,
-    not *exempt*) are replaced by the numerically nearest KEPT story scene,
-    holding for the segment's full duration. With *order* (timeline segment
-    ids), files shown in the immediately adjacent segments are avoided — the
-    substitute must not put the neighbor's panel on screen twice in a row."""
+    Rather than swapping in the numerically-nearest KEPT panel — which is
+    STORY-BLIND and put the WRONG art under the narration (IE Bai Xue: the
+    transfer-student line ran over an unrelated sports panel) — HOLD the nearest
+    GOOD panel, preferring the one just BEFORE it (story-adjacent), falling back
+    to the next good panel at the chapter head. A held image with the narration
+    running over it reads as deliberate coverage; QA's montage + semantic judge
+    already exempt holds. A garbage segment with no good panel anywhere keeps
+    its least-bad cut so the shot is never empty."""
     ex = exempt or set()
-    garbage = {seg: cuts[0] for seg, cuts in cuts_by_segment.items()
-               if len(cuts) == 1
-               and str(cuts[0].get("file")) not in ex
-               and coverage_by_file.get(str(cuts[0].get("file")), 0.0) >= min_cov}
+    seq = list(order) if order else list(cuts_by_segment.keys())
     out = {k: list(v) for k, v in cuts_by_segment.items()}
     subs: List[Tuple[str, str, str]] = []
-    pool = sorted({str(c.get("file")) for seg, cuts in cuts_by_segment.items()
-                   for c in cuts
-                   if seg not in garbage
-                   and coverage_by_file.get(str(c.get("file")), 0.0) < min_cov})
-    if not pool:
-        return out, subs
-    seg_pos = {s: i for i, s in enumerate(order)} if order else {}
-    files_by_seg = {seg: {str(c.get("file")) for c in cuts}
-                    for seg, cuts in cuts_by_segment.items()}
-    # global show-counts: a starved pool must SPREAD its panels, not loop
-    # the nearest one (IE ch1 tail showed the same two crops 3x each)
-    usage: Dict[str, int] = {}
-    for seg, cuts in cuts_by_segment.items():
-        if seg in garbage:
+
+    def _is_garbage(seg: str) -> bool:
+        cuts = cuts_by_segment.get(seg) or []
+        return (len(cuts) == 1
+                and str(cuts[0].get("file")) not in ex
+                and coverage_by_file.get(str(cuts[0].get("file")), 0.0) >= min_cov)
+
+    # nearest GOOD (non-garbage) shown panel in each direction, one scan each
+    prev_good: Dict[str, Optional[str]] = {}
+    g: Optional[str] = None
+    for seg in seq:
+        prev_good[seg] = g
+        if not _is_garbage(seg) and (cuts_by_segment.get(seg)):
+            g = str(cuts_by_segment[seg][-1].get("file"))
+    next_good: Dict[str, Optional[str]] = {}
+    g = None
+    for seg in reversed(seq):
+        next_good[seg] = g
+        if not _is_garbage(seg) and (cuts_by_segment.get(seg)):
+            g = str(cuts_by_segment[seg][-1].get("file"))
+
+    for seg in seq:
+        if not _is_garbage(seg):
             continue
-        for c in cuts:
-            f = str(c.get("file"))
-            usage[f] = usage.get(f, 0) + 1
-    # process in timeline order, refreshing the neighbor map after each
-    # assignment — two garbage neighbors must never receive the same panel
-    for seg in sorted(garbage, key=lambda s: seg_pos.get(s, 0)):
-        cut = garbage[seg]
-        old = str(cut.get("file"))
-        n = _scene_num(old)
-        avoid: set = set()
-        if order and seg in seg_pos:
-            i = seg_pos[seg]
-            for j in (i - 1, i + 1):
-                if 0 <= j < len(order):
-                    avoid |= files_by_seg.get(order[j], set())
-        cand = [f for f in pool if f not in avoid] or pool
-        best = min(cand, key=lambda f: (usage.get(f, 0),
-                                        abs(_scene_num(f) - n),
-                                        _scene_num(f) < n))
-        usage[best] = usage.get(best, 0) + 1
-        dur = round(float(durations.get(seg) or cut.get("dur") or 0.0), 4)
-        out[seg] = [{"file": best, "start": 0.0, "dur": dur}]
-        files_by_seg[seg] = {best}
-        subs.append((seg, old, best))
+        hold = prev_good.get(seg) or next_good.get(seg)
+        if hold is None:
+            continue                       # no good panel anywhere — least-bad stays
+        old = str(cuts_by_segment[seg][0].get("file"))
+        dur = round(float(durations.get(seg)
+                          or cuts_by_segment[seg][0].get("dur") or 0.0), 4)
+        out[seg] = [{"file": hold, "start": 0.0, "dur": dur, "held": True}]
+        subs.append((seg, old, hold))
     return out, subs
 
 
@@ -960,6 +952,9 @@ def cap_repeats_with_holds(
         cuts = list(cuts_by_segment.get(seg) or [])
         kept: List[Dict[str, Any]] = []
         for c in cuts:
+            if c.get("held"):
+                kept.append(c)     # already a substitute-hold — pass through
+                continue
             f = str(c.get("file"))
             # radius 3 matches QA's 4-segment degenerate window. The single
             # allocation invariant: NO panel — not even an exempt sys/doc card

@@ -596,10 +596,15 @@ def test_substitute_garbage_sole_cut_with_neighbor():
            "g0002_p01": [{"file": "p000003.jpg", "start": 0.0, "dur": 6.0}]}
     cov = {"p000000.jpg": 1.0, "p000003.jpg": 0.1}
     out, subs = rp.substitute_garbage_sole_cuts(
-        cbs, cov, durations={"g0001_p00": 8.0, "g0002_p01": 6.0})
-    assert out["g0001_p00"] == [{"file": "p000003.jpg", "start": 0.0, "dur": 8.0}]
+        cbs, cov, durations={"g0001_p00": 8.0, "g0002_p01": 6.0},
+        order=["g0001_p00", "g0002_p01"])
+    # garbage at the chapter head holds the NEXT good panel (story-adjacent),
+    # marked held so QA exempts it
+    assert out["g0001_p00"] == [{"file": "p000003.jpg", "start": 0.0,
+                                 "dur": 8.0, "held": True}]
     assert out["g0002_p01"] == cbs["g0002_p01"]
-    assert [(s[0], s[1]) for s in subs] == [("g0001_p00", "p000000.jpg")]
+    assert [(s[0], s[1], s[2]) for s in subs] == [
+        ("g0001_p00", "p000000.jpg", "p000003.jpg")]
 
 
 def test_speech_shaped_boxes_excludes_ui_rows():
@@ -732,38 +737,38 @@ def test_doc_like_mixed_panel_with_substantial_ui_text_is_document():
     assert rp.doc_like(0.25, 18, inwords[:16] + outwords[:2], [bubble]) is False
 
 
-def test_substitute_avoids_files_shown_in_adjacent_segments():
-    # IE p000008 case: the numerically nearest kept scene is the ADJACENT
-    # segment's sys curtain (p000007) — substituting it would put the same
-    # panel on screen twice in a row; pick the nearest NON-adjacent instead
+def test_substitute_holds_previous_good_panel():
+    # a garbage sole cut HOLDS the story-adjacent panel just before it, rather
+    # than swapping in a numerically-nearest unrelated one (IE Bai Xue): the
+    # narration runs over a held image, marked held so QA exempts it
     cbs = {"g1": [{"file": "p000007.jpg", "start": 0.0, "dur": 5.0}],
            "g2": [{"file": "p000008.jpg", "start": 0.0, "dur": 5.0}],
-           "g3": [{"file": "p000009.jpg", "start": 0.0, "dur": 5.0}],
-           "g4": [{"file": "p000012.jpg", "start": 0.0, "dur": 5.0}]}
-    cov = {"p000007.jpg": 0.0, "p000008.jpg": 1.0,
-           "p000009.jpg": 0.0, "p000012.jpg": 0.0}
+           "g3": [{"file": "p000009.jpg", "start": 0.0, "dur": 5.0}]}
+    cov = {"p000007.jpg": 0.0, "p000008.jpg": 1.0, "p000009.jpg": 0.0}
     out, subs = rp.substitute_garbage_sole_cuts(
-        cbs, cov, durations={k: 5.0 for k in cbs},
-        order=["g1", "g2", "g3", "g4"])
-    assert out["g2"][0]["file"] == "p000012.jpg"   # p7/p9 adjacent -> avoided
-    assert subs == [("g2", "p000008.jpg", "p000012.jpg")]
+        cbs, cov, durations={k: 5.0 for k in cbs}, order=["g1", "g2", "g3"])
+    assert out["g2"] == [{"file": "p000007.jpg", "start": 0.0,
+                          "dur": 5.0, "held": True}]   # holds the prior good panel
+    assert subs == [("g2", "p000008.jpg", "p000007.jpg")]
 
 
-def test_substitute_adjacent_garbage_segments_get_distinct_files():
-    # two garbage segments in a row must not both receive the same
-    # substitute (IE g0062/g0063 both got p000093 — identical neighbors)
-    cbs = {"g0": [{"file": "p000093.jpg", "start": 0.0, "dur": 4.0}],
-           "g1": [{"file": "p000050.jpg", "start": 0.0, "dur": 4.0}],
-           "g2": [{"file": "p000094.jpg", "start": 0.0, "dur": 4.0}],
-           "g3": [{"file": "p000095.jpg", "start": 0.0, "dur": 4.0}]}
+def test_substitute_garbage_run_holds_last_good():
+    # a RUN of garbage segments all hold the last good panel before them —
+    # a story-adjacent freeze beats a string of unrelated swaps (IE tail)
+    cbs = {"g0": [{"file": "p000093.jpg", "start": 0.0, "dur": 4.0}],   # good
+           "g1": [{"file": "p000050.jpg", "start": 0.0, "dur": 4.0}],   # good
+           "g2": [{"file": "p000094.jpg", "start": 0.0, "dur": 4.0}],   # garbage
+           "g3": [{"file": "p000095.jpg", "start": 0.0, "dur": 4.0}]}   # garbage
     cov = {"p000093.jpg": 0.0, "p000050.jpg": 0.0,
            "p000094.jpg": 1.0, "p000095.jpg": 1.0}
     out, subs = rp.substitute_garbage_sole_cuts(
         cbs, cov, durations={k: 4.0 for k in cbs},
         order=["g0", "g1", "g2", "g3"])
-    f2, f3 = out["g2"][0]["file"], out["g3"][0]["file"]
-    assert f2 != f3                                     # never twin neighbors
-    assert {f2, f3} <= {"p000093.jpg", "p000050.jpg"}
+    assert out["g2"][0] == {"file": "p000050.jpg", "start": 0.0,
+                            "dur": 4.0, "held": True}
+    assert out["g3"][0] == {"file": "p000050.jpg", "start": 0.0,
+                            "dur": 4.0, "held": True}
+    assert [s[0] for s in subs] == ["g2", "g3"]
 
 
 def test_substitute_skips_exempt_borderline_and_multicut():
@@ -782,33 +787,26 @@ def test_substitute_skips_exempt_borderline_and_multicut():
     assert out == cbs and subs == []
 
 
-def test_substitution_spreads_usage_across_starved_pool():
-    """IE ch1 tail regression: a 2-panel pool refilling 3 garbage segments
-    must SPREAD shows (A,B,A), never loop the nearest panel 3x."""
+def test_substitute_garbage_holds_not_wrong_swaps():
+    """IE ch1 tail: 3 garbage segments between two good panels hold the prior
+    good panel (story-adjacent) rather than swapping in unrelated art."""
     cuts = {
-        "g0001_p00": [{"file": "p000001.jpg", "start": 0.0, "dur": 4.0}],
-        "g0002_p00": [{"file": "p000090.jpg", "start": 0.0, "dur": 4.0}],
-        "g0003_p00": [{"file": "p000091.jpg", "start": 0.0, "dur": 4.0}],
-        "g0004_p00": [{"file": "p000092.jpg", "start": 0.0, "dur": 4.0}],
-        "g0005_p00": [{"file": "p000002.jpg", "start": 0.0, "dur": 4.0}],
+        "g0001_p00": [{"file": "p000001.jpg", "start": 0.0, "dur": 4.0}],   # good
+        "g0002_p00": [{"file": "p000090.jpg", "start": 0.0, "dur": 4.0}],   # garbage
+        "g0003_p00": [{"file": "p000091.jpg", "start": 0.0, "dur": 4.0}],   # garbage
+        "g0004_p00": [{"file": "p000092.jpg", "start": 0.0, "dur": 4.0}],   # garbage
+        "g0005_p00": [{"file": "p000002.jpg", "start": 0.0, "dur": 4.0}],   # good
     }
     cov = {"p000090.jpg": 1.0, "p000091.jpg": 1.0, "p000092.jpg": 1.0,
            "p000001.jpg": 0.0, "p000002.jpg": 0.0}
     order = list(cuts)
     out, subs = rp.substitute_garbage_sole_cuts(
         cuts, cov, durations={s: 4.0 for s in cuts}, order=order)
-    shown = {}
-    for seg in order:
-        for c in out[seg]:
-            shown[c["file"]] = shown.get(c["file"], 0) + 1
     assert len(subs) == 3
-    # pigeonhole: 3 refills over a 2-panel pool MUST reuse one panel — the
-    # contract is SPREAD (both panels used, no 3-in-a-row), and the QA
-    # montage flags escalate truly starved tails to a human.
-    assert {f for _, _, f in subs} == {"p000001.jpg", "p000002.jpg"}
-    seq = [sorted(c["file"] for c in out[s_]) for s_ in order]
-    for i in range(len(seq) - 2):
-        assert not (seq[i] == seq[i + 1] == seq[i + 2]), seq
+    # every garbage segment holds the prior good panel p000001 (held)
+    for seg in ("g0002_p00", "g0003_p00", "g0004_p00"):
+        assert out[seg][0]["file"] == "p000001.jpg"
+        assert out[seg][0]["held"] is True
 
 
 def test_cap_repeats_holds_previous_panel():
