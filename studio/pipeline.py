@@ -157,12 +157,7 @@ def _stage_scened(ep_dir: Path, cfg: Config) -> None:
 
 
 def _stage_visioned(ep_dir: Path, cfg: Config) -> None:
-    # Google Vision needs a service-account key. Prefer the repo's own key when
-    # present — it's canonical and overrides any stale GOOGLE_APPLICATION_CREDENTIALS
-    # left in the environment (e.g. an old path from before the repo moved).
-    keys = _REPO_ROOT / "keys" / "gcp-vision.json"
-    if keys.exists():
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
+    # OCR runs on-device via Apple Vision (free) — no Google credential needed.
     p = _ep_paths(ep_dir)
     _run_tool("vision_extract.py",
               ["--scenes-dir", str(p["scenes"]), "--glob", "*.jpg",

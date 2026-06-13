@@ -22,7 +22,6 @@ fsspec==2026.4.0
 gallery_dl==1.32.2
 google-api-core==2.31.0
 google-auth==2.53.0
-google-cloud-vision==3.14.0
 google-genai==2.8.0
 googleapis-common-protos==1.75.0
 grpcio==1.81.0

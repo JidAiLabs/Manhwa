@@ -2,7 +2,7 @@
 """
 vision_extract.py
 
-Extracts Google Cloud Vision signals per scene image and writes manifest.vision.json.
+Extracts vision signals (on-device Apple Vision) per scene image and writes manifest.vision.json.
 
 Adds:
 - ocr_clean (UI stripped)
@@ -25,7 +25,6 @@ import re
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Tuple
 
-from google.cloud import vision  # pip install google-cloud-vision
 from PIL import Image, ImageFile
 
 from ocr_chrome import strip_ui_chrome
@@ -376,9 +375,9 @@ def main() -> int:
     ap.add_argument("--scenes-dir", required=True, help="Directory containing scene_*.jpg")
     ap.add_argument("--glob", default="*.jpg")
     ap.add_argument("--out", default="manifest.vision.json")
-    ap.add_argument("--ocr-backend", choices=["google", "apple"], default="google",
-                    help="apple = on-device macOS Vision (free, $0; OCR matches "
-                         "Google at 97%% token-F1). google = Cloud Vision (paid).")
+    ap.add_argument("--ocr-backend", choices=["apple"], default="apple",
+                    help="on-device macOS Vision (free, $0). The Google Cloud "
+                         "Vision backend was removed; Apple is the only OCR.")
 
     ap.add_argument("--max-text-chars", type=int, default=1200)
     ap.add_argument("--max-labels", type=int, default=15)
@@ -409,16 +408,11 @@ def main() -> int:
     if not paths:
         raise SystemExit(f"No images found in {args.scenes_dir} with glob={args.glob}")
 
-    backend = args.ocr_backend
-    av = None
-    client = None
-    if backend == "apple":
-        import apple_vision as av  # on-device, free
-        if not av.available():
-            raise SystemExit("--ocr-backend apple: apple_vision unavailable "
-                             "(needs macOS + pyobjc Vision + ocrmac)")
-    else:
-        client = vision.ImageAnnotatorClient()
+    backend = args.ocr_backend  # always "apple" — Google backend removed
+    import apple_vision as av  # on-device macOS Vision (free), replaces Google
+    if not av.available():
+        raise SystemExit("vision_extract needs macOS Vision "
+                         "(pyobjc Vision + ocrmac)")
 
     def _coverage_from_boxes(boxes) -> float:
         return float(clamp01(sum(max(0.0, (b[2] - b[0])) * max(0.0, (b[3] - b[1]))
@@ -480,145 +474,6 @@ def main() -> int:
                                  "bbox": [0.0, 0.0, 1.0, 1.0]}],
                     "vision": {"error": repr(e), "backend": "apple"}})
             continue
-
-        try:
-            with Image.open(p) as im:
-                im.verify()
-            with Image.open(p) as im2:
-                w, h = im2.size
-
-            img_bytes = load_bytes(p)
-            image = vision.Image(content=img_bytes)
-
-            resp = client.annotate_image(
-                {
-                    "image": image,
-                    "features": [
-                        {"type_": vision.Feature.Type.TEXT_DETECTION},
-                        {"type_": vision.Feature.Type.LABEL_DETECTION, "max_results": cfg.max_labels},
-                        {"type_": vision.Feature.Type.OBJECT_LOCALIZATION, "max_results": cfg.max_objects},
-                        {"type_": vision.Feature.Type.FACE_DETECTION, "max_results": cfg.max_faces},
-                    ],
-                }
-            )
-
-            if resp.error and resp.error.message:
-                errors += 1
-                items.append(
-                    {
-                        "scene_id": scene_id,
-                        "scene_file": scene_file,
-                        "scene_path": os.path.abspath(p),
-                        "width": w,
-                        "height": h,
-                        "ocr_clean": "",
-                        "text_coverage": 0.0,
-                        "text_only": False,
-                        "keywords": [],
-                        "targets": [{"id": "wide", "type": "frame", "bbox": [0.0, 0.0, 1.0, 1.0]}],
-                        "vision": {"error": resp.error.message},
-                    }
-                )
-                continue
-
-            full_text = ""
-            if resp.text_annotations:
-                full_text = resp.text_annotations[0].description or ""
-            full_text = full_text.strip()
-            if len(full_text) > cfg.max_text_chars:
-                full_text = full_text[: cfg.max_text_chars] + "…"
-
-            labels = [{"desc": l.description, "score": float(l.score)} for l in (resp.label_annotations or [])]
-
-            objects_raw = list(resp.localized_object_annotations or [])
-            objects: List[Dict[str, Any]] = []
-            for o in objects_raw:
-                bb = rect_from_norm_vertices(
-                    getattr(o, "bounding_poly", None).normalized_vertices
-                    if getattr(o, "bounding_poly", None) else None
-                )
-                objects.append(
-                    {
-                        "name": o.name,
-                        "score": float(o.score),
-                        "bbox": [float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3])],
-                    }
-                )
-
-            faces: List[Dict[str, Any]] = []
-            for fa in list(resp.face_annotations or [])[: cfg.max_faces]:
-                bp = getattr(fa, "bounding_poly", None)
-                r_px = rect_from_vertices_px(getattr(bp, "vertices", None) if bp else None)
-                r_n = rect_px_to_norm(r_px, w, h)
-                faces.append(
-                    {
-                        "bbox": [float(r_n[0]), float(r_n[1]), float(r_n[2]), float(r_n[3])],
-                        "confidence": float(getattr(fa, "detection_confidence", 0.0) or 0.0),
-                    }
-                )
-
-            ocr_clean = clean_ocr_text(full_text, cfg)
-            text_cov = compute_text_coverage_from_text_annotations(resp, w, h)
-            keywords = keywords_from_text(ocr_clean, cfg)
-
-            label_names = [x["desc"] for x in labels]
-            object_names = [x["name"] for x in objects]
-
-            text_only = classify_text_only(ocr_clean, float(text_cov), label_names, object_names, cfg)
-
-            word_boxes = extract_word_boxes(resp, w, h)
-            text_blocks = merge_words_into_text_blocks(
-                word_boxes=word_boxes,
-                w=w,
-                h=h,
-                merge_y_px=cfg.text_block_merge_y_px,
-                max_blocks=cfg.max_text_blocks,
-            )
-
-            targets = make_targets(text_blocks=text_blocks, objects=objects, faces=faces)
-
-            # NEW: ocr_words
-            ocr_words = extract_ocr_words(resp, w, h, max_words=cfg.max_ocr_words)
-
-            items.append(
-                {
-                    "scene_id": scene_id,
-                    "scene_file": scene_file,
-                    "scene_path": os.path.abspath(p),
-                    "width": w,
-                    "height": h,
-                    "ocr_clean": ocr_clean,
-                    "text_coverage": round(float(text_cov), 4),
-                    "text_only": bool(text_only),
-                    "keywords": keywords,
-                    "targets": targets,
-                    "vision": {
-                        "text": full_text,
-                        "labels": labels,
-                        "objects": objects,
-                        "faces": faces,
-                        "text_blocks": [[round(x, 4) for x in b] for b in text_blocks],
-                        "ocr_words": ocr_words,
-                    },
-                }
-            )
-
-        except Exception as e:
-            errors += 1
-            items.append(
-                {
-                    "scene_id": scene_id,
-                    "scene_file": scene_file,
-                    "scene_path": os.path.abspath(p),
-                    "ocr_clean": "",
-                    "text_coverage": 0.0,
-                    "text_only": False,
-                    "keywords": [],
-                    "targets": [{"id": "wide", "type": "frame", "bbox": [0.0, 0.0, 1.0, 1.0]}],
-                    "vision": {"error": repr(e)},
-                }
-            )
-
     out_obj = {
         "scenes_dir": os.path.abspath(args.scenes_dir),
         "config": asdict(cfg),
