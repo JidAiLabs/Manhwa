@@ -1573,8 +1573,14 @@ def main() -> int:
     # junk (empty-bubble husks, flat glows, slivers) is DROPPED; the repeat
     # cap then refills/holds. The judge that asks what no geometry can:
     # "is this panel worth screen time?"
+    # For SPLIT panels, judge each written HALF (_a/_b): the original filename
+    # is never written to scenes_clean/, so judging by it skipped split panels
+    # entirely and let a junk gradient/husk half survive (g0026 p044_b).
+    judged: List[str] = []
+    for f in shown:
+        judged.extend(split_map.get(f, (f,)))
     junk = judge_cut_visuals(
-        [f for f in shown
+        [f for f in judged
          if not (scene_dims.get(f) or {}).get("sys")
          and not (scene_dims.get(f) or {}).get("doc")],
         clean_dir, exempt=exempt_all)
@@ -1587,11 +1593,22 @@ def main() -> int:
                     junk[str(f)] = "operator drop (dashboard)"
         except Exception:
             pass
+    def _cut_is_junk(f: str) -> bool:
+        # drop a cut when its file is junk (single panel or operator-dropped
+        # original), or when BOTH split halves are junk; a single junk half
+        # collapses the split to the survivor (handled in the split pass below)
+        if f in junk:
+            return True
+        if f in split_map:
+            a, b = split_map[f]
+            return a in junk and b in junk
+        return False
+
     if junk:
         for f, why in sorted(junk.items()):
             print(f"[ok] visual judge: DROPPING {f} — {why}")
         cuts_by_segment = {
-            seg: ([c for c in cs if str(c.get("file")) not in junk] or cs)
+            seg: ([c for c in cs if not _cut_is_junk(str(c.get("file")))] or cs)
             for seg, cs in cuts_by_segment.items()}
 
     # repeat cap + holds (also covers segments emptied by the judge — their
@@ -1602,12 +1619,24 @@ def main() -> int:
     for seg, f in holds:
         print(f"[ok] {seg}: repeat cap -> HOLDING previous panel {f}")
 
-    # split scenes render as side-by-side pairs
+    # split scenes render side-by-side — but if the judge killed ONE half,
+    # collapse to the surviving half (drops the junk gradient/husk half, e.g.
+    # g0026 p044_b) instead of rendering a broken split
     for cs in cuts_by_segment.values():
         for c in cs:
             f = str(c.get("file"))
-            if f in split_map:
-                c["file"], c["file2"] = split_map[f]
+            if f not in split_map:
+                continue
+            a, b = split_map[f]
+            a_junk, b_junk = a in junk, b in junk
+            if a_junk and not b_junk:
+                c["file"] = b
+                c.pop("file2", None); c.pop("layout", None)
+            elif b_junk and not a_junk:
+                c["file"] = a
+                c.pop("file2", None); c.pop("layout", None)
+            else:
+                c["file"], c["file2"] = a, b
                 c["layout"] = "split2"
 
     out_plan = rewrite_plan(plan, scenes_subdir="scenes_clean",
