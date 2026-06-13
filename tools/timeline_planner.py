@@ -626,6 +626,10 @@ def protected_card_files(vision_path: str, scene_dirs: List[str]) -> "set":
             items = json.load(fh).get("items") or []
     except Exception:
         return out
+    # the pipeline doesn't pass the scene dirs to the planner — fall back to the
+    # sibling scenes/ next to the vision manifest so the flat-frame test can run
+    dirs = [d for d in (scene_dirs or []) if d]
+    dirs.append(os.path.join(os.path.dirname(os.path.abspath(vision_path)), "scenes"))
     import re as _re
     import cv2  # lazy — keeps timeline_planner importable without the CV stack
     for it in items:
@@ -644,9 +648,9 @@ def protected_card_files(vision_path: str, scene_dirs: List[str]) -> "set":
         if float(it.get("text_coverage") or 0.0) >= 0.20:
             continue
         img = None
-        for d in scene_dirs:
-            p = os.path.join(d, f) if d else ""
-            if p and os.path.exists(p):
+        for d in dirs:
+            p = os.path.join(d, f)
+            if os.path.exists(p):
                 img = cv2.imread(p)
                 break
         if img is None:
