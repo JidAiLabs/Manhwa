@@ -472,6 +472,73 @@ def test_semantic_judge_skips_without_ollama(monkeypatch):
     assert fl[0]["severity"] == pq.INFO
 
 
+def _by_image(verdicts):
+    """Mock ollama.chat returning a per-image verdict keyed on the basename of
+    the image it was handed: {filename: (match_bool, confidence)}."""
+    import os
+    import json as _json
+
+    def chat(**kw):
+        img = os.path.basename(str(kw["messages"][0]["images"][0]))
+        match, conf = verdicts.get(img, (True, 95))
+        return {"message": {"content": _json.dumps(
+            {"match": match, "confidence": conf, "reason": f"{img}"})}}
+    return chat
+
+
+def test_semantic_judge_group_aware_passes_when_any_cut_matches(monkeypatch,
+                                                                tmp_path):
+    """The montage, not the primary panel, is what the viewer sees. A
+    multi_cut segment whose PRIMARY mismatches but whose later cut matches the
+    narration must NOT be flagged — the narration belongs to the group."""
+    import sys
+    import types
+    fake = types.ModuleType("ollama")
+    fake.chat = _by_image({"landscape.jpg": (False, 90),   # peaceful, no blood
+                           "prince.jpg": (True, 90)})       # bloodied prince
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    for f in ("landscape.jpg", "prince.jpg"):
+        (tmp_path / f).write_bytes(b"jpg")
+    plan = {"timeline": [_seg("g0001_p00",
+                              "Prince Cheon flees, covered in blood.",
+                              ["landscape.jpg", "prince.jpg"])]}
+    assert pq.semantic_alignment_flags(plan, str(tmp_path)) == []
+
+
+def test_semantic_judge_flags_only_when_no_cut_matches(monkeypatch, tmp_path):
+    """If the narration fits NONE of the panels actually shown, it is still a
+    real mismatch — flag once, citing the most confidently-rejected panel."""
+    import sys
+    import types
+    fake = types.ModuleType("ollama")
+    fake.chat = _by_image({"a.jpg": (False, 70),
+                           "b.jpg": (False, 88)})
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    for f in ("a.jpg", "b.jpg"):
+        (tmp_path / f).write_bytes(b"jpg")
+    plan = {"timeline": [_seg("g0001_p00", "a dragon roars", ["a.jpg", "b.jpg"])]}
+    fl = pq.semantic_alignment_flags(plan, str(tmp_path))
+    assert [f["code"] for f in fl] == ["narration_mismatch"]
+    assert fl[0]["scene"] == "b.jpg"   # highest-confidence rejection cited
+
+
+def test_semantic_judge_considers_split_half_file2(monkeypatch, tmp_path):
+    """split2 cuts render file + file2 side-by-side; both are on screen and
+    must be candidate matches for the narration."""
+    import sys
+    import types
+    fake = types.ModuleType("ollama")
+    fake.chat = _by_image({"left.jpg": (False, 90),
+                           "right.jpg": (True, 90)})
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    for f in ("left.jpg", "right.jpg"):
+        (tmp_path / f).write_bytes(b"jpg")
+    plan = {"timeline": [{"segment_id": "g0001_p00", "tts_text": "the reveal",
+                          "cuts": [{"file": "left.jpg", "file2": "right.jpg",
+                                    "layout": "split2", "duration_sec": 4.0}]}]}
+    assert pq.semantic_alignment_flags(plan, str(tmp_path)) == []
+
+
 # ---- montage degeneracy (user screenshot: 6 segments cycling 2 crops) -------
 
 def test_montage_flags_degenerate_loop():

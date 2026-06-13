@@ -525,6 +525,19 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
     except ImportError:
         return [_flag("semantic_skipped", INFO,
                       "ollama not importable — semantic judge skipped")]
+    from ollama_compat import chat as _ollama_chat
+
+    def _judge(path: str, text: str) -> Optional[Dict[str, Any]]:
+        resp = _ollama_chat(
+            model=model, think=False,
+            messages=[{"role": "user",
+                       "content": _SEM_PROMPT.format(text=text[:400]),
+                       "images": [path]}],
+            options={"temperature": 0, "num_predict": 200})
+        raw = str(resp["message"]["content"] or "")
+        m = re.search(r"\{.*\}", raw, re.S)
+        return json.loads(m.group(0)) if m else {}
+
     flags: List[Dict[str, Any]] = []
     for item in (plan or {}).get("timeline") or []:
         if item.get("branding"):
@@ -534,31 +547,42 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
         cuts = item.get("cuts") or []
         if not text or not cuts:
             continue
-        f0 = str(cuts[0].get("file") or "")
-        path = os.path.join(clean_dir, f0)
-        if not os.path.exists(path):
+        # the viewer sees the whole MONTAGE, not just the primary panel — the
+        # narration belongs to the segment if it fits ANY panel actually shown
+        # (every cut's file + its split2 file2). Judging primary-only is the
+        # group-blindness bug: a multi_cut beat narrating cut #2 was wrongly
+        # flagged against cut #1. Early-exit on the first plausible match keeps
+        # single-cut segments at one judge call.
+        files: List[str] = []
+        for c in cuts:
+            for f in (c.get("file"), c.get("file2")):
+                f = str(f or "")
+                if f and f not in files and os.path.exists(
+                        os.path.join(clean_dir, f)):
+                    files.append(f)
+        if not files:
             continue
-        try:
-            from ollama_compat import chat as _ollama_chat
-            resp = _ollama_chat(
-                model=model, think=False,
-                messages=[{"role": "user",
-                           "content": _SEM_PROMPT.format(text=text[:400]),
-                           "images": [path]}],
-                options={"temperature": 0, "num_predict": 200})
-            raw = str(resp["message"]["content"] or "")
-            m = re.search(r"\{.*\}", raw, re.S)
-            v = json.loads(m.group(0)) if m else {}
-        except Exception as e:                          # noqa: BLE001
-            flags.append(_flag("semantic_error", INFO,
-                               f"judge failed: {e}", segment_id=seg))
-            continue
-        if (v.get("match") is False
-                and int(v.get("confidence") or 0) >= min_confidence):
+        rejected: List[Tuple[str, int, str]] = []
+        matched = False
+        for f in files:
+            try:
+                v = _judge(os.path.join(clean_dir, f), text)
+            except Exception as e:                      # noqa: BLE001
+                flags.append(_flag("semantic_error", INFO,
+                                   f"judge failed on {f}: {e}",
+                                   segment_id=seg))
+                continue
+            conf = int(v.get("confidence") or 0)
+            if not (v.get("match") is False and conf >= min_confidence):
+                matched = True          # plausible match (or judge unsure)
+                break
+            rejected.append((f, conf, str(v.get("reason") or "")))
+        if not matched and rejected:
+            f, _conf, reason = max(rejected, key=lambda r: r[1])
             flags.append(_flag(
                 "narration_mismatch", WARN,
-                f"judge: {str(v.get('reason') or '')[:160]}",
-                scene=f0, segment_id=seg))
+                f"judge: {reason[:160]}",
+                scene=f, segment_id=seg))
     return flags
 
 
