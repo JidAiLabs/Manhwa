@@ -26,6 +26,8 @@ script_model = "gpt-5-nano"
 # "full" | "light" | "off". Grounded line survives as narration_plain;
 # caption-bearing groups reject rewrites that drop the caption words.
 punchup = "full"
+# OCR/visioned stage: "apple" = on-device macOS Vision (FREE, 97%% F1 vs Google) | "google" (paid)
+vision_backend = "apple"
 
 [tts]
 # voiced backend: "qwen" (local MPS, LOCKED narrator clone — production) |

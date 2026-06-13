@@ -165,7 +165,9 @@ def _stage_visioned(ep_dir: Path, cfg: Config) -> None:
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
     p = _ep_paths(ep_dir)
     _run_tool("vision_extract.py",
-              ["--scenes-dir", str(p["scenes"]), "--glob", "*.jpg", "--out", str(p["vision"])])
+              ["--scenes-dir", str(p["scenes"]), "--glob", "*.jpg",
+               "--out", str(p["vision"]),
+               "--ocr-backend", cfg.vision_backend])
 
 
 def _stage_grouped(ep_dir: Path, cfg: Config) -> None:

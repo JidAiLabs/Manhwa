@@ -31,6 +31,10 @@ class Config:
                                              # "full" | "light" | "off"
                                              # (grounded line kept as
                                              # narration_plain; captions protected)
+    vision_backend: str = "apple"           # OCR/visioned stage: "apple"
+                                             # (on-device macOS Vision, FREE $0,
+                                             # 97% token-F1 vs Google) | "google"
+                                             # (Cloud Vision, paid per panel)
 
 def load_creds_env(path: Path | None = None) -> None:
     """Load KEY=VALUE lines from keys/creds.env into os.environ.
@@ -79,4 +83,5 @@ def load(path: Path | None = None) -> Config:
         narration_source=m.get("narration_source", "gemini_verbatim"),
         punchup=(os.environ.get("STUDIO_PUNCHUP")
                  or m.get("punchup", "full")),
+        vision_backend=m.get("vision_backend", "apple"),
     )
