@@ -840,14 +840,50 @@ def test_cap_repeats_holds_previous_panel():
 
 
 def test_cap_repeats_exempts_sys_panels():
+    """Consecutive identical system cards keep the card ON SCREEN every segment
+    (exemption bypasses the global cap), but in-window recurrence renders as a
+    HOLD — the single allocation invariant: no panel, not even sys/doc, is
+    re-emitted as a fresh cut inside the degenerate window."""
     cuts = {f"g{i}": [{"file": "sys.jpg", "start": 0.0, "dur": 3.0}]
             for i in range(1, 5)}
     order = sorted(cuts)
     out, holds = rp.cap_repeats_with_holds(
         cuts, durations={s: 3.0 for s in order}, order=order,
         exempt={"sys.jpg"})
-    assert holds == []
-    assert all(out[s][0]["file"] == "sys.jpg" for s in order)
+    assert all(out[s][0]["file"] == "sys.jpg" for s in order)  # card always shown
+    assert [s for s, _ in holds] == ["g2", "g3", "g4"]         # recurrence held
+
+
+def test_cap_repeats_holds_exempt_panel_on_nearby_repeat():
+    """The IE ABA-dup fix. A sys/doc-exempt panel must NOT visibly repeat inside
+    the radius-3 window; it holds the previous panel instead. Exemption only
+    relaxes the GLOBAL cap (far-apart recurrence), never the in-window hold."""
+    cuts = {
+        "g1": [{"file": "art1.jpg", "start": 0.0, "dur": 4.0}],
+        "g2": [{"file": "doc.jpg", "start": 0.0, "dur": 4.0}],   # exempt, 1st show
+        "g3": [{"file": "art2.jpg", "start": 0.0, "dur": 4.0}],
+        "g4": [{"file": "doc.jpg", "start": 0.0, "dur": 4.0}],   # exempt, repeats in-window
+    }
+    order = ["g1", "g2", "g3", "g4"]
+    out, holds = rp.cap_repeats_with_holds(
+        cuts, durations={s: 4.0 for s in order}, order=order, exempt={"doc.jpg"})
+    assert out["g2"][0]["file"] == "doc.jpg" and not out["g2"][0].get("held")
+    assert out["g4"][0]["held"] and out["g4"][0]["file"] == "art2.jpg"
+    assert ("g4", "art2.jpg") in holds
+
+
+def test_cap_repeats_exempt_recurs_far_apart():
+    """A true system card MAY reappear far apart (outside the radius-3 window) —
+    exemption bypasses the global cap so both showings are fresh, not held."""
+    order = [f"g{i}" for i in range(1, 7)]
+    cuts = {s: [{"file": f"art{i}.jpg", "start": 0.0, "dur": 4.0}]
+            for i, s in enumerate(order)}
+    cuts["g1"] = [{"file": "sys.jpg", "start": 0.0, "dur": 4.0}]
+    cuts["g6"] = [{"file": "sys.jpg", "start": 0.0, "dur": 4.0}]   # 5 later, far apart
+    out, holds = rp.cap_repeats_with_holds(
+        cuts, durations={s: 4.0 for s in order}, order=order, exempt={"sys.jpg"})
+    assert out["g1"][0]["file"] == "sys.jpg" and not out["g1"][0].get("held")
+    assert out["g6"][0]["file"] == "sys.jpg" and not out["g6"][0].get("held")
 
 
 def test_judge_cut_visuals_drops_junk_keeps_good(tmp_path, monkeypatch):

@@ -961,10 +961,15 @@ def cap_repeats_with_holds(
         kept: List[Dict[str, Any]] = []
         for c in cuts:
             f = str(c.get("file"))
-            # radius 3 matches QA's 4-segment degenerate window — a repeat
-            # inside it holds instead, so starved windows self-cover
+            # radius 3 matches QA's 4-segment degenerate window. The single
+            # allocation invariant: NO panel — not even an exempt sys/doc card
+            # — is re-emitted as a fresh cut inside the window; it HOLDS the
+            # previous panel instead (kills the IE ABA-dups, which were all
+            # sys/doc panels reappearing 2 segments apart). Exemption relaxes
+            # only the GLOBAL cap, so a true system card may still recur far
+            # apart (outside the window).
             near = f in last_idx and (i - last_idx[f]) <= 3
-            if f in ex or (counts.get(f, 0) < cap and not near):
+            if not near and (f in ex or counts.get(f, 0) < cap):
                 kept.append(c)
                 counts[f] = counts.get(f, 0) + 1
                 last_idx[f] = i
