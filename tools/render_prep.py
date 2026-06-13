@@ -147,6 +147,9 @@ def drop_cross_segment_duplicate_cuts(
     get_img,
     *,
     thresh: float = 0.86,
+    coverage_by_file: Optional[Dict[str, float]] = None,
+    exempt: Optional[set] = None,
+    min_cov: float = 0.99,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]]]:
     """Consecutive SHOWN cuts must differ — across segment boundaries too.
 
@@ -154,7 +157,23 @@ def drop_cross_segment_duplicate_cuts(
     so eye-closeup/keyboard/foot-zoom pairs reached the screen back-to-back.
     Duplicates in multi-cut segments are dropped (time redistributed);
     sole-cut duplicates are only REPORTED — the caller forces them through
-    garbage substitution instead of emptying the segment."""
+    garbage substitution instead of emptying the segment.
+
+    A near-blank caption/system box (coverage >= *min_cov*, not *exempt*)
+    carries NO unique art: after bubble-inpainting it collapses to a generic
+    blank rectangle that template-matches every other panel's caption region.
+    Letting one stand as a comparison reference made REAL art panels look like
+    duplicates of blank space (IE ch1: the transfer-student reveal p93 was
+    killed because it embeds a caption box like its blank neighbour p92). So
+    such panels are skipped entirely here — neither flagged nor used as the
+    `prev_file` reference; the garbage-substitution pass handles them. This is
+    art-style agnostic: it keys on coverage geometry, never on pixels."""
+    cov = coverage_by_file or {}
+    ex = exempt or set()
+
+    def _blank_ref(f: str) -> bool:
+        return bool(cov) and f not in ex and cov.get(f, 0.0) >= min_cov
+
     out = {k: list(v) for k, v in cuts_by_segment.items()}
     dropped: List[Tuple[str, str]] = []
     prev_file: Optional[str] = None
@@ -163,6 +182,9 @@ def drop_cross_segment_duplicate_cuts(
         cuts = out.get(seg) or []
         for c in cuts:
             f = str(c.get("file"))
+            if _blank_ref(f):
+                kept.append(c)        # caption/blank: never a visual dup or
+                continue              # a reference — leave prev_file intact
             dup = False
             if prev_file and prev_file != f:
                 ia, ib = get_img(prev_file), get_img(f)
@@ -914,15 +936,46 @@ def substitute_garbage_sole_cuts(
         if not _is_garbage(seg) and (cuts_by_segment.get(seg)):
             g = str(cuts_by_segment[seg][-1].get("file"))
 
+    # A stretch of narration-only caption boxes must not freeze on one panel
+    # (IE ch1: p93 held 4x/33s). Cover each caption by HOLDING a story-adjacent
+    # real scene, cycling so no on-screen image (held or real) repeats more than
+    # twice in a row. The candidate pool is the upcoming scene (forward bridge)
+    # plus the recent scenes (newest first) — so a mid-chapter run alternates
+    # before/after while an END-of-chapter cliffhanger run (no scene after)
+    # replays recent scenes. Agnostic: keys on coverage geometry, not pixels.
+    prev_shown: Optional[str] = None       # last file actually put on screen
+    run_len = 0                            # consecutive count of prev_shown
+    recent: List[str] = []                 # recent distinct real panels, oldest→newest
     for seg in seq:
+        cuts = cuts_by_segment.get(seg) or []
         if not _is_garbage(seg):
+            if cuts:
+                f = str(cuts[-1].get("file"))
+                run_len = run_len + 1 if f == prev_shown else 1
+                prev_shown = f
+                if f in recent:
+                    recent.remove(f)
+                recent.append(f)
+                del recent[:-3]
             continue
-        hold = prev_good.get(seg) or next_good.get(seg)
-        if hold is None:
-            continue                       # no good panel anywhere — least-bad stays
-        old = str(cuts_by_segment[seg][0].get("file"))
+        # preference: the scene being narrated (prev good), then the upcoming
+        # scene, then recent scenes newest-first — all story-adjacent.
+        prefs: List[str] = []
+        for p in (prev_good.get(seg), next_good.get(seg), *reversed(recent)):
+            if p and p not in prefs:
+                prefs.append(p)
+        if not prefs:
+            continue                       # no good panel anywhere — keep cut
+        top = prefs[0]
+        if top != prev_shown or run_len < 2:
+            hold = top                     # coherent: stay on the narrated scene
+        else:                              # would freeze (>2 in a row) — cycle
+            hold = next((p for p in prefs if p != prev_shown), top)
+        run_len = run_len + 1 if hold == prev_shown else 1
+        prev_shown = hold
+        old = str(cuts[0].get("file"))
         dur = round(float(durations.get(seg)
-                          or cuts_by_segment[seg][0].get("dur") or 0.0), 4)
+                          or cuts[0].get("dur") or 0.0), 4)
         out[seg] = [{"file": hold, "start": 0.0, "dur": dur, "held": True}]
         subs.append((seg, old, hold))
     return out, subs
@@ -1483,7 +1536,8 @@ def main() -> int:
 
     for _round in range(3):
         cuts_by_segment, xdropped = drop_cross_segment_duplicate_cuts(
-            cuts_by_segment, order, _trimmed_clean, thresh=0.84)
+            cuts_by_segment, order, _trimmed_clean, thresh=0.84,
+            coverage_by_file=cov_all, exempt=exempt_all)
         for seg, f in xdropped:
             sole = (len(cuts_by_segment[seg]) == 1
                     and str(cuts_by_segment[seg][0]["file"]) == f)

@@ -607,6 +607,55 @@ def test_substitute_garbage_sole_cut_with_neighbor():
         ("g0001_p00", "p000000.jpg", "p000003.jpg")]
 
 
+def test_caption_run_alternates_holds_to_avoid_freeze():
+    # A run of narration-only caption boxes between scene A and scene D must
+    # not all freeze on A (IE ch1: 3 captions held p93 -> 4-in-a-row, 33s).
+    # Alternate the held image between the scene BEFORE and the scene AFTER so
+    # no on-screen image holds more than twice consecutively. Manhwa-agnostic.
+    from itertools import groupby
+    cbs = {
+        "s0": [{"file": "A.jpg", "start": 0.0, "dur": 5.0}],     # real scene A
+        "c1": [{"file": "cap1.jpg", "start": 0.0, "dur": 5.0}],  # caption (garbage)
+        "c2": [{"file": "cap2.jpg", "start": 0.0, "dur": 5.0}],
+        "c3": [{"file": "cap3.jpg", "start": 0.0, "dur": 5.0}],
+        "s4": [{"file": "D.jpg", "start": 0.0, "dur": 5.0}],     # real scene D
+    }
+    cov = {"A.jpg": 0.1, "cap1.jpg": 1.0, "cap2.jpg": 1.0,
+           "cap3.jpg": 1.0, "D.jpg": 0.1}
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cbs, cov, durations={k: 5.0 for k in cbs},
+        order=["s0", "c1", "c2", "c3", "s4"])
+    shown = [out[s][0]["file"] for s in ("s0", "c1", "c2", "c3", "s4")]
+    runs = [len(list(grp)) for _, grp in groupby(shown)]
+    assert max(runs) <= 2, shown                       # no freeze
+    for c in ("c1", "c2", "c3"):                        # captions hold real art
+        assert out[c][0]["file"] in ("A.jpg", "D.jpg")
+        assert out[c][0]["held"] is True
+
+
+def test_caption_run_at_chapter_end_cycles_recent_scenes():
+    # Cliffhanger: the chapter ENDS on a run of narration-only caption boxes
+    # with NO scene after (IE ch1 p94/p95/p96). With no forward scene to bridge
+    # to, cycle the recent real scenes instead of freezing on the last one.
+    from itertools import groupby
+    cbs = {
+        "s0": [{"file": "A.jpg", "start": 0.0, "dur": 5.0}],     # real
+        "s1": [{"file": "B.jpg", "start": 0.0, "dur": 5.0}],     # real
+        "c1": [{"file": "cap1.jpg", "start": 0.0, "dur": 5.0}],  # caption (garbage)
+        "c2": [{"file": "cap2.jpg", "start": 0.0, "dur": 5.0}],
+        "c3": [{"file": "cap3.jpg", "start": 0.0, "dur": 5.0}],
+    }
+    cov = {"A.jpg": 0.1, "B.jpg": 0.1, "cap1.jpg": 1.0,
+           "cap2.jpg": 1.0, "cap3.jpg": 1.0}
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cbs, cov, durations={k: 5.0 for k in cbs}, order=list(cbs))
+    shown = [out[s][0]["file"] for s in cbs]
+    assert max(len(list(g)) for _, g in groupby(shown)) <= 2, shown
+    for c in ("c1", "c2", "c3"):
+        assert out[c][0]["file"] in ("A.jpg", "B.jpg")     # recent real scenes
+        assert out[c][0]["held"] is True
+
+
 def test_speech_shaped_boxes_excludes_ui_rows():
     # the ORV app screen: the detector boxes its full-width list ROWS as
     # "bubbles" — only oval-ish, sub-full-width boxes are speech bubbles
@@ -710,6 +759,32 @@ def test_cross_segment_duplicate_sole_cut_marked_not_emptied():
     assert dropped == [("g2", "b.jpg")]
 
 
+def test_caption_box_is_not_a_dedup_reference():
+    # A real-art panel must NOT be dropped just because it embeds a generic
+    # caption/blank box that the (garbage) PREVIOUS panel also was. After
+    # bubble-inpainting every caption box collapses to a near-blank rectangle,
+    # so a caption panel "contains" any other panel's caption region — that is
+    # shared BLANK SPACE, not shared art, and must never drive visual dedup.
+    # Manhwa-agnostic: keys only on coverage (geometry), not on any art style.
+    art_a = _stamp(np.full((600, 400, 3), 200, np.uint8), 7)     # unique art
+    caption = np.full((150, 360, 3), 255, np.uint8)              # blank box
+    cv2.putText(caption, "NARRATION", (15, 95),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 4)
+    art_b = _stamp(np.full((600, 400, 3), 200, np.uint8), 13)    # different art
+    art_b[40:190, 20:380] = caption                             # …that embeds a caption
+    cbs = {"g1": [{"file": "A.jpg", "start": 0.0, "dur": 4.0}],
+           "g2": [{"file": "C.jpg", "start": 0.0, "dur": 4.0}],  # caption = garbage
+           "g3": [{"file": "B.jpg", "start": 0.0, "dur": 4.0}]}  # real art w/ caption
+    imgs = {"A.jpg": art_a, "C.jpg": caption, "B.jpg": art_b}
+    cov = {"A.jpg": 0.1, "C.jpg": 1.0, "B.jpg": 0.2}             # only C is garbage
+    out, dropped = rp.drop_cross_segment_duplicate_cuts(
+        cbs, ["g1", "g2", "g3"], lambda f: imgs.get(f),
+        coverage_by_file=cov, exempt=set())
+    # the caption box must not be used as a reference, so B survives
+    assert ("g3", "B.jpg") not in dropped
+    assert out["g3"] == cbs["g3"]
+
+
 def test_doc_like_separates_documents_from_dialogue():
     # app/stats screen: many words, few inside any bubble -> DOCUMENT
     words = [(10 * i, 10, 10 * i + 8, 18) for i in range(30)]
@@ -753,8 +828,9 @@ def test_substitute_holds_previous_good_panel():
 
 
 def test_substitute_garbage_run_holds_last_good():
-    # a RUN of garbage segments all hold the last good panel before them —
-    # a story-adjacent freeze beats a string of unrelated swaps (IE tail)
+    # a RUN of garbage segments holds story-adjacent scenes, staying on the
+    # last good panel until it would freeze (>2 in a row), then cycling to the
+    # previous recent scene rather than freezing (IE tail). All held.
     cbs = {"g0": [{"file": "p000093.jpg", "start": 0.0, "dur": 4.0}],   # good
            "g1": [{"file": "p000050.jpg", "start": 0.0, "dur": 4.0}],   # good
            "g2": [{"file": "p000094.jpg", "start": 0.0, "dur": 4.0}],   # garbage
@@ -764,9 +840,11 @@ def test_substitute_garbage_run_holds_last_good():
     out, subs = rp.substitute_garbage_sole_cuts(
         cbs, cov, durations={k: 4.0 for k in cbs},
         order=["g0", "g1", "g2", "g3"])
+    # g2 stays on the just-narrated scene p050 (real p050 + 1 hold = 2 frames)
     assert out["g2"][0] == {"file": "p000050.jpg", "start": 0.0,
                             "dur": 4.0, "held": True}
-    assert out["g3"][0] == {"file": "p000050.jpg", "start": 0.0,
+    # g3 would make p050 freeze 3-in-a-row -> cycles to the prior recent scene
+    assert out["g3"][0] == {"file": "p000093.jpg", "start": 0.0,
                             "dur": 4.0, "held": True}
     assert [s[0] for s in subs] == ["g2", "g3"]
 
@@ -788,8 +866,11 @@ def test_substitute_skips_exempt_borderline_and_multicut():
 
 
 def test_substitute_garbage_holds_not_wrong_swaps():
-    """IE ch1 tail: 3 garbage segments between two good panels hold the prior
-    good panel (story-adjacent) rather than swapping in unrelated art."""
+    """IE ch1 tail: a run of garbage segments between two good panels holds
+    only STORY-ADJACENT art — the scene just before or just after the run —
+    never numerically-nearest/unrelated art, and never freezes on one image
+    for more than two consecutive frames (the run alternates before/after)."""
+    from itertools import groupby
     cuts = {
         "g0001_p00": [{"file": "p000001.jpg", "start": 0.0, "dur": 4.0}],   # good
         "g0002_p00": [{"file": "p000090.jpg", "start": 0.0, "dur": 4.0}],   # garbage
@@ -803,10 +884,13 @@ def test_substitute_garbage_holds_not_wrong_swaps():
     out, subs = rp.substitute_garbage_sole_cuts(
         cuts, cov, durations={s: 4.0 for s in cuts}, order=order)
     assert len(subs) == 3
-    # every garbage segment holds the prior good panel p000001 (held)
+    # holds are only the two adjacent good panels (never unrelated art), held
     for seg in ("g0002_p00", "g0003_p00", "g0004_p00"):
-        assert out[seg][0]["file"] == "p000001.jpg"
+        assert out[seg][0]["file"] in ("p000001.jpg", "p000002.jpg")
         assert out[seg][0]["held"] is True
+    # and the stretch never freezes: no image runs more than twice in a row
+    shown = [out[s][0]["file"] for s in order]
+    assert max(len(list(g)) for _, g in groupby(shown)) <= 2, shown
 
 
 def test_cap_repeats_holds_previous_panel():
