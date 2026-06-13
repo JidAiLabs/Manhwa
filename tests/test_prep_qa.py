@@ -522,6 +522,24 @@ def test_semantic_judge_flags_only_when_no_cut_matches(monkeypatch, tmp_path):
     assert fl[0]["scene"] == "b.jpg"   # highest-confidence rejection cited
 
 
+def test_semantic_judge_skips_held_cuts(monkeypatch, tmp_path):
+    """A held cut intentionally shows the PREVIOUS segment's panel while new
+    narration plays — it is editorial coverage, not a narration match, so the
+    judge must skip it (consistent with montage_flags). A segment whose only
+    cut is held produces no narration_mismatch even when the judge would
+    reject the held image."""
+    import sys
+    import types
+    fake = types.ModuleType("ollama")
+    fake.chat = _by_image({"prev.jpg": (False, 95)})   # held panel, mismatches
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    (tmp_path / "prev.jpg").write_bytes(b"jpg")
+    plan = {"timeline": [{"segment_id": "g0002_p01", "tts_text": "new beat",
+                          "cuts": [{"file": "prev.jpg", "held": True,
+                                    "duration_sec": 4.0}]}]}
+    assert pq.semantic_alignment_flags(plan, str(tmp_path)) == []
+
+
 def test_semantic_judge_considers_split_half_file2(monkeypatch, tmp_path):
     """split2 cuts render file + file2 side-by-side; both are on screen and
     must be candidate matches for the narration."""

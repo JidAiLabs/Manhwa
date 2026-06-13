@@ -555,6 +555,8 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
         # single-cut segments at one judge call.
         files: List[str] = []
         for c in cuts:
+            if c.get("held"):
+                continue        # held = intentional coverage, not a match
             for f in (c.get("file"), c.get("file2")):
                 f = str(f or "")
                 if f and f not in files and os.path.exists(
