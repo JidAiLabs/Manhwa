@@ -185,34 +185,45 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
     p = _ep_paths(ep_dir)
-    if not p["cast"].exists():
-        # One Gemini call → chapter cast registry (manifest.cast.json) so the
-        # narration names the same character consistently. Skipped when the
-        # file exists, so a beated retry never re-pays for it.
-        cast_args = ["--groups-manifest", str(p["groups"]),
-                     "--vision-manifest", str(p["vision"]),
-                     "--out", str(p["cast"]),
-                     "--project", project, "--location", location,
-                     "--model", cfg.beats_model]
+    # keep-base: reuse the EXISTING beats' exact wording as the grounded base
+    # (no LLM regeneration), so a hand-picked / approved descriptive take is
+    # preserved verbatim instead of being re-rolled differently on every
+    # re-prepare. The persona punchup below still (re)applies the channel voice
+    # + source scrub. This is how a restored or frozen narration survives the
+    # pipeline. Drop the marker (or delete beats) to regenerate from scratch.
+    keep_base = (ep_dir / ".narration_keepbase").exists() and p["beats"].exists()
+    if keep_base:
+        print(f"[beated] keep-base marker present -> reuse {p['beats'].name}, "
+              "skipping cast + beats regeneration")
+    else:
+        if not p["cast"].exists():
+            # One Gemini call → chapter cast registry (manifest.cast.json) so the
+            # narration names the same character consistently. Skipped when the
+            # file exists, so a beated retry never re-pays for it.
+            cast_args = ["--groups-manifest", str(p["groups"]),
+                         "--vision-manifest", str(p["vision"]),
+                         "--out", str(p["cast"]),
+                         "--project", project, "--location", location,
+                         "--model", cfg.beats_model]
+            if cfg.beats_backend == "ollama":
+                cast_args += ["--backend", "ollama"]
+            _run_tool("cast_builder.py", cast_args)
+        beats_args = ["--groups-manifest", str(p["groups"]),
+                      "--vision-manifest", str(p["vision"]),
+                      "--out", str(p["beats"]),
+                      "--project", project, "--location", location,
+                      "--model", cfg.beats_model,
+                      "--cast", str(p["cast"])]
         if cfg.beats_backend == "ollama":
-            cast_args += ["--backend", "ollama"]
-        _run_tool("cast_builder.py", cast_args)
-    beats_args = ["--groups-manifest", str(p["groups"]),
-                  "--vision-manifest", str(p["vision"]),
-                  "--out", str(p["beats"]),
-                  "--project", project, "--location", location,
-                  "--model", cfg.beats_model,
-                  "--cast", str(p["cast"])]
-    if cfg.beats_backend == "ollama":
-        beats_args += ["--backend", "ollama",
-                       "--ollama-model", cfg.beats_model]
-    _run_tool("gemini_narrative_pass.py",
-              beats_args + [
-               # Send enough panels per group that the scene_selection
-               # (keep/redundant) judgment can see every candidate — otherwise an
-               # unseen panel defaults to 'keep' and same-moment dups survive.
-               # Cheap (a few extra images/chapter); groups average ~3 scenes.
-               "--max-images-per-group", "6"])
+            beats_args += ["--backend", "ollama",
+                           "--ollama-model", cfg.beats_model]
+        _run_tool("gemini_narrative_pass.py",
+                  beats_args + [
+                   # Send enough panels per group that the scene_selection
+                   # (keep/redundant) judgment can see every candidate — otherwise
+                   # an unseen panel defaults to 'keep' and same-moment dups survive.
+                   # Cheap (a few extra images/chapter); groups average ~3 scenes.
+                   "--max-images-per-group", "6"])
     if (cfg.punchup or "off") != "off":
         # persona pass over the grounded beats, in place: narration gets the
         # channel voice, narration_plain keeps the grounded line, and groups

@@ -581,3 +581,40 @@ def test_run_chapter_until_stops_at_target(tmp_path, monkeypatch):
                          until="scened")
     assert ran == ["stitched", "detected", "scened"]
     assert repo.get_chapter(con, ch.id).status == "scened"
+
+
+def _beated_fixture(tmp_path, monkeypatch, *, marker: bool):
+    """ep dir with existing manifests (+ optional keep-base marker) + a fake gcp
+    key so _stage_beated reads project without a cred check; returns the call stub."""
+    import json
+    import studio.pipeline as pipeline_mod
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    for m in ("manifest.beats.json", "manifest.cast.json",
+              "manifest.groups.json", "manifest.vision.json"):
+        (ep / m).write_text("{}")
+    if marker:
+        (ep / ".narration_keepbase").touch()
+    (tmp_path / "keys").mkdir()
+    (tmp_path / "keys" / "gcp-vision.json").write_text(json.dumps({"project_id": "t"}))
+    monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", tmp_path)
+    stub = _tool_stub([ep])
+    monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
+    cfg = Config(sites={}, yolo_weights=tmp_path / "f.pt", detect_backend="yolo",
+                 gallerydl_sleep=0.0, punchup="cinematic", beats_backend="ollama")
+    pipeline_mod._stage_beated(ep, cfg)
+    return stub
+
+
+def test_beated_keep_base_skips_regeneration_but_keeps_punchup(tmp_path, monkeypatch):
+    # the marker preserves a hand-picked/approved narration verbatim (no LLM
+    # re-roll) while the persona punchup still re-applies the channel voice
+    stub = _beated_fixture(tmp_path, monkeypatch, marker=True)
+    assert "gemini_narrative_pass.py" not in stub.calls   # no regeneration
+    assert "cast_builder.py" not in stub.calls
+    assert "narration_punchup.py" in stub.calls           # persona still applied
+
+
+def test_beated_without_marker_regenerates(tmp_path, monkeypatch):
+    stub = _beated_fixture(tmp_path, monkeypatch, marker=False)
+    assert "gemini_narrative_pass.py" in stub.calls       # normal regeneration
