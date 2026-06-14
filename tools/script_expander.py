@@ -743,6 +743,30 @@ def _escalate_tag_for_intensity(tag: str, rank: int) -> str:
     return t
 
 
+# Generic "intro chrome" openers the beats writer sometimes invents for the
+# first beat ("Welcome to the world of <Series Title>.") — these are AI slop AND
+# the one place the licensed series name leaks into spoken narration. Strip a
+# LEADING chrome-opener sentence. Title-AGNOSTIC by design: it keys on the meta
+# framing, not the title, so it spares legitimate mid-sentence story nouns (e.g.
+# Nano Machine the in-story device) and works for any manhwa.
+_CHROME_OPENER_RE = re.compile(
+    r"^\s*(?:welcome to|step into|enter the|dive into|venture into|"
+    r"prepare to (?:enter|dive into|witness)|this is (?:the )?(?:story|tale|world|saga|world) of|"
+    r"get ready for|let me (?:introduce|tell you about)|join us (?:in|as)|"
+    r"in the world of)\b[^.!?]*[.!?]\s*",
+    re.IGNORECASE)
+
+
+def strip_chrome_opener(text: str) -> str:
+    """Remove leading series-intro chrome sentence(s); leave the rest intact."""
+    prev = None
+    out = (text or "").strip()
+    while out != prev:
+        prev = out
+        out = _CHROME_OPENER_RE.sub("", out, count=1).strip()
+    return out
+
+
 def _build_verbatim_section(
     *,
     section_index: int,
@@ -769,9 +793,12 @@ def _build_verbatim_section(
             # never voice the parse-failure placeholder text
             base = "The scene continues."
         else:
+            # scrub series-intro chrome (the only place the licensed title leaks
+            # into spoken narration); if that empties the line, fall back to the
+            # image-grounded action so the beat is never silent.
             base = (
-                str(b.get("narration") or "").strip()
-                or str(b.get("what_happens") or "").strip()
+                strip_chrome_opener(str(b.get("narration") or "").strip())
+                or strip_chrome_opener(str(b.get("what_happens") or "").strip())
                 or str(b.get("beat_title") or "").strip()
                 or "The scene continues."
             )
