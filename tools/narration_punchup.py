@@ -103,15 +103,22 @@ def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
     return out
 
 
-CINEMATIC_RULES = """ALTERNATE-BY-BEAT MODE — each line is tagged DRAMATIC or
-CONNECTIVE; apply a DIFFERENT rule to each:
-- DRAMATIC: PRESERVE the cinematic atmosphere, imagery and emotional weight of
-  the line. Keep the vivid setting and description; movie-trailer gravitas is
-  WELCOME here (this OVERRIDES the "not a movie trailer" guidance above for
-  these lines). Add at most ONE subtle persona touch — never compress the line
-  into a one-line quip. The line may grow to keep its imagery.
-- CONNECTIVE: full persona — gamer framing, snark, "our guy", debuffs, the
-  reference-transcript density.
+CINEMATIC_RULES = """CINEMATIC + PERSONA BLEND — EVERY line must carry BOTH at
+once, never one without the other:
+  (A) CINEMATIC atmosphere — the vivid setting, sensory imagery and emotional
+      weight of the scene (this OVERRIDES the "not a movie trailer" line above;
+      trailer-grade atmosphere is wanted), AND
+  (B) the channel PERSONA VOICE — internet-native, dry, confident, intimate:
+      "our guy"/"our boy", punchy phrasing, and a bit of hyperbole or gamer/RPG
+      framing. NEVER produce neutral, voiceless literary prose.
+Each line is tagged DRAMATIC or CONNECTIVE — this only shifts the MIX of A vs B,
+it NEVER drops either one:
+- DRAMATIC: atmosphere-LED but still unmistakably in the persona voice. Lead
+  with the cinematic image, keep the tension, and let the voice land ONE sharp
+  flourish — a flourish that rides the drama, not a joke that deflates it. The
+  persona must still be audible (intimacy, confidence, one vivid hyperbole).
+- CONNECTIVE: persona-LED — full snark/gamer framing — with a light brush of the
+  scene's atmosphere so it still feels like the same world.
 Keep every grounding rule (no invented facts, cast names verbatim, captions
 preserved, mood tags preserved, no chrome) for BOTH."""
 
