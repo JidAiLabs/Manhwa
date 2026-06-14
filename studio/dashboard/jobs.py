@@ -21,6 +21,12 @@ LANES = {
     "prepare": "gpu", "voiceover": "gpu", "qa_scan": "gpu", "chain": "gpu",
     "render_segment": "cpu", "branding_segments": "cpu", "concat": "cpu",
     "refresh": "api", "discovery_scan": "api", "add_series": "api",
+    # metadata + thumbnail: short local-Gemma / Nano-Banana calls — keep them
+    # off the gpu lane so they never block a chapter's prepare/voiceover.
+    # EVERY claimable type MUST be listed here: lane loops only ever claim
+    # types in their own lane (the serial lane=None path is unused by the
+    # worker), so a handler in HANDLERS but absent from LANES queues forever.
+    "publish_meta": "api", "series_thumbnail": "api",
 }
 
 # parallel width per lane (64GB mini): two gpu jobs overlap one chapter's

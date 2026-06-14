@@ -22,6 +22,26 @@
 </select></form>
 <span class="kv">applies the next time a chapter's narration is written (prepare / rebuild); captions always stay verbatim</span>
 </div>
+
+<h2>Channel thumbnail <small>— ONE per manhwa, reused on every video (built from the arc's climax; copyright-safe, no licensed name baked in)</small></h2>
+<div class="row">
+{% if thumb_exists %}
+<img src="/thumb/series/{{ sid }}?v={{ thumb_v }}" alt="series thumbnail" style="max-width:480px;border:1px solid var(--line);border-radius:8px">
+{% else %}
+<span class="kv">no thumbnail yet — generate one from the arc's climax{% if not thumb_ready %} (prepare at least one chapter first){% endif %}</span>
+{% endif %}
+</div>
+<div class="row">
+<form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="series_thumbnail">
+<input type="hidden" name="series_id" value="{{ sid }}">
+<button class="ghost"{% if not thumb_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 'regenerate thumbnail' if thumb_exists else 'generate thumbnail' }}</button></form>
+{% if thumb_exists %}{% if thumb_approved %}<span class="b ok">APPROVED ✓</span>
+{% else %}<form class="inline" method="post" action="/approve"><input type="hidden" name="gate" value="thumbnail">
+<input type="hidden" name="series_id" value="{{ sid }}"><button class="green">approve thumbnail</button></form>
+<span class="b warn">awaits approval 🔒</span>{% endif %}{% endif %}
+<span class="kv">regenerating clears approval — the badge always matches the image shown</span>
+</div>
+
 <table><tr><th>ch</th><th>label</th><th>status</th><th>season</th><th></th></tr>
 {% for c in chapters %}
 <tr><td>{{ c.number }}</td><td><a href="/chapter/{{ c.id }}" style="color:var(--acc)">{{ c.label }}</a>{% if c.url %} <a href="{{ c.url }}" target="_blank" rel="noopener" title="read this chapter on the source site" class="kv" style="text-decoration:none">↗</a>{% endif %}</td>

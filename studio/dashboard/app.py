@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
+                               RedirectResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -256,10 +257,25 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         title, series_url, autopilot, style = (c.execute(
             "SELECT title, series_url, autopilot, narration_style "
             "FROM series WHERE id=?", (sid,)).fetchone() or ("?", "", 0, None))
+        thumb = REPO / "dist" / f"series_{sid}" / "thumbnail_yt.jpg"
+        thumb_exists = thumb.exists()
+        thumb_ready = any(
+            ch["ep_dir"] and (Path(ch["ep_dir"]) / "manifest.beats.json").exists()
+            for ch in chs)
         return page("series_detail.html", request, sid=sid, title=title,
                     series_url=_http_url(series_url), chapters=chs,
                     autopilot=bool(autopilot),
-                    narration_style=style or "default")
+                    narration_style=style or "default",
+                    thumb_exists=thumb_exists, thumb_ready=thumb_ready,
+                    thumb_v=int(thumb.stat().st_mtime) if thumb_exists else 0,
+                    thumb_approved=gates.thumbnail_approved(c, sid))
+
+    @app.get("/thumb/series/{sid}")
+    def series_thumb(sid: int):
+        p = REPO / "dist" / f"series_{sid}" / "thumbnail_yt.jpg"
+        if not p.exists():
+            return PlainTextResponse("no thumbnail yet", status_code=404)
+        return FileResponse(str(p), media_type="image/jpeg")
 
     @app.get("/chapter/{cid}", response_class=HTMLResponse)
     def chapter_page(request: Request, cid: int):
@@ -405,9 +421,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def post_approve(gate: str = Form(...),
                      chapter_id: Optional[int] = Form(None),
                      bundle_id: Optional[int] = Form(None),
+                     series_id: Optional[int] = Form(None),
                      note: str = Form("")):
         c = con()
-        gates.approve(c, gate, chapter_id=chapter_id,
+        gates.approve(c, gate, series_id=series_id, chapter_id=chapter_id,
                       bundle_id=bundle_id, note=note)
         # auto-advance: an approval IS the trigger for the next step
         # (the worker still re-checks every gate before doing anything)
@@ -418,7 +435,11 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                          payload={"branding": "both"})
         elif gate == "concat" and bundle_id:
             jobs.enqueue(c, "concat", bundle_id=bundle_id)
-        back = f"/chapter/{chapter_id}" if chapter_id else "/videos"
+        # thumbnail approval is a record only (uploads are manual) — no job
+        if gate == "thumbnail" and series_id:
+            back = f"/series/{series_id}"
+        else:
+            back = f"/chapter/{chapter_id}" if chapter_id else "/videos"
         return RedirectResponse(back, status_code=303)
 
     @app.post("/bundles")

@@ -57,3 +57,17 @@ def test_voice_gate_requires_narration_approval(tmp_path):
     assert not allowed and "narration" in why
     gates.approve(con, "voice", chapter_id=1, note="read the lines, good")
     assert gates.voice_allowed(con, 1) == (True, "")
+
+
+def test_thumbnail_approval_is_series_scoped(tmp_path):
+    """One thumbnail per manhwa — approved at the SERIES level, not chapter or
+    bundle. Other series stay unapproved, and same-id chapter/bundle approvals
+    on a different gate must not leak in."""
+    con = _con(tmp_path)
+    assert gates.thumbnail_approved(con, 7) is False
+    gates.approve(con, "thumbnail", series_id=7, note="this is the one")
+    assert gates.thumbnail_approved(con, 7) is True
+    assert gates.thumbnail_approved(con, 8) is False        # different series
+    gates.approve(con, "render", chapter_id=7)              # same id, other gate
+    gates.approve(con, "concat", bundle_id=7)
+    assert gates.thumbnail_approved(con, 8) is False        # no cross-talk

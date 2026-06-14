@@ -499,11 +499,61 @@ def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
         raise RuntimeError(f"publish_concept exited {rc}")
 
 
+def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
+                        log: TextIO) -> None:
+    """ONE thumbnail per manhwa (series), reused across every video. Built from
+    the arc's CLIMAX — the highest-intensity beat across the series' processed
+    chapters: a $0 local-Gemma concept (style + hook + climax refs) -> a
+    text-free Nano-Banana background -> branded overlay -> dist/series_<id>/
+    thumbnail_yt.jpg. Copyright-safe (no licensed name in the image). A fresh
+    build clears any prior approval so the APPROVED badge always refers to the
+    image currently on disk."""
+    sid = job["series_id"]
+    if not sid:
+        raise RuntimeError("series_thumbnail needs series_id")
+    title = _series_title(con, sid)
+    rows = con.execute(
+        "SELECT ep_dir FROM chapter WHERE series_id=? AND ep_dir IS NOT NULL "
+        "ORDER BY number", (sid,)).fetchall()
+    eps = [r[0] for r in rows
+           if r[0] and (Path(r[0]) / "manifest.beats.json").exists()]
+    if not eps:
+        raise RuntimeError("no processed chapters yet — prepare at least one "
+                           "chapter (narration) before generating a thumbnail")
+    out_dir = REPO / "dist" / f"series_{sid}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    concept_path = out_dir / "concept.json"
+    env = _series_env(con, sid)
+    with record_stage(con, chapter_id=None, stage="series_thumbnail",
+                      series_id=sid):
+        # 1) coherent arc concept (style + hook + climax refs) — $0 local Gemma
+        rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
+                      "--episode-dirs", ",".join(eps), "--series-title", title,
+                      "--out", str(concept_path)], log, env=env)
+        if rc != 0:
+            raise RuntimeError(f"publish_concept exited {rc}")
+        concept = json.loads(concept_path.read_text())
+        ci = int(concept.get("climax_chapter_index") or 0)
+        ref_ep = eps[ci] if 0 <= ci < len(eps) else eps[0]
+        # 2) text-free art (Nano Banana, ~$0.13) + deterministic branded overlay
+        rc = _stream([PY, str(REPO / "tools" / "thumbnail_build.py"),
+                      "--concept", str(concept_path),
+                      "--ref-episode-dir", ref_ep,
+                      "--out-dir", str(out_dir)], log, env=env)
+        if rc != 0:
+            raise RuntimeError(f"thumbnail_build exited {rc}")
+    # 3) a freshly built thumbnail must be re-approved before it's "the one"
+    con.execute("DELETE FROM approval WHERE gate='thumbnail' AND series_id=?",
+                (sid,))
+    con.commit()
+
+
 HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]] = {
     "discovery_scan": _h_discovery_scan,
     "prepare": _h_prepare,
     "voiceover": _h_voiceover,
     "publish_meta": _h_publish_meta,
+    "series_thumbnail": _h_series_thumbnail,
     "add_series": _h_add_series,
     "branding_segments": _h_branding_segments,
     "chain": _h_chain,

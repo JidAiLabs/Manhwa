@@ -49,6 +49,44 @@ def test_approve_and_chapter_lock_state(client):
                        ).fetchone()[0] == 1
 
 
+def test_series_thumbnail_job_and_approval_flow(client, tmp_path, monkeypatch):
+    """The series page is where the one-per-manhwa thumbnail is generated and
+    approved (answers 'where will I see it to approve it'). Generate enqueues a
+    series_thumbnail job; approving records a series-scoped 'thumbnail' gate."""
+    c, con = client
+    from studio.dashboard import app as _app, gates
+    monkeypatch.setattr(_app, "REPO", tmp_path)   # hermetic: no real dist/ writes
+    # generate button -> a queued series_thumbnail job carrying the series id
+    r = c.post("/jobs", data={"type": "series_thumbnail", "series_id": 1},
+               follow_redirects=False)
+    assert r.status_code == 303
+    row = con.execute("SELECT type, series_id, state FROM job WHERE "
+                      "type='series_thumbnail'").fetchone()
+    assert row == ("series_thumbnail", 1, "queued")
+    # no image on disk yet -> the file route 404s, the page shows no <img>
+    assert c.get("/thumb/series/1").status_code == 404
+    assert 'src="/thumb/series/1' not in c.get("/series/1").text
+    # approve -> series-scoped gate row, redirect back to the series page
+    r = c.post("/approve", data={"gate": "thumbnail", "series_id": 1},
+               follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/series/1"
+    assert gates.thumbnail_approved(con, 1) is True
+
+
+def test_series_thumbnail_served_and_shown_when_present(client, tmp_path, monkeypatch):
+    """Once dist/series_<id>/thumbnail_yt.jpg exists, the file route serves it
+    and the series page embeds it with a cache-busting version."""
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    tdir = tmp_path / "dist" / "series_1"
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / "thumbnail_yt.jpg").write_bytes(b"\xff\xd8\xff\xd9")  # tiny jpeg
+    rr = c.get("/thumb/series/1")
+    assert rr.status_code == 200 and "image/jpeg" in rr.headers["content-type"]
+    assert 'src="/thumb/series/1?v=' in c.get("/series/1").text
+
+
 def test_bundle_create_and_videos_page(client):
     c, con = client
     r = c.post("/bundles", data={"series_id": 1, "kind": "full",

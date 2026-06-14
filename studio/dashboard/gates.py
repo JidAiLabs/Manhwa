@@ -19,15 +19,26 @@ def approve(con: sqlite3.Connection, gate: str, *,
 
 
 def _has_approval(con: sqlite3.Connection, gate: str, *,
+                  series_id: Optional[int] = None,
                   chapter_id: Optional[int] = None,
                   bundle_id: Optional[int] = None) -> bool:
     if chapter_id is not None:
         q = con.execute("SELECT 1 FROM approval WHERE gate=? AND chapter_id=? "
                         "LIMIT 1", (gate, chapter_id))
-    else:
+    elif bundle_id is not None:
         q = con.execute("SELECT 1 FROM approval WHERE gate=? AND bundle_id=? "
                         "LIMIT 1", (gate, bundle_id))
+    else:
+        q = con.execute("SELECT 1 FROM approval WHERE gate=? AND series_id=? "
+                        "LIMIT 1", (gate, series_id))
     return q.fetchone() is not None
+
+
+def thumbnail_approved(con: sqlite3.Connection, series_id: int) -> bool:
+    """One thumbnail per manhwa — approved at the SERIES level. Regenerating
+    the thumbnail clears this (the worker deletes the row), so an APPROVED
+    badge always refers to the image currently on disk."""
+    return _has_approval(con, "thumbnail", series_id=series_id)
 
 
 def latest_qa_ok(con: sqlite3.Connection, chapter_id: int) -> bool:

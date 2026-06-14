@@ -102,3 +102,21 @@ def test_legacy_claim_without_lane_is_fully_serial(tmp_path):
     jobs.enqueue(con, "render_segment", chapter_id=2)
     assert jobs.claim_next(con) is not None
     assert jobs.claim_next(con) is None
+
+
+def test_every_worker_handler_has_a_lane():
+    """The worker only runs per-lane loops (the serial lane=None path is unused),
+    so a job type in HANDLERS but missing from LANES can NEVER be claimed — it
+    queues forever. This regressed once for publish_meta; guard it for good."""
+    from studio import worker
+    missing = [t for t in worker.HANDLERS if t not in jobs.LANES]
+    assert not missing, f"handlers with no lane (would queue forever): {missing}"
+    bad = [(t, l) for t, l in jobs.LANES.items() if l not in jobs.LANE_WIDTH]
+    assert not bad, f"lanes pointing at an unknown width bucket: {bad}"
+
+
+def test_series_thumbnail_is_claimable_on_its_lane(tmp_path):
+    con = _con(tmp_path)
+    jobs.enqueue(con, "series_thumbnail", series_id=1)
+    j = jobs.claim_next(con, lane=jobs.LANES["series_thumbnail"])
+    assert j and j["type"] == "series_thumbnail" and j["series_id"] == 1
