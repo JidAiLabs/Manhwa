@@ -95,6 +95,46 @@ def pinned_comment(real_title: str, official_link: str = "") -> str:
     return f"Manhwa: {t}{tail}"
 
 
+_INTENSITY = {"calm": 0, "unknown": 0, "tense": 1, "intense": 2, "explosive": 3}
+
+
+def bundle_digest(beats_objs: List[Dict[str, Any]], *,
+                  per_chapter_chars: int = 700) -> str:
+    """Aggregate MANY chapters into one arc digest that fits the LLM context:
+    a compact per-chapter summary (hooks + the punchiest beats), so the title
+    can span the whole arc (setup -> payoff), which a single chapter can't."""
+    parts: List[str] = []
+    for i, b in enumerate(beats_objs, 1):
+        lines: List[str] = []
+        for bt in b.get("beats") or []:
+            t = (str(bt.get("hook") or "").strip()
+                 or str(bt.get("what_happens") or "").strip())
+            if t:
+                lines.append(t)
+        blob = " ".join(lines)[:per_chapter_chars]
+        if blob:
+            parts.append(f"[Chapter {i}] {blob}")
+    return "\n".join(parts)
+
+
+def select_bundle_climax(beats_objs: List[Dict[str, Any]]):
+    """Pick the single most thumbnail-worthy moment across the bundle: the
+    highest-intensity kept beat. Returns (chapter_index, scene_files) so the
+    thumbnail art comes from the ARC's climax — usually NOT chapter 1."""
+    best = (-1, 0, [])  # (intensity, chapter_index, scene_files)
+    for ci, b in enumerate(beats_objs):
+        for bt in b.get("beats") or []:
+            scenes = [s for s in (bt.get("scene_selection") or [])
+                      if isinstance(s, dict)]
+            inten = max((_INTENSITY.get(str(s.get("intensity") or "").lower(), 0)
+                         for s in scenes), default=0)
+            if inten > best[0]:
+                files = [str(s.get("scene_file")) for s in scenes
+                         if s.get("role", "keep") != "redundant" and s.get("scene_file")]
+                best = (inten, ci, files[:3])
+    return best[1], best[2]
+
+
 def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
                      series_title: str, genre: str = "",
                      official_link: str = "") -> Dict[str, Any]:
@@ -115,6 +155,41 @@ def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
         "description": build_description(synopsis, hashtags),
         "pinned_comment": pinned_comment(series_title, official_link),
     }
+
+
+def _fmt_ts(sec: float) -> str:
+    s = int(sec)
+    h, m, s = s // 3600, (s % 3600) // 60, s % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def parts_timestamps(durations: List[float],
+                     labels: Optional[List[str]] = None) -> List[str]:
+    """YouTube-chapter 'Parts' list: cumulative offsets, first MUST be 0:00."""
+    out: List[str] = []
+    t = 0.0
+    for i, d in enumerate(durations):
+        out.append(f"{_fmt_ts(t)} {labels[i] if labels else f'Part {i + 1}'}")
+        t += float(d or 0.0)
+    return out
+
+
+def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
+                         *, durations: List[float], series_title: str,
+                         genre: str = "", official_link: str = "",
+                         labels: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Concept for a VIDEO (bundle of N chapters): arc title/synopsis from the
+    aggregated chapters, style+refs from the bundle's CLIMAX chapter, and the
+    Parts (YouTube-chapter) timestamps appended to the description."""
+    climax_ci, refs = select_bundle_climax(beats_list)
+    style_beats = beats_list[climax_ci] if beats_list else {}
+    c = assemble_concept(style_beats, llm, series_title=series_title,
+                         genre=genre, official_link=official_link)
+    c["parts"] = parts_timestamps(durations, labels)
+    c["climax_chapter_index"] = climax_ci
+    c["refs"] = refs                      # thumbnail art comes from the climax
+    c["description"] = c["description"] + "\n\n" + "\n".join(c["parts"])
+    return c
 
 
 def main() -> int:
