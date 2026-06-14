@@ -408,15 +408,27 @@ def audio_flags(plan: Dict[str, Any],
     means the beats/script were regenerated after voicing and the spoken audio
     is now stale (the bug the user caught by ear). $0, no LLM — re-voice the
     flagged segments (the voiced stage does this incrementally)."""
+    # the staleness gate only means anything for a VOICED plan (built FROM the
+    # clips). A pre-voiceover ESTIMATE plan (no source_tts_index) is timed from
+    # word counts; the same signal the per-item loop uses to emit estimate_plan.
+    voiced_plan = bool((plan or {}).get("source_tts_index"))
     if not (tts_index or {}).get("clips"):
         # a plan built voiced (source_tts_index set) but with no clip index is a
         # hard error — never silently pass it as "not voiced yet"
-        if (plan or {}).get("source_tts_index"):
+        if voiced_plan:
             return [_flag(
                 "audio_index_missing", ERROR,
                 "plan was built voiced (source_tts_index set) but "
                 "tts/tts_index.json has no clips — run/repair the voiced stage")]
         return []                       # genuinely not voiced yet — nothing to check
+    if not voiced_plan:
+        # ESTIMATE phase with clips on disk = LEFTOVERS from a prior run. They
+        # will be re-voiced after story approval (the voiced stage is
+        # incremental, keyed on text_sha), so stale text here is expected and
+        # harmless — NOT an error. The real audio<->narration gate runs once the
+        # plan is rebuilt voiced. (Without this, re-preparing any chapter that
+        # was voiced before fails QA on its own soon-to-be-replaced audio.)
+        return []
     r = audio_consistency(plan, tts_index)
     flags: List[Dict[str, Any]] = []
     for seg in r["stale"]:

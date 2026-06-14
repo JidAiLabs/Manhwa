@@ -771,12 +771,14 @@ def _idx(*pairs):
 
 
 def test_audio_flags_fresh_when_audio_matches_narration():
-    plan = {"timeline": [_seg("g0001_p00", "[tense] He runs.", ["a.jpg"])]}
+    plan = {"source_tts_index": "tts/tts_index.json",      # voiced plan
+            "timeline": [_seg("g0001_p00", "[tense] He runs.", ["a.jpg"])]}
     assert pq.audio_flags(plan, _idx(("g0001_p00", "He runs."))) == []
 
 
 def test_audio_flags_stale_when_narration_changed():
-    plan = {"timeline": [_seg("g0001_p00", "He sprints away now.", ["a.jpg"])]}
+    plan = {"source_tts_index": "tts/tts_index.json",      # voiced plan
+            "timeline": [_seg("g0001_p00", "He sprints away now.", ["a.jpg"])]}
     out = pq.audio_flags(plan, _idx(("g0001_p00", "He runs.")))
     assert [f["code"] for f in out] == ["audio_stale"]
     assert out[0]["severity"] == "ERROR"
@@ -785,6 +787,16 @@ def test_audio_flags_stale_when_narration_changed():
 def test_audio_flags_empty_index_is_not_gated():
     plan = {"timeline": [_seg("g0002_p01", "Brand new beat.", ["a.jpg"])]}
     assert pq.audio_flags(plan, _idx()) == []        # not voiced yet
+
+
+def test_audio_flags_estimate_plan_ignores_leftover_clips():
+    """Re-preparing a chapter that was voiced before leaves the OLD clips on
+    disk with stale text, but the fresh plan is a pre-voiceover ESTIMATE (no
+    source_tts_index). Those clips get re-voiced after story approval, so QA
+    must NOT ERROR on them — this was failing EVERY re-prepared chapter
+    (ORV/Nano/IE) with 10+ bogus audio_stale errors."""
+    plan = {"timeline": [_seg("g0001_p00", "Totally new narration.", ["a.jpg"])]}
+    assert pq.audio_flags(plan, _idx(("g0001_p00", "Old stale line."))) == []
 
 
 def test_audio_flags_voiced_plan_with_vanished_index_errors():
@@ -812,7 +824,8 @@ def test_narration_stale_tolerates_chrome_scrub_but_catches_real_drift():
 
 
 def test_audio_flags_missing_clip_for_voiced_chapter():
-    plan = {"timeline": [_seg("g0001_p00", "Has audio.", ["a.jpg"]),
+    plan = {"source_tts_index": "tts/tts_index.json",      # voiced plan
+            "timeline": [_seg("g0001_p00", "Has audio.", ["a.jpg"]),
                          _seg("g0002_p01", "No audio yet.", ["b.jpg"])]}
     out = pq.audio_flags(plan, _idx(("g0001_p00", "Has audio.")))
     assert [f["code"] for f in out] == ["audio_missing"]
