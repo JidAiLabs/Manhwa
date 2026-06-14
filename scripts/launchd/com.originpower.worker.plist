@@ -10,6 +10,9 @@
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>STUDIO_DASH_TOKEN</key><string>__TOKEN__</string>
+    <!-- launchd gives a minimal PATH; the pipeline shells out to Homebrew
+         binaries (ffmpeg, blender, npx). Without this they are not found. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>__REPO__/logs/worker.log</string>
