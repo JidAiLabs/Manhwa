@@ -14,6 +14,55 @@ ORIG = ("Prince Cheon flees through the fog as the Assassins close in, "
         "his robes torn and his breath ragged.")
 
 
+# ---- alternate-by-beat (cinematic) mode ----------------------------------
+
+def test_classify_beats_by_scene_intensity():
+    beats = {"beats": [
+        {"group_id": 1, "scene_selection": [{"intensity": "calm"},
+                                            {"intensity": "tense"}]},
+        {"group_id": 2, "scene_selection": [{"intensity": "intense"}]},
+        {"group_id": 3, "scene_selection": [{"intensity": "explosive"},
+                                            {"intensity": "calm"}]},
+        {"group_id": 4, "scene_selection": []},          # no signal
+    ]}
+    assert npu.classify_beats(beats) == {
+        1: "CONNECTIVE", 2: "DRAMATIC", 3: "DRAMATIC", 4: "CONNECTIVE"}
+
+
+def test_cinematic_prompt_tags_lines_with_class_and_both_rules():
+    lines = [{"group_id": 1, "narration": "a"}, {"group_id": 2, "narration": "b"}]
+    classes = {1: "DRAMATIC", 2: "CONNECTIVE"}
+    p = npu.build_prompt(lines, [], "cinematic", genre="murim", classes=classes)
+    assert "DRAMATIC" in p and "CONNECTIVE" in p
+    assert "cinematic" in p.lower()
+    assert '"style"' in p                      # per-line class threaded
+    # full mode is unchanged — no per-line style tags
+    assert '"style"' not in npu.build_prompt(lines, [], "full", genre="murim")
+
+
+def test_validate_allows_longer_dramatic_line():
+    orig = "He runs through the dark mountain forest."     # 7 words
+    cine = ("Under a pale blood moon he tears through the fog drowned forest, "
+            "every breath ragged, every step a desperate gamble against the "
+            "closing dark.")                                # ~24 words
+    assert npu.validate_line(orig, cine, [], max_ratio=2.6) is True
+    assert npu.validate_line(orig, cine, []) is False       # default 1.5 rejects
+
+
+def test_merge_uses_dramatic_budget_for_dramatic_beats():
+    long_cine = ("Under a pale blood moon Prince Cheon tears through the fog "
+                 "drowned forest, robes shredded, every breath a ragged prayer, "
+                 "every step a desperate gamble against the closing dark.")
+    beats = {"beats": [{"group_id": 1, "narration":
+                        "Prince Cheon runs through the dark mountain forest."}]}
+    punched = [{"group_id": 1, "narration": long_cine}]
+    # as CONNECTIVE the long line is rejected; as DRAMATIC it's kept
+    assert npu.merge(beats, punched, ["Prince Cheon"],
+                     classes={1: "CONNECTIVE"})["stats"]["punchup_applied"] == 0
+    assert npu.merge(beats, punched, ["Prince Cheon"],
+                     classes={1: "DRAMATIC"})["stats"]["punchup_applied"] == 1
+
+
 def test_validate_accepts_styled_same_facts():
     punched = ("Our guy Prince Cheon is speedrunning a mountain escape — "
                "robes shredded, lungs on fire, and the Assassins are "

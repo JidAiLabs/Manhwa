@@ -29,8 +29,14 @@ import argparse
 import json
 import os
 import re
+import sys
 import wave
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from narration_consistency import narration_sha  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +304,24 @@ def synthesize_manifest(
     clips_dir = os.path.join(out_dir, "clips")
     os.makedirs(clips_dir, exist_ok=True)
 
+    # Text-aware incremental cache: a clip is reused only when its narration is
+    # UNCHANGED (same text_sha). When the beats/script are regenerated, only the
+    # changed segments are re-voiced — the deterministic audio↔narration gate.
+    # Caching on file existence alone (the old rule) is what let stale audio ship.
+    prior_sha: Dict[str, str] = {}
+    prior_index_path = os.path.join(out_dir, "tts_index.json")
+    if os.path.exists(prior_index_path) and not overwrite:
+        try:
+            prev = json.load(open(prior_index_path))
+            for c in prev.get("clips") or []:
+                sid = c.get("segment_id")
+                sha = c.get("text_sha") or (
+                    narration_sha(c["sent_text"]) if c.get("sent_text") is not None else None)
+                if sid and sha:
+                    prior_sha[str(sid)] = str(sha)
+        except Exception:
+            prior_sha = {}
+
     index: Dict[str, Any] = {
         "source_script": os.path.abspath(script_obj.get("_path", "")) if script_obj.get("_path") else "",
         "backend": backend,
@@ -307,6 +331,7 @@ def synthesize_manifest(
         "total_duration_sec": 0.0,
     }
     total = 0.0
+    kept_ids: set = set()
     for it in items:
         seg_id = it["segment_id"]
         source_text = str(it["text"])
@@ -314,10 +339,14 @@ def synthesize_manifest(
         sent_text = strip_bracket_tags(source_text)
         if not sent_text:
             continue
+        text_sha = narration_sha(source_text)
         exaggeration = mood_to_exaggeration(tag)
         audio_path = os.path.join(clips_dir, f"{seg_id}.wav")
+        kept_ids.add(seg_id)
 
-        cached = os.path.exists(audio_path) and not overwrite
+        # reuse only when the audio exists AND the narration is unchanged
+        cached = (os.path.exists(audio_path) and not overwrite
+                  and prior_sha.get(seg_id) == text_sha)
         cond: Dict[str, Any] = {}
         if not cached:
             synth_fn(sent_text, audio_path, exaggeration)
@@ -333,6 +362,7 @@ def synthesize_manifest(
             "paragraph_index": int(it["paragraph_index"]),
             "source_text": source_text,
             "sent_text": sent_text,
+            "text_sha": text_sha,
             "mood_tag": tag or "",
             "exaggeration": exaggeration,
             "audio_file": os.path.relpath(audio_path, out_dir),
@@ -343,6 +373,15 @@ def synthesize_manifest(
         total += dur
         flag = " SOFT-ATTACK-LIFTED" if cond.get("soft_attack") else ""
         print(f"[{'cache' if cached else 'ok'}] {seg_id} dur={dur:.2f}s mood={tag or '-'}{flag}")
+
+    # prune orphan clips (segments no longer in the script) so a stale wav never
+    # leaks into the voice-preview concat or a later render
+    for fn in os.listdir(clips_dir):
+        if fn.endswith(".wav") and fn[:-4] not in kept_ids:
+            try:
+                os.remove(os.path.join(clips_dir, fn))
+            except OSError:
+                pass
 
     index["total_duration_sec"] = round(total, 4)
     return index

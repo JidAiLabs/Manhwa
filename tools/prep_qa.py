@@ -51,6 +51,7 @@ import render_prep as rp                      # art/bubble metrics, detector
 from render_prep import multi_scale_contained
 from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
+from narration_consistency import audio_consistency
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
@@ -394,6 +395,31 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
                 f"(sim {sim:.2f}) — script.json predates "
                 "manifest.beats.json; re-run the scripted stage",
                 segment_id=seg))
+    return flags
+
+
+def audio_flags(plan: Dict[str, Any],
+                tts_index: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Deterministic audio↔narration gate: the voiced clips must have been
+    voiced from the CURRENT narration. Each clip stores a text_sha; a mismatch
+    means the beats/script were regenerated after voicing and the spoken audio
+    is now stale (the bug the user caught by ear). $0, no LLM — re-voice the
+    flagged segments (the voiced stage does this incrementally)."""
+    if not (tts_index or {}).get("clips"):
+        return []                       # not voiced yet — nothing to check
+    r = audio_consistency(plan, tts_index)
+    flags: List[Dict[str, Any]] = []
+    for seg in r["stale"]:
+        flags.append(_flag(
+            "audio_stale", ERROR,
+            "voiceover audio was voiced from DIFFERENT text than the current "
+            "narration — re-voice this segment (beats/script changed after "
+            "voicing)", segment_id=seg))
+    for seg in r["missing"]:
+        flags.append(_flag(
+            "audio_missing", ERROR,
+            "narrated segment has no voiced clip — run the voiced stage",
+            segment_id=seg))
     return flags
 
 
@@ -976,6 +1002,7 @@ def main() -> int:
     flags.extend(alignment_flags(plan, _load_manifest("manifest.beats.json"),
                                  _load_manifest("manifest.groups.json"),
                                  _load_manifest("manifest.script.json")))
+    flags.extend(audio_flags(plan, _load_manifest("tts/tts_index.json")))
     flags.extend(montage_flags(plan))
     flags.extend(story_flags(plan, _load_manifest("manifest.beats.json"), vitems))
 

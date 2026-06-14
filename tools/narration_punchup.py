@@ -81,6 +81,41 @@ grinding stat points"), deadpan quest-log narration of dramatic moments.""",
 }
 
 
+# intensity ranking from beats' scene_selection — the deterministic signal that
+# decides which beats stay cinematic and which go full persona (alternate-by-beat)
+_INTENSITY_RANK = {"": 0, "unknown": 0, "calm": 0, "tense": 1,
+                   "intense": 2, "explosive": 3}
+
+
+def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
+    """Per-group DRAMATIC/CONNECTIVE label from the strongest scene intensity in
+    the beat. DRAMATIC (intense/explosive) stays cinematic; everything else gets
+    full persona. Deterministic — no LLM."""
+    out: Dict[int, str] = {}
+    for b in (beats_obj or {}).get("beats") or []:
+        try:
+            gid = int(b.get("group_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        ranks = [_INTENSITY_RANK.get(str(s.get("intensity") or "").lower(), 0)
+                 for s in (b.get("scene_selection") or []) if isinstance(s, dict)]
+        out[gid] = "DRAMATIC" if (max(ranks) if ranks else 0) >= 2 else "CONNECTIVE"
+    return out
+
+
+CINEMATIC_RULES = """ALTERNATE-BY-BEAT MODE — each line is tagged DRAMATIC or
+CONNECTIVE; apply a DIFFERENT rule to each:
+- DRAMATIC: PRESERVE the cinematic atmosphere, imagery and emotional weight of
+  the line. Keep the vivid setting and description; movie-trailer gravitas is
+  WELCOME here (this OVERRIDES the "not a movie trailer" guidance above for
+  these lines). Add at most ONE subtle persona touch — never compress the line
+  into a one-line quip. The line may grow to keep its imagery.
+- CONNECTIVE: full persona — gamer framing, snark, "our guy", debuffs, the
+  reference-transcript density.
+Keep every grounding rule (no invented facts, cast names verbatim, captions
+preserved, mood tags preserved, no chrome) for BOTH."""
+
+
 def genre_key(genre_text: str) -> str:
     g = (genre_text or "").lower()
     if any(k in g for k in ("murim", "wuxia", "martial", "cultivat")):
@@ -95,12 +130,20 @@ def genre_key(genre_text: str) -> str:
 
 
 def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
-                 humor: str, genre: str = "") -> str:
-    payload = [{"group_id": l["group_id"], "narration": l["narration"]}
-               for l in lines]
+                 humor: str, genre: str = "",
+                 classes: Optional[Dict[int, str]] = None) -> str:
     cast = ", ".join(cast_names) if cast_names else "(none listed)"
     addon = GENRE_ADDONS.get(genre_key(genre), "")
     guide = BASE_PERSONA + ("\n\n" + addon if addon else "")
+    if humor == "cinematic":
+        guide += "\n\n" + CINEMATIC_RULES
+        cls = classes or {}
+        payload = [{"group_id": l["group_id"],
+                    "style": cls.get(int(l["group_id"]), "CONNECTIVE"),
+                    "narration": l["narration"]} for l in lines]
+    else:
+        payload = [{"group_id": l["group_id"], "narration": l["narration"]}
+                   for l in lines]
     return (f"{guide}\n\nHUMOR={humor}\nCAST NAMES (verbatim): {cast}\n\n"
             "Rewrite EVERY line below in the persona. Return ONLY a JSON "
             "array of objects {\"group_id\": int, \"narration\": str} — same "
@@ -158,8 +201,10 @@ def _caption_words_by_group(ep_dir: str,
 
 def validate_line(original: str, punched: str,
                   cast_names: List[str], *,
-                  required: Any = None) -> bool:
-    """Reject rewrites that break the grounding contract."""
+                  required: Any = None, max_ratio: float = 1.5) -> bool:
+    """Reject rewrites that break the grounding contract. *max_ratio* is the
+    upper word-count multiple allowed — raised for DRAMATIC cinematic lines,
+    which intentionally keep more atmospheric description than the grounded line."""
     if not punched or not punched.strip():
         return False
     if required:
@@ -170,7 +215,7 @@ def validate_line(original: str, punched: str,
             if rs and len(set(rs) & pwords) / max(1, len(set(rs))) < 0.5:
                 return False    # a caption paraphrased away
     ow, pw = _word_count(original), _word_count(punched)
-    if ow >= 5 and not (0.6 * ow <= pw <= 1.5 * ow + 8):
+    if ow >= 5 and not (0.6 * ow <= pw <= max_ratio * ow + 8):
         return False
     om = _MOOD_RE.match(original)
     if om and not punched.strip().startswith(om.group(1)):
@@ -189,13 +234,17 @@ def validate_line(original: str, punched: str,
 
 def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
           cast_names: List[str],
-          caption_words: Any = None) -> Dict[str, Any]:
+          caption_words: Any = None,
+          classes: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
     """Apply validated rewrites; keep the grounded original otherwise.
     The original always survives as beat['narration_plain']; groups whose
-    panels carry captions reject any rewrite that drops the caption words."""
+    panels carry captions reject any rewrite that drops the caption words.
+    DRAMATIC beats (per *classes*) get a larger length budget so a cinematic
+    rewrite that keeps the atmosphere is not rejected as 'overlong'."""
     by_gid = {int(p.get("group_id") or 0): str(p.get("narration") or "")
               for p in punched if isinstance(p, dict)}
     caption_words = caption_words or {}
+    classes = classes or {}
     out = json.loads(json.dumps(beats_obj))
     applied = 0
     for b in out.get("beats") or []:
@@ -203,8 +252,10 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
         original = str(b.get("narration_plain") or b.get("narration") or "")
         b["narration_plain"] = original
         cand = by_gid.get(gid, "").replace("*", "")  # md emphasis -> TTS-safe
+        max_ratio = 3.0 if classes.get(gid) == "DRAMATIC" else 1.5
         if cand and validate_line(original, cand, cast_names,
-                                  required=caption_words.get(gid)):
+                                  required=caption_words.get(gid),
+                                  max_ratio=max_ratio):
             b["narration"] = cand
             applied += 1
         else:
@@ -267,7 +318,8 @@ def main() -> int:
     ap.add_argument("--ollama-model", default="gemma4:26b")
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="us-central1")
-    ap.add_argument("--humor", choices=["full", "light"], default="full")
+    ap.add_argument("--humor", choices=["full", "light", "cinematic"],
+                    default="full")
     ap.add_argument("--genre", default="",
                     help="series genre text (murim/modern/system axes); "
                          "auto-read from --script section_genre_mode if given")
@@ -294,7 +346,9 @@ def main() -> int:
              for b in beats_obj.get("beats") or []
              if (b.get("narration_plain") or b.get("narration"))]
     cast_names = _cast_names(args.cast)
-    prompt = build_prompt(lines, cast_names, args.humor, genre=args.genre)
+    classes = classify_beats(beats_obj) if args.humor == "cinematic" else {}
+    prompt = build_prompt(lines, cast_names, args.humor, genre=args.genre,
+                          classes=classes)
 
     if args.backend == "ollama":
         import ollama  # noqa: F401 — availability probe
@@ -319,7 +373,8 @@ def main() -> int:
     punched = _extract_json_array(raw)
     cap_words = (_caption_words_by_group(args.episode_dir, beats_obj)
                  if args.episode_dir else {})
-    out = merge(beats_obj, punched, cast_names, caption_words=cap_words)
+    out = merge(beats_obj, punched, cast_names, caption_words=cap_words,
+                classes=classes)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
     n = out["stats"]["punchup_applied"]

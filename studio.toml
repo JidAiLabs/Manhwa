@@ -23,9 +23,11 @@ beats_model = "gemma4:26b"
 # script: OpenAI. gpt-4.1-mini is API-deprecating 2026-10-14; gpt-5-nano is ~5x cheaper.
 script_model = "gpt-5-nano"
 # punchup: genre-aware persona pass over the grounded beats (channel voice).
+# "cinematic" = alternate-by-beat: DRAMATIC beats (high scene intensity) keep the
+#   cinematic atmosphere, CONNECTIVE beats get full persona — the user's blend.
 # "full" | "light" | "off". Grounded line survives as narration_plain;
 # caption-bearing groups reject rewrites that drop the caption words.
-punchup = "full"
+punchup = "cinematic"
 # OCR/visioned stage: "apple" = on-device macOS Vision (FREE, 97%% F1 vs Google) | "google" (paid)
 vision_backend = "apple"
 
