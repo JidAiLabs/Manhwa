@@ -42,5 +42,5 @@ backend = "qwen"
 voice_ref = "assets/voice/narrator_ref.wav"   # LOCKED narrator (user-picked clip g0021_p02).
                  # qwen clones it (Base ckpt, .txt transcript sidecar); chatterbox clones it too;
                  # kokoro ignores it (uses kokoro_voice).
-python = "/Users/anka/repos/Manhwa/.qwen_venv/bin/python"   # isolated venv per backend (deps conflict)
+python = ".qwen_venv/bin/python"   # repo-relative -> resolves per host (Air/Mini); isolated venv (deps conflict)
 kokoro_voice = "am_puck"   # used only when backend = "kokoro"

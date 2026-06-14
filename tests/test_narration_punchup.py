@@ -189,6 +189,17 @@ def test_config_wires_punchup_default_full(tmp_path):
     assert load(toml).punchup == "off"
 
 
+def test_config_tts_python_is_host_agnostic(tmp_path, monkeypatch):
+    from studio.config import load, REPO_ROOT
+    toml = tmp_path / "studio.toml"
+    # a RELATIVE path resolves against the repo root (works on any host)
+    toml.write_text("[tts]\npython = \".qwen_venv/bin/python\"\n")
+    assert load(toml).tts_python == str(REPO_ROOT / ".qwen_venv/bin/python")
+    # env override wins (per-host)
+    monkeypatch.setenv("STUDIO_TTS_PYTHON", "/custom/py")
+    assert load(toml).tts_python == "/custom/py"
+
+
 def test_caption_guard_is_per_scene_not_union():
     """A group with TWO captions must keep BOTH — union coverage is not
     enough (job 23 regression: 'ON THE DAY I FINISHED...' dropped while
