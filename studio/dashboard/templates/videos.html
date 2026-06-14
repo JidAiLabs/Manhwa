@@ -1,5 +1,5 @@
 {% extends "base.html" %}{% set active='videos' %}{% block body %}
-<h2>Videos <small>— bundle = intro + chapter segments + outro (concat, no re-render)</small></h2>
+<h2>Videos <small>— bundle = chapter segments + outro (no intro; concat, no re-render)</small></h2>
 <table><tr><th>bundle</th><th>kind</th><th>projected runtime</th><th>segments</th><th>state</th><th></th></tr>
 {% for b in bundles %}
 <tr><td><b>{{ b.title or ('bundle #' ~ b.id) }}</b></td>
@@ -12,6 +12,8 @@
 <td>
 <form class="inline" method="post" action="/approve"><input type="hidden" name="gate" value="concat">
 <input type="hidden" name="bundle_id" value="{{ b.id }}"><button class="green">approve</button></form>
+<form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="publish_meta">
+<input type="hidden" name="bundle_id" value="{{ b.id }}"><button class="ghost" title="generate this video's title + description + Parts (YouTube chapters) from the bundle's chapters — copyright-safe, real name only in pinned comment">title + description</button></form>
 <form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="concat">
 <input type="hidden" name="bundle_id" value="{{ b.id }}"><button>concat</button></form>
 </td></tr>

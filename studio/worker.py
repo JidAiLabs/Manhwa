@@ -20,7 +20,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, TextIO
+from typing import Any, Callable, Dict, List, Optional, TextIO
 
 from studio.dashboard import bundles, gates, jobs
 
@@ -470,24 +470,33 @@ def _h_refresh(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
 
 def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
                     log: TextIO) -> None:
-    """Generate the copyright-safe publish package — title + description +
-    pinned comment + thumbnail (styled art + branded overlay) — for one chapter.
-    $0 except the single Nano Banana image; the licensed name only ever lands in
-    the pinned comment."""
-    ch = _chapter(con, job["chapter_id"])
-    ep = str(Path(ch["ep_dir"] or ""))
-    title = _series_title(con, ch["series_id"])
-    env = _series_env(con, ch["series_id"])
-    with record_stage(con, chapter_id=ch["id"], stage="published",
-                      series_id=ch["series_id"]):
-        rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
-                      "--episode-dir", ep, "--series-title", title], log, env=env)
-        if rc != 0:
-            raise RuntimeError(f"publish_concept exited {rc}")
-        rc = _stream([PY, str(REPO / "tools" / "thumbnail_build.py"),
-                      "--episode-dir", ep], log, env=env)
-        if rc != 0:
-            raise RuntimeError(f"thumbnail_build exited {rc}")
+    """BUNDLE (video) metadata: arc title + description + Parts (YouTube-chapter
+    timestamps) + pinned comment, generated from ALL the bundle's chapters — a
+    single chapter can't carry the arc. Copyright-safe (real name only in the
+    pinned comment). The thumbnail is series-level (1 per manhwa), generated
+    separately. $0 (local Gemma)."""
+    bid = job["bundle_id"]
+    srow = con.execute("SELECT series_id FROM bundle WHERE id=?", (bid,)).fetchone()
+    if not srow:
+        raise RuntimeError(f"bundle {bid} not found")
+    sid = srow[0]
+    title = _series_title(con, sid)
+    eps: List[str] = []
+    for cid in bundles.bundle_chapters(con, bid):
+        ch = _chapter(con, cid)
+        if ch and ch.get("ep_dir") and (
+                Path(ch["ep_dir"]) / "manifest.beats.json").exists():
+            eps.append(str(ch["ep_dir"]))
+    if not eps:
+        raise RuntimeError(f"bundle {bid} has no chapters with beats yet")
+    out_dir = REPO / "dist" / f"bundle_{bid}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
+                  "--episode-dirs", ",".join(eps), "--series-title", title,
+                  "--out", str(out_dir / "publish_meta.json")],
+                 log, env=_series_env(con, sid))
+    if rc != 0:
+        raise RuntimeError(f"publish_concept exited {rc}")
 
 
 HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]] = {
