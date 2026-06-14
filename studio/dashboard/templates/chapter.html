@@ -35,6 +35,22 @@
 <span class="kv">{{ render_block_reason if not qa_ok else '' }}</span>{% endif %}
 </div>
 
+<h2>Step 3 — publish package <small>(title + thumbnail + description; real name only in the pinned comment)</small></h2>
+<div class="row">
+<form class="inline" method="post" action="/jobs">
+<input type="hidden" name="type" value="publish_meta"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
+<button class="ghost" title="generate copyright-safe title + thumbnail (Nano Banana art + branded overlay) + description">generate title + thumbnail</button></form>
+{% if publish %}<span class="b ok">style: {{ publish.style }} · hook: {{ publish.hook }}</span>{% endif %}
+</div>
+{% if publish %}
+<div class="seg">
+<div class="kv"><b>Title</b></div><div class="nar">{{ publish.title }}</div>
+{% if ep_rel and has_thumb %}<div style="margin:.5em 0"><img src="/media/{{ ep_rel }}/render/thumbnail_yt.jpg?v={{ thumb_v }}" style="max-width:480px;border-radius:6px"></div>{% endif %}
+<div class="kv"><b>Pinned comment</b> (the only place the real name appears)</div><div class="nar">{{ publish.pinned_comment }}</div>
+<details><summary class="kv">description</summary><div class="nar" style="white-space:pre-wrap">{{ publish.description }}</div></details>
+</div>
+{% endif %}
+
 <h2>Groups <small>— narration beside panels</small></h2>
 {% for g in gallery %}
 <div class="seg"><span class="kv"><b>{{ g.segment_id }}</b>{% if g.duration %} · {{ '%.1f'|format(g.duration) }}s{% endif %}</span>

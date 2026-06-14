@@ -143,12 +143,30 @@ def _make_client(location: str):
     return attempts
 
 
+def build_art_prompt(style_art_prompt: str) -> str:
+    """TEXT-FREE composition prompt for a style module — all words are added
+    later as a deterministic overlay, so the model must render NO text at all
+    (and never the licensed series name)."""
+    return f"""Create a YouTube thumbnail BACKGROUND image (16:9) for a webtoon recap.
+
+COMPOSITION:
+{style_art_prompt}
+
+CHARACTER FIDELITY:
+- Use the EXACT character designs from the reference images: same face, hairstyle, hair color, clothing. Repaint them in clean, high-detail webtoon/anime style — do NOT copy panel crops literally.
+- IGNORE and DO NOT reproduce any speech bubbles, on-page text, watermarks, or UI from the references.
+
+TEXT: render NO text whatsoever — no words, letters, numbers, logos, series name, or captions. Leave clean negative space in the upper and corner areas for text to be added later.
+
+STYLE: maximum-contrast YouTube thumbnail look — saturated colors, crisp edges, cinematic glow, particles/sparks, vignette. No watermark, no borders."""
+
+
 def generate(episode_dir: str, *, hook_text: str, refs: List[str],
              models: List[str], location: str, aspect: str, size: str,
-             out_path: str) -> Optional[str]:
+             out_path: str, prompt_override: str = "") -> Optional[str]:
     from google.genai import types
 
-    prompt = build_prompt(hook_text)
+    prompt = prompt_override or build_prompt(hook_text)
     images = _load_ref_images(episode_dir, refs)
     if not images:
         print("[err] no usable reference images")

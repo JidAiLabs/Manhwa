@@ -468,10 +468,33 @@ def _h_refresh(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         raise RuntimeError(f"refresh exited {rc}")
 
 
+def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
+                    log: TextIO) -> None:
+    """Generate the copyright-safe publish package — title + description +
+    pinned comment + thumbnail (styled art + branded overlay) — for one chapter.
+    $0 except the single Nano Banana image; the licensed name only ever lands in
+    the pinned comment."""
+    ch = _chapter(con, job["chapter_id"])
+    ep = str(Path(ch["ep_dir"] or ""))
+    title = _series_title(con, ch["series_id"])
+    env = _series_env(con, ch["series_id"])
+    with record_stage(con, chapter_id=ch["id"], stage="published",
+                      series_id=ch["series_id"]):
+        rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
+                      "--episode-dir", ep, "--series-title", title], log, env=env)
+        if rc != 0:
+            raise RuntimeError(f"publish_concept exited {rc}")
+        rc = _stream([PY, str(REPO / "tools" / "thumbnail_build.py"),
+                      "--episode-dir", ep], log, env=env)
+        if rc != 0:
+            raise RuntimeError(f"thumbnail_build exited {rc}")
+
+
 HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]] = {
     "discovery_scan": _h_discovery_scan,
     "prepare": _h_prepare,
     "voiceover": _h_voiceover,
+    "publish_meta": _h_publish_meta,
     "add_series": _h_add_series,
     "branding_segments": _h_branding_segments,
     "chain": _h_chain,

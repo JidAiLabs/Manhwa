@@ -282,12 +282,24 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         qa_html = Path(ch["ep_dir"] or "") / "prep_qa.html"
         qa_v = int(qa_html.stat().st_mtime) if (
             ch["ep_dir"] and qa_html.exists()) else 0
+        publish = None
+        pm = Path(ch["ep_dir"] or "") / "render" / "publish_meta.json"
+        if ch["ep_dir"] and pm.exists():
+            try:
+                publish = json.loads(pm.read_text())
+            except Exception:
+                publish = None
+        has_thumb = bool(ch["ep_dir"] and (
+            Path(ch["ep_dir"]) / "render" / "thumbnail_yt.jpg").exists())
+        thumb_v = int((Path(ch["ep_dir"]) / "render" / "thumbnail_yt.jpg")
+                      .stat().st_mtime) if has_thumb else 0
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
                     qa_ok=gates.latest_qa_ok(c, cid),
                     render_allowed=allowed, render_block_reason=why,
                     voice_allowed=v_allowed, voice_block_reason=v_why,
                     has_voice_preview=has_preview, qa_v=qa_v,
+                    publish=publish, has_thumb=has_thumb, thumb_v=thumb_v,
                     cost=_chapter_costs(ch["ep_dir"]),
                     gallery=_gallery(ch["ep_dir"]), ep_rel=ep_rel)
 
