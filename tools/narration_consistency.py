@@ -40,6 +40,34 @@ def narration_sha(text: Optional[str]) -> str:
     return hashlib.sha256(normalize_narration(text).encode("utf-8")).hexdigest()
 
 
+# --- series-intro / title-card "chrome" scrub -------------------------------
+# The beats writer invents opening chrome ("Welcome to the world of <Title>.",
+# "The chapter begins with a title card for <Title>.") — AI slop AND the one
+# place the licensed series title leaks into VOICED narration. We drop any
+# SENTENCE that reads as this meta framing, anywhere in the line. Title-AGNOSTIC
+# (keys on the framing, not the title) so legitimate story nouns survive (e.g.
+# "Nano Machine" the in-story device). Applied at the BEATS SOURCE so script,
+# plan and audio all inherit the same clean narration — no cross-stage desync.
+_CHROME_SENTENCE_RE = re.compile(
+    r"(?:\bwelcome to\b|\bstep into\b|\benter the\b|\bdive into\b|\bventure into\b|"
+    r"\bprepare to (?:enter|dive|witness)\b|\bthis is (?:the )?(?:story|tale|world|saga) of\b|"
+    r"\bget ready for\b|\blet me (?:introduce|tell you about)\b|\bjoin us (?:in|as)\b|"
+    r"\bin the world of\b|\bthe (?:chapter|episode|story|series|tale) (?:begins|opens|starts|kicks off)\b|"
+    r"\btitle card\b|\bopening (?:panel|shot|scene|card)\b|"
+    r"\bour (?:story|tale|recap) (?:begins|opens|starts)\b)",
+    re.IGNORECASE)
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def strip_chrome_opener(text: Optional[str]) -> str:
+    """Drop sentences that read as series-intro / title-card chrome; keep the
+    rest of the line intact. Series-title-agnostic (spares story nouns)."""
+    sents = _SENTENCE_SPLIT_RE.split((text or "").strip())
+    kept = [s for s in sents if s.strip() and not _CHROME_SENTENCE_RE.search(s)]
+    return " ".join(kept).strip()
+
+
 def _clip_sha(clip: Dict[str, Any]) -> Optional[str]:
     """The fingerprint a clip was actually voiced from — ONLY the stored
     ``text_sha`` is trustworthy. We deliberately do NOT fall back to hashing a

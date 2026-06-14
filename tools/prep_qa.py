@@ -51,7 +51,7 @@ import render_prep as rp                      # art/bubble metrics, detector
 from render_prep import multi_scale_contained
 from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
-from narration_consistency import audio_consistency
+from narration_consistency import audio_consistency, strip_chrome_opener
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
@@ -384,7 +384,10 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
         if not m:
             continue
         narr = bn.get(int(m.group(1)))
-        a, b = _norm_narr(item.get("tts_text") or ""), _norm_narr(narr or "")
+        # scrub series-intro/title-card chrome from the beats side too, matching
+        # what the script stage voices — otherwise a legitimately-scrubbed plan
+        # reads as "stale" against an un-scrubbed beats line (false positive).
+        a, b = _norm_narr(item.get("tts_text") or ""), _norm_narr(strip_chrome_opener(narr or ""))
         if not a or not b:
             continue
         sim = SequenceMatcher(None, a, b).ratio()

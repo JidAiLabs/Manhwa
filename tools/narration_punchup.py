@@ -31,6 +31,8 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
+from narration_consistency import strip_chrome_opener  # noqa: E402
+
 BASE_PERSONA = """You are the narrator persona of a top manhwa recap channel.
 Voice: internet-native, dry, confident, a little sarcastic — a sharp friend
 recapping the story, not a movie trailer.
@@ -269,6 +271,11 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
             # rejection RESTORES the grounded line — on an already-punched
             # file the old punch must not survive a failed re-validation
             b["narration"] = original
+        # scrub series-intro/title-card chrome at the SOURCE so the script, plan
+        # and audio all inherit the same clean narration (no cross-stage desync
+        # that would trip narration_stale). Title-agnostic; spares story nouns.
+        b["narration"] = strip_chrome_opener(b["narration"])
+        b["narration_plain"] = strip_chrome_opener(b["narration_plain"])
     out.setdefault("stats", {})["punchup_applied"] = applied
     return out
 

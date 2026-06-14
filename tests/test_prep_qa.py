@@ -795,6 +795,22 @@ def test_audio_flags_voiced_plan_with_vanished_index_errors():
     assert out[0]["severity"] == "ERROR"
 
 
+def test_narration_stale_tolerates_chrome_scrub_but_catches_real_drift():
+    # the script stage scrubs chrome openers; the gate must scrub the beats side
+    # too, else a legitimately-scrubbed plan reads as "stale" (the IE false pos).
+    groups = {"shots": [{"group_id": 1}]}
+    script = {"narration_source": "gemini_verbatim"}
+    plan = {"timeline": [_seg("g0001_p00", "[serious] He wakes as a baby.", ["a.jpg"])]}
+    chrome = {"beats": [{"group_id": 1,
+                         "narration": "Welcome to the grind of Infinite Evolution From Zero."}]}
+    assert "narration_stale" not in [f["code"] for f in
+        pq.alignment_flags(plan, chrome, groups, script)]
+    real = {"beats": [{"group_id": 1,
+                       "narration": "An unrelated paragraph about distant dragons and war."}]}
+    assert "narration_stale" in [f["code"] for f in
+        pq.alignment_flags(plan, real, groups, script)]
+
+
 def test_audio_flags_missing_clip_for_voiced_chapter():
     plan = {"timeline": [_seg("g0001_p00", "Has audio.", ["a.jpg"]),
                          _seg("g0002_p01", "No audio yet.", ["b.jpg"])]}
