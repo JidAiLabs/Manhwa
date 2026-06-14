@@ -23,9 +23,11 @@ beats_model = "gemma4:26b"
 # script: OpenAI. gpt-4.1-mini is API-deprecating 2026-10-14; gpt-5-nano is ~5x cheaper.
 script_model = "gpt-5-nano"
 # punchup: genre-aware persona pass over the grounded beats (channel voice).
+# "cinematic" = alternate-by-beat: DRAMATIC beats (high scene intensity) keep the
+#   cinematic atmosphere, CONNECTIVE beats get full persona — the user's blend.
 # "full" | "light" | "off". Grounded line survives as narration_plain;
 # caption-bearing groups reject rewrites that drop the caption words.
-punchup = "full"
+punchup = "cinematic"
 # OCR/visioned stage: "apple" = on-device macOS Vision (FREE, 97%% F1 vs Google) | "google" (paid)
 vision_backend = "apple"
 
@@ -40,5 +42,5 @@ backend = "qwen"
 voice_ref = "assets/voice/narrator_ref.wav"   # LOCKED narrator (user-picked clip g0021_p02).
                  # qwen clones it (Base ckpt, .txt transcript sidecar); chatterbox clones it too;
                  # kokoro ignores it (uses kokoro_voice).
-python = "/Users/anka/repos/Manhwa/.qwen_venv/bin/python"   # isolated venv per backend (deps conflict)
+python = ".qwen_venv/bin/python"   # repo-relative -> resolves per host (Air/Mini); isolated venv (deps conflict)
 kokoro_voice = "am_puck"   # used only when backend = "kokoro"

@@ -760,3 +760,44 @@ def test_montage_flags_exempt_sys_doc_recurrence():
     plan = {"timeline": tl, "scene_dims": {"s.jpg": {"sys": True},
                                            "d.jpg": {"doc": True}}}
     assert pq.montage_flags(plan) == []
+
+
+# ---- audio <-> narration consistency gate --------------------------------
+
+def _idx(*pairs):
+    from narration_consistency import narration_sha
+    return {"clips": [{"segment_id": s, "text_sha": narration_sha(t)}
+                      for s, t in pairs]}
+
+
+def test_audio_flags_fresh_when_audio_matches_narration():
+    plan = {"timeline": [_seg("g0001_p00", "[tense] He runs.", ["a.jpg"])]}
+    assert pq.audio_flags(plan, _idx(("g0001_p00", "He runs."))) == []
+
+
+def test_audio_flags_stale_when_narration_changed():
+    plan = {"timeline": [_seg("g0001_p00", "He sprints away now.", ["a.jpg"])]}
+    out = pq.audio_flags(plan, _idx(("g0001_p00", "He runs.")))
+    assert [f["code"] for f in out] == ["audio_stale"]
+    assert out[0]["severity"] == "ERROR"
+
+
+def test_audio_flags_empty_index_is_not_gated():
+    plan = {"timeline": [_seg("g0002_p01", "Brand new beat.", ["a.jpg"])]}
+    assert pq.audio_flags(plan, _idx()) == []        # not voiced yet
+
+
+def test_audio_flags_voiced_plan_with_vanished_index_errors():
+    plan = {"source_tts_index": "tts/tts_index.json",
+            "timeline": [_seg("g0001_p00", "Has narration.", ["a.jpg"])]}
+    out = pq.audio_flags(plan, {})                    # index missing/empty
+    assert [f["code"] for f in out] == ["audio_index_missing"]
+    assert out[0]["severity"] == "ERROR"
+
+
+def test_audio_flags_missing_clip_for_voiced_chapter():
+    plan = {"timeline": [_seg("g0001_p00", "Has audio.", ["a.jpg"]),
+                         _seg("g0002_p01", "No audio yet.", ["b.jpg"])]}
+    out = pq.audio_flags(plan, _idx(("g0001_p00", "Has audio.")))
+    assert [f["code"] for f in out] == ["audio_missing"]
+    assert out[0]["segment_id"] == "g0002_p01"

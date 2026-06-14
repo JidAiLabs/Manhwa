@@ -36,6 +36,20 @@ class Config:
                                              # 97% token-F1 vs Google) | "google"
                                              # (Cloud Vision, paid per panel)
 
+def _resolve_tts_python(val: str) -> str:
+    """Host-agnostic local-TTS interpreter. STUDIO_TTS_PYTHON env wins (per-host
+    override); a RELATIVE path resolves against the repo root so one committed
+    studio.toml works on every host (no hardcoded /Users/<name> — that broke the
+    voiced stage after the Air->Mini move). An absolute path is honored as-is."""
+    env = os.environ.get("STUDIO_TTS_PYTHON")
+    if env:
+        return env
+    if not val:
+        return ""
+    p = Path(val).expanduser()
+    return str(p if p.is_absolute() else REPO_ROOT / p)
+
+
 def load_creds_env(path: Path | None = None) -> None:
     """Load KEY=VALUE lines from keys/creds.env into os.environ.
 
@@ -78,7 +92,7 @@ def load(path: Path | None = None) -> Config:
         script_model=m.get("script_model", "gpt-4.1-mini"),
         tts_backend=t.get("backend", "elevenlabs"),
         tts_voice_ref=t.get("voice_ref", ""),
-        tts_python=t.get("python", ""),
+        tts_python=_resolve_tts_python(t.get("python", "")),
         tts_kokoro_voice=t.get("kokoro_voice", "af_heart"),
         narration_source=m.get("narration_source", "gemini_verbatim"),
         punchup=(os.environ.get("STUDIO_PUNCHUP")

@@ -15,9 +15,15 @@ import json
 import os
 import re
 import subprocess
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from narration_consistency import narration_sha  # noqa: E402
 
 ELEVEN_BASE = "https://api.elevenlabs.io"
 _TAG_RE = re.compile(r"\[[^\[\]]+\]")
@@ -252,6 +258,19 @@ def main() -> int:
 
     total = 0.0
 
+    # text-aware incremental cache (mirrors local_tts): reuse a clip only when
+    # its narration is UNCHANGED, so a beats/script regen re-voices ONLY the
+    # changed segments. Existence-only caching shipped stale audio.
+    prior_sha: Dict[str, str] = {}
+    prior_index_path = os.path.join(out_dir, "tts_index.json")
+    if os.path.exists(prior_index_path) and not args.overwrite:
+        try:
+            for c in (json.load(open(prior_index_path)).get("clips") or []):
+                if c.get("segment_id") and c.get("text_sha"):
+                    prior_sha[str(c["segment_id"])] = str(c["text_sha"])
+        except Exception:
+            prior_sha = {}
+
     for it in items:
         seg_id = it["segment_id"]
         gid = int(it["group_id"])
@@ -263,6 +282,7 @@ def main() -> int:
         sent_text = strip_bracket_tags(source_text) if args.strip_tags else source_text
         if not sent_text:
             continue
+        text_sha = narration_sha(source_text)
 
         # Canonical filename tied to segment_id (this is the critical fix)
         audio_name = f"{seg_id}.{ext}"
@@ -271,7 +291,8 @@ def main() -> int:
         vs = it.get("voice_settings")
         voice_settings = _coerce_voice_settings(vs, v3=v3) if isinstance(vs, dict) else dict(default_vs)
 
-        if os.path.exists(audio_path) and not args.overwrite:
+        if (os.path.exists(audio_path) and not args.overwrite
+                and prior_sha.get(seg_id) == text_sha):
             dur = ffprobe_duration_sec(audio_path)
             index["clips"].append({
                 "segment_id": seg_id,
@@ -281,6 +302,7 @@ def main() -> int:
                 "paragraph_index": para_idx,
                 "source_text": source_text,
                 "sent_text": sent_text,
+                "text_sha": text_sha,
                 "voice_settings": voice_settings,
                 "audio_file": os.path.relpath(audio_path, out_dir),
                 "duration_sec": round(dur, 4),
@@ -313,6 +335,7 @@ def main() -> int:
             "paragraph_index": para_idx,
             "source_text": source_text,
             "sent_text": sent_text,
+            "text_sha": text_sha,
             "voice_settings": voice_settings,
             "audio_file": os.path.relpath(audio_path, out_dir),
             "duration_sec": round(dur, 4),

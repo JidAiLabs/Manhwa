@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import wave
 from pathlib import Path
 
@@ -121,17 +122,55 @@ def test_synthesize_manifest_builds_aligned_index(tmp_path):
     assert (tmp_path / "clips" / "g0001_p00.wav").exists()
 
 
-def test_synthesize_manifest_caches_existing(tmp_path):
-    (tmp_path / "clips").mkdir()
-    (tmp_path / "clips" / "g0001_p00.wav").write_bytes(b"X")
-    (tmp_path / "clips" / "g0002_p01.wav").write_bytes(b"X")
-    synth_calls = []
+def _synth_write(calls):
+    def _fn(text, out_path, exaggeration):
+        calls.append(out_path)
+        with open(out_path, "wb") as f:
+            f.write(b"RIFFXXXXWAVE")
+    return _fn
+
+
+def test_synthesize_manifest_caches_unchanged_text(tmp_path):
+    # first run synthesizes both and writes the index
+    calls1 = []
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write(calls1), duration_fn=lambda p: 1.0)
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    assert len(calls1) == 2
+    assert all(c.get("text_sha") for c in idx["clips"])      # fingerprint stored
+    # second run, identical script: both cached (text unchanged) -> no synthesis
+    calls2 = []
     lt.synthesize_manifest(
         _script(), str(tmp_path), backend="kokoro",
-        synth_fn=lambda t, o, e: synth_calls.append(o),
-        duration_fn=lambda p: 1.0, overwrite=False,
-    )
-    assert synth_calls == []                      # both cached, no synthesis
+        synth_fn=_synth_write(calls2), duration_fn=lambda p: 1.0)
+    assert calls2 == []
+
+
+def test_synthesize_manifest_revoices_only_changed_segments(tmp_path):
+    # establish a baseline index
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0)
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    # edit ONLY the second paragraph's narration
+    changed = _script()
+    changed["sections"][0]["tts_paragraphs_v3"][1] = "[calm] A new, different line."
+    calls = []
+    lt.synthesize_manifest(
+        changed, str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0)
+    # only g0002_p01 re-voiced; g0001_p00 kept (deterministic gate, incremental)
+    assert [os.path.basename(c) for c in calls] == ["g0002_p01.wav"]
+
+
+def test_synthesize_manifest_prunes_orphan_clips(tmp_path):
+    (tmp_path / "clips").mkdir()
+    (tmp_path / "clips" / "g0099_p09.wav").write_bytes(b"orphan")   # not in script
+    lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0)
+    assert not (tmp_path / "clips" / "g0099_p09.wav").exists()      # pruned
 
 
 # ---- voice-clone ref sidecar (locked narrator g0021_p02) -------------------
