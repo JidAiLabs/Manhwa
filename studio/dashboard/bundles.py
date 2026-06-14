@@ -88,15 +88,14 @@ def segments_ready(con: sqlite3.Connection, bundle_id: int,
 
 def wrap_with_branding(segments: List[str], intro: str, outro: str,
                        *, exists=None) -> List[str]:
-    """Every published video = [series intro] + segments + [series outro].
-    Chapters render once with NO baked branding; the intro/outro are
-    per-series standalone mp4s, so singles, season packs, ladder steps and
-    FULL compilations are all just concats of the same segments."""
+    """Every published video = chapter segments + [series outro]. The INTRO was
+    dropped (channel decision 2026-06-15): videos open straight on the story so
+    viewers don't bounce on a cold open. *intro* is accepted but ignored. The
+    outro is a per-series standalone mp4 (singles, season packs, ladder steps and
+    FULL compilations are all just concats of the same segments)."""
     import os as _os
     exists = exists or _os.path.exists
     out = list(segments)
-    if intro and exists(intro):
-        out = [intro] + out
     if outro and exists(outro):
         out = out + [outro]
     return out

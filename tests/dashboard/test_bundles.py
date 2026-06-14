@@ -63,12 +63,13 @@ def test_projected_runtime_uses_plans_with_eta_fallback(tmp_path):
     assert total > 600 + 540             # + estimated ch3 + intro/outro
 
 
-def test_wrap_with_branding_prepends_and_appends_when_present():
+def test_wrap_with_branding_appends_outro_only_no_intro():
+    # channel decision 2026-06-15: NO intro — videos open on the story; outro kept
     segs = ["/a/ch1.mp4", "/a/ch2.mp4"]
     out = bundles.wrap_with_branding(
         segs, "/b/intro.mp4", "/b/outro.mp4",
         exists=lambda p: True)
-    assert out == ["/b/intro.mp4", "/a/ch1.mp4", "/a/ch2.mp4", "/b/outro.mp4"]
+    assert out == ["/a/ch1.mp4", "/a/ch2.mp4", "/b/outro.mp4"]   # intro ignored
     # missing branding files -> plain segments (graceful)
     assert bundles.wrap_with_branding(segs, "/b/i.mp4", "/b/o.mp4",
                                       exists=lambda p: False) == segs

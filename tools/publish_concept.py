@@ -192,9 +192,28 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
     return c
 
 
+def _gemma(prompt: str, model: str) -> Dict[str, Any]:
+    from ollama_compat import chat as _chat
+    resp = _chat(model=model, think=False,
+                 messages=[{"role": "user", "content": prompt}],
+                 options={"temperature": 0.8, "num_predict": 800})
+    return extract_json((resp.get("message") or {}).get("content") or "") or {}
+
+
+def _plan_duration(ep: str) -> float:
+    for fn in ("render.plan.clean.json", "render.plan.json"):
+        try:
+            return float(json.load(open(os.path.join(ep, fn))).get("total_duration_sec") or 0.0)
+        except Exception:
+            continue
+    return 0.0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--episode-dir", required=True)
+    ap.add_argument("--episode-dir", default="", help="single-chapter mode")
+    ap.add_argument("--episode-dirs", default="", help="comma-separated chapter "
+                    "dirs = a BUNDLE/video (arc title + Parts). Use for videos.")
     ap.add_argument("--series-title", default="", help="licensed title — BAN list "
                     "(never in title/desc/thumb) + pinned-comment credit")
     ap.add_argument("--genre", default="")
@@ -203,19 +222,29 @@ def main() -> int:
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
-    beats_obj = json.load(open(os.path.join(args.episode_dir, "manifest.beats.json")))
-    style = select_style(beats_obj, genre=args.genre)
-    prompt = build_concept_prompt(chapter_digest(beats_obj), args.series_title, style)
+    if args.episode_dirs:
+        eps = [e for e in args.episode_dirs.split(",") if e]
+        beats_list = [json.load(open(os.path.join(e, "manifest.beats.json"))) for e in eps]
+        durations = [_plan_duration(e) for e in eps]
+        style = select_style(beats_list[select_bundle_climax(beats_list)[0]] if beats_list else {},
+                             genre=args.genre)
+        llm = _gemma(build_concept_prompt(bundle_digest(beats_list), args.series_title, style),
+                     args.ollama_model)
+        concept = build_bundle_concept(beats_list, llm, durations=durations,
+                                       series_title=args.series_title, genre=args.genre,
+                                       official_link=args.official_link)
+        out = args.out or os.path.join(eps[0], "render", "bundle_publish_meta.json")
+    else:
+        if not args.episode_dir:
+            ap.error("need --episode-dir (single) or --episode-dirs (bundle)")
+        beats_obj = json.load(open(os.path.join(args.episode_dir, "manifest.beats.json")))
+        style = select_style(beats_obj, genre=args.genre)
+        llm = _gemma(build_concept_prompt(chapter_digest(beats_obj), args.series_title, style),
+                     args.ollama_model)
+        concept = assemble_concept(beats_obj, llm, series_title=args.series_title,
+                                   genre=args.genre, official_link=args.official_link)
+        out = args.out or os.path.join(args.episode_dir, "render", "publish_meta.json")
 
-    from ollama_compat import chat as _chat
-    resp = _chat(model=args.ollama_model, think=False,
-                 messages=[{"role": "user", "content": prompt}],
-                 options={"temperature": 0.8, "num_predict": 700})
-    llm = extract_json((resp.get("message") or {}).get("content") or "") or {}
-
-    concept = assemble_concept(beats_obj, llm, series_title=args.series_title,
-                               genre=args.genre, official_link=args.official_link)
-    out = args.out or os.path.join(args.episode_dir, "render", "publish_meta.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(concept, f, ensure_ascii=False, indent=2)
