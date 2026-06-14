@@ -19,6 +19,13 @@ def test_strips_series_intro_chrome_opener():
     assert f("This is the story of the Strongest Newbie.") == ""
 
 
+def test_strips_title_card_and_chapter_begins_chrome():
+    # the leak that slipped through the first fix (what_happens fallback)
+    assert f("The chapter begins with a title card for Infinite Evolution From Zero.") == ""
+    assert f("We open on a title card for The Strongest Newbie.") == ""
+    assert f("The episode opens with our hero asleep.") == ""
+
+
 def test_keeps_real_sentence_after_chrome_opener():
     assert f("Welcome to the world of X. He wakes as a baby.") == "He wakes as a baby."
 

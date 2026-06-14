@@ -743,28 +743,31 @@ def _escalate_tag_for_intensity(tag: str, rank: int) -> str:
     return t
 
 
-# Generic "intro chrome" openers the beats writer sometimes invents for the
-# first beat ("Welcome to the world of <Series Title>.") — these are AI slop AND
-# the one place the licensed series name leaks into spoken narration. Strip a
-# LEADING chrome-opener sentence. Title-AGNOSTIC by design: it keys on the meta
-# framing, not the title, so it spares legitimate mid-sentence story nouns (e.g.
-# Nano Machine the in-story device) and works for any manhwa.
-_CHROME_OPENER_RE = re.compile(
-    r"^\s*(?:welcome to|step into|enter the|dive into|venture into|"
-    r"prepare to (?:enter|dive into|witness)|this is (?:the )?(?:story|tale|world|saga|world) of|"
-    r"get ready for|let me (?:introduce|tell you about)|join us (?:in|as)|"
-    r"in the world of)\b[^.!?]*[.!?]\s*",
+# Series-intro / title-card "chrome" the beats writer invents for the opening
+# beat ("Welcome to the world of <Title>.", "The chapter begins with a title
+# card for <Title>.") — AI slop AND the one place the licensed series name leaks
+# into the VOICED narration. We drop any SENTENCE that reads as this meta chrome,
+# anywhere in the line. Title-AGNOSTIC by design: it keys on the meta framing
+# (welcome / title card / the chapter opens / the world|story of), NOT on the
+# title string, so legitimate mid-sentence story nouns (e.g. "Nano Machine" the
+# in-story device) survive, and it works for any manhwa.
+_CHROME_SENTENCE_RE = re.compile(
+    r"(?:\bwelcome to\b|\bstep into\b|\benter the\b|\bdive into\b|\bventure into\b|"
+    r"\bprepare to (?:enter|dive|witness)\b|\bthis is (?:the )?(?:story|tale|world|saga) of\b|"
+    r"\bget ready for\b|\blet me (?:introduce|tell you about)\b|\bjoin us (?:in|as)\b|"
+    r"\bin the world of\b|\bthe (?:chapter|episode|story|series|tale) (?:begins|opens|starts|kicks off)\b|"
+    r"\btitle card\b|\bopening (?:panel|shot|scene|card)\b|\bour (?:story|tale|recap) (?:begins|opens|starts)\b)",
     re.IGNORECASE)
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def strip_chrome_opener(text: str) -> str:
-    """Remove leading series-intro chrome sentence(s); leave the rest intact."""
-    prev = None
-    out = (text or "").strip()
-    while out != prev:
-        prev = out
-        out = _CHROME_OPENER_RE.sub("", out, count=1).strip()
-    return out
+    """Drop sentences that read as series-intro / title-card chrome; keep the
+    rest of the line intact. Series-title-agnostic (spares story nouns)."""
+    sents = _SENTENCE_SPLIT_RE.split((text or "").strip())
+    kept = [s for s in sents if s.strip() and not _CHROME_SENTENCE_RE.search(s)]
+    return " ".join(kept).strip()
 
 
 def _build_verbatim_section(
