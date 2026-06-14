@@ -63,18 +63,20 @@ def test_missing_when_no_clip():
     assert r["missing"] == ["g0009_p02"]
 
 
-def test_fallback_to_sent_text_for_preupgrade_index():
-    # an index written before text_sha existed still works via stored text
+def test_clip_without_text_sha_is_stale_even_with_stored_text():
+    # only text_sha proves freshness; a stored source/sent_text is NOT trusted
+    # (a rewrite-without-resynth producer would otherwise look fresh). Forces a
+    # one-time re-voice that backfills text_sha — self-healing migration.
     plan = _plan(("g0001_p00", "He runs."))
-    idx = _index(("g0001_p00", {"sent_text": "He runs."}))
-    assert nc.audio_consistency(plan, idx)["fresh"] == ["g0001_p00"]
+    assert nc.audio_consistency(
+        plan, _index(("g0001_p00", {"sent_text": "He runs."})))["stale"] == ["g0001_p00"]
+    assert nc.audio_consistency(
+        plan, _index(("g0001_p00", {"duration_sec": 3.0})))["stale"] == ["g0001_p00"]
 
 
-def test_legacy_clip_without_any_text_is_stale():
-    # Jun-10 indexes had neither text_sha nor sent_text -> must re-voice
-    plan = _plan(("g0001_p00", "He runs."))
-    idx = _index(("g0001_p00", {"duration_sec": 3.0}))
-    assert nc.audio_consistency(plan, idx)["stale"] == ["g0001_p00"]
+def test_inline_tags_are_ignored_in_fingerprint():
+    # a mid-sentence delivery tag must not look like a content change
+    assert nc.narration_sha("He fights [beat] harder.") == nc.narration_sha("He fights harder.")
 
 
 def test_branding_and_silent_segments_ignored():

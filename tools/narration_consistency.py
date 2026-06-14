@@ -21,15 +21,17 @@ import hashlib
 import re
 from typing import Any, Dict, List, Optional
 
-# leading run of [mood]/[delivery] bracket tags, e.g. "[excited] [fast] "
-_LEADING_TAGS = re.compile(r"^\s*(?:\[[^\]]*\]\s*)+")
+# ALL [mood]/[delivery] bracket tags, anywhere in the line — TTS strips every
+# one of them before synthesis (strip_bracket_tags), so the spoken content must
+# ignore them wherever they sit, not just at the start.
+_BRACKET_TAGS = re.compile(r"\[[^\]]*\]")
 
 
 def normalize_narration(text: Optional[str]) -> str:
-    """Canonical spoken-content form: leading bracket tags removed, whitespace
+    """Canonical spoken-content form: every bracket tag removed, whitespace
     collapsed, casefolded. Two lines that would be SPOKEN identically normalize
     to the same string."""
-    t = _LEADING_TAGS.sub("", text or "")
+    t = _BRACKET_TAGS.sub(" ", text or "")
     return re.sub(r"\s+", " ", t).strip().casefold()
 
 
@@ -39,16 +41,14 @@ def narration_sha(text: Optional[str]) -> str:
 
 
 def _clip_sha(clip: Dict[str, Any]) -> Optional[str]:
-    """The fingerprint a clip was voiced from. Prefers the stored ``text_sha``;
-    falls back to hashing the stored source text for pre-upgrade indexes; None
-    when the clip records no source text at all (must be treated as stale)."""
+    """The fingerprint a clip was actually voiced from — ONLY the stored
+    ``text_sha`` is trustworthy. We deliberately do NOT fall back to hashing a
+    stored ``source_text``/``sent_text``: a producer that rewrites that field
+    without re-synthesizing (e.g. a file-existence cache) would then look fresh
+    while shipping stale audio. No text_sha → unknown → caller treats as stale,
+    forcing a one-time re-voice that backfills the sha (self-healing migration)."""
     sha = clip.get("text_sha")
-    if sha:
-        return str(sha)
-    for key in ("source_text", "sent_text"):
-        if clip.get(key) is not None:
-            return narration_sha(str(clip.get(key)))
-    return None
+    return str(sha) if sha else None
 
 
 def audio_consistency(plan_obj: Dict[str, Any],

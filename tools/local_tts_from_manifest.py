@@ -44,6 +44,8 @@ from narration_consistency import narration_sha  # noqa: E402
 # ---------------------------------------------------------------------------
 
 _TAG_RE = re.compile(r"\[([^\]]+)\]")
+# canonical per-paragraph clip filename: g####_p##.wav (prune targets ONLY these)
+_SEGMENT_WAV_RE = re.compile(r"^g\d{4}_p\d{2}\.wav$")
 
 # Mood/intensity -> Chatterbox `exaggeration` (0..1, ~0.5 neutral). The script's
 # tts_paragraphs_v3 lead with an ElevenLabs-v3 style tag (e.g. "[tense]"); we map
@@ -374,14 +376,15 @@ def synthesize_manifest(
         flag = " SOFT-ATTACK-LIFTED" if cond.get("soft_attack") else ""
         print(f"[{'cache' if cached else 'ok'}] {seg_id} dur={dur:.2f}s mood={tag or '-'}{flag}")
 
-    # prune orphan clips (segments no longer in the script) so a stale wav never
-    # leaks into the voice-preview concat or a later render
+    # prune orphan SEGMENT clips (g####_p## no longer in the script) so a stale
+    # wav never leaks into the voice-preview concat or a later render. Only
+    # canonical segment names are touched — never branding or other sidecar wavs.
     for fn in os.listdir(clips_dir):
-        if fn.endswith(".wav") and fn[:-4] not in kept_ids:
+        if _SEGMENT_WAV_RE.match(fn) and fn[:-4] not in kept_ids:
             try:
                 os.remove(os.path.join(clips_dir, fn))
-            except OSError:
-                pass
+            except OSError as e:
+                print(f"[warn] could not prune orphan clip {fn}: {e}")
 
     index["total_duration_sec"] = round(total, 4)
     return index

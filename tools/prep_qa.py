@@ -406,7 +406,14 @@ def audio_flags(plan: Dict[str, Any],
     is now stale (the bug the user caught by ear). $0, no LLM — re-voice the
     flagged segments (the voiced stage does this incrementally)."""
     if not (tts_index or {}).get("clips"):
-        return []                       # not voiced yet — nothing to check
+        # a plan built voiced (source_tts_index set) but with no clip index is a
+        # hard error — never silently pass it as "not voiced yet"
+        if (plan or {}).get("source_tts_index"):
+            return [_flag(
+                "audio_index_missing", ERROR,
+                "plan was built voiced (source_tts_index set) but "
+                "tts/tts_index.json has no clips — run/repair the voiced stage")]
+        return []                       # genuinely not voiced yet — nothing to check
     r = audio_consistency(plan, tts_index)
     flags: List[Dict[str, Any]] = []
     for seg in r["stale"]:

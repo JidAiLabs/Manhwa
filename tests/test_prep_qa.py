@@ -787,6 +787,14 @@ def test_audio_flags_empty_index_is_not_gated():
     assert pq.audio_flags(plan, _idx()) == []        # not voiced yet
 
 
+def test_audio_flags_voiced_plan_with_vanished_index_errors():
+    plan = {"source_tts_index": "tts/tts_index.json",
+            "timeline": [_seg("g0001_p00", "Has narration.", ["a.jpg"])]}
+    out = pq.audio_flags(plan, {})                    # index missing/empty
+    assert [f["code"] for f in out] == ["audio_index_missing"]
+    assert out[0]["severity"] == "ERROR"
+
+
 def test_audio_flags_missing_clip_for_voiced_chapter():
     plan = {"timeline": [_seg("g0001_p00", "Has audio.", ["a.jpg"]),
                          _seg("g0002_p01", "No audio yet.", ["b.jpg"])]}
