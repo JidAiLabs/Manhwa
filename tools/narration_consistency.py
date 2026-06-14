@@ -54,18 +54,36 @@ _CHROME_SENTENCE_RE = re.compile(
     r"\bget ready for\b|\blet me (?:introduce|tell you about)\b|\bjoin us (?:in|as)\b|"
     r"\bin the world of\b|\bthe (?:chapter|episode|story|series|tale) (?:begins|opens|starts|kicks off)\b|"
     r"\btitle card\b|\bopening (?:panel|shot|scene|card)\b|"
-    r"\bour (?:story|tale|recap) (?:begins|opens|starts)\b)",
+    # meta-narration ABOUT the format instead of the story (AI slop): the
+    # narrator commenting on the recap/presentation rather than narrating it.
+    r"\bwe(?:'re| are)? (?:presented|shown|introduced|treated)\b|"
+    r"\bbefore the (?:story|tale|episode|chapter|recap) (?:unfolds|begins|starts|opens|kicks off)\b|"
+    r"\bmeta[- ]commentary\b|"
+    r"\bour (?:true )?(?:adventure|journey|tale|story|recap) (?:is about to|begins|opens|starts|unfolds|awaits|kicks off)\b)",
     re.IGNORECASE)
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
+# Licensed series titles leak as a trailing clause inside an OTHERWISE-good
+# sentence (e.g. "...a distant light, under the title 'Omniscient Reader'.") —
+# strip just the clause, keep the rest. Title-AGNOSTIC: keys on the framing
+# ("(under) the title 'X'" / "titled 'X'"), so any quoted title is removed.
+_TITLE_CLAUSE_RE = re.compile(
+    r"[,;:]?\s*(?:under|bearing|beneath|below|with)?\s*(?:the\s+title|titled|entitled)"
+    r"\s*[:,]?\s*['\"‘“][^'\"’”]+['\"’”]",
+    re.IGNORECASE)
+_DANGLE_PUNCT_RE = re.compile(r"\s+([.,;:!?])")
+
 
 def strip_chrome_opener(text: Optional[str]) -> str:
-    """Drop sentences that read as series-intro / title-card chrome; keep the
+    """Drop sentences that read as series-intro / title-card / meta chrome and
+    strip embedded 'the title \"X\"' clauses (the licensed-name leak); keep the
     rest of the line intact. Series-title-agnostic (spares story nouns)."""
-    sents = _SENTENCE_SPLIT_RE.split((text or "").strip())
+    t = _TITLE_CLAUSE_RE.sub("", (text or "").strip())
+    sents = _SENTENCE_SPLIT_RE.split(t)
     kept = [s for s in sents if s.strip() and not _CHROME_SENTENCE_RE.search(s)]
-    return " ".join(kept).strip()
+    out = " ".join(kept).strip()
+    return _DANGLE_PUNCT_RE.sub(r"\1", out)        # tidy " ." left by clause cut
 
 
 def _clip_sha(clip: Dict[str, Any]) -> Optional[str]:

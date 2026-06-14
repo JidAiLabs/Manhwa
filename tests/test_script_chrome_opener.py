@@ -42,3 +42,23 @@ def test_idempotent_and_blank_safe():
     assert f("") == ""
     assert f("He fights.") == "He fights."
     assert f(f("Welcome to the world of X. Real line.")) == "Real line."
+
+
+def test_strips_embedded_title_leak_clause_keeps_sentence():
+    # the licensed name leaks as a trailing clause (ORV g0011) -> strip just the
+    # clause, keep the rest of the sentence intact
+    assert f("Figures look toward a distant light, under the title 'Omniscient Reader'.") \
+        == "Figures look toward a distant light."
+    assert f("A grand vista appears, titled 'Some Webtoon'.") == "A grand vista appears."
+    # no title framing -> untouched, even with quoted in-story text
+    assert f("He finishes reading 'the ending...' of the tale.") \
+        == "He finishes reading 'the ending...' of the tale."
+
+
+def test_strips_meta_commentary_lines():
+    # ORV g0003 / g0010: narrator talks about the recap format, not the story
+    assert f("Before the story unfolds, we are presented with the series' statistics.") == ""
+    assert f("Leaving behind the meta-commentary, our true adventure is about to unfold.") == ""
+    # a meta sentence among real ones -> only the meta sentence is removed
+    assert f("He draws his sword. Before the action begins, we are shown the stats. "
+             "The monster roars.") == "He draws his sword. The monster roars."
