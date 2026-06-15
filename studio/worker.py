@@ -214,9 +214,8 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
     """Auto-heal: regenerate ONLY the QA-flagged groups from their panels and
     re-derive, up to _HEAL_MAX cycles, until no narration-healable ERROR remains.
     A failing line is re-narrated from the art — never dropped to satisfy QA."""
-    cfg, project, location = _beats_cfg()
-    env = _series_env(con, ch["series_id"])
     corr = ep / "heal_corrections.json"
+    cfg = project = location = env = None
     for cycle in range(1, _HEAL_MAX + 1):
         _stream([PY, str(REPO / "tools" / "narration_heal.py"),
                  "--qa", str(ep / "prep_qa.json"), "--out", str(corr)], log)
@@ -225,8 +224,11 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
         except Exception:
             ncorr = 0
         if ncorr == 0:
-            log.write("[heal] no narration-healable ERRORs remain\n")
+            log.write("[heal] no narration-healable flags remain\n")
             return
+        if cfg is None:                       # load config lazily — only if healing
+            cfg, project, location = _beats_cfg()
+            env = _series_env(con, ch["series_id"])
         log.write(f"[heal] cycle {cycle}/{_HEAL_MAX}: re-narrating {ncorr} "
                   "flagged group(s) from their panels\n")
         _regen_flagged(ep, cfg, project, location, str(corr), env, log)
@@ -279,13 +281,14 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
                 raise RuntimeError(f"timeline_planner exited {rc}")
 
     _plan()
-    codes = _run_prep_and_qa(con, ch, log, heal_aware=True)
-    if codes:
-        # AUTO-HEAL: re-narrate ONLY the QA-flagged groups from their panels
-        # (corrections + --resume keep every good line), re-derive and re-QA in a
-        # loop until green. A failing line is never DROPPED to satisfy QA.
-        _heal_to_green(con, ch, ep, log)
-        codes = _qa_error_codes(ep)
+    _run_prep_and_qa(con, ch, log, heal_aware=True)
+    # AUTO-HEAL: re-narrate ONLY the QA-flagged groups from their panels
+    # (corrections + --resume keep every good line), re-derive and re-QA in a
+    # loop until green. A failing line is never DROPPED to satisfy QA. Runs
+    # unconditionally — it self-gates on the corrections map, so it also catches
+    # chrome/meta leaks that QA only WARNs about (the channel voices no chrome).
+    _heal_to_green(con, ch, ep, log)
+    codes = _qa_error_codes(ep)
     if codes:
         raise RuntimeError(
             f"prep-QA still has ERROR flags after auto-heal ({sorted(codes)}) — "

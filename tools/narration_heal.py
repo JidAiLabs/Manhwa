@@ -41,9 +41,11 @@ def _note_for(code: str, detail: str) -> str:
         return ("The narration SKIPPED an on-panel caption. Weave its words into "
                 f"the narration (this is mandatory): \"{cap}\".")
     if code == "chrome_narration":
-        return ("Do NOT mention view counts, episode-count statistics as UI, "
-                "'the chapter/series displays', screenshots, or the recap format "
-                "itself — narrate only the events and dialogue shown in the panel.")
+        return ("Narrate the panel's content as STORY, not as an interface: turn "
+                "any on-screen numbers into prose (e.g. 'over 3,000 episodes and "
+                "almost no readers'). NEVER use interface words — 'view count', "
+                "'comments', 'tap', 'swipe', 'next episode', 'displays statistics', "
+                "'the screen/chapter shows'.")
     if code == "fragment_dangle":
         return "The narration is a dangling fragment — make it a complete sentence."
     if code in ("beats_incomplete", "empty_item", "silent_group"):
@@ -56,7 +58,14 @@ def corrections_from_qa(report: Dict[str, Any]) -> Dict[int, str]:
     """{group_id: combined correction note} from the ERROR flags QA can heal."""
     notes: Dict[int, List[str]] = {}
     for f in report.get("flags") or []:
-        if f.get("severity") != "ERROR" or f.get("code") not in HEALABLE:
+        code = f.get("code")
+        # a chrome/meta leak is a rule violation at ANY severity (the channel
+        # never voices interface chatter); other codes only heal as ERRORs.
+        if code == "chrome_narration":
+            pass
+        elif f.get("severity") == "ERROR" and code in HEALABLE:
+            pass
+        else:
             continue
         gid = _gid(f.get("segment_id"))
         if gid is None:

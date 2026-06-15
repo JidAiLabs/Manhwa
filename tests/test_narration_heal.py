@@ -47,6 +47,18 @@ def test_multiple_errors_on_one_group_combine():
     assert "HELLO" in corr[7] and ("view count" in corr[7] or "format" in corr[7])
 
 
+def test_chrome_narration_heals_even_as_a_warning():
+    # the channel voices NO interface chatter, so a chrome/meta leak is healed at
+    # ANY severity (other codes only heal as ERRORs)
+    rep = {"flags": [
+        _flag("chrome_narration", "WARN", "mentions 'view count'", "g0003_p02"),
+        _flag("flash_cut", "WARN", "too short", "g0004_p03"),   # other WARN -> skip
+    ]}
+    corr = nh.corrections_from_qa(rep)
+    assert set(corr) == {3}
+    assert "interface" in corr[3].lower() or "view count" in corr[3]
+
+
 def test_empty_report_is_empty():
     assert nh.corrections_from_qa({}) == {}
     assert nh.corrections_from_qa({"flags": []}) == {}
