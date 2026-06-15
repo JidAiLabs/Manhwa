@@ -50,10 +50,25 @@ $V -m studio status [series_id]                                # chapter status 
 Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), Elftoon→**Infinite Evolution From Zero**.
 
 ### Current state / next work
-- **Nano Machine ch1 QA scorecard is CONFIDENT** (all green): 56 shown panels (2.33/page), 0 under 3.5s, 0 visible dups, 0 OCR-echoes, 0 silent groups. QA is an automated instrument now (`studio/qa_flags.py` — scores the *rendered* montage, not raw scenes; `studio/qa.py` renders scorecard + flag badges).
-- **DONE this session (SP2 + cost):** QA confidence instrument; geometric sliver-merge (proved over-seg on dense manhwa is a *selection* problem, not geometry); **Gemini scene-selection** folded into the beats call (keep/redundant + bubble_mode + intensity, ~$0 extra) → timeline drops redundant-first; beats retry overhead cut (1.67→1.17 calls/group); script per-beat narration coverage (fixes silent groups) + type-aware anti-echo (keep short direct lines/titles, rephrase dialogue/monologue); exact token+$ cost logging w/ cache visibility; per-stage model config; **free local TTS adapter (chatterbox/kokoro)**.
-- **Plans:** `docs/plans/2026-06-09-acquisition-catalog-spine.md` (SP1). **SP2: `docs/plans/specs/2026-06-09-scene-bubble-quality-design.md`** — montage/over-seg + dedup + pacing DONE; **remaining: #4 bubble inpaint (white+black), #5 bubble-mode→narration (data already in beats.scene_selection), Batch API bulk mode.** Lesson: **bubble/scene *understanding* belongs in the Gemini multimodal pass, not regex/YOLO.**
-- To reach a rendered video: set `[tts].backend=chatterbox` (default), `pip install chatterbox-tts torchaudio`, run `studio run <id> --chapters N` → `render.plan.json` → Blender.
+- **UNDERSTANDING-FIRST REDESIGN shipped (2026-06-15)** — grouping now happens AFTER
+  understanding each panel, not by gutters. The grouped stage runs `panel_understand.py`
+  (describe every panel) then `story_group.py` (group by understanding → story-beats +
+  flashback tags), replacing `scene_group_builder.py`. Narration length matches the panels
+  (content-driven); `narration_punchup` lets the LLM decide cinematic/persona per line (no
+  force, captions verbatim); the planner paces every distinct panel UNDER the voiceover (no
+  truncation, no music, no silence); the renderer applies a flashback sepia/vignette; NO
+  intro. Verified on ORV Ep0: 6→11 story-beats, flashback detected, 24/27 panels at 3–10.7s,
+  zero flicker. Full lineage + the realized lesson ("scene/story *understanding* belongs in
+  the multimodal pass, not regex/YOLO") in `docs/plans/specs/2026-06-15-recap-quality-root-cause-fix.md`.
+- **Also live:** auto-heal-to-green (`narration_heal.py` + worker `_heal_to_green` re-narrate
+  only QA-flagged groups from panels until 0 ERRORs), prep_qa blank-crop validity gate (no
+  sys/doc exemption), bundle-level title/desc (`publish_meta` job), series-level thumbnail +
+  Series-page approve UI.
+- **NEXT (see `.continue-here.md`):** clean slate (clear logs + DB job/stage history), reset
+  the 4 first chapters to `visioned`, run "prepare → QA" per chapter on the dashboard to
+  exercise the new pipeline end-to-end, review, then voice (Qwen) + render only once it looks
+  right. **A pull that touches `studio/worker.py` or `studio/dashboard/**` needs a daemon
+  restart (`launchctl kickstart -k`); tools + pipeline.py are subprocesses → fresh on pull.**
 
 ---
 
