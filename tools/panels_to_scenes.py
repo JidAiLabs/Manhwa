@@ -894,7 +894,14 @@ def main() -> int:
                 # caption cards run shorter than real panels)
                 min_h_eff = (int(args.recover_min_h_px) if pidx is None
                              else int(args.min_h_px))
-                if (box_xyxy[3] - box_xyxy[1]) < min_h_eff or (box_xyxy[2] - box_xyxy[0]) < int(args.min_w_px):
+                bh = box_xyxy[3] - box_xyxy[1]
+                bw = box_xyxy[2] - box_xyxy[0]
+                # SLIVER guard: a wide-thin horizontal band (short AND >3x wider
+                # than tall) is a broken crop / effect-strip fragment, NOT a real
+                # panel and NOT a caption card (cards are TALL). The recovery floor
+                # (90px) let a 150px red-blob sliver through under "caption card" —
+                # this catches it regardless of source.
+                if bh < min_h_eff or bw < int(args.min_w_px) or (bh < 180 and bw > 3 * bh):
                     skipped_small += 1
                     continue
 
