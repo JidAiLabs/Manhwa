@@ -51,6 +51,26 @@ def test_build_cuts_all_redundant_still_shows_one():
     assert len(cuts) == 1                                # never an empty shot
 
 
+# ---- coverage invariant: stretch to fit panels, never truncate --------------
+
+def test_coverage_duration_stretches_to_fit_every_keeper():
+    # 4 panels, no redundancy, short narration -> stretch to 4*3.5 so NONE drop
+    # (the old kmax cap showed only floor(7/3.5)=2 and silently dropped 2)
+    assert tp.coverage_duration(["a", "b", "c", "d"], None, 7.0, 3.5) == 14.0
+
+
+def test_coverage_duration_counts_only_keepers_not_redundant():
+    sel = _sel({"a": "keep", "b": "redundant", "c": "keep", "d": "redundant"})
+    # only 2 keepers -> 2*3.5 = 7; the narration is already 7 -> they all fit
+    assert tp.coverage_duration(["a", "b", "c", "d"], sel, 7.0, 3.5) == 7.0
+
+
+def test_coverage_duration_keeps_a_long_narration_unchanged():
+    # narration longer than the coverage need -> unchanged (panels pace under it)
+    assert tp.coverage_duration(["a", "b"], None, 20.0, 3.5) == 20.0
+    assert tp.coverage_duration([], None, 5.0, 3.5) == 5.0
+
+
 # ---- filler-beat drop (build #3) -------------------------------------------
 
 def test_is_filler_narration():
