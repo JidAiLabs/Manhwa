@@ -1517,6 +1517,13 @@ def main() -> int:
                         # — a story beat the timeline protected; never drop it
                         # as low-art text here
                         exempt.add(f)
+                    if (vit.get("panel_kind") in ("story", "caption")
+                            and str(vit.get("ocr_clean") or "").strip()):
+                        # the understanding says story/caption AND there is real
+                        # text — a system/age/org card or a monologue card. Its
+                        # text IS the content: keep it. Only genuinely blank story
+                        # panels (no OCR, low art) fall through to the husk drop.
+                        exempt.add(f)
                 cov[f] = score
             new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)
             dropped = list(dropped) + bdropped
