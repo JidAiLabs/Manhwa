@@ -109,6 +109,21 @@ def test_caption_solo_beat_folds_into_previous_same_segment_beat():
     assert [s["shot_id"] for s in merged] == [1, 2]      # renumbered contiguous
 
 
+def test_title_card_files_protects_story_system_cards_not_chrome():
+    # flat_frac pre-set so the detector skips image I/O; reuses prep_qa._is_title_card
+    items = [
+        {"scene_file": "c", "ocr_clean": "SKY CORPORATION.", "flat_frac": 0.9,
+         "text_coverage": 0.05, "text_only": False},                       # story org card
+        {"scene_file": "a", "ocr_clean": "LIN ZICHEN - AGE: 5 MONTHS", "flat_frac": 0.9,
+         "text_coverage": 0.05, "text_only": False},                       # story time card
+        {"scene_file": "d", "ocr_clean": "thanks for reading join our discord and subscribe now please",
+         "flat_frac": 0.9, "text_coverage": 0.05, "text_only": False},     # promo chrome
+    ]
+    cards = sg.title_card_files(items)
+    assert "c" in cards and "a" in cards     # in-world system cards protected
+    assert "d" not in cards                  # long promo is chrome, not protected
+
+
 def test_caption_closer_with_no_same_segment_neighbour_stays():
     shots = [
         {"shot_id": 1, "scene_files": ["p0"], "segment": "flashback", "arc_label": "x"},

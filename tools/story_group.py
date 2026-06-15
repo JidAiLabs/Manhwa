@@ -223,6 +223,37 @@ def chrome_files(vision_items: List[Dict[str, Any]], series_title: str) -> set:
     return out
 
 
+def title_card_files(vision_items: List[Dict[str, Any]]) -> set:
+    """Story title/system cards — 'SKY CORPORATION.', 'LIN ZICHEN - AGE: 5 MONTHS',
+    an RPG status window — that the QA layer treats as UNDROPPABLE story beats.
+    Detected with prep_qa's EXACT `_is_title_card` heuristic (same flat-frame test)
+    so story_group and prep_qa always agree: a card kept here can never be flagged
+    'system_card_dropped'. These are protected from chrome/empty exclusion even when
+    the LLM mislabels a flat info-card as chrome."""
+    try:
+        from prep_qa import _is_title_card
+        from PIL import Image
+        import numpy as np
+    except Exception:
+        return set()
+    out = set()
+    for it in vision_items:
+        sf = it.get("scene_file")
+        ocr = str(it.get("ocr_clean") or "")
+        if not sf or not (1 <= len(ocr.split()) <= 10) or it.get("text_only"):
+            continue
+        vit = it
+        if "flat_frac" not in it and it.get("scene_path"):
+            try:
+                g = np.asarray(Image.open(it["scene_path"]).convert("L"), dtype=float)
+                vit = {**it, "flat_frac": float(((g > 235) | (g < 25)).mean())}
+            except Exception:
+                continue
+        if _is_title_card(ocr, vit):
+            out.add(sf)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--understood", required=True,
@@ -264,12 +295,20 @@ def main() -> int:
                                  in ("story", "caption") and not p.get("error")}
         ocr_chrome = chrome_files(list(vmap.values()),
                                   args.series_title) - keep_by_understanding
-        excluded = understood_nonstory | ocr_chrome
+        # NEVER drop a story title/system card (age/time/status/org card) even if the
+        # LLM mislabelled a flat info-card as chrome — same detector prep_qa uses, so
+        # this can never trip the 'system_card_dropped' QA error.
+        cards = title_card_files(list(vmap.values()))
+        excluded = (understood_nonstory | ocr_chrome) - cards
         if understood_nonstory:
             print(f"[nonstory] understanding dropped {len(understood_nonstory)}: "
                   f"{sorted(understood_nonstory)}")
-        if ocr_chrome:
-            print(f"[chrome] OCR-regex added (non-story only): {sorted(ocr_chrome)}")
+        protected = cards & (understood_nonstory | ocr_chrome)
+        if protected:
+            print(f"[protect] kept {len(protected)} story system/title card(s): "
+                  f"{sorted(protected)}")
+        if ocr_chrome - cards:
+            print(f"[chrome] OCR-regex added (non-story only): {sorted(ocr_chrome - cards)}")
     story = [p for p in panels if p.get("scene_file") not in excluded]
 
     client = None
