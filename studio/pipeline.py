@@ -166,9 +166,40 @@ def _stage_visioned(ep_dir: Path, cfg: Config) -> None:
 
 
 def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
+    """Understanding-first grouping (replaces the old position/gutter merge):
+      Pass 1 panel_understand — describe EVERY panel multimodally (full coverage
+                                by construction).
+      Pass 2 story_group     — group by that understanding into story-sized beats
+                                with flashback/scene tags.
+    Output marker stays manifest.groups.json (byte-compatible shots[]). Honors
+    .narration_keepbase (reuse existing groups so a kept narration stays aligned)."""
+    import json
     p = _ep_paths(ep_dir)
-    _run_tool("scene_group_builder.py",
-              ["--vision-manifest", str(p["vision"]), "--out", str(p["groups"])])
+    if (ep_dir / ".narration_keepbase").exists() and p["groups"].exists():
+        print(f"[grouped] keep-base present -> reuse {p['groups'].name}, "
+              "skip re-understanding/re-grouping")
+        return
+    understood = ep_dir / "manifest.panels.understood.json"
+    if cfg.beats_backend == "ollama":
+        backend = ["--backend", "ollama", "--ollama-model", cfg.beats_model]
+    else:
+        keys = _REPO_ROOT / "keys" / "gcp-vision.json"
+        if keys.exists():
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
+            project = json.loads(keys.read_text()).get("project_id", "")
+        else:
+            _check_vertex_adc()
+            project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+        location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+        backend = ["--backend", "vertex", "--model", cfg.beats_model,
+                   "--project", project, "--location", location]
+    _run_tool("panel_understand.py",
+              ["--vision-manifest", str(p["vision"]), "--out", str(understood),
+               "--resume"] + backend)
+    _run_tool("story_group.py",
+              ["--understood", str(understood),
+               "--vision-manifest", str(p["vision"]),
+               "--out", str(p["groups"])] + backend)
 
 
 def _stage_beated(ep_dir: Path, cfg: Config) -> None:

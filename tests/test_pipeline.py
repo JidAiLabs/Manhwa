@@ -37,6 +37,9 @@ def _make_cfg(tmp_path: Path) -> Config:
         yolo_weights=tmp_path / "fake.pt",
         detect_backend="yolo",
         gallerydl_sleep=0.0,
+        # production uses local Gemma — grouped (now LLM: understand+story-group)
+        # needs no cloud cred on this backend; the cred wall stays at beated.
+        beats_backend="ollama",
     )
 
 
@@ -74,7 +77,9 @@ def _tool_stub(ep_dir_ref: list[Path]):
         "expand_boxes_to_gutters.py": "manifest.panels.json",
         "panels_to_scenes.py":        "manifest.scenes.json",
         "vision_extract.py":          "manifest.vision.json",
-        "scene_group_builder.py":     "manifest.groups.json",
+        "scene_group_builder.py":     "manifest.groups.json",   # legacy grouper
+        "panel_understand.py":        "manifest.panels.understood.json",  # Pass 1
+        "story_group.py":             "manifest.groups.json",   # Pass 2 (grouped marker)
         "timeline_planner.py":        "manifest.beat.json",
         "script_expander.py":         "manifest.script.json",
         "elevenlabs_tts_from_manifest.py": "manifest.voiced.json",
@@ -189,7 +194,8 @@ class TestRunChapterFullProgress:
             "expand_boxes_to_gutters.py",
             "panels_to_scenes.py",
             "vision_extract.py",
-            "scene_group_builder.py",
+            "panel_understand.py",       # grouped = Pass 1 understand
+            "story_group.py",            # + Pass 2 story-group (replaces scene_group_builder)
         }
 
     def test_catalog_statuses_in_order(self, tmp_path, monkeypatch):
