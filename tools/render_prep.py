@@ -1700,12 +1700,12 @@ def main() -> int:
                             scene_dims=scene_dims,
                             cuts_by_segment=cuts_by_segment)
 
-    intro_dur = outro_dur = 0.0
+    outro_dur = 0.0
     which = "none" if args.no_branding else args.branding
     if which != "none":
-        intro_dur = _wav_duration_sec(os.path.join(args.branding_dir, "intro.wav"))
+        # NO intro on any video (channel decision) — only the outro is read/added.
         outro_dur = _wav_duration_sec(os.path.join(args.branding_dir, "outro.wav"))
-        out_plan = insert_branding_items(out_plan, intro_dur=intro_dur,
+        out_plan = insert_branding_items(out_plan, intro_dur=0.0,
                                          outro_dur=outro_dur, which=which)
 
     out_path = args.out_plan or (os.path.splitext(args.plan)[0] + ".clean.json")
@@ -1714,7 +1714,7 @@ def main() -> int:
 
     print(f"[ok] wrote={out_path} shown={len(shown)} "
           f"seam_dups_dropped={sorted(set(all_dropped))} bubbles_inpainted={bubbles_cleaned} "
-          f"branding=intro:{intro_dur:.1f}s/outro:{outro_dur:.1f}s "
+          f"branding=outro:{outro_dur:.1f}s (no intro) "
           f"total={out_plan.get('total_duration_sec', 0)/60:.1f}min")
     return 0
 
