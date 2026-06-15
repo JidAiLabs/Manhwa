@@ -82,12 +82,53 @@ redundant* verdict — never the *is-this-a-real-image* check.
   dream, arc_label, callback_to[]}`, fed into `_pack_group_payload` + a writer
   rule that frames flashbacks/callbacks.
 
+## THE REDESIGN: understanding-first pipeline (supersedes the per-stage patches)
+
+User's call (2026-06-15): the grouping is the root — it merges panels by
+position/gutters BEFORE anything understands them, which forces both the flat
+narration and the dropped panels. Flip it so **understanding drives grouping**.
+This single redesign subsumes RC-COV-1/2/3, RC-NAR-2, and RC-NAR-4.
+
+New order (replaces "group → narrate per group"):
+- **Pass 1 — understand every panel.** One cheap multimodal line per panel
+  (subject/action/dialogue/scene+time cues). Full coverage by construction.
+- **Pass 2 — group by understanding.** Read all per-panel descriptions; segment
+  into BEATS at scene changes / flashbacks / topic shifts; cluster near-identical
+  consecutive panels into one montage beat. Emits per-beat `{panels[], segment:
+  present|flashback|dream, arc_label, callback_to[]}`. EVERY panel lands in a beat
+  (coverage invariant); beat count is story-sized, not gutter-sized.
+- **Pass 3 — narrate per beat.** One flowing cinematic+persona line per beat from
+  its panels' understanding (voice per-beat, not per-panel → no choppiness).
+- Then punchup + verbatim script as today.
+
+## Render alignment (the chain must move together, not just narration)
+
+- **Planner (`timeline_planner.py`) — the bridge.** Replace the
+  duration→panel truncation (RC-COV-1) with: `beat_dur = max(narration_audio,
+  n_panels * min_cut_sec)`. Coverage becomes a property of the plan the renderer
+  receives — it shows every panel because the plan contains every panel. Carry
+  the `segment`/flashback tag + per-cut motion into each timeline item.
+- **Renderer (Remotion `RecapVideo`, props = render.plan.clean.json) — two new
+  behaviors:** (a) when a beat's visuals outlast its narration, show the extra
+  panels as a paced Ken-Burns montage under the music/SFX bed (never drop);
+  (b) apply a flashback look (desaturate/vignette/soft frame) when the item's
+  `segment == flashback`. Plan CONTRACT (timeline = beats with cuts[] + per-cut
+  dur + tts_audio + motion) is unchanged — renderer is extended, not rewritten.
+
 ## Phased plan
 
-1. **Never ship broken** — RC-IMG-1 (done) → RC-IMG-2, RC-IMG-3, RC-IMG-4.
-2. **Full coverage** — RC-COV-1, RC-COV-2, RC-COV-3.
-3. **Richer narration** — RC-NAR-1 (done) → RC-NAR-2 (falls out of #2), RC-NAR-3.
-4. **Story-aware** — RC-NAR-4 (chapter structure pass).
+0. **Never ship broken** — RC-IMG-1 (done) → RC-IMG-2, RC-IMG-3, RC-IMG-4
+   (independent of the redesign; keep as a guardrail).
+1. **Pass 1 + 2 + 3 redesign** — understand-per-panel → story-group → per-beat
+   narrate. Delivers coverage + more beats + flashback structure at once.
+2. **Planner coverage invariant** — stretch beats to fit panels; carry flashback
+   tag (RC-COV-1).
+3. **Renderer alignment** — montage-outlasts-audio + flashback visual treatment.
+4. **Persona length cap** — RC-NAR-3.
+
+Each phase: implement → unit tests → deploy → re-run ORV ch1 → verify on the
+dashboard AND the rendered segment before moving on. No voiceover/upload until
+visuals + narration are right.
 
 Each phase: implement → unit tests → deploy → re-run ORV ch1 on the dashboard →
 verify panel-by-panel before moving on. No voiceover until the visuals + narration
