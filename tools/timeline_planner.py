@@ -711,95 +711,6 @@ def protected_story_files(vision_path: str) -> "set":
     return out
 
 
-# A panel is a DEVICE/UI SCREEN when the understanding literally describes a
-# screen / feed / list / stats / document — the POSITIVE signal (keying off the
-# absence of an actor was too brittle: it mis-flagged a "toddler running" whose
-# label happened to omit a known actor word).
-_SCREEN_RE = re.compile(
-    r"\b(screen|smartphone|phone|monitor|display|displaying|displays|app|"
-    r"interface|webtoon|episode|episodes|comments|view count|view-count|"
-    r"statistics|dashboard|notification|spreadsheet|scrollbar|"
-    r"list of|page of|table of|menu of|grid of)\b", re.I)
-# ...but a real person/creature on the frame makes it a SCENE even with a screen
-# in it (a character holding a phone). Lexicon need only be good enough to spare
-# the obvious cases — the screen gate above already excludes non-screen art.
-_ACTOR_RE = re.compile(
-    r"\b(m[ae]n|wom[ae]n|boy|girl|kid|child|children|baby|toddler|infant|elder|"
-    r"lady|person|people|guy|guys|figure|figures|character|characters|crowd|"
-    r"soldier|warrior|king|queen|knight|fighter|swordsman|stranger|individual|"
-    r"individuals|hunter|beast|beasts|monster|monsters|creature|creatures|animal|"
-    r"animals|dog|wolf|dragon|demon|demons|ghost)\b", re.I)
-
-
-def _has_actor(*texts: Any) -> bool:
-    for t in texts:
-        seq = t if isinstance(t, (list, tuple)) else [t]
-        if any(_ACTOR_RE.search(str(x or "")) for x in seq):
-            return True
-    return False
-
-
-def text_screen_files(understood_path: str, vision_path: str) -> "set":
-    """Panels that are INFORMATION, not a shot — a device/UI screen / feed / list /
-    stat card / document the understanding explicitly describes as such, carrying
-    real text and NO in-world actor (a phone feed, an episode list, a 'VIEWS: 1'
-    grid, a stats dump). Their content belongs in the NARRATION; on screen they
-    collapse (a scene in the same beat wins; a text-only beat keeps one). Agnostic
-    + deterministic, from the understanding we already have.
-
-    A SHORT card (<= 8 words) is never flagged, so title/system/age cards stay; a
-    panel with a person/creature is a SCENE even with a screen in it; and a panel
-    the model never calls a screen is left alone (a toddler running is safe). Empty
-    set when the understanding is absent."""
-    out: set = set()
-    subj: Dict[str, Dict[str, Any]] = {}
-    try:
-        for p in (json.load(open(understood_path)).get("panels") or []):
-            sf = os.path.basename(str(p.get("scene_file") or ""))
-            if sf:
-                subj[sf] = p
-    except Exception:
-        return out
-    try:
-        items = json.load(open(vision_path)).get("items") or []
-    except Exception:
-        return out
-    for it in items:
-        sf = os.path.basename(str(it.get("scene_file") or ""))
-        if not sf or str(it.get("panel_kind") or "").lower() != "story":
-            continue
-        words = re.findall(r"[A-Za-z0-9']+", str(it.get("ocr_clean") or ""))
-        if len(words) <= 8:
-            continue                                   # short card / little text
-        rec = subj.get(sf) or {}
-        blob = (rec.get("description") or "") + " " + " ".join(rec.get("subjects") or [])
-        if not _SCREEN_RE.search(blob):
-            continue                                   # not described as a screen
-        if _has_actor(rec.get("subjects") or [], rec.get("description") or ""):
-            continue                                   # a person/creature -> scene
-        if len(words) >= 12 or float(it.get("text_coverage") or 0.0) >= 0.25:
-            out.add(sf)                                # a text screen, no actor
-    return out
-
-
-def prefer_scenes_in_beat(group_files: List[str], text_screens: "set") -> List[str]:
-    """SCENE WINS: when a beat has any non-text-screen panel, drop its text-screen
-    panels (their info rides the narration); a text-ONLY beat keeps just the FIRST
-    text-screen so the shot is never empty and a UI parade collapses to one."""
-    if not text_screens:
-        return group_files
-    has_other = any(f not in text_screens for f in group_files)
-    out: List[str] = []
-    kept_text = False
-    for f in group_files:
-        if f in text_screens:
-            if has_other or kept_text:
-                continue
-            kept_text = True
-        out.append(f)
-    return out or list(group_files)
-
-
 # -----------------------------
 # Main
 # -----------------------------
@@ -809,10 +720,6 @@ def main() -> int:
     ap.add_argument("--beats", default="", help="manifest.beats.json (optional)")
     ap.add_argument("--script", default="", help="manifest.script.json (preferred)")
     ap.add_argument("--vision", default="", help="manifest.vision.json (optional)")
-    ap.add_argument("--understood", default="",
-                    help="manifest.panels.understood.json (optional) — lets the "
-                         "planner tell a scene from a text/UI screen so screens "
-                         "collapse to the narration instead of parading on screen")
     ap.add_argument("--tts-index", default="", help="tts_sections/tts_index.json (optional)")
     ap.add_argument("--out", required=True, help="render.plan.json")
 

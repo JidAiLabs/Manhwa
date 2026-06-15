@@ -68,54 +68,6 @@ def test_build_cuts_protected_story_panel_survives_redundant_verdict():
     assert "p16.jpg" not in files        # unprotected redundant caption still drops
 
 
-def test_has_actor_detects_person_or_creature():
-    assert tp._has_actor(["a man in a suit"]) is True
-    assert tp._has_actor(["a large snarling beast"]) is True
-    assert tp._has_actor(["a smartphone displaying a list of episodes"]) is False
-    assert tp._has_actor([], "A crowd of people stands in the dark.") is True
-    assert tp._has_actor([], "A black screen of stat numbers.") is False
-
-
-def test_prefer_scenes_in_beat_scene_wins_and_text_only_keeps_one():
-    ts = {"ui1.jpg", "ui2.jpg"}
-    # mixed beat -> the scene wins, both UI screens drop (their info is narrated)
-    assert tp.prefer_scenes_in_beat(["scene.jpg", "ui1.jpg", "ui2.jpg"], ts) == ["scene.jpg"]
-    # a text-ONLY beat keeps just the first screen (never empty, no UI parade)
-    assert tp.prefer_scenes_in_beat(["ui1.jpg", "ui2.jpg"], ts) == ["ui1.jpg"]
-    # nothing flagged -> unchanged
-    assert tp.prefer_scenes_in_beat(["a.jpg", "b.jpg"], set()) == ["a.jpg", "b.jpg"]
-
-
-def test_text_screen_files_flags_ui_not_scenes_or_cards(tmp_path):
-    import json
-    understood = {"panels": [
-        {"scene_file": "feed.jpg",
-         "subjects": ["a smartphone screen showing an episode list"],
-         "description": "A phone app lists episodes with view counts."},
-        {"scene_file": "train.jpg",
-         "subjects": ["a man in a suit", "smartphone"],
-         "description": "A man reads his phone on a train."},
-        {"scene_file": "card.jpg", "subjects": [], "description": "A title card."},
-    ]}
-    vision = {"items": [
-        {"scene_file": "feed.jpg", "panel_kind": "story", "text_coverage": 0.4,
-         "ocr_clean": "READ EPISODE 1389 COMMENTS 1 VIEWS 1 READ EPISODE 1388 "
-                      "COMMENTS 1 VIEWS 1 READ EPISODE 1387 COMMENTS 1 VIEWS 1"},
-        {"scene_file": "train.jpg", "panel_kind": "story", "text_coverage": 0.2,
-         "ocr_clean": "WHO WOULD READ A WEB NOVEL THAT HAS OVER 3000 EPISODES "
-                      "I AM THE ONLY READER AND IT TOOK TEN YEARS"},
-        {"scene_file": "card.jpg", "panel_kind": "story", "text_coverage": 0.1,
-         "ocr_clean": "SKY CORPORATION"},
-    ]}
-    up = tmp_path / "u.json"; up.write_text(json.dumps(understood))
-    vp = tmp_path / "v.json"; vp.write_text(json.dumps(vision))
-    ts = tp.text_screen_files(str(up), str(vp))
-    assert ts == {"feed.jpg"}           # the UI feed is information, not a shot
-    assert "train.jpg" not in ts        # a man is present -> scene, even with text
-    assert "card.jpg" not in ts         # short card -> kept (title/system card)
-    assert tp.text_screen_files("", "") == set()    # no understanding -> safe no-op
-
-
 def test_protected_story_files_reads_stamped_panel_kind(tmp_path):
     import json
     vision = {"items": [

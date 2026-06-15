@@ -240,7 +240,6 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                         "--beats", str(ep / "manifest.beats.json"),
                         "--script", str(ep / "manifest.script.json"),
                         "--vision", str(ep / "manifest.vision.json"),
-                        "--understood", str(ep / "manifest.panels.understood.json"),
                         "--out", str(ep / "render.plan.json"),
                         "--mode", "narrated", "--min-cut-sec", "3.5"], log) != 0:
                 raise RuntimeError("timeline_planner (heal) failed")
@@ -277,7 +276,6 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
                           "--beats", str(ep / "manifest.beats.json"),
                           "--script", str(ep / "manifest.script.json"),
                           "--vision", str(ep / "manifest.vision.json"),
-                          "--understood", str(ep / "manifest.panels.understood.json"),
                           "--out", str(ep / "render.plan.json"),
                           "--mode", "narrated", "--min-cut-sec", "3.5"], log)
             if rc != 0:
