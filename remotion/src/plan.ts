@@ -55,6 +55,9 @@ export type TimelineItem = {
   // "intro" | "outro" — inserted by tools/render_prep.py; the renderer
   // supplies the bundled channel audio/visuals for these items.
   branding?: string;
+  // story-structure tag from story_group: "present" | "flashback" | "dream".
+  // The renderer applies a faded/sepia + vignette look when not "present".
+  segment?: string;
 };
 
 export type SceneDims = {

@@ -889,6 +889,9 @@ def main() -> int:
                 "segment_id": segment_id,
                 "group_id": group_id,
                 "shot_id": shot_id,
+                # story-structure tag from story_group (present|flashback|dream);
+                # the renderer applies a flashback look when != present.
+                "segment": str(gobj.get("segment") or "present"),
                 "display_strategy": display_strategy,
                 "primary_scene_file": primary_scene_file,
                 "group_scene_files": scene_files,
