@@ -318,6 +318,7 @@ def _stage_planned(ep_dir: Path, cfg: Config) -> None:
     _run_tool("timeline_planner.py",
               ["--groups", str(p["groups"]), "--beats", str(p["beats"]),
                "--script", str(p["script"]), "--vision", str(p["vision"]),
+               "--understood", str(ep_dir / "manifest.panels.understood.json"),
                "--tts-index", str(p["tts_index"]),
                "--out", str(p["plan"]), "--mode", "narrated",
                # Each shown picture gets >= 3.5s; excess panels in a shot are dropped.
