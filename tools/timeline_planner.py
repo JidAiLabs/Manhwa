@@ -892,12 +892,6 @@ def main() -> int:
     if protected_story:
         print(f"[plan] protected {len(protected_story)} understood story panel(s) "
               f"from the redundant-drop")
-    # text/UI screens (a phone feed, an episode list, a stat card) are information,
-    # not a shot: shown only when a beat has no real scene, and never more than one.
-    text_screens = text_screen_files(args.understood, args.vision)
-    if text_screens:
-        print(f"[plan] {len(text_screens)} text/UI screen panel(s) -> narrate, "
-              f"collapse on screen: {sorted(text_screens)}")
 
     for gobj in groups:
         group_id = int(gobj.get("group_id") or gobj.get("shot_id") or 0)
@@ -907,11 +901,6 @@ def main() -> int:
         if not isinstance(scene_files, list):
             scene_files = []
         scene_files = [str(x) for x in scene_files if x]
-
-        # SCENE WINS: drop text/UI screens from this beat's montage when a real
-        # scene is present (their info is in the narration); a text-only beat keeps
-        # one. Runs before the husk filter so the screens never reach the cuts.
-        scene_files = prefer_scenes_in_beat(scene_files, text_screens)
 
         # Filter (clean preferred)
         if args.prefer_clean and args.clean_scene_dir and scene_files:
