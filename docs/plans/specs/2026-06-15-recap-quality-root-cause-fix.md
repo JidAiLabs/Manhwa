@@ -101,19 +101,28 @@ New order (replaces "group → narrate per group"):
   its panels' understanding (voice per-beat, not per-panel → no choppiness).
 - Then punchup + verbatim script as today.
 
-## Render alignment (the chain must move together, not just narration)
+## Timing model (user-corrected 2026-06-15): the stretch lives in the NARRATION
 
-- **Planner (`timeline_planner.py`) — the bridge.** Replace the
-  duration→panel truncation (RC-COV-1) with: `beat_dur = max(narration_audio,
-  n_panels * min_cut_sec)`. Coverage becomes a property of the plan the renderer
-  receives — it shows every panel because the plan contains every panel. Carry
-  the `segment`/flashback tag + per-cut motion into each timeline item.
-- **Renderer (Remotion `RecapVideo`, props = render.plan.clean.json) — two new
-  behaviors:** (a) when a beat's visuals outlast its narration, show the extra
-  panels as a paced Ken-Burns montage under the music/SFX bed (never drop);
-  (b) apply a flashback look (desaturate/vignette/soft frame) when the item's
-  `segment == flashback`. Plan CONTRACT (timeline = beats with cuts[] + per-cut
-  dur + tts_audio + motion) is unchanged — renderer is extended, not rewritten.
+NO background music (user never asked for it) and NO hardcoded per-panel
+duration. So we do NOT stretch a shot into silence and do NOT force panels to a
+fixed pace. Instead:
+- **Narration length matches the panels** (`gemini_narrative_pass`): ~one moment
+  per kept panel, so a multi-panel beat gets a fuller spoken line that naturally
+  covers the time those panels are on screen. The beat's duration follows the
+  narration. (DONE)
+- **Planner paces panels UNDER the narration** (`build_cuts`): show every
+  distinct panel within `dur` (drop only near-duplicate frames); one panel + a
+  long line = a long hold. No kmax truncation, no silence. (DONE)
+- **NO intro** on any video — outro only (`render_prep`). (DONE)
+
+## Render alignment (remaining)
+
+- **Flashback visual treatment.** story_group tags each shot `segment`
+  (present|flashback|dream). Carry that tag from groups → each plan timeline item
+  in `timeline_planner`, then in the Remotion renderer (`Cut.tsx`/`Shot.tsx`)
+  apply a look (desaturate/vignette/soft frame) when `segment == flashback`. Plan
+  CONTRACT (timeline = beats with cuts[] + per-cut dur + tts_audio + motion)
+  unchanged — renderer extended, not rewritten.
 
 ## Phased plan
 
