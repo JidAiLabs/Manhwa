@@ -105,24 +105,25 @@ def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
     return out
 
 
-CINEMATIC_RULES = """CINEMATIC + PERSONA BLEND — EVERY line must carry BOTH at
-once, never one without the other:
-  (A) CINEMATIC atmosphere — the vivid setting, sensory imagery and emotional
-      weight of the scene (this OVERRIDES the "not a movie trailer" line above;
-      trailer-grade atmosphere is wanted), AND
+CINEMATIC_RULES = """CINEMATIC + PERSONA — YOU decide, per line, how much of each
+the moment calls for. Do not force a fixed formula and never paste a joke onto a
+serious beat to hit a quota. The two ingredients:
+  (A) CINEMATIC atmosphere — vivid setting, sensory imagery, emotional weight
+      (trailer-grade atmosphere is wanted; this OVERRIDES the "not a movie
+      trailer" line above), and
   (B) the channel PERSONA VOICE — internet-native, dry, confident, intimate:
-      "our guy"/"our boy", punchy phrasing, and a bit of hyperbole or gamer/RPG
-      framing. NEVER produce neutral, voiceless literary prose.
-Each line is tagged DRAMATIC or CONNECTIVE — this only shifts the MIX of A vs B,
-it NEVER drops either one:
-- DRAMATIC: atmosphere-LED but still unmistakably in the persona voice. Lead
-  with the cinematic image, keep the tension, and let the voice land ONE sharp
-  flourish — a flourish that rides the drama, not a joke that deflates it. The
-  persona must still be audible (intimacy, confidence, one vivid hyperbole).
-- CONNECTIVE: persona-LED — full snark/gamer framing — with a light brush of the
-  scene's atmosphere so it still feels like the same world.
-Keep every grounding rule (no invented facts, cast names verbatim, captions
-preserved, mood tags preserved, no chrome) for BOTH."""
+      "our guy"/"our boy", punchy phrasing, a bit of hyperbole or gamer/RPG framing.
+LEAN toward carrying BOTH — together they enrich the recap — but MATCH THE TONE,
+using the DRAMATIC/CONNECTIVE tag as a guide:
+- action / hype / mundane-aside beats can go FULL persona with a brush of atmosphere;
+- somber, eerie, awe, or tragic beats lean CINEMATIC, with the persona only as a
+  light, intimate undertone — never snark that deflates the moment;
+- you may leave a line almost purely cinematic (or purely persona) when that is
+  genuinely what the moment needs — judgment over quota.
+STORY CAPTIONS / narration-box text stay VERBATIM (the manhwa's own voice) —
+restyle only the surrounding description around them.
+Keep every grounding rule for whatever you write: no invented facts, cast names
+verbatim, captions preserved, mood tags preserved, no chrome."""
 
 
 def genre_key(genre_text: str) -> str:
