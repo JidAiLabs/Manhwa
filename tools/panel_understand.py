@@ -40,7 +40,7 @@ PANEL_SCHEMA: Dict[str, Any] = {
         "intensity": {"type": "STRING",
                       "enum": ["calm", "tense", "intense", "explosive"]},
         "panel_kind": {"type": "STRING",
-                       "enum": ["story", "chrome", "empty"]},
+                       "enum": ["story", "chrome", "empty", "caption"]},
     },
     "required": ["description", "action", "intensity", "panel_kind"],
 }
@@ -65,7 +65,12 @@ SYSTEM = (
     "    'empty' = NO real story content: a blank or near-blank frame, a plain "
     "gradient / speed-line / texture transition with no subject, or speech bubbles "
     "with NO readable text.\n"
-    "    'story' = anything that actually advances the chapter. When unsure, 'story'.\n"
+    "    'caption' = a TEXT-ONLY transition/monologue card: just words on a plain or "
+    "solid background (e.g. a black card reading 'BACK THEN, I HAD NO IDEA.') with NO "
+    "scene drawn. Its words matter (put them in 'dialogue'), but it is not a picture. "
+    "A panel with real art AND a caption is 'story', not 'caption'.\n"
+    "    'story' = anything that actually advances the chapter (real scene art). When "
+    "unsure, 'story'.\n"
     "The 'previous_panels' field is context for continuity only — describe THIS "
     "panel, not the previous ones."
 )
@@ -73,7 +78,7 @@ SYSTEM = (
 
 def _norm_panel_kind(v: Any) -> str:
     v = str(v or "").strip().lower()
-    return v if v in ("story", "chrome", "empty") else "story"
+    return v if v in ("story", "chrome", "empty", "caption") else "story"
 
 
 def build_payload(panel: Dict[str, Any], prev_descs: List[str]) -> Dict[str, Any]:

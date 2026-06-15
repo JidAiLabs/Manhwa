@@ -166,6 +166,38 @@ def nonstory_files(panels: List[Dict[str, Any]]) -> set:
     return out
 
 
+def caption_files(panels: List[Dict[str, Any]]) -> set:
+    """scene_files the understanding marked 'caption' — text-only monologue/
+    transition cards (e.g. a black card 'BACK THEN, I HAD NO IDEA.'). Their WORDS
+    belong in the narration, but the bare text image is not a standalone scene."""
+    return {p.get("scene_file") for p in panels
+            if str(p.get("panel_kind") or "").strip().lower() == "caption"
+            and p.get("scene_file")}
+
+
+def merge_caption_solos(shots: List[Dict[str, Any]], caption_set: set
+                        ) -> List[Dict[str, Any]]:
+    """A beat made of ONLY caption panels has no art to show — its bare text-on-
+    plain image would be the entire shot. Fold it into the adjacent beat of the
+    SAME segment (prefer the previous one) so the caption's words ride that beat's
+    narration and the text image gets deduped. A closing caption with no same-
+    segment neighbour stays as-is. Renumbers shot_id to stay contiguous."""
+    cap = set(caption_set or [])
+
+    def all_caption(s: Dict[str, Any]) -> bool:
+        return bool(s["scene_files"]) and all(f in cap for f in s["scene_files"])
+
+    out: List[Dict[str, Any]] = []
+    for s in shots:
+        if all_caption(s) and out and out[-1]["segment"] == s["segment"]:
+            out[-1]["scene_files"].extend(s["scene_files"])     # weave into prev beat
+        else:
+            out.append({**s, "scene_files": list(s["scene_files"])})
+    for i, s in enumerate(out, 1):
+        s["shot_id"] = i
+    return out
+
+
 def _midtone(item: Dict[str, Any]) -> Optional[float]:
     from scene_chrome import needs_image_stats
     if (not needs_image_stats(str(item.get("ocr_clean") or ""))
@@ -224,13 +256,20 @@ def main() -> int:
         # chrome/empty/parse-failed panels; keep the OCR-regex chrome detector as
         # belt-and-suspenders for anything the understanding missed.
         understood_nonstory = nonstory_files(panels)
-        ocr_chrome = chrome_files(list(vmap.values()), args.series_title)
+        # the understanding is AUTHORITATIVE: never let the brittle OCR-regex drop a
+        # panel it classified as real story/caption content (that silently lost 2 ORV
+        # story panels — the regex vetoed a 'story' verdict on garbled OCR).
+        keep_by_understanding = {p.get("scene_file") for p in panels
+                                 if str(p.get("panel_kind") or "").lower()
+                                 in ("story", "caption") and not p.get("error")}
+        ocr_chrome = chrome_files(list(vmap.values()),
+                                  args.series_title) - keep_by_understanding
         excluded = understood_nonstory | ocr_chrome
         if understood_nonstory:
             print(f"[nonstory] understanding dropped {len(understood_nonstory)}: "
                   f"{sorted(understood_nonstory)}")
-        if ocr_chrome - understood_nonstory:
-            print(f"[chrome] OCR-regex added: {sorted(ocr_chrome - understood_nonstory)}")
+        if ocr_chrome:
+            print(f"[chrome] OCR-regex added (non-story only): {sorted(ocr_chrome)}")
     story = [p for p in panels if p.get("scene_file") not in excluded]
 
     client = None
@@ -252,6 +291,8 @@ def main() -> int:
         return parsed
 
     shots, chapter = group_panels(story, call_fn, max_beat_len=args.max_beat_len)
+    # caption-only beats fold into their neighbour so the text rides real art
+    shots = merge_caption_solos(shots, caption_files(story))
     out = {
         "source_understood": os.path.abspath(args.understood),
         "source_vision_manifest": os.path.abspath(args.vision_manifest),

@@ -91,3 +91,27 @@ def test_nonstory_files_drops_chrome_empty_and_parse_failures():
     dropped = sg.nonstory_files(panels)
     assert dropped == {"p1", "p2", "p3"}                 # chrome + empty + error
     assert "p0" not in dropped and "p4" not in dropped   # real story stays
+    # captions are NOT dropped — they're kept (their words ride the narration)
+    assert sg.nonstory_files([{"scene_file": "c", "panel_kind": "caption"}]) == set()
+
+
+def test_caption_solo_beat_folds_into_previous_same_segment_beat():
+    panels = [{"scene_file": "p0", "panel_kind": "story"},
+              {"scene_file": "c1", "panel_kind": "caption"},
+              {"scene_file": "p2", "panel_kind": "story"}]
+    assert sg.caption_files(panels) == {"c1"}
+    shots = [
+        {"shot_id": 1, "scene_files": ["p0"], "segment": "present", "arc_label": "a"},
+        {"shot_id": 2, "scene_files": ["c1"], "segment": "present", "arc_label": "cap"},
+        {"shot_id": 3, "scene_files": ["p2"], "segment": "present", "arc_label": "b"}]
+    merged = sg.merge_caption_solos(shots, {"c1"})
+    assert [s["scene_files"] for s in merged] == [["p0", "c1"], ["p2"]]
+    assert [s["shot_id"] for s in merged] == [1, 2]      # renumbered contiguous
+
+
+def test_caption_closer_with_no_same_segment_neighbour_stays():
+    shots = [
+        {"shot_id": 1, "scene_files": ["p0"], "segment": "flashback", "arc_label": "x"},
+        {"shot_id": 2, "scene_files": ["c9"], "segment": "present", "arc_label": "end"}]
+    merged = sg.merge_caption_solos(shots, {"c9"})
+    assert [s["scene_files"] for s in merged] == [["p0"], ["c9"]]   # segment differs

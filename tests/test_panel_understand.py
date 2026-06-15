@@ -35,8 +35,9 @@ def test_assemble_record_normalizes_and_flags_parse_failure():
     assert bad["panel_kind"] == "empty"          # unparsed -> filtered out of grouping
     # invalid intensity -> 'unknown', never crash
     assert pu.assemble_record("p3.jpg", {"intensity": "epic"})["intensity"] == "unknown"
-    # chrome/empty pass through; missing/invalid kind defaults to 'story'
+    # chrome/empty/caption pass through; missing/invalid kind defaults to 'story'
     assert pu.assemble_record("p4.jpg", {"panel_kind": "chrome"})["panel_kind"] == "chrome"
+    assert pu.assemble_record("p6.jpg", {"panel_kind": "caption"})["panel_kind"] == "caption"
     assert pu.assemble_record("p5.jpg", {})["panel_kind"] == "story"
 
 
