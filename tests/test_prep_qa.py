@@ -148,6 +148,30 @@ def test_image_flags_stale_dims_mismatch():
     assert any(f["code"] == "stale_dims" for f in flags)
 
 
+def test_blank_crop_black_void_errors_even_for_sys():
+    # the gap the user caught: an all-black panel passed QA because content
+    # checks were skipped for sys/doc. The validity gate has NO exemption.
+    img = np.zeros((400, 600, 3), dtype=np.uint8)            # all black
+    flags = pq.image_flags("p000023.jpg", img, [], doc=False, sys=True,
+                           dims_entry={"w": 600, "h": 400})
+    assert any(f["code"] == "blank_crop" and f["severity"] == "ERROR"
+               for f in flags)
+
+
+def test_blank_crop_white_void_errors_even_for_doc():
+    img = np.full((400, 600, 3), 255, dtype=np.uint8)        # over-inpainted white
+    flags = pq.image_flags("p000001.jpg", img, [], doc=True,
+                           dims_entry={"w": 600, "h": 400})
+    assert any(f["code"] == "blank_crop" and f["severity"] == "ERROR"
+               for f in flags)
+
+
+def test_valid_image_is_not_blank_crop():
+    flags = pq.image_flags("p000005.jpg", _art(400, 600), [], doc=False,
+                           dims_entry={"w": 600, "h": 400})
+    assert not any(f["code"] == "blank_crop" for f in flags)
+
+
 def test_image_flags_doc_panel_skips_husk_and_dead_box():
     img = np.full((400, 600, 3), 250, dtype=np.uint8)          # white doc page
     flags = pq.image_flags("p000013.jpg", img, [(10, 10, 590, 390)],

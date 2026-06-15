@@ -187,6 +187,25 @@ def image_flags(
                            "verify travel speed is watchable",
                            scene=name, segment_id=segment_id))
 
+    # VALIDITY INVARIANT — runs for EVERY shown crop, including sys/doc/branding
+    # (no exemption): a shown panel MUST be a real image, never a near-uniform
+    # white/black void. A valid dark or bright scene still has structure (std
+    # well above zero); a broken crop — an over-inpainted caption card or a
+    # failed crop — is near-flat. This is the gap that let an all-black panel
+    # pass QA. A title card's styled glyphs keep std high, so real cards survive.
+    gray_full = img.mean(axis=2) if img.ndim == 3 else img
+    std_full = float(gray_full.std())
+    white_frac = float((gray_full > 244).mean())
+    black_frac = float((gray_full < 12).mean())
+    if std_full < 6.0 or (max(white_frac, black_frac) >= 0.97 and std_full < 25.0):
+        kind = "white" if white_frac >= black_frac else "black"
+        flags.append(_flag(
+            "blank_crop", ERROR,
+            f"shown crop is a near-uniform {kind} void (std={std_full:.1f}, "
+            f"white={white_frac:.2f}, black={black_frac:.2f}) — not a real "
+            "image; recrop or drop this panel",
+            scene=name, segment_id=segment_id))
+
     if not doc and not sys:
         gray = img.mean(axis=2) if img.ndim == 3 else img
         art = rp.art_content_score(img, [])

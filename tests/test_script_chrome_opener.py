@@ -62,3 +62,12 @@ def test_strips_meta_commentary_lines():
     # a meta sentence among real ones -> only the meta sentence is removed
     assert f("He draws his sword. Before the action begins, we are shown the stats. "
              "The monster roars.") == "He draws his sword. The monster roars."
+
+
+def test_our_adventure_begins_is_story_not_chrome():
+    # regression: a too-broad "our (adventure|journey|story) begins" pattern was
+    # nuking legit action lines to EMPTY. Only format words (recap/video) = chrome.
+    s = "Our adventure begins as Prince Cheon draws his blade."
+    assert f(s) == s
+    assert f("Our journey into the abyss begins now.") == "Our journey into the abyss begins now."
+    assert f("Our recap begins right here.") == ""        # format-chrome -> dropped

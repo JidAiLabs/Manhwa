@@ -59,7 +59,9 @@ _CHROME_SENTENCE_RE = re.compile(
     r"\bwe(?:'re| are)? (?:presented|shown|introduced|treated)\b|"
     r"\bbefore the (?:story|tale|episode|chapter|recap) (?:unfolds|begins|starts|opens|kicks off)\b|"
     r"\bmeta[- ]commentary\b|"
-    r"\bour (?:true )?(?:adventure|journey|tale|story|recap) (?:is about to|begins|opens|starts|unfolds|awaits|kicks off)\b)",
+    # only FORMAT-chrome ("our recap begins"), NOT story voice — "Our adventure
+    # begins as Prince Cheon draws his blade" is a legit line and must survive.
+    r"\bour (?:recap|video|coverage) (?:is about to|begins|opens|starts|unfolds|awaits|kicks off)\b)",
     re.IGNORECASE)
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
