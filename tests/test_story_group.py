@@ -1,0 +1,77 @@
+"""story_group (Pass 2): group by understanding into a CONSECUTIVE, fully-covering
+partition. The repair logic is the coverage invariant — every panel lands in
+exactly one shot, in order, no matter how the model mis-orders/omits."""
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+_SPEC = importlib.util.spec_from_file_location(
+    "story_group",
+    Path(__file__).resolve().parent.parent / "tools" / "story_group.py")
+sg = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(sg)  # type: ignore[union-attr]
+
+ORDER = ["p0", "p1", "p2", "p3", "p4"]
+
+
+def _files(shots):
+    return [s["scene_files"] for s in shots]
+
+
+def test_basic_grouping_assigns_contiguous_shot_ids():
+    shots = sg.repair_to_shots(ORDER[:3], [
+        {"scene_files": ["p0", "p1"], "segment": "present", "arc_label": "intro"},
+        {"scene_files": ["p2"], "segment": "present", "arc_label": "next"}])
+    assert _files(shots) == [["p0", "p1"], ["p2"]]
+    assert [s["shot_id"] for s in shots] == [1, 2]
+
+
+def test_coverage_invariant_unassigned_panel_is_never_dropped():
+    # model forgot p2 entirely -> it continues the current beat, still shown
+    shots = sg.repair_to_shots(ORDER[:3], [
+        {"scene_files": ["p0", "p1"]}])
+    flat = [f for s in shots for f in s["scene_files"]]
+    assert flat == ["p0", "p1", "p2"]                 # all 3 covered, in order
+
+
+def test_model_misordering_becomes_consecutive_runs():
+    # model groups p0+p2 together (non-consecutive); reading order is preserved
+    shots = sg.repair_to_shots(ORDER[:3], [
+        {"scene_files": ["p0", "p2"], "arc_label": "A"},
+        {"scene_files": ["p1"], "arc_label": "B"}])
+    assert _files(shots) == [["p0"], ["p1"], ["p2"]]  # consecutive runs only
+
+
+def test_max_beat_len_splits_long_runs():
+    shots = sg.repair_to_shots(ORDER, [
+        {"scene_files": ORDER, "segment": "present", "arc_label": "battle"}],
+        max_beat_len=2)
+    assert _files(shots) == [["p0", "p1"], ["p2", "p3"], ["p4"]]
+    assert all(s["arc_label"] == "battle" for s in shots)   # tag preserved
+
+
+def test_flashback_segment_is_carried():
+    shots = sg.repair_to_shots(ORDER[:3], [
+        {"scene_files": ["p0"], "segment": "present"},
+        {"scene_files": ["p1", "p2"], "segment": "flashback", "arc_label": "ten years ago"}])
+    assert shots[1]["segment"] == "flashback" and shots[1]["arc_label"] == "ten years ago"
+    assert shots[0]["segment"] == "present"
+    # invalid segment normalizes to present
+    assert sg.repair_to_shots(["x"], [{"scene_files": ["x"], "segment": "weird"}])[0]["segment"] == "present"
+
+
+def test_group_panels_full_pipeline_with_stub_covers_everything():
+    panels = [{"scene_file": f} for f in ORDER]
+    captured = {}
+
+    def stub(payload):
+        captured["payload"] = payload
+        return {"beats": [{"scene_files": ["p0", "p1"], "segment": "present"},
+                          {"scene_files": ["p2", "p3", "p4"], "segment": "flashback"}]}
+
+    shots = sg.group_panels(panels, stub, max_beat_len=4)
+    flat = [f for s in shots for f in s["scene_files"]]
+    assert flat == ORDER                              # full coverage
+    assert captured["payload"]["panels"][0]["n"] == 0  # numbered, ordered input
+    assert sg.group_panels([], stub) == []
