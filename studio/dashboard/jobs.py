@@ -20,7 +20,11 @@ _COLS = ("id, type, series_id, chapter_id, bundle_id, payload_json, state, "
 # assembly-line lanes: stages occupy different resources, so one job may run
 # PER LANE simultaneously (prepare ch N+1 on gpu while render ch N-1 on cpu)
 LANES = {
-    "prepare": "gpu", "voiceover": "gpu", "qa_scan": "gpu", "chain": "gpu",
+    # gemma (ollama LLM) work
+    "prepare": "gpu", "qa_scan": "gpu", "chain": "gpu",
+    # qwen (TTS) is a DIFFERENT model — its own lane so a voiceover overlaps a
+    # prepare instead of waiting behind it (64GB fits gemma + qwen together)
+    "voiceover": "tts",
     "render_segment": "cpu", "branding_segments": "cpu", "concat": "cpu",
     "refresh": "api", "discovery_scan": "api", "add_series": "api",
     # metadata + thumbnail: short local-Gemma / Nano-Banana calls — keep them
@@ -36,6 +40,7 @@ LANES = {
 # requests so the GPU never thrashes. Renders stay exclusive on cpu.
 LANE_WIDTH = {
     "gpu": int(os.environ.get("STUDIO_GPU_WIDTH", "2")),
+    "tts": int(os.environ.get("STUDIO_TTS_WIDTH", "1")),   # one qwen voiceover at a time
     "cpu": int(os.environ.get("STUDIO_CPU_WIDTH", "1")),
     "api": int(os.environ.get("STUDIO_API_WIDTH", "2")),
 }

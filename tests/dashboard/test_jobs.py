@@ -59,21 +59,25 @@ def test_queue_view_keeps_recent_finished_jobs(tmp_path):
 
 
 def test_lane_claims_respect_per_lane_width(tmp_path):
-    """Assembly line with WIDTH: gpu runs 2 jobs at once (Gemma time of one
-    chapter overlaps OCR/CPU time of another), cpu stays exclusive."""
+    """Assembly line with WIDTH: gpu (gemma) runs 2 prepares at once, while a
+    voiceover runs IN PARALLEL in its own tts (qwen) lane — not blocked behind
+    the prepares; cpu stays exclusive."""
     con = _con(tmp_path)
-    g = jobs.enqueue(con, "voiceover", chapter_id=1)
-    c = jobs.enqueue(con, "render_segment", chapter_id=2)
-    a = jobs.enqueue(con, "refresh", series_id=1)
-    g2 = jobs.enqueue(con, "prepare", chapter_id=3)
-    g3 = jobs.enqueue(con, "prepare", chapter_id=4)
-    assert jobs.claim_next(con, lane="gpu")["id"] == g
-    assert jobs.claim_next(con, lane="gpu")["id"] == g2    # width 2
-    assert jobs.claim_next(con, lane="gpu") is None        # gpu full
-    assert jobs.claim_next(con, lane="cpu")["id"] == c     # cpu free
+    v = jobs.enqueue(con, "voiceover", chapter_id=1)        # tts lane
+    c = jobs.enqueue(con, "render_segment", chapter_id=2)   # cpu lane
+    a = jobs.enqueue(con, "refresh", series_id=1)           # api lane
+    g1 = jobs.enqueue(con, "prepare", chapter_id=3)         # gpu lane
+    g2 = jobs.enqueue(con, "prepare", chapter_id=4)         # gpu lane
+    g3 = jobs.enqueue(con, "prepare", chapter_id=5)         # gpu lane (3rd, waits)
+    assert jobs.claim_next(con, lane="gpu")["id"] == g1
+    assert jobs.claim_next(con, lane="gpu")["id"] == g2     # gpu width 2
+    assert jobs.claim_next(con, lane="gpu") is None         # gpu full -> g3 waits
+    assert jobs.claim_next(con, lane="tts")["id"] == v      # voiceover runs in PARALLEL
+    assert jobs.claim_next(con, lane="tts") is None         # tts width 1
+    assert jobs.claim_next(con, lane="cpu")["id"] == c      # cpu free
     assert jobs.claim_next(con, lane="api")["id"] == a
-    jobs.finish(con, g, ok=True)
-    assert jobs.claim_next(con, lane="gpu")["id"] == g3
+    jobs.finish(con, g1, ok=True)
+    assert jobs.claim_next(con, lane="gpu")["id"] == g3     # freed slot -> 3rd prepare
 
 
 def test_claim_race_lost_returns_none(tmp_path):
