@@ -1290,7 +1290,10 @@ def main() -> int:
                 text_score[sf] = 1.0 if it.get("text_only") else tc
                 vision_item[sf] = {"ocr_clean": it.get("ocr_clean"),
                                    "text_only": it.get("text_only"),
-                                   "text_coverage": tc}
+                                   "text_coverage": tc,
+                                   # carry the understanding's verdict so the
+                                   # is_chrome_scene chokepoint defers to it
+                                   "panel_kind": it.get("panel_kind")}
                 w = float(it.get("width") or 0)
                 h = float(it.get("height") or 0)
                 if w > 0 and h > 0:
@@ -1458,23 +1461,10 @@ def main() -> int:
                 cleaned_cache[fname] = (out, boxes)
         return cleaned_cache[fname]
 
-    # The multimodal UNDERSTANDING is authoritative for "is this real story art":
-    # a panel it marked 'story' with real subjects must NEVER be dropped here as
-    # chrome/husk just because it carries a watermark OCR or heavy SFX text. That
-    # is what lost the beast panel (p000009 "a swordsman facing two snarling
-    # beasts") in ORV Ep0 — its only OCR was an 'ELF100N com' watermark, so the
-    # chrome heuristic scored it 1.0 and the beat substituted a neighbour caption.
-    story_rich: set = set()
-    understood_path = os.path.join(args.episode_dir, "manifest.panels.understood.json")
-    if os.path.exists(understood_path):
-        try:
-            with open(understood_path, "r", encoding="utf-8") as f:
-                for p in json.load(f).get("panels") or []:
-                    if (str(p.get("panel_kind") or "").lower() == "story"
-                            and (p.get("subjects") or []) and not p.get("error")):
-                        story_rich.add(str(p.get("scene_file") or ""))
-        except Exception:
-            story_rich = set()
+    # Chrome is decided at the single chokepoint (scene_chrome.is_chrome_scene),
+    # which now defers to the understanding's panel_kind (carried on vision_item).
+    # So a 'story' panel is never scored as chrome here — no per-module exempt set
+    # is needed, and genuine husks/blanks are still dropped on their own merits.
 
     # 1. drop bad cuts per shot — seam duplicates (geometric, then VISUAL
     # containment), then bubble/text-dominated panels, then CHROME
@@ -1506,16 +1496,15 @@ def main() -> int:
                         str(vit.get("ocr_clean") or "")):
                     g = img.mean(axis=2)
                     mid = float(((g > 60) & (g < 200)).mean())
-                if f not in story_rich and is_chrome_scene(
-                        vit, series_title=args.series_title or None, midtone_frac=mid):
-                    score = 1.0  # chrome is never story — overrides exemptions
+                if is_chrome_scene(vit, series_title=args.series_title or None,
+                                   midtone_frac=mid):
+                    score = 1.0  # chrome (per the understanding-aware chokepoint)
                 else:
                     cimg, cboxes = _cleaned(f)
                     rich = _text_rich(f)
-                    if (f not in story_rich and cimg is not None
-                            and not panel_recoverable(
-                                cimg, cboxes, min_art_score=args.min_art_score,
-                                text_rich=rich)):
+                    if cimg is not None and not panel_recoverable(
+                            cimg, cboxes, min_art_score=args.min_art_score,
+                            text_rich=rich):
                         score = 1.0  # no recoverable region after cleaning
                     if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
                         exempt.add(f)  # system-message panel — story beat
@@ -1527,11 +1516,6 @@ def main() -> int:
                         # styled title/system card (SKY CORPORATION, age cards)
                         # — a story beat the timeline protected; never drop it
                         # as low-art text here
-                        exempt.add(f)
-                    if f in story_rich:
-                        # understanding says real story art (subjects present) —
-                        # protect from the bubble/garbage drop despite a watermark
-                        # OCR or heavy SFX text fooling the heuristics
                         exempt.add(f)
                 cov[f] = score
             new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)

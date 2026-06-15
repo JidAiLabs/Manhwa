@@ -489,7 +489,8 @@ def caption_unvoiced_flags(beats_obj: Dict[str, Any],
             txt = str(it.get("ocr_clean") or "")
             try:
                 import scene_chrome as _sc
-                if _sc.is_chrome_scene({"ocr_clean": txt}):
+                if _sc.is_chrome_scene({"ocr_clean": txt,
+                                        "panel_kind": it.get("panel_kind")}):
                     continue   # resurrected end-cards/plugs are not captions
             except Exception:
                 pass
@@ -1005,6 +1006,9 @@ def main() -> int:
                     "text_only": it.get("text_only"),
                     "text_coverage": it.get("text_coverage"),
                     "n_words": len((it.get("vision") or {}).get("ocr_words") or []),
+                    # carry the understanding so is_chrome_scene defers to it (no
+                    # false chrome_leak on a 'story' panel whose OCR is just '1')
+                    "panel_kind": it.get("panel_kind"),
                 }
     sp_ = os.path.join(ep, "manifest.scenes.json")
     if os.path.exists(sp_):
