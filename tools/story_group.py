@@ -287,9 +287,10 @@ def main() -> int:
     ap.add_argument("--model", default="gemini-2.5-flash")
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="")
-    ap.add_argument("--max-beat-len", type=int, default=2,
-                    help="cap panels per beat — lower = MORE, tighter beats (more "
-                         "narration lines, longer recap); 8->~14 beats on ORV Ep0")
+    ap.add_argument("--max-beat-len", type=int, default=0,
+                    help="cap panels per beat; 0 = AUTO-scale to chapter size "
+                         "(~16-beat target) so small chapters get tight beats and "
+                         "big ones don't explode (ORV 34p->cap 2, a 116p chapter->7)")
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="0 = deterministic beat boundaries + segment tags")
     ap.add_argument("--keep-chrome", action="store_true")
@@ -349,7 +350,11 @@ def main() -> int:
             backoff_max=60.0, backend=args.backend)
         return parsed
 
-    shots, chapter = group_panels(story, call_fn, max_beat_len=args.max_beat_len)
+    # AUTO-scale the per-beat cap to chapter size (target ~16 beats): a fixed cap
+    # of 2 made ORV's 34 panels a good 13 beats but a 116-panel chapter 64
+    # (over-fragmented — captions split off -> fragment_dangle, narration overload).
+    mbl = args.max_beat_len or max(2, round(len(story) / 16))
+    shots, chapter = group_panels(story, call_fn, max_beat_len=mbl)
     # caption-only beats fold into their neighbour so the text rides real art
     shots = merge_caption_solos(shots, caption_files(story))
     shots = annotate_intensity(shots, panels)   # per-shot PACE = peak intensity
