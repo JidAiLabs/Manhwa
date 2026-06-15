@@ -137,60 +137,67 @@ def test_run_prep_and_qa_heal_aware_returns_instead_of_raising(
         worker._run_prep_and_qa(con, ch, log, heal_aware=False)
 
 
-def test_prepare_self_heals_stale_narration(tmp_path, monkeypatch):
+def test_prepare_auto_heals_red_qa_to_green(tmp_path, monkeypatch):
+    # first QA is red -> the targeted auto-heal runs -> green -> job done
     con = _con(tmp_path)
     _seed_chapter(con, tmp_path)
-    calls = []
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
-                        (calls.append(" ".join(map(str, cmd))), 0)[1])
-    qa_results = [{"narration_stale"}, set()]
-    qa_calls = []
-
-    def fake_qa(c, ch, log, **kw):
-        qa_calls.append(1)
-        return qa_results.pop(0)
-    monkeypatch.setattr(worker, "_run_prep_and_qa", fake_qa)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: {"caption_unvoiced"})
+    healed = []
+    monkeypatch.setattr(worker, "_heal_to_green",
+                        lambda c, ch, ep, log: healed.append(1))
+    monkeypatch.setattr(worker, "_qa_error_codes", lambda ep: set())  # green now
     jid = jobs.enqueue(con, "prepare", chapter_id=5)
-    worker.run_once(con, handlers=worker.HANDLERS,
-                    log_dir=str(tmp_path / "l"))
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     state, err = con.execute("SELECT state, error FROM job WHERE id=?",
                              (jid,)).fetchone()
     assert state == "done", err
-    assert len(qa_calls) == 2
-    assert con.execute("SELECT status FROM chapter WHERE id=5"
-                       ).fetchone()[0] == "beated"
-    assert sum("--until scripted" in c for c in calls) >= 2
-    assert sum("timeline_planner.py" in c for c in calls) >= 2
+    assert healed == [1]
 
 
-def test_prepare_heal_beats_incomplete_demotes_to_grouped(
-        tmp_path, monkeypatch):
+def test_prepare_fails_if_heal_cannot_reach_green(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _seed_chapter(con, tmp_path)
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
-    qa_results = [{"beats_incomplete", "narration_stale"}, set()]
     monkeypatch.setattr(worker, "_run_prep_and_qa",
-                        lambda c, ch, log, **kw: qa_results.pop(0))
-    jobs.enqueue(con, "prepare", chapter_id=5)
-    worker.run_once(con, handlers=worker.HANDLERS,
-                    log_dir=str(tmp_path / "l"))
-    assert con.execute("SELECT status FROM chapter WHERE id=5"
-                       ).fetchone()[0] == "grouped"
-
-
-def test_prepare_heal_gives_up_after_one_cycle(tmp_path, monkeypatch):
-    con = _con(tmp_path)
-    _seed_chapter(con, tmp_path)
-    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
-    qa_results = [{"narration_stale"}, {"narration_stale"}]
-    monkeypatch.setattr(worker, "_run_prep_and_qa",
-                        lambda c, ch, log, **kw: qa_results.pop(0))
+                        lambda c, ch, log, **kw: {"caption_unvoiced"})
+    monkeypatch.setattr(worker, "_heal_to_green", lambda c, ch, ep, log: None)
+    monkeypatch.setattr(worker, "_qa_error_codes",
+                        lambda ep: {"caption_unvoiced"})   # still red after heal
     jid = jobs.enqueue(con, "prepare", chapter_id=5)
-    worker.run_once(con, handlers=worker.HANDLERS,
-                    log_dir=str(tmp_path / "l"))
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     state, err = con.execute("SELECT state, error FROM job WHERE id=?",
                              (jid,)).fetchone()
-    assert state == "failed" and "stale" in err
+    assert state == "failed" and "auto-heal" in err
+
+
+def test_heal_to_green_regenerates_only_flagged_then_stops(tmp_path, monkeypatch):
+    # the loop runs narration_heal -> if it wrote corrections, regen those groups
+    # + re-derive + re-QA; stops the cycle corrections come back empty
+    import json
+    import types
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep), "number": 1}
+    seq = [{"3": "cover the caption"}, {}]   # cycle1 has 1 group, cycle2 none
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        if "narration_heal.py" in s:
+            out = cmd[cmd.index("--out") + 1]
+            json.dump(seq.pop(0) if seq else {}, open(out, "w"))
+        return 0
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
+        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
+                              punchup="cinematic", script_model="s"), "p", "l"))
+    regen = []
+    monkeypatch.setattr(worker, "_regen_flagged",
+                        lambda *a, **k: regen.append(1))
+    monkeypatch.setattr(worker, "_run_prep_and_qa", lambda *a, **k: set())
+    worker._heal_to_green(con, ch, ep, open(tmp_path / "log.txt", "w"))
+    assert regen == [1]          # exactly one heal cycle, then corrections empty
 
 
 # ---- autopilot: spotless QA advances without human clicks -------------------

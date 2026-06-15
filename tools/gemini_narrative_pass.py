@@ -534,10 +534,11 @@ def main() -> int:
         sys_g = system
         if gid in corrections:
             sys_g = system + (
-                "\n\nCORRECTION FOR THIS GROUP — your previous narration asserted something NOT "
-                "visible in these panels:\n  " + corrections[gid] + "\n"
-                "Rewrite the 'narration' to REMOVE that invented content. Stay strictly to what is "
-                "visible here plus the panel's actual dialogue; keep the cast names.\n"
+                "\n\nCORRECTION FOR THIS GROUP — the previous narration had this problem:\n  "
+                + corrections[gid] + "\n"
+                "Rewrite the 'narration' to FIX it: stay strictly to what is visible here plus the "
+                "panel's actual dialogue, COVER every on-panel caption in full, keep the cast names, "
+                "assert nothing not shown, and never leave the narration empty.\n"
             )
             regenerated += 1
 

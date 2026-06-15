@@ -154,10 +154,94 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
          1 if rc == 0 else 0, ch["series_id"]))
     con.commit()
     codes = _qa_error_codes(ep)
-    if rc != 0 and not (heal_aware and codes & STALE_CODES):
+    if rc != 0 and not heal_aware:
         raise RuntimeError("prep-QA found ERROR-severity flags — open the "
                            f"report in {ep}")
     return codes
+
+
+def _beats_cfg():
+    """(cfg, project, location) for the beats/punchup/script tools, sourced the
+    same way _stage_beated does (SA key project, no gcloud)."""
+    from studio.config import load as _load_cfg
+    cfg = _load_cfg()
+    keys = REPO / "keys" / "gcp-vision.json"
+    project = (json.loads(keys.read_text()).get("project_id", "")
+               if keys.exists() else os.environ.get("GOOGLE_CLOUD_PROJECT", ""))
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+    return cfg, project, location
+
+
+def _regen_flagged(ep: Path, cfg, project: str, location: str,
+                   corr_path: str, env, log: TextIO) -> None:
+    """Re-narrate ONLY the corrected groups from their panels (--resume keeps
+    every other line), then re-apply persona + re-derive the verbatim script."""
+    beats, cast = str(ep / "manifest.beats.json"), str(ep / "manifest.cast.json")
+    vision = str(ep / "manifest.vision.json")
+    gargs = [PY, str(REPO / "tools" / "gemini_narrative_pass.py"),
+             "--groups-manifest", str(ep / "manifest.groups.json"),
+             "--vision-manifest", vision, "--out", beats,
+             "--project", project, "--location", location,
+             "--model", cfg.beats_model, "--cast", cast,
+             "--resume", "--corrections", corr_path, "--max-images-per-group", "6"]
+    if cfg.beats_backend == "ollama":
+        gargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]
+    if _stream(gargs, log, env=env) != 0:
+        raise RuntimeError("gemini_narrative_pass (heal) failed")
+    if (cfg.punchup or "off") != "off":
+        pargs = [PY, str(REPO / "tools" / "narration_punchup.py"),
+                 "--beats", beats, "--out", beats, "--cast", cast,
+                 "--episode-dir", str(ep), "--humor", cfg.punchup]
+        if cfg.beats_backend == "ollama":
+            pargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]
+        else:
+            pargs += ["--backend", "vertex", "--model", cfg.beats_model,
+                      "--project", project, "--location", location]
+        _stream(pargs, log, env=env)
+    sargs = [PY, str(REPO / "tools" / "script_expander.py"), "--beats", beats,
+             "--vision", vision, "--out", str(ep / "manifest.script.json"),
+             "--model", cfg.script_model, "--narration-source",
+             "gemini_verbatim", "--cast", cast]
+    if _stream(sargs, log, env=env) != 0:
+        raise RuntimeError("script_expander (heal) failed")
+
+
+_HEAL_MAX = 4
+
+
+def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
+                   log: TextIO) -> None:
+    """Auto-heal: regenerate ONLY the QA-flagged groups from their panels and
+    re-derive, up to _HEAL_MAX cycles, until no narration-healable ERROR remains.
+    A failing line is re-narrated from the art — never dropped to satisfy QA."""
+    cfg, project, location = _beats_cfg()
+    env = _series_env(con, ch["series_id"])
+    corr = ep / "heal_corrections.json"
+    for cycle in range(1, _HEAL_MAX + 1):
+        _stream([PY, str(REPO / "tools" / "narration_heal.py"),
+                 "--qa", str(ep / "prep_qa.json"), "--out", str(corr)], log)
+        try:
+            ncorr = len(json.loads(corr.read_text()))
+        except Exception:
+            ncorr = 0
+        if ncorr == 0:
+            log.write("[heal] no narration-healable ERRORs remain\n")
+            return
+        log.write(f"[heal] cycle {cycle}/{_HEAL_MAX}: re-narrating {ncorr} "
+                  "flagged group(s) from their panels\n")
+        _regen_flagged(ep, cfg, project, location, str(corr), env, log)
+        with record_stage(con, chapter_id=ch["id"], stage="planned",
+                          series_id=ch["series_id"]):
+            if _stream([PY, str(REPO / "tools" / "timeline_planner.py"),
+                        "--groups", str(ep / "manifest.groups.json"),
+                        "--beats", str(ep / "manifest.beats.json"),
+                        "--script", str(ep / "manifest.script.json"),
+                        "--vision", str(ep / "manifest.vision.json"),
+                        "--out", str(ep / "render.plan.json"),
+                        "--mode", "narrated", "--min-cut-sec", "3.5"], log) != 0:
+                raise RuntimeError("timeline_planner (heal) failed")
+        _run_prep_and_qa(con, ch, log, heal_aware=True)
+    log.write(f"[heal] hit the {_HEAL_MAX}-cycle cap\n")
 
 
 def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
@@ -196,27 +280,16 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
 
     _plan()
     codes = _run_prep_and_qa(con, ch, log, heal_aware=True)
-    if codes & STALE_CODES:
-        # mechanical staleness (script older than beats / beats missing
-        # groups): re-run the writing chain ONCE, then re-QA. Never loop.
-        demote = ("grouped" if "beats_incomplete" in codes else "beated")
-        log.write(f"[heal] stale narration chain {sorted(codes)} → "
-                  f"status={demote}, re-running beated/scripted once\n")
-        con.execute("UPDATE chapter SET status=? WHERE id=?",
-                    (demote, ch["id"]))
-        con.commit()
-        rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
-                      "--chapters", str(int(ch["number"])),
-                      "--until", "scripted"], log,
-                     env=_series_env(con, ch["series_id"]))
-        if rc != 0:
-            raise RuntimeError(f"studio run (heal) exited {rc}")
-        _plan()
-        codes = _run_prep_and_qa(con, ch, log, heal_aware=True)
-        if codes & STALE_CODES:
-            raise RuntimeError(
-                "narration still stale after one heal cycle — manual review "
-                f"needed ({sorted(codes & STALE_CODES)})")
+    if codes:
+        # AUTO-HEAL: re-narrate ONLY the QA-flagged groups from their panels
+        # (corrections + --resume keep every good line), re-derive and re-QA in a
+        # loop until green. A failing line is never DROPPED to satisfy QA.
+        _heal_to_green(con, ch, ep, log)
+        codes = _qa_error_codes(ep)
+    if codes:
+        raise RuntimeError(
+            f"prep-QA still has ERROR flags after auto-heal ({sorted(codes)}) — "
+            f"open the report in {ep}")
     if _autopilot_clean(con, ch) and not gates._has_approval(
             con, "voice", chapter_id=ch["id"]):
         log.write("[autopilot] QA spotless → story auto-approved, "
