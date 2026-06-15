@@ -3,10 +3,10 @@
 {% for j in jobs %}
 <tr><td>{{ j.id }}</td><td>{{ j.type }}{% if j.payload.target %} → {{ j.payload.target }}{% endif %}</td>
 <td class="kv">{% if j.chapter_id %}<a href="/chapter/{{ j.chapter_id }}" style="color:var(--acc)">ch#{{ j.chapter_id }}</a>{% elif j.bundle_id %}bundle#{{ j.bundle_id }}{% elif j.series_id %}series#{{ j.series_id }}{% else %}—{% endif %}</td>
-<td>{% if j.state=='running' %}<span class="b run">RUNNING</span>
+<td>{% if j.state=='running' %}<span class="b run">RUNNING</span><div class="kv" style="margin-top:2px">⏱ {{ fmt_eta(j.elapsed_sec) }}{% if j.est_total_sec %} / ~{{ fmt_eta(j.est_total_sec) }}{% endif %}</div>
 {% elif j.state=='queued' %}<span class="b q">QUEUED</span>
-{% elif j.state=='failed' %}<span class="b err">FAILED</span>
-{% elif j.state=='done' %}<span class="b ok">DONE ✓</span>
+{% elif j.state=='failed' %}<span class="b err">FAILED</span>{% if j.duration_sec %}<div class="kv" style="margin-top:2px">took {{ fmt_eta(j.duration_sec) }}</div>{% endif %}
+{% elif j.state=='done' %}<span class="b ok">DONE ✓</span>{% if j.duration_sec %}<div class="kv" style="margin-top:2px">took {{ fmt_eta(j.duration_sec) }}</div>{% endif %}
 {% else %}<span class="b q">{{ j.state|upper }}</span>{% endif %}</td>
 <td class="kv">{{ j.error or '' }}</td>
 <td>

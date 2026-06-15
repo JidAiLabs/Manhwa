@@ -35,6 +35,13 @@
 <span class="kv">{{ render_block_reason if not qa_ok else '' }}</span>{% endif %}
 </div>
 
+<h2>Rendered video <small>(the final segment for this chapter)</small></h2>
+<div class="row">
+{% if render_url %}<video controls preload="metadata" src="{{ render_url }}" style="max-width:560px;border-radius:8px;vertical-align:middle"></video>
+<a href="{{ render_url }}" download style="color:var(--acc)">download mp4</a>
+{% else %}<span class="kv">the rendered video appears here once you approve voiceover → render (Step 2)</span>{% endif %}
+</div>
+
 <p class="kv" style="margin:.6em 0">Title, description &amp; thumbnail are per <b>video</b> — generated on the <a href="/videos" style="color:var(--acc)">Videos</a> page (title/description per bundle) and the <a href="/series/{{ ch.series_id }}" style="color:var(--acc)">Series</a> page (one thumbnail per manhwa). Not per chapter.</p>
 
 <h2>Groups <small>— narration beside panels</small></h2>

@@ -12,6 +12,8 @@ import os
 import sqlite3
 from typing import Any, Dict, List, Optional
 
+from studio.dashboard import eta
+
 _COLS = ("id, type, series_id, chapter_id, bundle_id, payload_json, state, "
          "priority, created_at, started_at, finished_at, log_path, error")
 
@@ -124,6 +126,44 @@ def set_log(con: sqlite3.Connection, job_id: int, log_path: str) -> None:
     con.commit()
 
 
+# Stages a job of each type runs, for a rough running-job countdown. Real
+# stage_run medians refine these as history accumulates (eta.stage_eta).
+_TYPE_STAGES = {
+    "prepare": ["grouped", "beated", "scripted", "planned", "prepped", "qa_scan"],
+    "voiceover": ["voiced"],
+    "render_segment": ["render_segment"],
+    "concat": ["concat"],
+}
+
+
+def _with_timing(con: sqlite3.Connection, job: Dict[str, Any]) -> Dict[str, Any]:
+    """Annotate a job with wall-clock timing so the queue shows progress:
+    running jobs get ``elapsed_sec`` (live) + ``est_total_sec`` (rough, ~);
+    finished jobs get ``duration_sec``. All computed in SQL so UTC stored
+    times never collide with the local clock."""
+    st = job.get("state")
+    if st == "running":
+        job["elapsed_sec"] = 0
+        if job.get("started_at"):
+            row = con.execute(
+                "SELECT CAST((julianday('now') - julianday(?)) * 86400 AS INT)",
+                (job["started_at"],)).fetchone()
+            if row and row[0] is not None:
+                job["elapsed_sec"] = max(0, int(row[0]))
+        stages = _TYPE_STAGES.get(job.get("type"))
+        if stages:
+            job["est_total_sec"] = sum(
+                eta.stage_eta(con, s, job.get("series_id")) for s in stages)
+    elif st in ("done", "failed", "cancelled") and job.get("started_at") \
+            and job.get("finished_at"):
+        row = con.execute(
+            "SELECT CAST((julianday(?) - julianday(?)) * 86400 AS INT)",
+            (job["finished_at"], job["started_at"])).fetchone()
+        if row and row[0] is not None:
+            job["duration_sec"] = max(0, int(row[0]))
+    return job
+
+
 def queue_view(con: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Running first, then the queue, then the most recent finished jobs —
     a job must never silently vanish the moment it completes."""
@@ -136,4 +176,5 @@ def queue_view(con: sqlite3.Connection) -> List[Dict[str, Any]]:
         f"SELECT {_COLS} FROM job WHERE type!='heartbeat' AND "
         "state IN ('done','failed','cancelled') "
         "ORDER BY finished_at DESC, id DESC LIMIT 12").fetchall()
-    return [_row(r) for r in active] + [_row(r) for r in recent]
+    return ([_with_timing(con, _row(r)) for r in active]
+            + [_with_timing(con, _row(r)) for r in recent])

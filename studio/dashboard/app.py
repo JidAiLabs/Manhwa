@@ -295,6 +295,11 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         v_allowed, v_why = gates.voice_allowed(c, cid)
         has_preview = bool(ch["ep_dir"] and (
             Path(ch["ep_dir"]) / "render" / "voice_preview.mp3").exists())
+        seg = (Path(ch["ep_dir"]) / "render" / "segment_both.mp4"
+               if ch["ep_dir"] else None)
+        render_url = (f"/media/{ep_rel}/render/segment_both.mp4"
+                      f"?v={int(seg.stat().st_mtime)}"
+                      if seg and seg.exists() and ep_rel is not None else None)
         qa_html = Path(ch["ep_dir"] or "") / "prep_qa.html"
         qa_v = int(qa_html.stat().st_mtime) if (
             ch["ep_dir"] and qa_html.exists()) else 0
@@ -304,6 +309,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     render_allowed=allowed, render_block_reason=why,
                     voice_allowed=v_allowed, voice_block_reason=v_why,
                     has_voice_preview=has_preview, qa_v=qa_v,
+                    render_url=render_url,
                     cost=_chapter_costs(ch["ep_dir"]),
                     gallery=_gallery(ch["ep_dir"]), ep_rel=ep_rel)
 
