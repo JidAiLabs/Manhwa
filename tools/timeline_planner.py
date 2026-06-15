@@ -687,6 +687,30 @@ def protected_card_files(vision_path: str, scene_dirs: List[str]) -> "set":
     return out
 
 
+def protected_story_files(vision_path: str) -> "set":
+    """Every panel the UNDERSTANDING calls real story content (panel_kind=='story',
+    stamped on the vision manifest by panel_understand). These OUTRANK the beats
+    LLM's per-panel 'redundant' verdict — which proved unreliable, dropping the
+    very panel that named ORV's whole premise (the phone showing 'Three Ways to
+    Survive the Apocalypse'). The understanding is authoritative: a real story
+    panel is always SHOWN; only effect/empty/caption frames (already filtered at
+    grouping) or true near-duplicates may be dropped. Degrades to the empty set
+    (card-only behaviour) when panel_kind isn't stamped (an older manifest)."""
+    out: set = set()
+    if not vision_path or not os.path.exists(vision_path):
+        return out
+    try:
+        with open(vision_path, "r", encoding="utf-8") as fh:
+            items = json.load(fh).get("items") or []
+    except Exception:
+        return out
+    for it in items:
+        f = os.path.basename(str(it.get("scene_file") or ""))
+        if f and str(it.get("panel_kind") or "").strip().lower() == "story":
+            out.add(f)
+    return out
+
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -766,6 +790,15 @@ def main() -> int:
         args.vision, [args.clean_scene_dir, args.raw_scene_dir])
     if protected_cards:
         print(f"[plan] protected title/system cards: {sorted(protected_cards)}")
+    # the understanding's verdict OUTRANKS the beats LLM's 'redundant' tag: every
+    # real story panel is shown (the LLM dropped the premise panel otherwise). Pure
+    # effects/empties are already gone (filtered at grouping); captions stay
+    # droppable (their words ride the narration). Union drives both filters below.
+    protected_story = protected_story_files(args.vision)
+    protected = protected_cards | protected_story
+    if protected_story:
+        print(f"[plan] protected {len(protected_story)} understood story panel(s) "
+              f"from the redundant-drop")
 
     for gobj in groups:
         group_id = int(gobj.get("group_id") or gobj.get("shot_id") or 0)
@@ -793,8 +826,8 @@ def main() -> int:
             )
             if dropped:
                 dropped_summary.append({"group_id": group_id, "dropped": dropped})
-            # never let the husk filter drop a mandatory title/system card
-            keep_set = set(kept) | (protected_cards & set(scene_files))
+            # never let the husk filter drop a mandatory card OR a real story panel
+            keep_set = set(kept) | (protected & set(scene_files))
             scene_files = [f for f in scene_files if f in keep_set]  # orig order
 
         beat = beats_by_gid.get(group_id, {"group_id": group_id})
@@ -882,7 +915,7 @@ def main() -> int:
                         scene_files, dur,
                         min_cut_sec=float(args.min_cut_sec),
                         selection=beat.get("scene_selection"),
-                        protected=protected_cards,
+                        protected=protected,
                     )
 
             item: Dict[str, Any] = {

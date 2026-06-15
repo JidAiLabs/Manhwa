@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from typing import Any, Callable, Dict, List, Optional
 
@@ -166,6 +167,78 @@ def nonstory_files(panels: List[Dict[str, Any]]) -> set:
     return out
 
 
+# Words that signal a panel is ONLY a visual effect (no actor, object, or place).
+# Real combat panels are FULL of these too — so an effect word ALONE never drops a
+# panel; it must ALSO name nothing concrete (below). Substring match is fine here.
+_EFFECT_CUES = (
+    "fragment", "sliver", "streak", "blob", "smear", "blur", "speed line",
+    "speed-line", "motion line", "glow", "flash", "spark", "ember", "gradient",
+    "texture", "static", "swirl", "haze", "shape", "light", "energy", "abstract",
+    "splatter", "distort", "glitch", "ripple", "shimmer", "beam",
+)
+# Concrete nouns: a person, body part, creature, object, or place. If the
+# description names ANY of these (as a WHOLE word — 'background' must not match
+# 'ground'), the panel depicts a real scene and is KEPT. This is the discriminator
+# that stops a real character/establishing shot from being dropped as an effect.
+_CONCRETE_NOUNS = frozenset((
+    "man", "woman", "boy", "girl", "child", "baby", "person", "people", "figure",
+    "character", "guy", "men", "women", "crowd", "soldier", "warrior", "king",
+    "queen", "men", "kid", "stranger", "individual", "individuals",
+    "face", "eye", "eyes", "hand", "hands", "arm", "arms", "leg", "legs", "body",
+    "head", "hair", "finger", "fingers", "mouth", "back", "shoulder", "fist",
+    "foot", "feet", "teeth", "skin",
+    "beast", "monster", "creature", "animal", "dog", "wolf", "snake", "dragon",
+    "horn", "horns", "claw", "claws", "wing", "wings", "tail", "fang", "foliage",
+    "sword", "blade", "knife", "weapon", "gun", "phone", "smartphone", "book",
+    "screen", "door", "car", "table", "chair", "machine", "machinery", "structure",
+    "structures", "building", "buildings", "wall", "window", "armor", "coat",
+    "suit", "mask", "sign", "card", "letter", "bottle", "cup", "device", "robe",
+    "portal", "gate", "rift", "throne", "banner", "flag", "vehicle", "ship",
+    "city", "street", "road", "room", "hall", "house", "forest", "mountain",
+    "sky", "field", "sea", "ocean", "river", "bridge", "train", "subway", "school",
+    "classroom", "office", "castle", "village", "town", "landscape", "horizon",
+    "ground", "floor", "ceiling", "tree", "trees", "cliff", "cave", "desk", "desks",
+    "tower", "gate", "garden", "alley", "rooftop", "platform", "hallway", "stairs",
+))
+
+
+def effect_only_files(panels: List[Dict[str, Any]]) -> set:
+    """scene_files the understanding shows as a PURE visual EFFECT — a story-kind
+    panel that names NO concrete subject (only shapes / light / streaks /
+    fragments) and carries no dialogue. These are transition/impact slivers, not a
+    scene: the narrator must not describe them and the montage must not show them.
+
+    The 'names nothing concrete' test is the discriminator. gemma's `subjects`
+    field is unreliable (it leaves it empty on clear character close-ups), and a
+    real combat panel is full of effect words (sparks, flash, embers) — so neither
+    subjects==[] NOR an effect word can drop a panel alone. We drop ONLY when the
+    panel is story-kind, has no listed subject, no dialogue, AND its description
+    names nothing real while carrying an effect cue. Calibrated on live gemma
+    output across ORV/Nano/IE: drops the ORV glowing-red sliver (p000008) and
+    keeps every man/face/beast/phone/machinery panel."""
+    out = set()
+    for p in panels:
+        sf = p.get("scene_file")
+        if not sf or p.get("error"):
+            continue
+        if str(p.get("panel_kind") or "").strip().lower() != "story":
+            continue                                  # only reclassify 'story'
+        if p.get("subjects"):
+            continue                                  # model named a subject
+        if str(p.get("dialogue") or "").strip():
+            continue                                  # carries story text (card)
+        desc = str(p.get("description") or "").strip().lower()
+        if not desc:
+            out.add(sf)                               # story-kind, nothing at all
+            continue
+        words = set(re.findall(r"[a-z]+", desc))
+        if words & _CONCRETE_NOUNS:
+            continue                                  # names something real -> KEEP
+        if any(cue in desc for cue in _EFFECT_CUES):
+            out.add(sf)                               # only effects, nothing real
+    return out
+
+
 def caption_files(panels: List[Dict[str, Any]]) -> set:
     """scene_files the understanding marked 'caption' — text-only monologue/
     transition cards (e.g. a black card 'BACK THEN, I HAD NO IDEA.'). Their WORDS
@@ -308,6 +381,12 @@ def main() -> int:
         # chrome/empty/parse-failed panels; keep the OCR-regex chrome detector as
         # belt-and-suspenders for anything the understanding missed.
         understood_nonstory = nonstory_files(panels)
+        # PURE-EFFECT panels the model still labelled 'story' (a glowing sliver, an
+        # impact streak — names nothing concrete): drop them HERE, before narration,
+        # so the narrator never writes a line for a panel the montage can't show. The
+        # alternative (dropping at render, AFTER the line is written) guaranteed the
+        # narration↔image mismatch the user kept hitting.
+        effect_only = effect_only_files(panels)
         # the understanding is AUTHORITATIVE: never let the brittle OCR-regex drop a
         # panel it classified as real story/caption content (that silently lost 2 ORV
         # story panels — the regex vetoed a 'story' verdict on garbled OCR).
@@ -320,10 +399,13 @@ def main() -> int:
         # LLM mislabelled a flat info-card as chrome — same detector prep_qa uses, so
         # this can never trip the 'system_card_dropped' QA error.
         cards = title_card_files(list(vmap.values()))
-        excluded = (understood_nonstory | ocr_chrome) - cards
+        excluded = (understood_nonstory | ocr_chrome | effect_only) - cards
         if understood_nonstory:
             print(f"[nonstory] understanding dropped {len(understood_nonstory)}: "
                   f"{sorted(understood_nonstory)}")
+        if effect_only - cards:
+            print(f"[effect] dropped {len(effect_only - cards)} pure-effect panel(s) "
+                  f"(no concrete subject): {sorted(effect_only - cards)}")
         protected = cards & (understood_nonstory | ocr_chrome)
         if protected:
             print(f"[protect] kept {len(protected)} story system/title card(s): "

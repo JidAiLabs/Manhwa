@@ -54,6 +54,35 @@ def test_build_cuts_all_redundant_still_shows_one():
     assert len(cuts) == 1                                # never an empty shot
 
 
+def test_build_cuts_protected_story_panel_survives_redundant_verdict():
+    # THE premise-panel bug: the beats LLM tagged p14 (the phone showing the
+    # novel title — the whole premise) 'redundant'; the understanding calls it
+    # 'story', so it's PROTECTED and must still be shown. An unprotected redundant
+    # caption (p16) still drops — captions ride the narration, not the montage.
+    sel = _sel({"p14.jpg": "redundant", "p15.jpg": "keep", "p16.jpg": "redundant"})
+    cuts = tp.build_cuts(["p14.jpg", "p15.jpg", "p16.jpg"], 9.0,
+                         min_cut_sec=3.0, selection=sel, protected={"p14.jpg"})
+    files = [c["file"] for c in cuts]
+    assert "p14.jpg" in files            # protected story panel survives the drop
+    assert "p15.jpg" in files            # the keeper is still there
+    assert "p16.jpg" not in files        # unprotected redundant caption still drops
+
+
+def test_protected_story_files_reads_stamped_panel_kind(tmp_path):
+    import json
+    vision = {"items": [
+        {"scene_file": "scenes/p1.jpg", "panel_kind": "story"},   # basename kept
+        {"scene_file": "p2.jpg", "panel_kind": "caption"},        # not story
+        {"scene_file": "p3.jpg", "panel_kind": "empty"},          # not story
+        {"scene_file": "p4.jpg", "panel_kind": "story"},
+        {"scene_file": "p5.jpg"},                                 # unstamped
+    ]}
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    assert tp.protected_story_files(str(vp)) == {"p1.jpg", "p4.jpg"}
+    assert tp.protected_story_files("") == set()                  # missing -> empty
+
+
 # ---- filler-beat drop (build #3) -------------------------------------------
 
 def test_is_filler_narration():

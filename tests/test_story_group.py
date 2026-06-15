@@ -95,6 +95,70 @@ def test_nonstory_files_drops_chrome_empty_and_parse_failures():
     assert sg.nonstory_files([{"scene_file": "c", "panel_kind": "caption"}]) == set()
 
 
+def test_effect_only_drops_pure_effect_panels_but_keeps_real_scenes():
+    # REAL gemma records (live ORV/Nano/IE understood.json) — the calibration oracle.
+    # Only a panel that names NOTHING concrete AND has an effect cue is dropped;
+    # gemma's subjects=[] is unreliable, so real character/combat panels (which are
+    # FULL of effect words: flash, embers, sparks) must survive on their nouns.
+    panels = [
+        # THE ORV SLIVER — story-kind, no subject, no dialogue, names only
+        # shapes/fragments/streaks. 'background' must NOT match 'ground'. -> DROP
+        {"scene_file": "p000008.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "",
+         "description": "The panel shows bright, glowing red shapes against a "
+                        "solid black background, resembling fragments or light streaks."},
+        # real combat — names 'man'/'blade' though subjects=[] -> KEEP
+        {"scene_file": "p000024.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "",
+         "description": "A dark-haired man in tactical gear swings a blade, creating "
+                        "a bright flash of light amidst flying debris and glowing embers."},
+        # real close-up — 'face'/'eye'/'hair' though subjects=[] -> KEEP
+        {"scene_file": "p000034.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "",
+         "description": "A close-up shot of an anime-style character's face, showing "
+                        "their eye and part of their blue-tinted hair against a bright, "
+                        "glowing background."},
+        # real scene — 'arm'/'hand'/'foliage' -> KEEP
+        {"scene_file": "p000003.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "",
+         "description": "A close-up shot shows a pale arm or limb being gripped or "
+                        "struck by a dark, shadowy clawed hand amidst dark foliage."},
+        # SFX transition but names 'structures'/'machinery' -> KEEP (conservative)
+        {"scene_file": "p000011.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "",
+         "description": "Large, stylized sound effect text overlays a blurred, "
+                        "fast-moving scene of metallic structures or machinery streaking past."},
+        # has a listed subject -> never evaluated -> KEEP
+        {"scene_file": "p000007.jpg", "panel_kind": "story",
+         "subjects": ["debris", "sparks"], "dialogue": "",
+         "description": "Red SFX text over an abstract scene of debris and sparks."},
+        # system/age card: subjects=[] but carries dialogue -> KEEP
+        {"scene_file": "p000card.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "LIN ZICHEN - AGE: 5 MONTHS",
+         "description": "Character introduction cards and a system notification window."},
+        # a caption (not story-kind) is never touched by the effect filter
+        {"scene_file": "c.jpg", "panel_kind": "caption", "subjects": [],
+         "dialogue": "", "description": "glowing streaks of abstract light"},
+    ]
+    dropped = sg.effect_only_files(panels)
+    assert dropped == {"p000008.jpg"}                      # ONLY the sliver
+    for keep in ("p000024.jpg", "p000034.jpg", "p000003.jpg", "p000011.jpg",
+                 "p000007.jpg", "p000card.jpg", "c.jpg"):
+        assert keep not in dropped
+
+
+def test_effect_only_drops_story_panel_with_empty_description():
+    # story-kind, no subject, no dialogue, no description at all -> nothing real -> DROP
+    assert sg.effect_only_files(
+        [{"scene_file": "x.jpg", "panel_kind": "story", "subjects": [],
+          "dialogue": "", "description": ""}]) == {"x.jpg"}
+    # but an atmospheric establishing shot with NO effect words is KEPT even with
+    # an unknown noun (the effect-cue requirement is the second safety net)
+    assert sg.effect_only_files(
+        [{"scene_file": "y.jpg", "panel_kind": "story", "subjects": [],
+          "dialogue": "", "description": "A quiet panorama at dawn."}]) == set()
+
+
 def test_caption_solo_beat_folds_into_previous_same_segment_beat():
     panels = [{"scene_file": "p0", "panel_kind": "story"},
               {"scene_file": "c1", "panel_kind": "caption"},
