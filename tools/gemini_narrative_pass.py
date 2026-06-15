@@ -156,10 +156,13 @@ def _pack_group_payload(group: Dict[str, Any], vision_items_by_file: Dict[str, D
         "group_id": int(group.get("shot_id") or group.get("group_id") or 0),
         "scene_files": scene_files,
         "scenes_signals": scenes,
-        # this beat's place in the arc (story_group emits arc_label/segment; the
-        # old code looked for the non-existent 'why_merge' and dropped it)
+        # this beat's place in the arc + its PACE (intensity drives line length:
+        # punchy for intense/explosive, fuller for calm/tense). story_group emits
+        # arc_label/segment/intensity; the old code looked for a non-existent
+        # 'why_merge' and dropped the lot.
         "arc_label": group.get("arc_label"),
         "segment": group.get("segment") or "present",
+        "intensity": group.get("intensity") or "tense",
     }
 
 
@@ -420,6 +423,12 @@ def main() -> int:
         "  naturally covers the time those panels are on screen. Write like a top manhwa-\n"
         "  recap channel: NAME the characters, describe the ACTION, weave in their words.\n"
         "  This is the final voiced line.\n"
+        "    - PACE = INPUT_JSON.intensity (the beat's energy): an 'explosive' or 'intense'\n"
+        "      beat is a FIGHT or SHOCK — write SHORT, HARD, urgent lines: punchy present-\n"
+        "      tense verbs, no meandering, so the montage cuts stay FAST. A 'calm' or 'tense'\n"
+        "      beat earns FULLER, richer narration — set the scene, the stakes, what the\n"
+        "      character feels — a slower, more detailed line. NEVER write a slow wordy line\n"
+        "      over a fight; NEVER let a quiet story beat feel thin. Match the scene's energy.\n"
         "    - GROUND it strictly in THESE panels — describe only what is actually drawn here.\n"
         "      Invent NOTHING: no event/motion/outcome not shown, and NO setting that isn't\n"
         "      visible (never 'chandeliers', 'a grand hall', 'marble', 'parchment' unless on the page).\n"

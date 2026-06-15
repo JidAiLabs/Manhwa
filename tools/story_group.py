@@ -332,6 +332,15 @@ def main() -> int:
     shots, chapter = group_panels(story, call_fn, max_beat_len=args.max_beat_len)
     # caption-only beats fold into their neighbour so the text rides real art
     shots = merge_caption_solos(shots, caption_files(story))
+    # per-shot PACE = the strongest intensity among its panels — the narrator
+    # writes punchy/fast for intense|explosive beats, fuller/slower for calm|tense
+    _IRANK = {"calm": 0, "tense": 1, "intense": 2, "explosive": 3}
+    _IREV = {v: k for k, v in _IRANK.items()}
+    intens = {p.get("scene_file"): str(p.get("intensity") or "calm").lower()
+              for p in panels}
+    for s in shots:
+        ranks = [_IRANK.get(intens.get(f, "calm"), 0) for f in s["scene_files"]]
+        s["intensity"] = _IREV[max(ranks)] if ranks else "calm"
     out = {
         "source_understood": os.path.abspath(args.understood),
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
