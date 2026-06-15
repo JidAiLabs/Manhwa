@@ -51,6 +51,12 @@ GENRE-NEUTRAL TECHNIQUES (use 1-2 per line, vary them, never force all):
 HARD RULES:
 - NEVER invent events, objects, dialogue, or names not present in the
   original line. You restyle facts; you do not add them.
+- NEVER change a quantity or invent a collective: "two beasts" stay two
+  beasts, never "a pack/swarm/horde/army". Do not rename what is drawn
+  (a beast is a beast, not a "dog").
+- NEVER add game/UI/"system" framing to a world that does not have one:
+  no "server", "respawn", "boss fight", "XP", "level up", "patch notes"
+  unless the original line already established a literal game system.
 - Keep every character name EXACTLY as written (the cast list is law).
 - Keep the original meaning and emotional turn of the line — an injured
   character stays injured, a defeat stays a defeat.
@@ -120,10 +126,11 @@ using the DRAMATIC/CONNECTIVE tag as a guide:
   light, intimate undertone — never snark that deflates the moment;
 - you may leave a line almost purely cinematic (or purely persona) when that is
   genuinely what the moment needs — judgment over quota.
-STORY CAPTIONS / narration-box text stay VERBATIM (the manhwa's own voice) —
-restyle only the surrounding description around them.
+STORY CAPTIONS / narration-box text: WEAVE them into the line in the story's own
+first-person voice — you MAY rephrase for flow, but keep their MEANING and any key
+phrase, and never read a caption robotically as a bare standalone fragment.
 Keep every grounding rule for whatever you write: no invented facts, cast names
-verbatim, captions preserved, mood tags preserved, no chrome."""
+verbatim, caption meaning preserved, mood tags preserved, no chrome."""
 
 
 def genre_key(genre_text: str) -> str:
@@ -172,6 +179,52 @@ _UI_TOKENS = {"read", "ep", "episode", "episodes", "comments", "comment",
               "views", "view", "likes", "like", "subscribe", "next", "prev",
               "previous", "tap", "menu", "notice", "unread"}
 
+# --- grounding enforcement: the persona pass restyles facts, it must not INVENT --
+# game/UI/"system" vocab that fabricates mechanics a real-world scene never had
+# ("the nightmare's SERVER went live") and collective nouns that inflate a literal
+# count ("two beasts" -> "a PACK"). A term is flagged ONLY when it is ABSENT from
+# the grounded original — i.e. the rewrite ADDED it. System-genre stories legit-
+# imately run on game UIs, so the system list is waived there; collectives are
+# banned for every genre (you cannot invent a crowd the art never drew).
+# TIGHT on purpose: only words that assert a literal game/computer system exists
+# and have NO ordinary real-world meaning, so a legitimate rephrase can never trip
+# them and persona METAPHORS (speedrun, boss fight, free XP) are still allowed —
+# the user objects to invented FACTS ("there is no server"), not to style.
+_INVENTED_SYSTEM = {
+    "server", "servers", "respawn", "respawned", "respawns", "respawning",
+    "hitbox", "hitboxes", "framerate", "savefile", "killstreak", "matchmaking",
+    "leaderboard", "leaderboards", "hotbar",
+}
+_COLLECTIVES = {
+    "pack", "packs", "swarm", "swarms", "horde", "hordes", "army", "armies",
+    "legion", "legions", "flock", "throng", "dozens", "hundreds",
+    "thousands", "countless", "myriad",
+}
+
+
+def _new_words(original: str, punched: str) -> set:
+    """Lowercase alpha tokens in the rewrite but NOT in the grounded original."""
+    ow = set(re.findall(r"[a-z][a-z']*", (original or "").lower()))
+    pw = set(re.findall(r"[a-z][a-z']*", (punched or "").lower()))
+    return pw - ow
+
+
+def invented_term(original: str, punched: str, *, genre: str = "") -> Optional[str]:
+    """First fabricated term the persona pass ADDED that the grounded line never
+    had: a banned collective (any genre) or a game/system word (non-system genre).
+    Returns None when clean. Deterministic grounding enforcement so an invented
+    'server'/'pack' is REJECTED (fall back to the grounded line), not merely
+    discouraged by the prompt."""
+    added = _new_words(original, punched)
+    hit = sorted(added & _COLLECTIVES)
+    if hit:
+        return hit[0]
+    if genre_key(genre) != "system":
+        hit = sorted(added & _INVENTED_SYSTEM)
+        if hit:
+            return hit[0]
+    return None
+
 
 def _caption_words_by_group(ep_dir: str,
                             beats_obj: Dict[str, Any]) -> Dict[int, set]:
@@ -211,7 +264,8 @@ def _caption_words_by_group(ep_dir: str,
 
 def validate_line(original: str, punched: str,
                   cast_names: List[str], *,
-                  required: Any = None, max_ratio: float = 1.5) -> bool:
+                  required: Any = None, max_ratio: float = 1.5,
+                  genre: str = "") -> bool:
     """Reject rewrites that break the grounding contract. *max_ratio* is the
     upper word-count multiple allowed — raised for DRAMATIC cinematic lines,
     which intentionally keep more atmospheric description than the grounded line."""
@@ -239,13 +293,18 @@ def validate_line(original: str, punched: str,
     if re.search(r"\b(chapter|episode)\s+\d+|\.com\b|webtoon|asura|elftoon",
                  low_p):
         return False
+    # grounding: reject an INVENTED game/system word or collective the grounded
+    # line never had ("server", "wolf pack") — restyle facts, do not add them
+    if invented_term(original, punched, genre=genre):
+        return False
     return True
 
 
 def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
           cast_names: List[str],
           caption_words: Any = None,
-          classes: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
+          classes: Optional[Dict[int, str]] = None,
+          genre: str = "") -> Dict[str, Any]:
     """Apply validated rewrites; keep the grounded original otherwise.
     The original always survives as beat['narration_plain']; groups whose
     panels carry captions reject any rewrite that drops the caption words.
@@ -265,7 +324,7 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
         max_ratio = 3.0 if classes.get(gid) == "DRAMATIC" else 1.5
         if cand and validate_line(original, cand, cast_names,
                                   required=caption_words.get(gid),
-                                  max_ratio=max_ratio):
+                                  max_ratio=max_ratio, genre=genre):
             b["narration"] = cand
             applied += 1
         else:
@@ -389,7 +448,7 @@ def main() -> int:
     cap_words = (_caption_words_by_group(args.episode_dir, beats_obj)
                  if args.episode_dir else {})
     out = merge(beats_obj, punched, cast_names, caption_words=cap_words,
-                classes=classes)
+                classes=classes, genre=args.genre)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
     n = out["stats"]["punchup_applied"]
