@@ -34,6 +34,10 @@ _SEGMENTS = ("present", "flashback", "dream")
 GROUP_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
+        "chapter": {"type": "OBJECT", "properties": {
+            "logline": {"type": "STRING"},
+            "premise": {"type": "STRING"},
+        }},
         "beats": {"type": "ARRAY", "items": {
             "type": "OBJECT",
             "properties": {
@@ -56,11 +60,23 @@ SYSTEM = (
     "beat at: a scene or location change, a time jump, a FLASHBACK start OR end, "
     "or a clear topic shift. Group near-identical consecutive panels (e.g. a "
     "multi-panel action or a slow reveal) into ONE beat.\n"
+    "ORDER + FLOW — the beats must read as ONE story in reading order:\n"
+    "  - A caption / monologue panel that INTRODUCES the moment right after it "
+    "(e.g. 'ON THE DAY I FINISHED THE WEB NOVEL…' immediately before that event) "
+    "belongs in the SAME beat as the art it introduces. Never strand an intro "
+    "caption as its own separate beat sitting before the moment it sets up.\n"
+    "  - Keep a flashback or dream as a CONTIGUOUS block. Do NOT bounce "
+    "present→flashback→present→flashback: only change 'segment' at a real "
+    "time-shift, and change it back only when the story truly returns to now.\n"
     "For each beat return: scene_files (its consecutive panels, in order), "
     "segment (present | flashback | dream — MARK flashbacks and dreams), "
     "arc_label (a 2-4 word label for the scene). Cover EVERY panel exactly once, "
     "in order. Prefer MORE, tighter beats over a few large ones — each beat "
-    "becomes one narration line, so it should be one clear moment."
+    "becomes one narration line, so it should be one clear moment.\n"
+    "ALSO return 'chapter': a LOGLINE (one vivid sentence — what this chapter is "
+    "about, its arc) and a PREMISE (1-2 sentences: the situation + the stakes), "
+    "synthesized from the WHOLE sequence. This is the through-line the narrator "
+    "uses to connect the beats — base it ONLY on what the panels actually show."
 )
 
 
@@ -117,15 +133,37 @@ def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
 
 
 def group_panels(panels: List[Dict[str, Any]], call_fn: Callable[..., Any],
-                 *, max_beat_len: int = 4) -> List[Dict[str, Any]]:
-    """Group the (non-chrome, ordered) panels into story shots. `call_fn(payload)
-    -> parsed dict|None` is injected (real model, or stub in tests)."""
+                 *, max_beat_len: int = 4
+                 ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Group the (story-only, ordered) panels into story shots AND capture the
+    chapter spine (logline/premise). `call_fn(payload) -> parsed dict|None` is
+    injected (real model, or stub in tests). Returns (shots, chapter)."""
     if not panels:
-        return []
+        return [], {}
     parsed = call_fn(build_grouping_payload(panels))
-    beats = (parsed or {}).get("beats") if isinstance(parsed, dict) else None
-    return repair_to_shots([p.get("scene_file") for p in panels],
-                           beats or [], max_beat_len=max_beat_len)
+    pd = parsed if isinstance(parsed, dict) else {}
+    beats = pd.get("beats")
+    chapter = pd.get("chapter") if isinstance(pd.get("chapter"), dict) else {}
+    shots = repair_to_shots([p.get("scene_file") for p in panels],
+                            beats or [], max_beat_len=max_beat_len)
+    return shots, chapter
+
+
+def nonstory_files(panels: List[Dict[str, Any]]) -> set:
+    """scene_files the UNDERSTANDING (Pass 1) marked non-story — panel_kind
+    'chrome'/'empty', or a parse failure. The multimodal pass already SAW these
+    aren't story (a logo, an end-card, a blank/empty-bubble frame), so we trust
+    it and drop them here instead of re-deriving chrome from brittle OCR regex.
+    These never become beats."""
+    out = set()
+    for p in panels:
+        sf = p.get("scene_file")
+        if not sf:
+            continue
+        kind = str(p.get("panel_kind") or "").strip().lower()
+        if kind in ("chrome", "empty") or p.get("error"):
+            out.add(sf)
+    return out
 
 
 def _midtone(item: Dict[str, Any]) -> Optional[float]:
@@ -160,6 +198,8 @@ def main() -> int:
     ap.add_argument("--vision-manifest", required=True,
                     help="for chrome exclusion + scene paths")
     ap.add_argument("--out", required=True, help="manifest.groups.json")
+    ap.add_argument("--story-out", default="",
+                    help="manifest.story.json (chapter spine); default: beside --out")
     ap.add_argument("--series-title", default="", help="chrome BAN (cover/title)")
     ap.add_argument("--backend", choices=["vertex", "ollama"], default="ollama")
     ap.add_argument("--ollama-model", default="gemma4:26b")
@@ -167,7 +207,8 @@ def main() -> int:
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="")
     ap.add_argument("--max-beat-len", type=int, default=4)
-    ap.add_argument("--temperature", type=float, default=0.3)
+    ap.add_argument("--temperature", type=float, default=0.0,
+                    help="0 = deterministic beat boundaries + segment tags")
     ap.add_argument("--keep-chrome", action="store_true")
     args = ap.parse_args()
 
@@ -176,11 +217,21 @@ def main() -> int:
     panels = [p for p in (understood.get("panels") or []) if p.get("scene_file")]
 
     vmap = {it.get("scene_file"): it for it in (vision.get("items") or [])}
-    chrome = set() if args.keep_chrome else chrome_files(
-        list(vmap.values()), args.series_title)
-    if chrome:
-        print(f"[chrome] excluded {len(chrome)}: {sorted(chrome)}")
-    story = [p for p in panels if p.get("scene_file") not in chrome]
+    if args.keep_chrome:
+        excluded: set = set()
+    else:
+        # ROOT filter: trust the multimodal understanding (panel_kind) to drop
+        # chrome/empty/parse-failed panels; keep the OCR-regex chrome detector as
+        # belt-and-suspenders for anything the understanding missed.
+        understood_nonstory = nonstory_files(panels)
+        ocr_chrome = chrome_files(list(vmap.values()), args.series_title)
+        excluded = understood_nonstory | ocr_chrome
+        if understood_nonstory:
+            print(f"[nonstory] understanding dropped {len(understood_nonstory)}: "
+                  f"{sorted(understood_nonstory)}")
+        if ocr_chrome - understood_nonstory:
+            print(f"[chrome] OCR-regex added: {sorted(ocr_chrome - understood_nonstory)}")
+    story = [p for p in panels if p.get("scene_file") not in excluded]
 
     client = None
     model = args.ollama_model
@@ -200,11 +251,11 @@ def main() -> int:
             backoff_max=60.0, backend=args.backend)
         return parsed
 
-    shots = group_panels(story, call_fn, max_beat_len=args.max_beat_len)
+    shots, chapter = group_panels(story, call_fn, max_beat_len=args.max_beat_len)
     out = {
         "source_understood": os.path.abspath(args.understood),
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
-        "chrome_excluded": sorted(chrome),
+        "chrome_excluded": sorted(excluded),
         "grouping": {"method": "understanding_first_v1",
                      "max_beat_len": args.max_beat_len},
         "summary": {"num_scenes": len(story), "num_shots": len(shots),
@@ -213,8 +264,22 @@ def main() -> int:
         "shots": shots,
     }
     dump_json(args.out, out)
+
+    # Chapter STORY SPINE (logline + premise + ordered arc) — the through-line the
+    # narrator uses so beats connect into one story instead of isolated captions.
+    story_out = args.story_out or os.path.join(
+        os.path.dirname(os.path.abspath(args.out)), "manifest.story.json")
+    spine = {
+        "source_groups": os.path.abspath(args.out),
+        "logline": str((chapter or {}).get("logline") or "").strip(),
+        "premise": str((chapter or {}).get("premise") or "").strip(),
+        "arc": [{"group_id": s["shot_id"], "arc_label": s["arc_label"],
+                 "segment": s["segment"]} for s in shots],
+    }
+    dump_json(story_out, spine)
     print(f"[ok] wrote={args.out} scenes={len(story)} shots={len(shots)} "
-          f"(was position-grouped; now story-grouped) chrome={len(chrome)}")
+          f"(story-grouped) excluded={len(excluded)} | spine={story_out} "
+          f"logline={'y' if spine['logline'] else 'n'}")
     return 0
 
 

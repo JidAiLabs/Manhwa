@@ -92,6 +92,44 @@ def _build_cast_block(cast_path: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _build_story_block(story_path: str) -> str:
+    """Render manifest.story.json (the chapter spine: logline + premise + ordered
+    arc) into a prompt block, so every beat is written as part of the WHOLE story
+    instead of an isolated panel caption. Empty string when no spine is given."""
+    if not story_path or not os.path.exists(story_path):
+        return ""
+    try:
+        with open(story_path, "r", encoding="utf-8") as f:
+            s = json.load(f)
+    except Exception:
+        return ""
+    logline = str(s.get("logline") or "").strip()
+    premise = str(s.get("premise") or "").strip()
+    arc = s.get("arc") if isinstance(s.get("arc"), list) else []
+    if not (logline or premise or arc):
+        return ""
+    lines = ["CHAPTER STORY SPINE — the whole arc this recap tells. Write EVERY "
+             "beat as part of THIS story (place it in the arc, pay off setups, "
+             "call back to earlier beats) so the recap reads as ONE connected "
+             "story, not isolated panel descriptions. Use the spine for "
+             "through-line + context ONLY — never state anything not visible in "
+             "the current beat's panels:"]
+    if logline:
+        lines.append(f"  LOGLINE: {logline}")
+    if premise:
+        lines.append(f"  PREMISE: {premise}")
+    if arc:
+        lines.append("  ARC (beats in order):")
+        for a in arc:
+            gid = a.get("group_id")
+            lab = str(a.get("arc_label") or "").strip()
+            seg = str(a.get("segment") or "present")
+            tag = "" if seg == "present" else f" [{seg}]"
+            lines.append(f"    beat {gid}: {lab}{tag}")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def _pack_group_payload(group: Dict[str, Any], vision_items_by_file: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     scene_files = group.get("scene_files") or []
     scenes: List[Dict[str, Any]] = []
@@ -118,7 +156,10 @@ def _pack_group_payload(group: Dict[str, Any], vision_items_by_file: Dict[str, D
         "group_id": int(group.get("shot_id") or group.get("group_id") or 0),
         "scene_files": scene_files,
         "scenes_signals": scenes,
-        "why_merge": group.get("why_merge"),
+        # this beat's place in the arc (story_group emits arc_label/segment; the
+        # old code looked for the non-existent 'why_merge' and dropped it)
+        "arc_label": group.get("arc_label"),
+        "segment": group.get("segment") or "present",
     }
 
 
@@ -339,6 +380,7 @@ def main() -> int:
     ap.add_argument("--retries", type=int, default=2, help="Retries per group on parse/validation failure")
     ap.add_argument("--max-output-tokens", type=int, default=2400)
     ap.add_argument("--cast", default="", help="Optional manifest.cast.json for consistent character naming + dialogue attribution")
+    ap.add_argument("--story", default="", help="Optional manifest.story.json (chapter spine: logline + ordered arc) so each beat advances ONE connected story")
     ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
     args = ap.parse_args()
 
@@ -415,8 +457,16 @@ def main() -> int:
         "      re-describe the setting already established, never start with the same\n"
         "      opening words as the previous line, and if the previous line ended\n"
         "      mid-thought, your first words must complete it.\n"
+        "    - STORY SPINE: a CHAPTER STORY SPINE (logline + the ordered arc) is given\n"
+        "      below, and INPUT_JSON.arc_label is THIS beat's place in it. Write the\n"
+        "      line to ADVANCE that story — connect it to what came before, set up what\n"
+        "      comes next, and carry the chapter's through-line so the recap is ONE\n"
+        "      story (e.g. tie 'I know how this goes' back to the years he spent reading\n"
+        "      it alone). The spine is CONTEXT only — assert nothing not visible in THESE\n"
+        "      panels, and keep captions verbatim.\n"
         "\n"
         "{CAST_BLOCK}"
+        "{STORY_SPINE}"
         "ALSO judge each panel for the recap video (scene_selection, one entry per scene_file):\n"
         "  role: DEFAULT to 'keep'. Only mark a panel 'redundant' when it is genuinely\n"
         "    expendable — i.e. ONE of these clearly holds:\n"
@@ -438,6 +488,7 @@ def main() -> int:
         "Return ONLY valid JSON matching the provided schema. No extra text.\n"
     )
     system = system.replace("{CAST_BLOCK}", _build_cast_block(args.cast))
+    system = system.replace("{STORY_SPINE}", _build_story_block(args.story))
     corrections: Dict[int, str] = {}
     if args.corrections and os.path.exists(args.corrections):
         try:

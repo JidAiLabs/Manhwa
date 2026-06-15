@@ -67,11 +67,27 @@ def test_group_panels_full_pipeline_with_stub_covers_everything():
 
     def stub(payload):
         captured["payload"] = payload
-        return {"beats": [{"scene_files": ["p0", "p1"], "segment": "present"},
+        return {"chapter": {"logline": "A lonely reader's novel becomes real.",
+                            "premise": "He alone knows how the world ends."},
+                "beats": [{"scene_files": ["p0", "p1"], "segment": "present"},
                           {"scene_files": ["p2", "p3", "p4"], "segment": "flashback"}]}
 
-    shots = sg.group_panels(panels, stub, max_beat_len=4)
+    shots, chapter = sg.group_panels(panels, stub, max_beat_len=4)
     flat = [f for s in shots for f in s["scene_files"]]
     assert flat == ORDER                              # full coverage
     assert captured["payload"]["panels"][0]["n"] == 0  # numbered, ordered input
-    assert sg.group_panels([], stub) == []
+    assert chapter["logline"].startswith("A lonely reader")   # spine captured
+    assert sg.group_panels([], stub) == ([], {})
+
+
+def test_nonstory_files_drops_chrome_empty_and_parse_failures():
+    panels = [
+        {"scene_file": "p0", "panel_kind": "story"},
+        {"scene_file": "p1", "panel_kind": "chrome"},       # logo / end-card
+        {"scene_file": "p2", "panel_kind": "empty"},        # blank / empty bubble
+        {"scene_file": "p3", "panel_kind": "story", "error": "parse_failed"},  # unparsed
+        {"scene_file": "p4"},                                # missing kind -> kept
+    ]
+    dropped = sg.nonstory_files(panels)
+    assert dropped == {"p1", "p2", "p3"}                 # chrome + empty + error
+    assert "p0" not in dropped and "p4" not in dropped   # real story stays

@@ -39,8 +39,10 @@ PANEL_SCHEMA: Dict[str, Any] = {
         "setting": {"type": "STRING"},
         "intensity": {"type": "STRING",
                       "enum": ["calm", "tense", "intense", "explosive"]},
+        "panel_kind": {"type": "STRING",
+                       "enum": ["story", "chrome", "empty"]},
     },
-    "required": ["description", "action", "intensity"],
+    "required": ["description", "action", "intensity", "panel_kind"],
 }
 
 SYSTEM = (
@@ -56,9 +58,22 @@ SYSTEM = (
     "  setting: where/what the scene is (a train, a city street, a flashback "
     "screen, etc.).\n"
     "  intensity: calm | tense | intense | explosive.\n"
+    "  panel_kind: classify this panel for the recap —\n"
+    "    'chrome' = NOT story: a series cover, a title/chapter-number card, a "
+    "creator/site logo or watermark (e.g. a '…toon.com' end-card), a 'thanks for "
+    "reading / follow / join our Discord' promo, an app/UI screen, or credits.\n"
+    "    'empty' = NO real story content: a blank or near-blank frame, a plain "
+    "gradient / speed-line / texture transition with no subject, or speech bubbles "
+    "with NO readable text.\n"
+    "    'story' = anything that actually advances the chapter. When unsure, 'story'.\n"
     "The 'previous_panels' field is context for continuity only — describe THIS "
     "panel, not the previous ones."
 )
+
+
+def _norm_panel_kind(v: Any) -> str:
+    v = str(v or "").strip().lower()
+    return v if v in ("story", "chrome", "empty") else "story"
 
 
 def build_payload(panel: Dict[str, Any], prev_descs: List[str]) -> Dict[str, Any]:
@@ -80,9 +95,13 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
     """Pure: normalize one model result into a panel record. A parse failure is
     recorded (never silently dropped) so resume can re-run just that panel."""
     if not isinstance(parsed, dict):
+        # parse failure: no understanding -> treat as 'empty' so it is filtered
+        # out of grouping (a panel we can't understand must not be narrated);
+        # --resume still re-attempts it because error is recorded.
         return {"scene_file": scene_file, "description": "", "subjects": [],
                 "action": "", "dialogue": "", "setting": "",
-                "intensity": "unknown", "error": "parse_failed"}
+                "intensity": "unknown", "panel_kind": "empty",
+                "error": "parse_failed"}
     inten = str(parsed.get("intensity") or "").lower()
     return {
         "scene_file": scene_file,
@@ -93,6 +112,7 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
         "setting": str(parsed.get("setting") or "").strip(),
         "intensity": inten if inten in
         ("calm", "tense", "intense", "explosive") else "unknown",
+        "panel_kind": _norm_panel_kind(parsed.get("panel_kind")),
     }
 
 

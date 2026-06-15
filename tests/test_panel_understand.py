@@ -27,13 +27,17 @@ def test_assemble_record_normalizes_and_flags_parse_failure():
     good = pu.assemble_record("p1.jpg", {
         "description": " A monster looms. ", "subjects": ["monster"],
         "action": "it roars", "dialogue": "ROAR", "setting": "train",
-        "intensity": "EXPLOSIVE"})
+        "intensity": "EXPLOSIVE", "panel_kind": "story"})
     assert good["description"] == "A monster looms." and good["intensity"] == "explosive"
-    assert "error" not in good
+    assert good["panel_kind"] == "story" and "error" not in good
     bad = pu.assemble_record("p2.jpg", None)
     assert bad["error"] == "parse_failed" and bad["intensity"] == "unknown"
+    assert bad["panel_kind"] == "empty"          # unparsed -> filtered out of grouping
     # invalid intensity -> 'unknown', never crash
     assert pu.assemble_record("p3.jpg", {"intensity": "epic"})["intensity"] == "unknown"
+    # chrome/empty pass through; missing/invalid kind defaults to 'story'
+    assert pu.assemble_record("p4.jpg", {"panel_kind": "chrome"})["panel_kind"] == "chrome"
+    assert pu.assemble_record("p5.jpg", {})["panel_kind"] == "story"
 
 
 def test_understand_panels_is_ordered_threads_context_and_covers_all():

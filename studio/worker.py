@@ -183,6 +183,7 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
              "--vision-manifest", vision, "--out", beats,
              "--project", project, "--location", location,
              "--model", cfg.beats_model, "--cast", cast,
+             "--story", str(ep / "manifest.story.json"),
              "--resume", "--corrections", corr_path, "--max-images-per-group", "6"]
     if cfg.beats_backend == "ollama":
         gargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]

@@ -244,7 +244,10 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                       "--out", str(p["beats"]),
                       "--project", project, "--location", location,
                       "--model", cfg.beats_model,
-                      "--cast", str(p["cast"])]
+                      "--cast", str(p["cast"]),
+                      # chapter spine (logline + arc) from story_group -> beats
+                      # connect into one story instead of isolated panel captions
+                      "--story", str(ep_dir / "manifest.story.json")]
         if cfg.beats_backend == "ollama":
             beats_args += ["--backend", "ollama",
                            "--ollama-model", cfg.beats_model]
