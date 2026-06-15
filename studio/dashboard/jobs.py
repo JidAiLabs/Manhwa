@@ -129,7 +129,9 @@ def set_log(con: sqlite3.Connection, job_id: int, log_path: str) -> None:
 # Stages a job of each type runs, for a rough running-job countdown. Real
 # stage_run medians refine these as history accumulates (eta.stage_eta).
 _TYPE_STAGES = {
-    "prepare": ["grouped", "beated", "scripted", "planned", "prepped", "qa_scan"],
+    # the stages the worker actually records via record_stage for a prepare job —
+    # so the ETA self-corrects from real run medians instead of stale per-stage seeds
+    "prepare": ["chain:scripted", "planned", "prepped", "qa_scan"],
     "voiceover": ["voiced"],
     "render_segment": ["render_segment"],
     "concat": ["concat"],
@@ -161,6 +163,18 @@ def _with_timing(con: sqlite3.Connection, job: Dict[str, Any]) -> Dict[str, Any]
             (job["finished_at"], job["started_at"])).fetchone()
         if row and row[0] is not None:
             job["duration_sec"] = max(0, int(row[0]))
+    # readable scope label — "Manhwa · Chapter" instead of a bare ch#id
+    cid, sid = job.get("chapter_id"), job.get("series_id")
+    if cid:
+        r = con.execute("SELECT s.title, c.label FROM chapter c "
+                        "JOIN series s ON s.id = c.series_id WHERE c.id = ?",
+                        (cid,)).fetchone()
+        if r:
+            job["scope_name"] = f"{r[0]} · {r[1]}"
+    elif sid:
+        r = con.execute("SELECT title FROM series WHERE id = ?", (sid,)).fetchone()
+        if r:
+            job["scope_name"] = str(r[0])
     return job
 
 

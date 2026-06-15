@@ -13,6 +13,9 @@ SEED_SEC = {
     "visioned": 120, "grouped": 5, "beated": 1980, "scripted": 5,
     "voiced": 1200, "planned": 10, "prepped": 130, "qa_scan": 120,
     "render_segment": 2400, "concat": 180,
+    # local-gemma prepare (fetch -> understand -> group -> narrate -> script) as
+    # ONE recorded stage; ~12 min measured on ORV, refined by the live median
+    "chain:scripted": 720,
 }
 
 
