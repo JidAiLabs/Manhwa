@@ -188,24 +188,17 @@ def _mini_plan():
     ], "total_duration_sec": 18.0}
 
 
-def test_branding_inserts_intro_after_first_item_and_appends_outro():
+def test_branding_drops_intro_appends_outro_only():
+    # channel decision (2026-06-15): NO intro on any video — even with intro_dur
+    # passed, only the outro is appended; the video opens straight on the story.
     plan = _mini_plan()
     out = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.1)
     tl = out["timeline"]
     assert [t["segment_id"] for t in tl] == [
-        "g0001_p00", "branding_intro", "g0002_p01", "branding_outro"]
-    intro = tl[1]
-    assert intro["branding"] == "intro"
-    assert intro["start_sec"] == 10.0
-    assert intro["duration_sec"] >= 6.0            # audio + breathing pad
-    # intro shows the SAME panel the story paused on (last cut of item 1)
-    assert intro["cuts"][0]["file"] == "a.jpg"
-    # story resumes shifted by the intro length
-    assert abs(tl[2]["start_sec"] - (10.0 + intro["duration_sec"])) < 1e-6
-    outro = tl[3]
-    assert outro["branding"] == "outro"
-    assert outro["start_sec"] == tl[2]["end_sec"]
-    assert outro["duration_sec"] >= 12.1
+        "g0001_p00", "g0002_p01", "branding_outro"]
+    assert all(t.get("branding") != "intro" for t in tl)   # no intro anywhere
+    outro = tl[-1]
+    assert outro["branding"] == "outro" and outro["duration_sec"] >= 12.1
     assert out["total_duration_sec"] == outro["end_sec"]
 
 
@@ -216,10 +209,10 @@ def test_branding_which_intro_only_and_outro_only():
         {"segment_id": "g0001_p00", "start_sec": 0.0, "end_sec": 10.0,
          "duration_sec": 10.0, "cuts": [{"file": "a.jpg", "start": 0, "dur": 10}]}],
         "total_duration_sec": 10.0}
+    # "intro" (a bundle's first segment) now carries NO branding at all
     intro = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
                                      which="intro")
-    segs = [i.get("branding") for i in intro["timeline"]]
-    assert "intro" in segs and "outro" not in segs
+    assert [i.get("branding") for i in intro["timeline"]] == [None]
     outro = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
                                      which="outro")
     segs = [i.get("branding") for i in outro["timeline"]]

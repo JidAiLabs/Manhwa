@@ -1138,9 +1138,12 @@ def insert_branding_items(
 
     if which not in ("both", "intro", "outro", "none"):
         raise ValueError(f"branding which={which!r}")
-    if which in ("outro", "none"):
-        intro_dur = 0.0
-    if which in ("intro", "none"):
+    # channel decision (2026-06-15): NO intro on any video — videos open on the
+    # story, outro only. The intro arg + the "intro"/"both" modes are kept for
+    # compat but never insert an intro; "intro" (a bundle's first segment) now
+    # carries no branding at all.
+    intro_dur = 0.0
+    if which in ("none", "intro"):
         outro_dur = 0.0
 
     new_tl: List[Dict[str, Any]] = list(tl)

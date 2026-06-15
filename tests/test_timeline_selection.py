@@ -23,10 +23,13 @@ def _sel(roles):
     return [{"scene_file": k, "role": v} for k, v in roles.items()]
 
 
-def test_build_cuts_without_selection_unchanged():
-    # 7s @ 3.5 => kmax 2 => first two panels (legacy behavior preserved)
+def test_build_cuts_no_selection_shows_every_panel():
+    # NEW coverage rule: no distinct panel is dropped to fit a short shot — all 4
+    # are paced WITHIN it (the old kmax cap truncated to 2; with no music we pace
+    # under the narration instead of dropping or stretching into silence).
     cuts = tp.build_cuts(["a.jpg", "b.jpg", "c.jpg", "d.jpg"], 7.0, min_cut_sec=3.5)
-    assert [c["file"] for c in cuts] == ["a.jpg", "b.jpg"]
+    assert [c["file"] for c in cuts] == ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+    assert abs(sum(c["dur"] for c in cuts) - 7.0) < 1e-6   # all fit inside the shot
 
 
 def test_build_cuts_drops_redundant_first():
@@ -49,26 +52,6 @@ def test_build_cuts_all_redundant_still_shows_one():
     sel = _sel({"a.jpg": "redundant", "b.jpg": "redundant"})
     cuts = tp.build_cuts(["a.jpg", "b.jpg"], 2.0, min_cut_sec=3.5, selection=sel)
     assert len(cuts) == 1                                # never an empty shot
-
-
-# ---- coverage invariant: stretch to fit panels, never truncate --------------
-
-def test_coverage_duration_stretches_to_fit_every_keeper():
-    # 4 panels, no redundancy, short narration -> stretch to 4*3.5 so NONE drop
-    # (the old kmax cap showed only floor(7/3.5)=2 and silently dropped 2)
-    assert tp.coverage_duration(["a", "b", "c", "d"], None, 7.0, 3.5) == 14.0
-
-
-def test_coverage_duration_counts_only_keepers_not_redundant():
-    sel = _sel({"a": "keep", "b": "redundant", "c": "keep", "d": "redundant"})
-    # only 2 keepers -> 2*3.5 = 7; the narration is already 7 -> they all fit
-    assert tp.coverage_duration(["a", "b", "c", "d"], sel, 7.0, 3.5) == 7.0
-
-
-def test_coverage_duration_keeps_a_long_narration_unchanged():
-    # narration longer than the coverage need -> unchanged (panels pace under it)
-    assert tp.coverage_duration(["a", "b"], None, 20.0, 3.5) == 20.0
-    assert tp.coverage_duration([], None, 5.0, 3.5) == 5.0
 
 
 # ---- filler-beat drop (build #3) -------------------------------------------

@@ -592,15 +592,27 @@ def build_cuts(
     if len(files) == 1:
         return [{"file": files[0], "start": 0.0, "dur": shot_dur}]
 
-    kmax = max(1, int(math.floor(shot_dur / float(min_cut_sec))))
+    # Show EVERY distinct panel within shot_dur: drop only near-duplicate
+    # (role=redundant) frames, NEVER truncate distinct panels to fit a short
+    # narration. With no background music we pace the panels UNDER the voice (a
+    # faster montage when a beat is panel-dense) instead of stretching into
+    # silence; one panel + a long line is simply a long hold. min_cut_sec is no
+    # longer a hard cap — the story-grouper keeps beats small enough to watch.
     if selection:
         # selection scene_file values are basenames (from beats); match in kind.
         sel = [{**e, "scene_file": os.path.basename(str(e.get("scene_file") or ""))}
                for e in selection]
-        files = choose_kept_scenes(files, sel, kmax, protected=protected)
-    else:
-        files = files[: min(len(files), kmax)]
+        # show EVERY keeper (cap = the number of keepers, not a time budget); if
+        # the whole shot is redundant, choose_kept_scenes falls back to the first
+        # one so two near-identical frames never both play.
+        roles = {e["scene_file"]: str(e.get("role") or "keep") for e in sel}
+        prot = protected or set()
+        n_keep = sum(1 for f in files
+                     if roles.get(f, "keep") != "redundant" or f in prot)
+        files = choose_kept_scenes(files, sel, max(1, n_keep), protected=protected)
     k = len(files)
+    if k == 0:
+        return []
 
     per = shot_dur / float(k)
     cuts: List[Dict[str, Any]] = []
@@ -610,26 +622,6 @@ def build_cuts(
         cuts.append({"file": f, "start": round(t, 3), "dur": round(float(dur), 3)})
         t += per
     return cuts
-
-
-def coverage_duration(files: List[str], selection: Any, shot_dur: float,
-                      min_cut_sec: float, protected: Any = None) -> float:
-    """Coverage invariant (replaces the kmax truncation): the shot must be long
-    enough to show EVERY kept panel for at least *min_cut_sec*, so a panel is
-    never dropped just because the narration over it is short. Returns
-    max(shot_dur, n_keepers * min_cut_sec). The narration audio is unchanged
-    (tts_audio_duration_sec); any extra visual time is a montage under the music
-    bed in the renderer — 'more pictures than words' is shown, not discarded."""
-    if not files:
-        return float(shot_dur)
-    if selection:
-        sel = [{**e, "scene_file": os.path.basename(str(e.get("scene_file") or ""))}
-               for e in selection]
-        keepers = choose_kept_scenes(files, sel, len(files), protected=protected)
-    else:
-        keepers = files
-    k = max(1, len(keepers))
-    return max(float(shot_dur), k * float(min_cut_sec))
 
 
 _FILLER_NARRATION_RE = re.compile(
@@ -876,22 +868,18 @@ def main() -> int:
             # If no usable files: keep shot (audio still plays) but no cuts
             primary_scene_file = scene_files[0] if scene_files else ""
 
-            # Cuts drive the montage. COVERAGE INVARIANT: stretch the shot so
-            # every kept panel gets >= min_cut_sec of screen time instead of
-            # build_cuts truncating panels to fit a short narration. shot_total
-            # (>= dur) drives the timeline; the audio length stays separate.
+            # Cuts drive the montage. COVERAGE: build_cuts shows EVERY distinct
+            # panel within `dur` (drops only near-duplicate frames) — no panel is
+            # truncated to fit a short line, and with no music we never stretch
+            # into silence. One panel + a long line = a long hold.
             cuts: List[Dict[str, Any]] = []
-            shot_total = float(dur)
             if scene_files:
                 if display_strategy == "single_hold":
-                    cuts = build_cuts([primary_scene_file], shot_total,
+                    cuts = build_cuts([primary_scene_file], dur,
                                       min_cut_sec=float(args.min_cut_sec))
                 else:
-                    shot_total = coverage_duration(
-                        scene_files, beat.get("scene_selection"), float(dur),
-                        float(args.min_cut_sec), protected=protected_cards)
                     cuts = build_cuts(
-                        scene_files, shot_total,
+                        scene_files, dur,
                         min_cut_sec=float(args.min_cut_sec),
                         selection=beat.get("scene_selection"),
                         protected=protected_cards,
@@ -910,8 +898,8 @@ def main() -> int:
                 "cuts": cuts,
 
                 "start_sec": round(time_cursor, 3),
-                "duration_sec": round(float(shot_total), 3),
-                "end_sec": round(time_cursor + float(shot_total), 3),
+                "duration_sec": round(float(dur), 3),
+                "end_sec": round(time_cursor + float(dur), 3),
 
                 "camera": camera,
                 "motion": motion,
@@ -934,7 +922,7 @@ def main() -> int:
             }
 
             timeline.append(item)
-            time_cursor += float(shot_total)
+            time_cursor += float(dur)
 
     out_obj = {
         "source_groups": os.path.abspath(args.groups),
