@@ -213,6 +213,23 @@ def main() -> int:
     dump_json(args.out, {
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
         "model": model, "count": len(panels), "panels": panels})
+
+    # Centralize the chrome/story verdict: stamp panel_kind back onto the vision
+    # manifest so the SINGLE chrome chokepoint (scene_chrome.is_chrome_scene —
+    # used by story_group, render_prep AND prep_qa) defers to the understanding
+    # everywhere. No downstream module re-derives chrome from OCR and disagrees.
+    kind_by_file = {p.get("scene_file"): p.get("panel_kind")
+                    for p in panels if p.get("scene_file") and p.get("panel_kind")}
+    changed = False
+    for it in (vision.get("items") or []):
+        k = kind_by_file.get(it.get("scene_file"))
+        if k and it.get("panel_kind") != k:
+            it["panel_kind"] = k
+            changed = True
+    if changed:
+        dump_json(args.vision_manifest, vision)
+        print(f"[ok] stamped panel_kind onto {os.path.basename(args.vision_manifest)}")
+
     ok = sum(1 for p in panels if p.get("description") and not p.get("error"))
     print(f"[ok] wrote={args.out} panels={len(panels)} understood={ok}")
     return 0

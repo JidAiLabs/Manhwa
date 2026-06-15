@@ -21,6 +21,21 @@ sc = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(sc)  # type: ignore[union-attr]
 
 
+def test_panel_kind_understanding_is_the_single_source_of_truth():
+    # The multimodal understanding (stamped onto the vision item by
+    # panel_understand) is authoritative — story_group/render_prep/prep_qa all
+    # reach chrome through here, so this is where the recursion must stop.
+    # 'story' is NEVER chrome, even with a watermark/counter OCR (the beast panel
+    # whose only OCR was '1' that kept failing chrome_leak).
+    assert sc.is_chrome_scene({"ocr_clean": "ELFTOON.com VIEWS: 1", "panel_kind": "story"}) is False
+    assert sc.is_chrome_scene({"ocr_clean": "1", "panel_kind": "story"}) is False
+    # 'chrome' is chrome regardless of OCR; 'caption' is content (not chrome)
+    assert sc.is_chrome_scene({"ocr_clean": "a swordsman draws his blade", "panel_kind": "chrome"}) is True
+    assert sc.is_chrome_scene({"ocr_clean": "BACK THEN, I HAD NO IDEA.", "panel_kind": "caption"}) is False
+    # no panel_kind -> the OCR heuristic still runs (a clean end-card domain + plug)
+    assert sc.is_chrome_scene({"ocr_clean": "thanks for reading, visit elftoon.com"}) is True
+
+
 def _is(ocr, **kw):
     item = {"ocr_clean": ocr, "text_only": kw.get("text_only", False),
             "text_coverage": kw.get("text_coverage", 0.1)}

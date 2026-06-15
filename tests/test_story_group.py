@@ -130,3 +130,16 @@ def test_caption_closer_with_no_same_segment_neighbour_stays():
         {"shot_id": 2, "scene_files": ["c9"], "segment": "present", "arc_label": "end"}]
     merged = sg.merge_caption_solos(shots, {"c9"})
     assert [s["scene_files"] for s in merged] == [["p0"], ["c9"]]   # segment differs
+
+
+def test_annotate_intensity_takes_the_peak_per_beat():
+    panels = [{"scene_file": "a", "intensity": "calm"},
+              {"scene_file": "b", "intensity": "explosive"},
+              {"scene_file": "c", "intensity": "tense"}]
+    shots = [{"shot_id": 1, "scene_files": ["a", "b"]},   # peak of calm+explosive
+             {"shot_id": 2, "scene_files": ["c"]},
+             {"shot_id": 3, "scene_files": ["z"]}]         # unknown panel -> calm
+    sg.annotate_intensity(shots, panels)
+    assert shots[0]["intensity"] == "explosive"   # one explosive panel sets pace
+    assert shots[1]["intensity"] == "tense"
+    assert shots[2]["intensity"] == "calm"

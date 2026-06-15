@@ -198,6 +198,24 @@ def merge_caption_solos(shots: List[Dict[str, Any]], caption_set: set
     return out
 
 
+_INTENSITY_RANK = {"calm": 0, "tense": 1, "intense": 2, "explosive": 3}
+
+
+def annotate_intensity(shots: List[Dict[str, Any]],
+                       panels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Tag each shot with PACE = the STRONGEST intensity among its panels — the
+    narrator writes punchy/fast for intense|explosive beats and fuller/slower for
+    calm|tense. Peak (not mean) so one explosive panel keeps the beat urgent."""
+    rev = {v: k for k, v in _INTENSITY_RANK.items()}
+    intens = {p.get("scene_file"): str(p.get("intensity") or "calm").lower()
+              for p in panels}
+    for s in shots:
+        ranks = [_INTENSITY_RANK.get(intens.get(f, "calm"), 0)
+                 for f in s["scene_files"]]
+        s["intensity"] = rev[max(ranks)] if ranks else "calm"
+    return shots
+
+
 def _midtone(item: Dict[str, Any]) -> Optional[float]:
     from scene_chrome import needs_image_stats
     if (not needs_image_stats(str(item.get("ocr_clean") or ""))
@@ -269,7 +287,9 @@ def main() -> int:
     ap.add_argument("--model", default="gemini-2.5-flash")
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="")
-    ap.add_argument("--max-beat-len", type=int, default=4)
+    ap.add_argument("--max-beat-len", type=int, default=2,
+                    help="cap panels per beat — lower = MORE, tighter beats (more "
+                         "narration lines, longer recap); 8->~14 beats on ORV Ep0")
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="0 = deterministic beat boundaries + segment tags")
     ap.add_argument("--keep-chrome", action="store_true")
@@ -332,15 +352,7 @@ def main() -> int:
     shots, chapter = group_panels(story, call_fn, max_beat_len=args.max_beat_len)
     # caption-only beats fold into their neighbour so the text rides real art
     shots = merge_caption_solos(shots, caption_files(story))
-    # per-shot PACE = the strongest intensity among its panels — the narrator
-    # writes punchy/fast for intense|explosive beats, fuller/slower for calm|tense
-    _IRANK = {"calm": 0, "tense": 1, "intense": 2, "explosive": 3}
-    _IREV = {v: k for k, v in _IRANK.items()}
-    intens = {p.get("scene_file"): str(p.get("intensity") or "calm").lower()
-              for p in panels}
-    for s in shots:
-        ranks = [_IRANK.get(intens.get(f, "calm"), 0) for f in s["scene_files"]]
-        s["intensity"] = _IREV[max(ranks)] if ranks else "calm"
+    shots = annotate_intensity(shots, panels)   # per-shot PACE = peak intensity
     out = {
         "source_understood": os.path.abspath(args.understood),
         "source_vision_manifest": os.path.abspath(args.vision_manifest),

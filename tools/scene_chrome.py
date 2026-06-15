@@ -86,7 +86,19 @@ def is_chrome_scene(
       5. OCR-BLIND chrome (stylized number cards): empty OCR + a near-binary
          pixel profile (*midtone_frac*, supplied by callers with image
          access) — real art always has midtones.
+
+    The multimodal UNDERSTANDING is authoritative when present: if the vision item
+    carries a panel_kind (stamped onto the vision manifest by panel_understand),
+    a 'story'/'caption' verdict is NEVER chrome (whatever the OCR says) and 'chrome'
+    is chrome. This is the SINGLE source of truth — story_group, render_prep and
+    prep_qa all reach chrome detection through here, so none of them re-derive it
+    from OCR and disagree (e.g. the beast panel whose only OCR was '1').
     """
+    kind = str(item.get("panel_kind") or "").strip().lower()
+    if kind in ("story", "caption"):
+        return False
+    if kind == "chrome":
+        return True
     ocr = str(item.get("ocr_clean") or "").strip()
     if not ocr:
         # pure art — chrome only when image stats prove a binary card
