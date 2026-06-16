@@ -20,8 +20,11 @@ Chapter page structure:
 from __future__ import annotations
 
 import html
+import os
+import random
 import re
-import tempfile
+import shutil
+import time
 from pathlib import Path
 
 import httpx
@@ -54,6 +57,43 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# Asura sits behind Cloudflare; a bulk download burst trips rate-limiting
+# (HTTP 522/429/5xx). THROTTLE requests and RETRY transient failures with
+# exponential backoff so a chapter doesn't hard-fail on a passing hiccup.
+# Tunable per host via env (lower throttle when two machines share asura).
+_THROTTLE_SEC = float(os.environ.get("ASURA_THROTTLE_SEC", "0.8"))
+_MAX_TRIES = int(os.environ.get("ASURA_MAX_TRIES", "5"))
+_TRANSIENT = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+_last_req = [0.0]
+
+
+def _get_retry(url: str, *, timeout: float = 30.0) -> httpx.Response:
+    """GET with a global throttle + exponential-backoff retry on transient
+    errors (Cloudflare 5xx/429, timeouts, connection resets). Raises the last
+    error only after exhausting _MAX_TRIES."""
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_TRIES):
+        wait = _THROTTLE_SEC - (time.monotonic() - _last_req[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_req[0] = time.monotonic()
+        try:
+            resp = httpx.get(url, headers=_HEADERS,
+                             follow_redirects=True, timeout=timeout)
+            if resp.status_code in _TRANSIENT:
+                last_exc = httpx.HTTPStatusError(
+                    f"transient {resp.status_code}", request=resp.request,
+                    response=resp)
+            else:
+                resp.raise_for_status()
+                return resp
+        except httpx.TransportError as e:        # timeouts, conn resets, DNS
+            last_exc = e
+        if attempt < _MAX_TRIES - 1:
+            time.sleep(min(60.0, 2.0 * (2 ** attempt)) + random.uniform(0, 1.5))
+    assert last_exc is not None
+    raise last_exc
+
 # Asura serves chapter pages from a stable CDN path:
 #   https://cdn.asurascans.com/asura-images/chapters[-restored]/<slug>/<ch>/NNN.webp
 # (covers live under /covers/, so matching /chapters excludes them).
@@ -67,9 +107,7 @@ _CHAPTER_IMG_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 def _get_html(url: str) -> HTMLParser:
-    resp = httpx.get(url, headers=_HEADERS, follow_redirects=True, timeout=30)
-    resp.raise_for_status()
-    return HTMLParser(resp.text)
+    return HTMLParser(_get_retry(url, timeout=30).text)
 
 
 def _parse_chapter_number(text: str) -> float | None:
@@ -146,10 +184,12 @@ def _download_images(image_urls: list[str], dest_dir: Path) -> list[Path]:
     dest_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for i, url in enumerate(image_urls, start=1):
-        resp = httpx.get(url, headers=_HEADERS, follow_redirects=True, timeout=60)
-        resp.raise_for_status()
-        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
         out_path = dest_dir / f"{i:03d}.jpg"
+        if out_path.exists() and out_path.stat().st_size > 0:
+            written.append(out_path)        # RESUME: already fetched, skip
+            continue
+        resp = _get_retry(url, timeout=60)
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
         img.save(out_path, format="JPEG")
         written.append(out_path)
     return written
@@ -189,9 +229,8 @@ class AsuraAdapter(SourceAdapter):
         carrying "slug"/"title" and a "public_url" (/comics/<slug>-<hash>)."""
         from urllib.parse import quote
         try:
-            resp = httpx.get(f"{_BASE_URL}/series?name={quote(title)}",
-                             headers=_HEADERS, follow_redirects=True,
-                             timeout=15)
+            resp = _get_retry(f"{_BASE_URL}/series?name={quote(title)}",
+                              timeout=15)
             text = resp.text.replace("&quot;", '"')
             origin = str(resp.url).split("/series")[0]
             out: list[tuple[str, str]] = []
@@ -207,14 +246,17 @@ class AsuraAdapter(SourceAdapter):
             return []
 
     def download(self, chapter: ChapterRef, dest_dir: Path) -> list[Path]:
-        resp = httpx.get(chapter.url, headers=_HEADERS, follow_redirects=True, timeout=30)
-        resp.raise_for_status()
+        resp = _get_retry(chapter.url, timeout=30)
         image_urls = _extract_image_urls(resp.text)
         if not image_urls:
             raise RuntimeError(
                 f"No images found on Asura chapter page: {chapter.url}"
             )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            written = _download_images(image_urls, tmp_path)
-            return normalize_into(tmp_path, dest_dir)
+        # PERSISTENT staging dir so a failed attempt RESUMES (skip-existing in
+        # _download_images) instead of re-fetching every image; removed only
+        # after a full success normalizes into dest_dir.
+        staging = dest_dir / ".staging"
+        written = _download_images(image_urls, staging)
+        out = normalize_into(staging, dest_dir)
+        shutil.rmtree(staging, ignore_errors=True)
+        return out

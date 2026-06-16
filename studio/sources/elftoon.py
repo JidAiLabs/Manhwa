@@ -26,8 +26,11 @@ Chapter page structure:
 from __future__ import annotations
 
 import json
+import os
+import random
 import re
-import tempfile
+import shutil
+import time
 from pathlib import Path
 
 import httpx
@@ -69,11 +72,43 @@ _TS_READER_RE = re.compile(r"ts_reader\.run\((\{.*?\})\);", re.DOTALL)
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Elftoon can rate-limit/timeout a bulk fetch (5xx/429); THROTTLE + RETRY with
+# exponential backoff so a chapter doesn't hard-fail on a transient hiccup.
+_THROTTLE_SEC = float(os.environ.get("ELFTOON_THROTTLE_SEC", "0.8"))
+_MAX_TRIES = int(os.environ.get("ELFTOON_MAX_TRIES", "5"))
+_TRANSIENT = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+_last_req = [0.0]
+
+
+def _get_retry(url: str, *, timeout: float = 30.0) -> httpx.Response:
+    """GET with a global throttle + exponential-backoff retry on transient errors."""
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_TRIES):
+        wait = _THROTTLE_SEC - (time.monotonic() - _last_req[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_req[0] = time.monotonic()
+        try:
+            resp = httpx.get(url, headers=_HEADERS,
+                             follow_redirects=True, timeout=timeout)
+            if resp.status_code in _TRANSIENT:
+                last_exc = httpx.HTTPStatusError(
+                    f"transient {resp.status_code}", request=resp.request,
+                    response=resp)
+            else:
+                resp.raise_for_status()
+                return resp
+        except httpx.TransportError as e:
+            last_exc = e
+        if attempt < _MAX_TRIES - 1:
+            time.sleep(min(60.0, 2.0 * (2 ** attempt)) + random.uniform(0, 1.5))
+    assert last_exc is not None
+    raise last_exc
+
+
 def _get_html(url: str) -> HTMLParser:
     """Fetch *url* with a browser User-Agent and return a parsed HTMLParser."""
-    resp = httpx.get(url, headers=_HEADERS, follow_redirects=True, timeout=30)
-    resp.raise_for_status()
-    return HTMLParser(resp.text)
+    return HTMLParser(_get_retry(url, timeout=30).text)
 
 
 def _parse_series(tree: HTMLParser) -> tuple[str, list[ChapterRef]]:
@@ -152,10 +187,11 @@ def _download_images(image_urls: list[str], dest_dir: Path) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     for i, url in enumerate(image_urls, start=1):
         ext = Path(url.split("?")[0]).suffix or ".jpg"
-        resp = httpx.get(url, headers=_HEADERS, follow_redirects=True, timeout=60)
-        resp.raise_for_status()
-        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
         out_path = dest_dir / f"{i:03d}{ext}"
+        if out_path.exists() and out_path.stat().st_size > 0:
+            continue                        # RESUME: already fetched, skip
+        resp = _get_retry(url, timeout=60)
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
         img.save(out_path, format="JPEG")
 
 
@@ -204,14 +240,16 @@ class ElftoonAdapter(SourceAdapter):
         )
 
     def download(self, chapter: ChapterRef, dest_dir: Path) -> list[Path]:
-        resp = httpx.get(chapter.url, headers=_HEADERS, follow_redirects=True, timeout=30)
-        resp.raise_for_status()
+        resp = _get_retry(chapter.url, timeout=30)
         image_urls = _extract_image_urls(resp.text)
         if not image_urls:
             raise RuntimeError(
                 f"No images found on Elftoon chapter page: {chapter.url}"
             )
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            _download_images(image_urls, tmp_path)
-            return normalize_into(tmp_path, dest_dir)
+        # PERSISTENT staging so a failed attempt RESUMES (skip-existing) instead
+        # of re-fetching every image; removed only after a full success.
+        staging = dest_dir / ".staging"
+        _download_images(image_urls, staging)
+        out = normalize_into(staging, dest_dir)
+        shutil.rmtree(staging, ignore_errors=True)
+        return out
