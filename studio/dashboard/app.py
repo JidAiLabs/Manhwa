@@ -133,9 +133,9 @@ def _stage_timeline(con: sqlite3.Connection, ch: Dict[str, Any]) -> List[Dict[st
 
 def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
     rows = []
-    for sid, title, source, surl, autopilot in con.execute(
-            "SELECT id, title, source, series_url, autopilot FROM series "
-            "ORDER BY id"):
+    for sid, title, source, surl, autopilot, new_pending in con.execute(
+            "SELECT id, title, source, series_url, autopilot, "
+            "COALESCE(new_pending, 0) FROM series ORDER BY id"):
         chs = con.execute(
             "SELECT status, season FROM chapter WHERE series_id=?",
             (sid,)).fetchall()
@@ -154,6 +154,7 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             "url": _http_url(surl), "autopilot": bool(autopilot),
             "total": total,
             "done": done, "new": new, "seasons": seasons,
+            "new_pending": int(new_pending or 0),
             "pct": (100 * done // total) if total else 0,
             "eta": eta.fmt_eta(eta.series_eta(con, sid, remaining)),
             "wall_spent": eta.fmt_eta(cost),
@@ -448,6 +449,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             for (cid,) in rows:
                 jobs.enqueue(c, "prepare", chapter_id=cid, series_id=series_id,
                              payload={"auto_to": auto_to} if auto_to else {})
+            c.execute("UPDATE series SET new_pending=0 WHERE id=?", (series_id,))
+            c.commit()
             return RedirectResponse(f"/series/{series_id}", status_code=303)
         if type == "prepare_series":
             # expand: one 'prepare' job per chapter that has no QA yet,
@@ -460,6 +463,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             for (cid,) in rows:
                 jobs.enqueue(c, "prepare", chapter_id=cid,
                              series_id=series_id)
+            c.execute("UPDATE series SET new_pending=0 WHERE id=?", (series_id,))
+            c.commit()
             return RedirectResponse("/", status_code=303)
         payload: Dict[str, Any] = {}
         if target:
@@ -603,6 +608,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                   (None if style == "default" else style, sid))
         c.commit()
         return RedirectResponse(f"/series/{sid}", status_code=303)
+
+    @app.post("/series/{sid}/seen")
+    def post_seen(sid: int):
+        # dismiss the new-chapter red alert without running the series
+        c = con()
+        c.execute("UPDATE series SET new_pending=0 WHERE id=?", (sid,))
+        c.commit()
+        return RedirectResponse("/series", status_code=303)
 
     @app.post("/series/{sid}/autopilot")
     def post_autopilot(sid: int):

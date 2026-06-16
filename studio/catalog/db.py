@@ -5,6 +5,7 @@ from pathlib import Path
 def connect(path: Path | str) -> sqlite3.Connection:
     con = sqlite3.connect(str(path))
     con.execute("PRAGMA foreign_keys=ON")
+    con.execute("PRAGMA busy_timeout=5000")  # daily refresh cron + worker share the db
     con.executescript("""
         CREATE TABLE IF NOT EXISTS series (
           id INTEGER PRIMARY KEY,
@@ -101,6 +102,11 @@ def connect(path: Path | str) -> sqlite3.Connection:
     if "autopilot" not in scols:
         # manage-by-exception: spotless QA auto-advances voice/render gates
         con.execute("ALTER TABLE series ADD COLUMN autopilot INTEGER "
+                    "NOT NULL DEFAULT 0")
+    if "new_pending" not in scols:
+        # red-alert badge: chapters a daily refresh found since you last ran the
+        # series (cleared when you bulk-run it or dismiss it)
+        con.execute("ALTER TABLE series ADD COLUMN new_pending INTEGER "
                     "NOT NULL DEFAULT 0")
     con.commit()
     return con

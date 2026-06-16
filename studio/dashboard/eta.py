@@ -93,7 +93,10 @@ def chapter_wall_median(con: sqlite3.Connection,
 
 def series_eta(con: sqlite3.Connection, series_id: int,
                chapters_remaining: int) -> float:
-    return chapters_remaining * chapter_wall_median(con, series_id)
+    # build time is bottlenecked by the slowest PARALLEL lane, not the serial
+    # sum of every stage (which double-counted the vestigial 'beated' seed and
+    # read ~3x too high). Matches the bulk run-range estimate.
+    return chapters_remaining * lane_bottleneck_sec(con, series_id, "video")
 
 
 def fmt_eta(sec: float) -> str:

@@ -255,6 +255,12 @@ def cmd_refresh(args: argparse.Namespace) -> int:
             print(f"  [warn] {s.title}: discovery failed: {e}")
             continue
         new = len(repo.list_chapters(con, s.id)) - before
+        if new > 0:
+            # raise the board's red-alert badge so you know to run the new ones
+            con.execute("UPDATE series SET new_pending = new_pending + ? "
+                        "WHERE id=?", (new, s.id))
+        con.execute("UPDATE series SET last_checked=? WHERE id=?", (now, s.id))
+        con.commit()
         total_new += new
         print(f"  {s.title}: {new} new chapter(s)")
     print(f"refresh done: {total_new} new chapter(s)")
