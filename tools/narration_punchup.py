@@ -96,15 +96,17 @@ native voice here — it's literally how this world works; use it freely.""",
 
 
 # intensity ranking from beats' scene_selection — the deterministic signal that
-# decides which beats stay cinematic and which go full persona (alternate-by-beat)
+# guards persona: cinematic is the baseline everywhere; only CONNECTIVE beats may
+# take an occasional persona touch, DRAMATIC beats stay purely cinematic.
 _INTENSITY_RANK = {"": 0, "unknown": 0, "calm": 0, "tense": 1,
                    "intense": 2, "explosive": 3}
 
 
 def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
     """Per-group DRAMATIC/CONNECTIVE label from the strongest scene intensity in
-    the beat. DRAMATIC (intense/explosive) stays cinematic; everything else gets
-    full persona. Deterministic — no LLM."""
+    the beat. Cinematic is the baseline for ALL beats; the tag only guards where
+    an OCCASIONAL persona touch is allowed — DRAMATIC (intense/explosive) stays
+    purely cinematic, CONNECTIVE may take a light wink. Deterministic — no LLM."""
     out: Dict[int, str] = {}
     for b in (beats_obj or {}).get("beats") or []:
         try:
@@ -117,22 +119,22 @@ def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
     return out
 
 
-CINEMATIC_RULES = """CINEMATIC + PERSONA — YOU decide, per line, how much of each
-the moment calls for. Do not force a fixed formula and never paste a joke onto a
-serious beat to hit a quota. The two ingredients:
-  (A) CINEMATIC atmosphere — vivid setting, sensory imagery, emotional weight
-      (trailer-grade atmosphere is wanted; this OVERRIDES the "not a movie
-      trailer" line above), and
-  (B) the channel PERSONA VOICE — internet-native, dry, confident, intimate:
-      "our guy"/"our boy", punchy phrasing, a bit of hyperbole — plus only the
-      genre-appropriate framing the GENRE block allows (no game framing off-genre).
-LEAN toward carrying BOTH — together they enrich the recap — but MATCH THE TONE,
-using the DRAMATIC/CONNECTIVE tag as a guide:
-- action / hype / mundane-aside beats can go FULL persona with a brush of atmosphere;
-- somber, eerie, awe, or tragic beats lean CINEMATIC, with the persona only as a
-  light, intimate undertone — never snark that deflates the moment;
-- you may leave a line almost purely cinematic (or purely persona) when that is
-  genuinely what the moment needs — judgment over quota.
+CINEMATIC_RULES = """CINEMATIC IS THE BASELINE — write EVERY line cinematic by
+default: vivid setting, sensory imagery, emotional weight, trailer-grade
+atmosphere (this OVERRIDES the "not a movie trailer" line above). The whole
+recap lives in that cinematic voice.
+PERSONA / HUMOR IS AN OCCASIONAL SEASONING, never the default. Now and then —
+when a beat genuinely invites levity (a light aside, an absurd or triumphant
+mundane moment, a knowing wink at the audience) — add a BRIEF touch of the
+channel PERSONA VOICE: internet-native, dry, confident, intimate ("our guy"/
+"our boy"), a little hyperbole, and only the genre-appropriate framing the GENRE
+block allows (no game framing off-genre). That is a few touches per chapter to
+make it funnier — NOT every line, never a quota, never pasted onto a serious beat.
+Use the DRAMATIC/CONNECTIVE tag as the guard:
+- DRAMATIC, somber, eerie, tense, awe or tragic beats stay PURELY cinematic —
+  any wink there deflates the moment;
+- only a CONNECTIVE / mundane-aside beat may take the occasional persona touch;
+- when unsure, stay cinematic.
 STORY CAPTIONS / narration-box text: WEAVE them into the line in the story's own
 first-person voice — you MAY rephrase for flow, but keep their MEANING and any key
 phrase, and never read a caption robotically as a bare standalone fragment.
