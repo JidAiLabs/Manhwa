@@ -83,6 +83,18 @@ def test_validate_rejects_blowup_and_chrome():
         ["Prince Cheon"]) is False
 
 
+def test_infer_genre_from_content_reads_the_manhwa_type():
+    sys_b = {"beats": [{"narration_plain": "A status window blinks LEVEL UP; "
+                        "he opens his skill tree and accepts the quest."}]}
+    assert npu.infer_genre_from_content(sys_b) == "system"
+    murim_b = {"beats": [{"narration_plain": "The sect elder channels his qi as "
+                          "the murim clans gather; cultivation peaks tonight."}]}
+    assert npu.infer_genre_from_content(murim_b) == "murim"
+    modern_b = {"beats": [{"narration_plain": "He scrolls his phone on the subway "
+                           "as monsters tear through the city."}]}
+    assert npu.infer_genre_from_content(modern_b) == "modern"
+
+
 def test_validate_preserves_mood_tags():
     o = "[panicked] He runs for the treeline as arrows fall."
     assert npu.validate_line(o, "[panicked] Our guy books it for the "

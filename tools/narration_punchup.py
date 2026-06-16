@@ -333,6 +333,38 @@ def _cast_names(cast_path: str) -> List[str]:
         return []
 
 
+def infer_genre_from_content(beats_obj: Dict[str, Any], ep_dir: str = "") -> str:
+    """Read the manhwa TYPE off the chapter's own content so the persona adapts
+    without any per-series config: a game/system world (status windows, skills,
+    quests) keeps its game voice; a murim world (sect/qi/cultivation) its wuxia
+    snark; everything else is treated as a real, modern world. This is the
+    'understanding of the manhwa type' driving the persona — it classifies the
+    WORLD from what's on the page, it does not blacklist narration words. Reads the
+    grounded narration plus, when available, the raw OCR (a cleaner signal)."""
+    blob = " ".join(str(b.get("narration_plain") or b.get("narration") or "")
+                    for b in (beats_obj or {}).get("beats") or []).lower()
+    try:
+        if ep_dir:
+            v = json.load(open(os.path.join(ep_dir, "manifest.vision.json")))
+            blob += " " + " ".join(str(i.get("ocr_clean") or "")
+                                   for i in (v.get("items") or [])).lower()
+    except Exception:
+        pass
+    system = ("status window", "status screen", "notification window", "level up",
+              "leveled up", " skill ", "skill tree", " quest", "system message",
+              "stat point", "stat window", "dungeon", "awaken", " mana ", "[skill]",
+              "[level", "ding!", "you have")
+    murim = ("sect", " qi ", "martial art", "cultivat", "murim", "meridian",
+             "dao ", "pavilion", "inner energy", "clan ", "ancestor")
+    ss = sum(1 for w in system if w in blob)
+    ms = sum(1 for w in murim if w in blob)
+    if ss >= 2 and ss >= ms:
+        return "system"
+    if ms >= 2 and ms > ss:
+        return "murim"
+    return "modern"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--beats", required=True)
@@ -366,6 +398,10 @@ def main() -> int:
             pass
 
     beats_obj = json.load(open(args.beats))
+    # the persona follows the manhwa TYPE: when no genre is given (the beated stage
+    # runs before the script exists), read it from the chapter's own content.
+    if not args.genre:
+        args.genre = infer_genre_from_content(beats_obj, args.episode_dir)
     # idempotent: always punch from the GROUNDED line — re-running on an
     # already-punched file must not punch the punch (closed-loop drift)
     lines = [{"group_id": int(b.get("group_id") or 0),
