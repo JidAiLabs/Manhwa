@@ -561,6 +561,42 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         jobs.enqueue(c, "prepare", chapter_id=cid, priority=50)
         return RedirectResponse(f"/chapter/{cid}", status_code=303)
 
+    @app.post("/chapter/{cid}/revoice")
+    def post_revoice(cid: int):
+        # Re-synthesize the voiceover with the latest TTS (seeded + de-robotted)
+        # and re-render — KEEPS the approved narration, only the audio + video
+        # are rebuilt. Clearing the cached clips forces a full re-synth (the
+        # text_sha cache would otherwise reuse them); rewinding to 'scripted'
+        # makes the resume-by-status runner actually re-run the voiced stage.
+        c = con()
+        r = c.execute("SELECT ep_dir FROM chapter WHERE id=?", (cid,)).fetchone()
+        if r and r[0]:
+            tts_dir = Path(r[0]) / "tts"
+            clips = tts_dir / "clips"
+            if clips.exists():
+                for w in clips.glob("*.wav"):
+                    try:
+                        w.unlink()
+                    except OSError:
+                        pass
+            idx = tts_dir / "tts_index.json"
+            if idx.exists():
+                try:
+                    idx.unlink()
+                except OSError:
+                    pass
+        # narration stays approved; clear the render gate so auto_to=video
+        # re-approves + re-renders (it no-ops when render is already approved)
+        if not gates._has_approval(c, "voice", chapter_id=cid):
+            gates.approve(c, "voice", chapter_id=cid, note="re-voice")
+        c.execute("DELETE FROM approval WHERE gate='render' AND chapter_id=?",
+                  (cid,))
+        c.execute("UPDATE chapter SET status='scripted' WHERE id=?", (cid,))
+        c.commit()
+        jobs.enqueue(c, "voiceover", chapter_id=cid,
+                     payload={"auto_to": "video"}, priority=50)
+        return RedirectResponse(f"/chapter/{cid}", status_code=303)
+
     @app.post("/series/{sid}/style")
     def post_style(sid: int, style: str = Form(...)):
         if style not in ("default", "off", "light", "full"):

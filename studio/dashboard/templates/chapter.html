@@ -33,6 +33,11 @@
 <input type="hidden" name="gate" value="render"><input type="hidden" name="chapter_id" value="{{ ch.id }}">
 <button class="green">approve voiceover → render video</button></form>
 <span class="kv">{{ render_block_reason if not qa_ok else '' }}</span>{% endif %}
+{% if has_voice_preview %}
+<form class="inline" method="post" action="/chapter/{{ ch.id }}/revoice" onsubmit="return confirm('Re-voiceover this chapter? Re-synthesizes ALL audio with the latest voice fixes (consistent seed + de-robotted), then re-renders the video — keeps the narration. ~10 min.')">
+<button class="ghost" title="re-synthesize the audio with the latest TTS fixes, then re-render — keeps the narration">↻ re-voiceover + re-render</button></form>
+<span class="kv">re-synthesizes audio with the latest voice fixes + re-renders (keeps narration)</span>
+{% endif %}
 </div>
 
 <h2>Rendered video <small>(the final segment for this chapter)</small></h2>
