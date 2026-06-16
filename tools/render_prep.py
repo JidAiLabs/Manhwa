@@ -1585,6 +1585,16 @@ def main() -> int:
                     recoverable = (cimg is None) or panel_recoverable(
                         cimg, cboxes, min_art_score=args.min_art_score,
                         text_rich=rich)
+                    # Deterministic empty-bubble husk: blanked bubbles DOMINATE the
+                    # frame and the panel carried NO text (a curtain/gradient with
+                    # empty outlines, no drawn subject — IE p000010, which a faint
+                    # gradient lets sneak past the art-score). Can't over-drop: a
+                    # real atmospheric shot has no bubbles (coverage ~0); a real
+                    # dialogue panel carried text (text_coverage > 0).
+                    if (cimg is not None and cboxes
+                            and bubble_coverage(cimg.shape, cboxes) >= 0.20
+                            and float(vit.get("text_coverage") or 0.0) <= 0.02):
+                        recoverable = False
                     if not recoverable:
                         score = 1.0  # no recoverable region after cleaning
                     # System / title / document cards are story beats whose TEXT is
