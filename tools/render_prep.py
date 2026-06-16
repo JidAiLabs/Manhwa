@@ -1507,22 +1507,24 @@ def main() -> int:
                         text_rich=rich)
                     if not recoverable:
                         score = 1.0  # no recoverable region after cleaning
-                    # An exemption may ONLY protect a panel that SURVIVES cleaning
-                    # with real content. An empty-bubble / empty-box husk (its text
-                    # got inpainted away, leaving blank outlines over a gradient) is
-                    # NOT recoverable — and must not be kept just because it once
-                    # carried OCR. That blank panel is exactly the empty bubble the
-                    # viewer sees, so it falls through to the husk drop + a held scene.
-                    if recoverable:
-                        if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
-                            exempt.add(f)  # system-message panel — story beat
-                        if rich:
-                            exempt.add(f)  # document panel: its text IS the content
-                        if _is_title_card(f):
-                            exempt.add(f)  # styled title/system card (age/org)
-                        if (vit.get("panel_kind") in ("story", "caption")
-                                and str(vit.get("ocr_clean") or "").strip()):
-                            exempt.add(f)  # story/caption WITH surviving content
+                    # System / title / document cards are story beats whose TEXT is
+                    # the content — it sits on a flat card, NOT in an inpainted
+                    # bubble, so it survives cleaning. Keep them unconditionally,
+                    # even at low art (SKY CORPORATION, 'LIN ZICHEN - AGE: 5 MONTHS').
+                    if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
+                        exempt.add(f)  # system-message panel — story beat
+                    if rich:
+                        exempt.add(f)  # document panel: its text IS the content
+                    if _is_title_card(f):
+                        exempt.add(f)  # styled title/system card (age/org/title)
+                    # The BROAD 'story/caption carries OCR' exemption ONLY holds when
+                    # the panel SURVIVES cleaning. An empty-bubble husk (its text was
+                    # inpainted away, leaving blank outlines over a gradient) is NOT
+                    # recoverable — so it is NOT exempted here and drops as the husk
+                    # it is, with a real neighbour held in its place.
+                    if recoverable and (vit.get("panel_kind") in ("story", "caption")
+                            and str(vit.get("ocr_clean") or "").strip()):
+                        exempt.add(f)
                 cov[f] = score
             new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)
             dropped = list(dropped) + bdropped

@@ -748,8 +748,14 @@ def story_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
                     + ("held stand-in" if held else "silent swap"),
                     segment_id=seg))
 
-    # 3. dropped system/title card — these are story beats, never droppable
+    # 3. dropped system/title card — these are story beats, never droppable.
+    # A panel the understanding calls 'caption' is a narrative-voice MONOLOGUE
+    # (its words ride the narration); it is SUPPOSED to be narrated, not shown,
+    # so its absence from the montage is intended — never a system_card_dropped,
+    # even when its short caps text looks like a title card to the heuristic.
     for f, vit in (vitems or {}).items():
+        if str(vit.get("panel_kind") or "").lower() == "caption":
+            continue
         if _base_scene(f) not in shown_all and _is_title_card(
                 str(vit.get("ocr_clean") or ""), vit):
             flags.append(_flag(
