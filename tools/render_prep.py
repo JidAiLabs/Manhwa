@@ -454,7 +454,29 @@ def clean_scene_image(
         for (wx1, wy1, wx2, wy2) in words:
             pad = 5  # cover anti-aliased stroke edges beyond the tight OCR box
             wmask[max(0, wy1 - pad):wy2 + pad, max(0, wx1 - pad):wx2 + pad] = 255
-        wmask = cv2.bitwise_and(wmask, (inside > 0).astype(np.uint8) * 255)
+        gate = inside > 0
+        # A bubble clipped by the panel edge (its body cut off by the panel
+        # boundary) has its text flush against that edge, where the eroded
+        # interior can't reach — the inside-gate alone leaves the glyphs (IE
+        # ch1 p000111 "JOINING OUR CLASS."). The detector vouched for this box
+        # and OCR pinned the words, so also admit word pixels inside the
+        # bubble's inner region: inset to spare the outline ring, but flush on
+        # the clipped side(s).
+        H_, W_ = out.shape[:2]
+        bx1, by1, bx2, by2 = (int(v) for v in b)
+        edge_tol = 2
+        if bx1 <= edge_tol or by1 <= edge_tol or bx2 >= W_ - edge_tol or by2 >= H_ - edge_tol:
+            ox = max(4, int(0.06 * (bx2 - bx1)))
+            oy = max(4, int(0.06 * (by2 - by1)))
+            ix1 = bx1 if bx1 <= edge_tol else bx1 + ox
+            iy1 = by1 if by1 <= edge_tol else by1 + oy
+            ix2 = bx2 if bx2 >= W_ - edge_tol else bx2 - ox
+            iy2 = by2 if by2 >= H_ - edge_tol else by2 - oy
+            if ix2 > ix1 and iy2 > iy1:
+                inner = np.zeros((H_, W_), bool)
+                inner[max(0, iy1):iy2, max(0, ix1):ix2] = True
+                gate = gate | inner
+        wmask = cv2.bitwise_and(wmask, gate.astype(np.uint8) * 255)
         if wmask.any() and fill is not None:
             # flat fill with the bubble's own interior color: on a flat
             # interior this is exact removal — nothing to ghost or smear
