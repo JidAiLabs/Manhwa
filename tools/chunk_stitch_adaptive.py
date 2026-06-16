@@ -504,6 +504,27 @@ def main() -> int:
         cur_images.append(im)
         cur_h += im.height
 
+    # JPEG cannot encode an image taller than 65500px. A single giant strip
+    # (asura often ships a whole chapter as ONE tall image) or a tall remainder
+    # would crash canvas.save below, so sub-cut it into JPEG-safe pieces first —
+    # prefer a real gutter near the cap, else force a clean horizontal cut.
+    JPEG_SAFE_H = 65000
+    while cur_images and sum(im.height for im in cur_images) > JPEG_SAFE_H:
+        canvas = render_canvas(cur_images)
+        cut_y, dbg = _pick_cut_y_run_based(
+            canvas=canvas, target_y=JPEG_SAFE_H,
+            base_window=int(args.search_window),
+            min_run_px=int(args.min_gutter_run_px),
+            max_window=int(args.max_search_window))
+        if not cut_y or cut_y <= 0 or cut_y > JPEG_SAFE_H:
+            force_y, dbg = _force_cut_least_damage(
+                canvas=canvas, target_y=JPEG_SAFE_H,
+                window=int(args.max_search_window))
+            cut_y = force_y if (force_y and force_y > 0) else JPEG_SAFE_H
+        cut_y = min(int(cut_y), JPEG_SAFE_H)
+        print(f"[jpeg-cap] remainder {canvas.size[1]}px > {JPEG_SAFE_H} -> cut at {cut_y}")
+        flush_by_cut(cut_y=cut_y, keep_overlap=int(args.overlap_px), cut_debug=dbg)
+
     # Flush remainder as last chunk
     if cur_images:
         canvas = render_canvas(cur_images)
