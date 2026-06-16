@@ -11,8 +11,8 @@
 <form class="inline" method="post" action="/jobs">
 <input type="hidden" name="type" value="prepare_range">
 <input type="hidden" name="series_id" value="{{ sid }}">
-<b>bulk run</b> ep <input type="number" step="0.1" name="num_from" id="rf" value="0" style="width:4.5em">
-→ <input type="number" step="0.1" name="num_to" id="rt" value="{{ chapters[-1].number if chapters else 1 }}" style="width:4.5em">
+<b>bulk run</b> ep <input type="number" step="1" min="0" name="num_from" id="rf" value="0" style="width:4.5em">
+→ <input type="number" step="1" min="0" name="num_to" id="rt" value="{{ chapters[-1].number|round(0,'ceil')|int if chapters else 1 }}" style="width:4.5em">
 <select name="target" id="rtgt">
 <option value="qa">to QA report</option>
 <option value="voice">to voiceover</option>

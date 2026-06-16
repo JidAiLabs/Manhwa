@@ -420,7 +420,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     + float(seed.get("prepped", 130)) + float(seed.get("qa_scan", 120)))
         if target == "video":
             per += float(seed.get("render_segment", 2400))
-        proc = per * n
+        # wall-clock, not raw compute: the worker runs ~2 GPU lanes in parallel
+        proc = per * n / 2.0
 
         def fmt(s: float) -> str:
             s = int(s)
