@@ -1315,7 +1315,11 @@ def main() -> int:
                                    "text_coverage": tc,
                                    # carry the understanding's verdict so the
                                    # is_chrome_scene chokepoint defers to it
-                                   "panel_kind": it.get("panel_kind")}
+                                   "panel_kind": it.get("panel_kind"),
+                                   # + the subjects, so an in-world screen the
+                                   # understanding rescued chrome->story keeps
+                                   # its on-screen text (see _is_inworld_screen)
+                                   "subjects": it.get("subjects") or []}
                 w = float(it.get("width") or 0)
                 h = float(it.get("height") or 0)
                 if w > 0 and h > 0:
@@ -1398,6 +1402,18 @@ def main() -> int:
         return doc_like(text_score.get(fname, 0.0), len(words), words,
                         speech_shaped_boxes(_boxes(fname), panel_w))
 
+    def _is_inworld_screen(fname: str) -> bool:
+        """An in-world device/app screen the understanding rescued chrome->story
+        (panel_understand stamps subjects=['an in-world screen']): its on-screen
+        text IS the story content — an episode list, a feed (ORV ep1 p000003,
+        the "no one reads it" webnovel list). Treat it like a document: keep
+        that text, blank only the speech bubble(s) over it. doc_like can't see
+        it because the detector mis-boxes the UI rows as bubbles, so the screen
+        looks dialogue-dominated; the understanding's marker is the reliable
+        signal."""
+        subj = vision_item.get(fname, {}).get("subjects") or []
+        return any("in-world screen" in str(s).lower() for s in subj)
+
     def _is_title_card(fname: str) -> bool:
         """Styled title/system card (SKY CORPORATION., LIN ZICHEN - AGE: 3
         YEARS) — short mostly-caps phrase on a flat (white/black) frame. These
@@ -1432,10 +1448,12 @@ def main() -> int:
                 # title/system card: the styled text IS the content (SKY
                 # CORPORATION, age cards) — never blank it
                 cleaned_cache[fname] = (img.copy(), [])
-            elif _text_rich(fname) and fname not in speech_files:
-                # DOCUMENT panel (word-rich, no speech per Gemini): its
-                # document text IS the content and must survive — but a
-                # speech bubble floating OVER it (ORV p000025) is dialogue
+            elif (_text_rich(fname) or _is_inworld_screen(fname)) and fname not in speech_files:
+                # DOCUMENT panel (word-rich, no speech per Gemini) OR a rescued
+                # in-world screen (episode list / feed): its on-screen text IS
+                # the content and must survive — but a speech bubble floating
+                # OVER it (ORV p000025 stats page, p000003 reader comment) is
+                # dialogue
                 # like any other: blank ONLY words inside speech-SHAPED
                 # boxes; UI rows (wide flat detector boxes) and all
                 # outside-bubble text stay untouched. No orphan pass here.

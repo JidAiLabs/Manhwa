@@ -232,8 +232,12 @@ def apply_inworld_screen_overrides(panels: List[Dict[str, Any]],
             continue
         if _is_inworld_balloon(dets, w, h):
             p["panel_kind"] = "story"
-            if not p.get("subjects"):
-                p["subjects"] = ["an in-world screen"]
+            # stamp the marker render_prep keys on to keep the screen text
+            # (it routes in-world screens to the document treatment)
+            subj = [s for s in (p.get("subjects") or []) if s]
+            if not any("in-world screen" in str(s).lower() for s in subj):
+                subj.append("an in-world screen")
+            p["subjects"] = subj
             n += 1
             log(f"[inworld] {p.get('scene_file')}: chrome->story "
                 f"(speech balloon over dialogue {(p.get('dialogue') or '')[:48]!r})")
