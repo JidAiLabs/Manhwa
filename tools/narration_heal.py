@@ -22,7 +22,7 @@ from typing import Any, Dict, List
 HEALABLE = {
     "caption_unvoiced", "chrome_narration", "fragment_dangle",
     "filler_narration", "beats_incomplete", "narration_stale",
-    "empty_item", "silent_group",
+    "empty_item", "silent_group", "grounding_weak",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -51,6 +51,14 @@ def _note_for(code: str, detail: str) -> str:
     if code in ("beats_incomplete", "empty_item", "silent_group"):
         return ("The narration is empty — describe what actually happens in this "
                 "panel (and cover any on-panel caption).")
+    if code == "grounding_weak":
+        issue = (detail or "").split(":", 1)[-1].strip()
+        return ("The narration is weak or mis-grounded"
+                + (f" ({issue})" if issue else "")
+                + ". Re-narrate this group to name EXACTLY what the panel shows: "
+                "fix any mis-named or invented subject (beasts are 'beasts', not "
+                "'dogs'; do not invent quantities or a crowd) and replace vague "
+                "filler with a concrete, vivid line.")
     return "Rewrite the narration to match exactly what is shown in the panel."
 
 
@@ -61,8 +69,8 @@ def corrections_from_qa(report: Dict[str, Any]) -> Dict[int, str]:
         code = f.get("code")
         # a chrome/meta leak is a rule violation at ANY severity (the channel
         # never voices interface chatter); other codes only heal as ERRORs.
-        if code == "chrome_narration":
-            pass
+        if code in ("chrome_narration", "grounding_weak"):
+            pass   # a rule/quality violation worth healing at ANY severity
         elif f.get("severity") == "ERROR" and code in HEALABLE:
             pass
         else:

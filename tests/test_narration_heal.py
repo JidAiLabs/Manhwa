@@ -62,3 +62,27 @@ def test_chrome_narration_heals_even_as_a_warning():
 def test_empty_report_is_empty():
     assert nh.corrections_from_qa({}) == {}
     assert nh.corrections_from_qa({"flags": []}) == {}
+
+
+# --- grounding_weak: the QA-eyes flag that drives quality heal (WARN-severity) -
+
+def test_grounding_weak_heals_at_warn_severity():
+    # most codes heal only as ERROR; grounding_weak (like chrome_narration) heals
+    # at ANY severity so a weak-but-valid line gets a regen attempt
+    rep = {"flags": [_flag("grounding_weak", "WARN",
+                           "weak/mis-grounded narration: beasts called 'dogs'",
+                           "g0004_p03")]}
+    corr = nh.corrections_from_qa(rep)
+    assert 4 in corr
+    note = corr[4].lower()
+    assert "mis-grounded" in note or "name exactly what the panel shows" in note
+    assert "dogs" in note          # the specific issue is threaded into the note
+
+
+def test_grounding_weak_in_healable_set():
+    assert "grounding_weak" in nh.HEALABLE
+
+
+def test_grounding_weak_without_segment_is_skipped():
+    rep = {"flags": [_flag("grounding_weak", "WARN", "weak: x", None)]}
+    assert nh.corrections_from_qa(rep) == {}

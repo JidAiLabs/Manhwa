@@ -35,6 +35,15 @@ class Config:
                                              # (on-device macOS Vision, FREE $0,
                                              # 97% token-F1 vs Google) | "google"
                                              # (Cloud Vision, paid per panel)
+    semantic_heal: bool = False             # opt-in QA-eyes -> auto-heal: a
+                                             # grounding judge flags weak/mis-
+                                             # grounded lines (prep_qa
+                                             # --semantic-heal), the heal loop
+                                             # regenerates them, and the strictly-
+                                             # better safeguard gates acceptance.
+                                             # OFF = current pipeline byte-for-byte
+                                             # unchanged. Env STUDIO_SEMANTIC_HEAL
+                                             # wins (per-run toggle).
 
 def _resolve_tts_python(val: str) -> str:
     """Host-agnostic local-TTS interpreter. STUDIO_TTS_PYTHON env wins (per-host
@@ -98,4 +107,7 @@ def load(path: Path | None = None) -> Config:
         punchup=(os.environ.get("STUDIO_PUNCHUP")
                  or m.get("punchup", "full")),
         vision_backend=m.get("vision_backend", "apple"),
+        semantic_heal=(os.environ.get("STUDIO_SEMANTIC_HEAL", "").lower()
+                       in ("1", "true", "yes")
+                       or bool(m.get("semantic_heal", False))),
     )

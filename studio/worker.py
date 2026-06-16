@@ -144,9 +144,12 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
         if rc != 0:
             raise RuntimeError(f"render_prep exited {rc}")
     t0 = time.time()
-    rc = _stream([PY, str(REPO / "tools" / "prep_qa.py"),
-                  "--episode-dir", str(ep), "--series-title", title,
-                  "--semantic"], log)
+    qa_args = [PY, str(REPO / "tools" / "prep_qa.py"),
+               "--episode-dir", str(ep), "--series-title", title, "--semantic"]
+    from studio.config import load as _load_cfg
+    if _load_cfg().semantic_heal:
+        qa_args.append("--semantic-heal")   # QA-eyes: grounding_weak -> auto-heal
+    rc = _stream(qa_args, log)
     con.execute(
         "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
         "meta_json) VALUES (?,?,?,?, json_object('series_id', ?))",
@@ -178,6 +181,9 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
     every other line), then re-apply persona + re-derive the verbatim script."""
     beats, cast = str(ep / "manifest.beats.json"), str(ep / "manifest.cast.json")
     vision = str(ep / "manifest.vision.json")
+    preheal = ep / "manifest.beats.preheal.json"
+    if cfg.semantic_heal:
+        preheal.write_text(Path(beats).read_text())   # snapshot the pre-heal lines
     gargs = [PY, str(REPO / "tools" / "gemini_narrative_pass.py"),
              "--groups-manifest", str(ep / "manifest.groups.json"),
              "--vision-manifest", vision, "--out", beats,
@@ -199,6 +205,21 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
             pargs += ["--backend", "vertex", "--model", cfg.beats_model,
                       "--project", project, "--location", location]
         _stream(pargs, log, env=env)
+    if cfg.semantic_heal:
+        # strictly-better safeguard: keep each regenerated line ONLY if a judge
+        # rules it beats the pre-heal line on the panel; else revert to the
+        # original. Auto-heal can then only improve or hold a beat, never make
+        # it worse (closes the closed-loop-degrades-good-lines risk).
+        aargs = [PY, str(REPO / "tools" / "narration_accept_better.py"),
+                 "--old", str(preheal), "--new", beats,
+                 "--scenes-dir", str(ep / "scenes_clean"),
+                 "--vision-manifest", vision, "--out", beats]
+        if cfg.beats_backend == "ollama":
+            aargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]
+        else:
+            aargs += ["--backend", "vertex", "--model", cfg.beats_model,
+                      "--project", project, "--location", location]
+        _stream(aargs, log, env=env)
     sargs = [PY, str(REPO / "tools" / "script_expander.py"), "--beats", beats,
              "--vision", vision, "--out", str(ep / "manifest.script.json"),
              "--model", cfg.script_model, "--narration-source",

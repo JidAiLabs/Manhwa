@@ -656,6 +656,87 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
     return flags
 
 
+_GROUND_PROMPT = """You are a strict QA judge for a manhwa recap. The attached \
+image is the panel shown on screen while the narrator reads this line:
+
+NARRATION: {text}
+
+Judge the narration against THIS panel on two things:
+1. GROUNDING — does it name what is actually shown, inventing nothing and \
+mis-naming nothing? (e.g. calling beasts "dogs", inventing a crowd or a \
+quantity that isn't there, renaming a character/object).
+2. QUALITY — is it a concrete descriptive line, not vague filler ("something \
+happens", "things change", "a moment passes") and not interface chatter?
+
+Be conservative: only flag a CLEAR problem. If the line is reasonably grounded \
+and not filler, it is ok.
+Reply ONLY JSON: {{"ok": true/false, "issue": "<short — what is mis-grounded \
+or weak; empty if ok>"}}"""
+
+
+def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
+                    model: str = "gemma4:26b") -> List[Dict[str, Any]]:
+    """Stronger 'eyes' than semantic_alignment_flags: per shown panel, judge
+    whether the narration is well GROUNDED (names the right subjects, invents
+    nothing) and not weak/filler. Emits a HEALABLE `grounding_weak` WARN so the
+    auto-heal loop re-narrates it — gated by the strictly-better safeguard, so a
+    flagged-but-already-good line can never be replaced by a worse one. Only
+    runs under --semantic-heal (off by default); the existing pipeline is
+    unchanged when it's off."""
+    try:
+        import ollama  # noqa: F401  (local + free; absent on bare boxes)
+    except ImportError:
+        return [_flag("grounding_skipped", INFO,
+                      "ollama not importable — grounding judge skipped")]
+    from ollama_compat import chat as _ollama_chat
+
+    def _judge(path: str, text: str) -> Dict[str, Any]:
+        resp = _ollama_chat(
+            model=model, think=False,
+            messages=[{"role": "user",
+                       "content": _GROUND_PROMPT.format(text=text[:400]),
+                       "images": [path]}],
+            options={"temperature": 0, "num_predict": 200})
+        raw = str(resp["message"]["content"] or "")
+        m = re.search(r"\{.*\}", raw, re.S)
+        return json.loads(m.group(0)) if m else {}
+
+    flags: List[Dict[str, Any]] = []
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        seg = str(item.get("segment_id") or "")
+        text = (item.get("tts_text") or "").strip()
+        cuts = item.get("cuts") or []
+        if not text or not cuts:
+            continue
+        # judge the PRIMARY shown panel of the beat (the one the line is most
+        # about); one call per beat keeps the pass cheap.
+        prim = None
+        for c in cuts:
+            if c.get("held"):
+                continue
+            f = str(c.get("file") or "")
+            if f and os.path.exists(os.path.join(clean_dir, f)):
+                prim = f
+                break
+        if not prim:
+            continue
+        try:
+            v = _judge(os.path.join(clean_dir, prim), text)
+        except Exception as e:                              # noqa: BLE001
+            flags.append(_flag("grounding_error", INFO,
+                               f"judge failed on {prim}: {e}", segment_id=seg))
+            continue
+        if v.get("ok") is False:
+            issue = str(v.get("issue") or "").strip()[:180]
+            flags.append(_flag(
+                "grounding_weak", WARN,
+                f"weak/mis-grounded narration: {issue}",
+                scene=prim, segment_id=seg))
+    return flags
+
+
 # ---------------------------------------------------------------------------
 # story-level QA: the checks the per-panel passes cannot see — does each
 # segment tell a real beat (not filler), does the shown art belong to THIS
@@ -991,6 +1072,11 @@ def main() -> int:
                     help="Gemma vision-judge: narration vs shown panel per "
                          "segment (WARN-level)")
     ap.add_argument("--semantic-model", default="gemma4:26b")
+    ap.add_argument("--semantic-heal", action="store_true",
+                    help="run the grounding 'eyes' (grounding_weak flags that "
+                         "feed auto-heal); off by default — opt-in via "
+                         "[heal].semantic. Pairs with the strictly-better "
+                         "safeguard in the heal loop.")
     args = ap.parse_args()
 
     ep = args.episode_dir.rstrip("/")
@@ -1079,6 +1165,8 @@ def main() -> int:
     if args.semantic:
         flags.extend(semantic_alignment_flags(plan, clean_dir,
                                               model=args.semantic_model))
+    if args.semantic_heal:
+        flags.extend(grounding_flags(plan, clean_dir, model=args.semantic_model))
 
     detector = None
     if not args.no_detector:

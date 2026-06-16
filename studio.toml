@@ -30,6 +30,10 @@ script_model = "gpt-5-nano"
 punchup = "cinematic"
 # OCR/visioned stage: "apple" = on-device macOS Vision (FREE, 97%% F1 vs Google) | "google" (paid)
 vision_backend = "apple"
+# QA-eyes -> auto-heal (opt-in): a grounding judge flags weak/mis-grounded lines, the heal loop
+# regenerates them, and the strictly-better safeguard reverts any non-improvement. false = current
+# pipeline unchanged. Env STUDIO_SEMANTIC_HEAL=1 toggles per-run (used for the A/B comparison).
+semantic_heal = false
 
 [tts]
 # voiced backend: "qwen" (local MPS, LOCKED narrator clone — production) |
