@@ -17,6 +17,7 @@
 <td><a href="/series/{{ s.id }}"><button class="ghost">open</button></a>
 <form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="refresh">
 <input type="hidden" name="series_id" value="{{ s.id }}"><button class="ghost">refresh</button></form>
-{% if s.new_pending %}<form class="inline" method="post" action="/series/{{ s.id }}/seen"><button class="ghost" title="dismiss the new-chapter alert without running">✓ seen</button></form>{% endif %}</td></tr>
+{% if s.new_pending %}<form class="inline" method="post" action="/series/{{ s.id }}/seen"><button class="ghost" title="dismiss the new-chapter alert without running">✓ seen</button></form>{% endif %}
+<a href="/series/{{ s.id }}/delete" title="permanently delete this series + all its files"><button class="ghost" style="color:#e74c3c">🗑 delete</button></a></td></tr>
 {% endfor %}</table>
 {% endblock %}

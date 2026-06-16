@@ -1,0 +1,21 @@
+{% extends "base.html" %}{% set active='series' %}{% block body %}
+<h2>Delete series — {{ title }}</h2>
+<div class="row"><span class="b" style="background:#e74c3c;color:#fff;font-size:1.05em">⚠ PERMANENT — this cannot be undone</span></div>
+<p>This deletes <b>{{ title }}</b> and <b>everything</b> created for it:</p>
+<ul class="kv">
+  <li>{{ n_chapters }} chapter(s) — all panels, scenes, OCR, narration, audio, and rendered video</li>
+  <li>the source folder <code>ongoing/{{ slug }}/</code>{% if size %} (~{{ size }} on disk){% endif %}</li>
+  <li>series branding (intro/outro) and the YouTube thumbnail</li>
+  <li>all queue, job, approval and stage history in the catalog</li>
+</ul>
+{% if running %}<div class="row"><span class="b warn">⏳ a job is currently running for this series — cancel it first; deletion is blocked</span></div>{% endif %}
+{% if error %}<div class="row"><span class="b warn">{{ error }}</span></div>{% endif %}
+<form method="post" action="/series/{{ sid }}/delete">
+<div class="row">To confirm, type the series title exactly: <b>{{ title }}</b></div>
+<div class="row">
+<input name="confirm" placeholder="{{ title }}" autocomplete="off" style="width:26em">
+<button class="green" style="background:#e74c3c;border-color:#e74c3c"{% if running %} disabled{% endif %}>DELETE PERMANENTLY</button>
+</div>
+</form>
+<div class="row"><a href="/series" style="color:var(--acc)">← cancel, back to the series board</a></div>
+{% endblock %}

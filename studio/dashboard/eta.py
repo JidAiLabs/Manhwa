@@ -29,18 +29,26 @@ LANE_OF = {
 }
 
 
+# A real pipeline stage never legitimately finishes in under ~5s — sub-second
+# durations are NO-OP recordings (the resume-by-status runner re-ran a stage that
+# was already complete, e.g. chain:scripted = 0.22s). Those would drag the median
+# (and the on-screen ETA) absurdly low, so they're excluded; the seed is used
+# until a real run lands.
+_MIN_REAL_SEC = 5.0
+
+
 def _median(con: sqlite3.Connection, stage: str,
             series_id: Optional[int]) -> Optional[float]:
     if series_id is not None:
         rows = con.execute(
             "SELECT duration_sec FROM stage_run WHERE stage=? AND ok=1 AND "
-            "json_extract(meta_json, '$.series_id')=? AND duration_sec>0",
-            (stage, series_id)).fetchall()
+            "json_extract(meta_json, '$.series_id')=? AND duration_sec>=?",
+            (stage, series_id, _MIN_REAL_SEC)).fetchall()
         if rows:
             return float(statistics.median(r[0] for r in rows))
     rows = con.execute(
         "SELECT duration_sec FROM stage_run WHERE stage=? AND ok=1 AND "
-        "duration_sec>0", (stage,)).fetchall()
+        "duration_sec>=?", (stage, _MIN_REAL_SEC)).fetchall()
     if rows:
         return float(statistics.median(r[0] for r in rows))
     return None

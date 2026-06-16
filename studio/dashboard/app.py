@@ -162,6 +162,51 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
     return rows
 
 
+def _series_delete_targets(slug: str, sid: int) -> List[Path]:
+    """The on-disk roots created for a series. PATH-SAFE: the ongoing folder is
+    only included when it resolves to a real child of REPO/ongoing (never the
+    ongoing root itself, never an escaping slug like '..')."""
+    targets: List[Path] = []
+    ongoing_root = (REPO / "ongoing").resolve()
+    if slug:
+        d = (REPO / "ongoing" / slug).resolve()
+        if d != ongoing_root and str(d).startswith(str(ongoing_root) + os.sep):
+            targets.append(d)
+    targets.append((REPO / "assets" / "branding" / "series" / str(int(sid))))
+    targets.append((REPO / "dist" / f"series_{int(sid)}"))
+    return targets
+
+
+def _delete_series(con: sqlite3.Connection, sid: int) -> Dict[str, Any]:
+    """Delete EVERY file + db row created for a series. Irreversible — callers
+    must gate this behind the typed-name confirmation."""
+    row = con.execute("SELECT slug, title FROM series WHERE id=?",
+                      (sid,)).fetchone()
+    if not row:
+        return {"ok": False, "deleted_files": []}
+    slug, title = row
+    deleted_files = []
+    for d in _series_delete_targets(slug, sid):
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+            deleted_files.append(str(d))
+    chap_ids = [r[0] for r in
+                con.execute("SELECT id FROM chapter WHERE series_id=?", (sid,))]
+    if chap_ids:
+        qs = ",".join("?" for _ in chap_ids)
+        for tbl in ("stage_run", "approval", "bundle_chapter", "job"):
+            con.execute(f"DELETE FROM {tbl} WHERE chapter_id IN ({qs})",
+                        chap_ids)
+    con.execute("DELETE FROM job WHERE series_id=?", (sid,))
+    con.execute("DELETE FROM approval WHERE series_id=?", (sid,))
+    con.execute("DELETE FROM bundle WHERE series_id=?", (sid,))
+    con.execute("DELETE FROM chapter WHERE series_id=?", (sid,))
+    con.execute("DELETE FROM series WHERE id=?", (sid,))
+    con.commit()
+    return {"ok": True, "title": title, "deleted_files": deleted_files,
+            "deleted_chapters": len(chap_ids)}
+
+
 def create_app(db_path: str = "studio.db") -> FastAPI:
     app = FastAPI(title="OriginPower Studio")
 
@@ -615,6 +660,56 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         c = con()
         c.execute("UPDATE series SET new_pending=0 WHERE id=?", (sid,))
         c.commit()
+        return RedirectResponse("/series", status_code=303)
+
+    def _series_running_jobs(c: sqlite3.Connection, sid: int) -> int:
+        return c.execute(
+            "SELECT COUNT(*) FROM job WHERE state='running' AND type!='heartbeat'"
+            " AND (series_id=? OR chapter_id IN (SELECT id FROM chapter WHERE "
+            "series_id=?))", (sid, sid)).fetchone()[0]
+
+    @app.get("/series/{sid}/delete", response_class=HTMLResponse)
+    def series_delete_confirm(request: Request, sid: int, error: str = ""):
+        c = con()
+        row = c.execute("SELECT slug, title FROM series WHERE id=?",
+                        (sid,)).fetchone()
+        if not row:
+            return HTMLResponse("series not found", status_code=404)
+        slug, title = row
+        n_chapters = c.execute("SELECT COUNT(*) FROM chapter WHERE series_id=?",
+                               (sid,)).fetchone()[0]
+        size = ""
+        d = (REPO / "ongoing" / slug) if slug else None
+        if d and d.exists():
+            try:
+                import subprocess as _sp
+                out = _sp.run(["du", "-sh", str(d)], capture_output=True,
+                              text=True, timeout=20).stdout
+                size = out.split("\t")[0].strip() if out else ""
+            except Exception:
+                size = ""
+        return page("delete_series.html", request, sid=sid, title=title,
+                    slug=slug, n_chapters=n_chapters, size=size,
+                    running=bool(_series_running_jobs(c, sid)), error=error)
+
+    @app.post("/series/{sid}/delete")
+    def series_delete(sid: int, confirm: str = Form("")):
+        c = con()
+        row = c.execute("SELECT title FROM series WHERE id=?", (sid,)).fetchone()
+        if not row:
+            return RedirectResponse("/series", status_code=303)
+        title = row[0]
+        # guard 1 — the typed name must match EXACTLY (blocks accidental clicks)
+        if (confirm or "").strip() != (title or "").strip():
+            return RedirectResponse(
+                f"/series/{sid}/delete?error=name+did+not+match,+nothing+deleted",
+                status_code=303)
+        # guard 2 — never delete files out from under a running job
+        if _series_running_jobs(c, sid):
+            return RedirectResponse(
+                f"/series/{sid}/delete?error=a+job+is+running+for+this+series,+"
+                "cancel+it+first", status_code=303)
+        _delete_series(c, sid)
         return RedirectResponse("/series", status_code=303)
 
     @app.post("/series/{sid}/autopilot")
