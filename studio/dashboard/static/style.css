@@ -34,6 +34,10 @@ h2{font-size:16px;margin:18px 0 10px}h2 small{color:var(--dim);font-weight:400}
 .st .n{font-size:11px;color:var(--dim)}.st .t{font-size:12px;margin-top:3px}
 .st.done{background:#11331f33}.st.done .n{color:var(--ok)}
 .kv{font-size:12.5px;color:var(--dim)}.kv b{color:var(--tx)}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
 .note{font-size:11.5px;color:var(--dim);margin-top:14px}
-form.inline{display:inline}
+form.inline{display:inline-flex;gap:6px;align-items:center}
+input,select{background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:6px 9px;font:inherit;line-height:1.2}
+input::placeholder{color:var(--dim)}
+input:focus,select:focus{outline:0;border-color:var(--acc)}
+select{cursor:pointer}
