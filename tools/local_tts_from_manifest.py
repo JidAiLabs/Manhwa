@@ -468,6 +468,28 @@ QWEN_VOICE_PERSONA = "A deep, resonant male narrator voice, clear and dramatic."
 QWEN_MODEL_VOICE_DESIGN = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 QWEN_MODEL_BASE = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
+# Clone generation is stochastic. UNSEEDED it drifts clip-to-clip (timbre wobble)
+# and occasionally emits a robotic/buzzy take — measured on Nano ch1: spectral
+# flatness ~0.33 across clips, but g0014_p01 came out at 0.42 (audibly robotic).
+# So: seed per-text (reproducible), and if a take reads robotic, re-roll on the
+# next seed and KEEP the least-buzzy. Most clips pass on the first try, so cost
+# is unchanged except for the rare bad take.
+QWEN_CLONE_MAX_TRIES = 3
+QWEN_ROBOTIC_FLATNESS = 0.40   # narration sits ~0.33; >0.40 reads buzzy/robotic
+
+
+def spectral_flatness(wav: Any) -> float:
+    """Geometric-mean / arithmetic-mean of the magnitude spectrum (0..1).
+    High = noise-like/buzzy (a robotic TTS take); clean speech sits low."""
+    import numpy as np
+    a = np.asarray(wav, dtype=float)
+    if a.ndim > 1:
+        a = a.mean(axis=1)
+    if a.size < 256:
+        return 0.0
+    sp = np.abs(np.fft.rfft(a * np.hanning(a.size))) + 1e-12
+    return float(np.exp(np.mean(np.log(sp))) / np.mean(sp))
+
 
 def ref_text_for(voice_ref: str) -> str:
     """Transcript of a voice-clone reference wav, from its `.txt` sidecar
@@ -527,9 +549,29 @@ def _make_qwen_synth(voice_ref: str, language: str = "English",
         )
 
         def synth(text: str, out_path: str, exaggeration: float) -> None:
-            wavs, sr = model.generate_voice_clone(
-                text=text, language=language, voice_clone_prompt=prompt)
-            sf.write(out_path, wavs[0], sr, subtype="PCM_16")
+            import hashlib
+            # per-text seed -> the clip is reproducible (re-runs identical, so the
+            # audio<->narration gate is exact); if a take reads robotic, re-roll on
+            # the next seed and keep the least-buzzy one.
+            base = int(hashlib.sha1(text.encode("utf-8")).hexdigest()[:8], 16)
+            best_wav = None
+            best_sr = None
+            best_flat = 1.0
+            for attempt in range(QWEN_CLONE_MAX_TRIES):
+                seed = (base + attempt) & 0x7FFFFFFF
+                torch.manual_seed(seed)
+                if device == "mps" and hasattr(torch, "mps"):
+                    torch.mps.manual_seed(seed)
+                elif device == "cuda":
+                    torch.cuda.manual_seed_all(seed)
+                wavs, sr = model.generate_voice_clone(
+                    text=text, language=language, voice_clone_prompt=prompt)
+                flat = spectral_flatness(wavs[0])
+                if flat < best_flat:
+                    best_flat, best_wav, best_sr = flat, wavs[0], sr
+                if flat <= QWEN_ROBOTIC_FLATNESS:
+                    break
+            sf.write(out_path, best_wav, best_sr, subtype="PCM_16")
 
         return synth
 

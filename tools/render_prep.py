@@ -1772,9 +1772,26 @@ def main() -> int:
     if junk:
         for f, why in sorted(junk.items()):
             print(f"[ok] visual judge: DROPPING {f} — {why}")
-        cuts_by_segment = {
-            seg: ([c for c in cs if not _cut_is_junk(str(c.get("file")))] or cs)
-            for seg, cs in cuts_by_segment.items()}
+
+        def _drop_junk_cuts(cs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            # Redistribute the freed time so a judge-dropped cut never leaves a
+            # BLACK GAP (the survivors re-spread to fill the voiceover-locked
+            # group window) — same contract as the seam/husk drop passes. Before
+            # this, the judge drop alone was the one path that removed a cut
+            # WITHOUT reflowing, so a mid-group drop left a hole (Nano g0001
+            # p000003 -> 3.6s black at 7.3-10.9s).
+            junk_files = [str(c.get("file")) for c in cs
+                          if _cut_is_junk(str(c.get("file")))]
+            if not junk_files:
+                return cs
+            survivors = [c for c in cs
+                         if not _cut_is_junk(str(c.get("file")))]
+            if not survivors:
+                return cs   # whole segment is junk — holds/substitution cover it
+            return _redistribute(cs, junk_files)
+
+        cuts_by_segment = {seg: _drop_junk_cuts(cs)
+                           for seg, cs in cuts_by_segment.items()}
 
     # repeat cap + holds (also covers segments emptied by the judge — their
     # neighbor's panel holds while the narration continues)
