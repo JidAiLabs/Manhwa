@@ -362,12 +362,37 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
     ep = Path(ch["ep_dir"] or "")
     clips = sorted((ep / "tts" / "clips").glob("*.wav"))
     if clips:
-        lst = ep / "render" / "voice_preview.txt"
-        lst.parent.mkdir(parents=True, exist_ok=True)
-        lst.write_text("".join(f"file '{c}'\n" for c in clips))
+        import subprocess as _sp
+        rdir = ep / "render"
+        rdir.mkdir(parents=True, exist_ok=True)
+        # a short pause BETWEEN groups so beats don't slam together (the preview
+        # was a gapless concat). format-match the clips so the concat demuxer is
+        # happy.
+        sil = rdir / "_gap.wav"
+        try:
+            meta = _sp.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=sample_rate,channels", "-of",
+                 "csv=p=0", str(clips[0])],
+                capture_output=True, text=True).stdout.strip().split(",")
+            sr = meta[0] if meta and meta[0] else "24000"
+            cl = "stereo" if (len(meta) > 1 and meta[1] == "2") else "mono"
+        except Exception:
+            sr, cl = "24000", "mono"
+        _stream(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                 f"anullsrc=r={sr}:cl={cl}", "-t", "0.4", str(sil)], log)
+        lines, prev = [], None
+        for c in clips:
+            g = c.name.split("_")[0]                 # 'g0001' from g0001_p00.wav
+            if prev is not None and g != prev and sil.exists():
+                lines.append(f"file '{sil}'\n")
+            lines.append(f"file '{c}'\n")
+            prev = g
+        lst = rdir / "voice_preview.txt"
+        lst.write_text("".join(lines))
         _stream(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat",
                  "-safe", "0", "-i", str(lst), "-codec:a", "libmp3lame",
-                 "-b:a", "96k", str(ep / "render" / "voice_preview.mp3")],
+                 "-b:a", "96k", str(rdir / "voice_preview.mp3")],
                 log)
     auto_to = (job.get("payload") or {}).get("auto_to")
     if auto_to == "video" and not gates._has_approval(
