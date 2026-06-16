@@ -274,6 +274,50 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
     log.write(f"[heal] hit the {_HEAL_MAX}-cycle cap\n")
 
 
+# QA ERROR codes that re-narration CAN'T fix — the panel itself is the problem
+# (blank/void crop, a leaked dead caption box, bubble text the blanker missed).
+# The last-resort heal DROPS those panels instead of failing the whole chapter.
+_VISUAL_DROPPABLE = {"blank_crop", "dead_box_leak", "visible_text", "ghost_text"}
+
+
+def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
+                       log: TextIO) -> None:
+    """Last-resort heal for QA ERRORs re-narration can't touch: DROP the
+    offending panel (manual_drops.json, the same mechanism as the dashboard drop
+    button) + re-prep. Bounded to <=25% of cuts so a chapter is never gutted —
+    a slightly shorter recap beats a dead chapter. Runs only after narration
+    heal; spotless chapters never reach here."""
+    mdp = ep / "manual_drops.json"
+    for _pass in range(2):
+        try:
+            report = json.loads((ep / "prep_qa.json").read_text())
+        except Exception:
+            return
+        flags = report.get("flags") or []
+        drop = {Path(str(f.get("scene"))).name for f in flags
+                if f.get("severity") == "ERROR"
+                and f.get("code") in _VISUAL_DROPPABLE and f.get("scene")}
+        if not drop:
+            return                            # no drop-able visual error left
+        n_cuts = int(report.get("n_cuts") or 0)
+        cap = max(3, int(0.25 * n_cuts))
+        if len(drop) > cap:
+            log.write(f"[visual-heal] {len(drop)} drop-able ERROR panels exceed "
+                      f"the {cap}/{n_cuts}-cut cap — leaving for manual review\n")
+            return
+        try:
+            existing = set(map(str, json.loads(mdp.read_text()))) if mdp.exists() \
+                else set()
+        except Exception:
+            existing = set()
+        if drop <= existing:                  # already dropped, still flagged
+            return
+        mdp.write_text(json.dumps(sorted(existing | drop), indent=1))
+        log.write(f"[visual-heal] auto-dropping {len(drop)} QA-flagged panel(s) "
+                  f"+ re-prepping: {sorted(drop)}\n")
+        _run_prep_and_qa(con, ch, log, heal_aware=True, reuse_clean=True)
+
+
 def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
     """Everything up to a reviewable QA REPORT, with NO voiceover:
     chain → scripted, then an ESTIMATED-timing plan (planner runs without
@@ -316,6 +360,10 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     # unconditionally — it self-gates on the corrections map, so it also catches
     # chrome/meta leaks that QA only WARNs about (the channel voices no chrome).
     _heal_to_green(con, ch, ep, log)
+    # then the LAST-RESORT visual heal: errors re-narration can't fix (blank
+    # crops, dead-box leaks, missed bubble text) get the offending panel dropped
+    # + a re-prep, bounded so a chapter is never gutted.
+    _heal_visual_drops(con, ch, ep, log)
     codes = _qa_error_codes(ep)
     if codes:
         raise RuntimeError(
