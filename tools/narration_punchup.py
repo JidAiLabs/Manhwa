@@ -38,8 +38,6 @@ Voice: internet-native, dry, confident, a little sarcastic — a sharp friend
 recapping the story, not a movie trailer.
 
 GENRE-NEUTRAL TECHNIQUES (use 1-2 per line, vary them, never force all):
-- gamer/RPG framing: stats, XP, side quest, boss fight, NPC, build,
-  speedrun, loot, aggro ("free XP", "that's a boss-fight invitation")
 - audience intimacy: "our guy", "our boy", "look at his face"
 - comedic hyperbole on impacts ("coughing up half his internal organs")
 - punchy standalone fragments for beats: "Total silence." "Deal." "He's in."
@@ -47,16 +45,17 @@ GENRE-NEUTRAL TECHNIQUES (use 1-2 per line, vary them, never force all):
 - meta-narration ("the stealth mission is officially an action movie now")
 - vary line openings; filler openers like "Okay, so" at most ONCE per
   chapter, never on consecutive lines
+The comedy/framing AXIS is set by the GENRE block below — it is NOT neutral.
+Use only framing that fits THIS manhwa's world.
 
 HARD RULES:
 - NEVER invent events, objects, dialogue, or names not present in the
-  original line. You restyle facts; you do not add them.
-- NEVER change a quantity or invent a collective: "two beasts" stay two
-  beasts, never "a pack/swarm/horde/army". Do not rename what is drawn
-  (a beast is a beast, not a "dog").
-- NEVER add game/UI/"system" framing to a world that does not have one:
-  no "server", "respawn", "boss fight", "XP", "level up", "patch notes"
-  unless the original line already established a literal game system.
+  original line. You RESTYLE the facts; you do not add them. Keep the SAME
+  subjects and the SAME counts the line gives you — don't rename what's drawn
+  or turn a few into a crowd.
+- STAY IN THIS MANHWA'S WORLD: never bolt on a mechanic it doesn't have. The
+  GENRE block decides what framing fits; outside a literal game/system world
+  there is no "server", "respawn", or "XP" to reach for.
 - Keep every character name EXACTLY as written (the cast list is law).
 - Keep the original meaning and emotional turn of the line — an injured
   character stays injured, a defeat stays a defeat.
@@ -73,19 +72,26 @@ GENRE_ADDONS = {
 Comedy axis = the gap between the ancient setting and modern concepts:
 modern-life anachronisms land hardest here ("punched into a different zip code", "he doesn't read the HR reports on his enforcers", "sect politics =
 corporate org-chart drama"). Cultivation/qi/sect jargon is fair game for
-snark ("30 years of qi per pill — supplements have gotten serious").""",
+snark ("30 years of qi per pill — supplements have gotten serious").
+This world has NO game system — game/RPG framing (XP, respawn, aggro, boss
+fights, loot) is off-genre here; never reach for it.""",
     "modern": """GENRE: modern-world (apocalypse/hunter/regression in a
 contemporary setting). The world ALREADY has phones and subways — ancient-
 setting anachronism jokes do NOT apply. Comedy axis = mundane daily life vs
 supernatural stakes ("the apocalypse started before his commute ended",
 "monster attacks and his first thought is the deposit on his flat"). If the
 protagonist knows the story/future, lean on reader/meta jokes ("he has the
-walkthrough; everyone else is playing blind").""",
+walkthrough; everyone else is playing blind").
+This is a REAL world, not a game: never frame its monsters or stakes as game
+mechanics — no "aggro", "respawn", "boss fight", "server", "XP". The monsters
+are real; say what they are.""",
     "system": """GENRE: system/reincarnation/regression with game windows.
 Comedy axis = treating life as a game UI played absurdly well: tutorial and
 newbie framing ("skipping the tutorial", "day-one patch notes"), absurd
 contrast between the protagonist's situation and power ("a literal infant
-grinding stat points"), deadpan quest-log narration of dramatic moments.""",
+grinding stat points"), deadpan quest-log narration of dramatic moments.
+Game/RPG framing (XP, boss fights, aggro, loot, respawn, quest log) IS the
+native voice here — it's literally how this world works; use it freely.""",
 }
 
 
@@ -118,7 +124,8 @@ serious beat to hit a quota. The two ingredients:
       (trailer-grade atmosphere is wanted; this OVERRIDES the "not a movie
       trailer" line above), and
   (B) the channel PERSONA VOICE — internet-native, dry, confident, intimate:
-      "our guy"/"our boy", punchy phrasing, a bit of hyperbole or gamer/RPG framing.
+      "our guy"/"our boy", punchy phrasing, a bit of hyperbole — plus only the
+      genre-appropriate framing the GENRE block allows (no game framing off-genre).
 LEAN toward carrying BOTH — together they enrich the recap — but MATCH THE TONE,
 using the DRAMATIC/CONNECTIVE tag as a guide:
 - action / hype / mundane-aside beats can go FULL persona with a brush of atmosphere;
@@ -179,53 +186,6 @@ _UI_TOKENS = {"read", "ep", "episode", "episodes", "comments", "comment",
               "views", "view", "likes", "like", "subscribe", "next", "prev",
               "previous", "tap", "menu", "notice", "unread"}
 
-# --- grounding enforcement: the persona pass restyles facts, it must not INVENT --
-# game/UI/"system" vocab that fabricates mechanics a real-world scene never had
-# ("the nightmare's SERVER went live") and collective nouns that inflate a literal
-# count ("two beasts" -> "a PACK"). A term is flagged ONLY when it is ABSENT from
-# the grounded original — i.e. the rewrite ADDED it. System-genre stories legit-
-# imately run on game UIs, so the system list is waived there; collectives are
-# banned for every genre (you cannot invent a crowd the art never drew).
-# TIGHT on purpose: only words that assert a literal game/computer system exists
-# and have NO ordinary real-world meaning, so a legitimate rephrase can never trip
-# them and persona METAPHORS (speedrun, boss fight, free XP) are still allowed —
-# the user objects to invented FACTS ("there is no server"), not to style.
-_INVENTED_SYSTEM = {
-    "server", "servers", "respawn", "respawned", "respawns", "respawning",
-    "hitbox", "hitboxes", "framerate", "savefile", "killstreak", "matchmaking",
-    "leaderboard", "leaderboards", "hotbar",
-}
-_COLLECTIVES = {
-    "pack", "packs", "swarm", "swarms", "horde", "hordes", "army", "armies",
-    "legion", "legions", "flock", "throng", "dozens", "hundreds",
-    "thousands", "countless", "myriad",
-}
-
-
-def _new_words(original: str, punched: str) -> set:
-    """Lowercase alpha tokens in the rewrite but NOT in the grounded original."""
-    ow = set(re.findall(r"[a-z][a-z']*", (original or "").lower()))
-    pw = set(re.findall(r"[a-z][a-z']*", (punched or "").lower()))
-    return pw - ow
-
-
-def invented_term(original: str, punched: str, *, genre: str = "") -> Optional[str]:
-    """First fabricated term the persona pass ADDED that the grounded line never
-    had: a banned collective (any genre) or a game/system word (non-system genre).
-    Returns None when clean. Deterministic grounding enforcement so an invented
-    'server'/'pack' is REJECTED (fall back to the grounded line), not merely
-    discouraged by the prompt."""
-    added = _new_words(original, punched)
-    hit = sorted(added & _COLLECTIVES)
-    if hit:
-        return hit[0]
-    if genre_key(genre) != "system":
-        hit = sorted(added & _INVENTED_SYSTEM)
-        if hit:
-            return hit[0]
-    return None
-
-
 def _caption_words_by_group(ep_dir: str,
                             beats_obj: Dict[str, Any]) -> Dict[int, set]:
     """Per-group caption word sets (text_only/recovered panels, UI tokens
@@ -264,8 +224,7 @@ def _caption_words_by_group(ep_dir: str,
 
 def validate_line(original: str, punched: str,
                   cast_names: List[str], *,
-                  required: Any = None, max_ratio: float = 1.5,
-                  genre: str = "") -> bool:
+                  required: Any = None, max_ratio: float = 1.5) -> bool:
     """Reject rewrites that break the grounding contract. *max_ratio* is the
     upper word-count multiple allowed — raised for DRAMATIC cinematic lines,
     which intentionally keep more atmospheric description than the grounded line."""
@@ -293,18 +252,13 @@ def validate_line(original: str, punched: str,
     if re.search(r"\b(chapter|episode)\s+\d+|\.com\b|webtoon|asura|elftoon",
                  low_p):
         return False
-    # grounding: reject an INVENTED game/system word or collective the grounded
-    # line never had ("server", "wolf pack") — restyle facts, do not add them
-    if invented_term(original, punched, genre=genre):
-        return False
     return True
 
 
 def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
           cast_names: List[str],
           caption_words: Any = None,
-          classes: Optional[Dict[int, str]] = None,
-          genre: str = "") -> Dict[str, Any]:
+          classes: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
     """Apply validated rewrites; keep the grounded original otherwise.
     The original always survives as beat['narration_plain']; groups whose
     panels carry captions reject any rewrite that drops the caption words.
@@ -324,7 +278,7 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
         max_ratio = 3.0 if classes.get(gid) == "DRAMATIC" else 1.5
         if cand and validate_line(original, cand, cast_names,
                                   required=caption_words.get(gid),
-                                  max_ratio=max_ratio, genre=genre):
+                                  max_ratio=max_ratio):
             b["narration"] = cand
             applied += 1
         else:
@@ -448,7 +402,7 @@ def main() -> int:
     cap_words = (_caption_words_by_group(args.episode_dir, beats_obj)
                  if args.episode_dir else {})
     out = merge(beats_obj, punched, cast_names, caption_words=cap_words,
-                classes=classes, genre=args.genre)
+                classes=classes)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
     n = out["stats"]["punchup_applied"]

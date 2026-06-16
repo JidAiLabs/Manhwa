@@ -218,17 +218,27 @@ def main() -> int:
     # manifest so the SINGLE chrome chokepoint (scene_chrome.is_chrome_scene —
     # used by story_group, render_prep AND prep_qa) defers to the understanding
     # everywhere. No downstream module re-derives chrome from OCR and disagrees.
-    kind_by_file = {p.get("scene_file"): p.get("panel_kind")
-                    for p in panels if p.get("scene_file") and p.get("panel_kind")}
+    by_file = {p.get("scene_file"): p for p in panels if p.get("scene_file")}
     changed = False
     for it in (vision.get("items") or []):
-        k = kind_by_file.get(it.get("scene_file"))
+        p = by_file.get(it.get("scene_file"))
+        if not p:
+            continue
+        k = p.get("panel_kind")
         if k and it.get("panel_kind") != k:
             it["panel_kind"] = k
             changed = True
+        # Also stamp the SUBJECTS the multimodal pass identified, so the narration
+        # generator NAMES what's actually there and can't rename it (a 'beast' must
+        # not become a 'hound', two must not become 'a pack'). Grounding via the
+        # understanding itself — no creature wordlist to maintain.
+        subj = [str(s) for s in (p.get("subjects") or []) if s]
+        if subj and it.get("subjects") != subj:
+            it["subjects"] = subj
+            changed = True
     if changed:
         dump_json(args.vision_manifest, vision)
-        print(f"[ok] stamped panel_kind onto {os.path.basename(args.vision_manifest)}")
+        print(f"[ok] stamped panel_kind + subjects onto {os.path.basename(args.vision_manifest)}")
 
     ok = sum(1 for p in panels if p.get("description") and not p.get("error"))
     print(f"[ok] wrote={args.out} panels={len(panels)} understood={ok}")

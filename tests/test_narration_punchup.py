@@ -83,34 +83,6 @@ def test_validate_rejects_blowup_and_chrome():
         ["Prince Cheon"]) is False
 
 
-def test_gate_rejects_invented_server_on_real_world():
-    # "the nightmare's server just went live" — there is no server, it's real life
-    orig = "Then, a sudden crash, and the beast tears through the world."
-    bad = "Then, a sudden crash, and the nightmare's server just went live."
-    assert npu.invented_term(orig, bad) == "server"
-    assert npu.validate_line(orig, bad, []) is False
-
-
-def test_gate_rejects_invented_collective_count():
-    # two beasts must never become "a wolf pack" / "a swarm"
-    orig = "A man in a white coat faces two snarling beasts."
-    assert npu.validate_line(orig, "A man faces a snarling wolf pack.", []) is False
-    assert npu.invented_term(orig, "the swarm descends on him") == "swarm"
-    assert npu.invented_term(orig, "two beasts close in") is None      # count kept
-
-
-def test_gate_allows_persona_metaphor_but_not_literal_invention():
-    orig = "He sprints down the mountain as the killers close in."
-    # metaphorical gamer flavour is style, not a fabricated fact -> allowed
-    assert npu.invented_term(
-        orig, "Our guy is speedrunning the descent, a boss fight on his heels") is None
-    # a literal game word is legit in a SYSTEM-genre world, invented in a modern one
-    assert npu.invented_term("A status window blinks.",
-                             "The respawn timer ticks down.", genre="system") is None
-    assert npu.invented_term("A status window blinks.",
-                             "The respawn timer ticks down.", genre="modern") == "respawn"
-
-
 def test_validate_preserves_mood_tags():
     o = "[panicked] He runs for the treeline as arrows fall."
     assert npu.validate_line(o, "[panicked] Our guy books it for the "

@@ -149,6 +149,9 @@ def _pack_group_payload(group: Dict[str, Any], vision_items_by_file: Dict[str, D
                 "keywords": it.get("keywords") if isinstance(it.get("keywords"), list) else [],
                 "labels": labels[:15],
                 "objects": objects[:15],
+                # what the multimodal understanding actually identified in this
+                # panel — NAME these, do not rename or invent creatures/counts.
+                "subjects": it.get("subjects") if isinstance(it.get("subjects"), list) else [],
             }
         )
 
@@ -432,9 +435,11 @@ def main() -> int:
         "    - GROUND it strictly in THESE panels — describe only what is actually drawn here.\n"
         "      Invent NOTHING: no event/motion/outcome not shown, and NO setting that isn't\n"
         "      visible (never 'chandeliers', 'a grand hall', 'marble', 'parchment' unless on the page).\n"
-        "      Do NOT invent a SYSTEM the world lacks (no 'server'/'game'/'respawn' framing on a\n"
-        "      real-world scene), do NOT rename what is drawn (a beast is a 'beast', not a 'dog'),\n"
-        "      and do NOT inflate quantities (two beasts are 'two beasts', never 'a pack/swarm').\n"
+        "      USE THE UNDERSTANDING: each panel's INPUT_JSON.scenes_signals[].subjects lists\n"
+        "      exactly what the analyst identified — name THOSE, in those words. Do not rename\n"
+        "      them (if it says 'beast' it is a beast, not a 'hound'), do not change their number\n"
+        "      (two stay two, never 'a pack/swarm'), and do not add a creature/person not listed.\n"
+        "      Do NOT invent a SYSTEM the world lacks (no 'server'/'game'/'respawn' on a real scene).\n"
         "    - NAME characters from the CHAPTER CAST by matching appearance; never 'a figure'/\n"
         "      'a young man' when it matches the cast. Same person = same name every scene.\n"
         "    - DIALOGUE — quote SPARINGLY, recap-style: PARAPHRASE the bulk into narration and\n"
