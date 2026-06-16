@@ -657,32 +657,34 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
 
 
 _GROUND_PROMPT = """You are a strict QA judge for a manhwa recap. The attached \
-image is the panel shown on screen while the narrator reads this line:
+images are ALL the panels shown on screen while the narrator reads this line \
+(a beat is a short montage of these panels, seen together):
 
 NARRATION: {text}
 
-Judge the narration against THIS panel on two things:
-1. GROUNDING — does it name what is actually shown, inventing nothing and \
-mis-naming nothing? (e.g. calling beasts "dogs", inventing a crowd or a \
-quantity that isn't there, renaming a character/object).
-2. QUALITY — is it a concrete descriptive line, not vague filler ("something \
-happens", "things change", "a moment passes") and not interface chatter?
+Judge the narration against THESE panels TAKEN TOGETHER, on two things:
+1. GROUNDING — does it INVENT or MIS-NAME something that appears in NONE of the \
+panels? (e.g. calling beasts "dogs", inventing a character / crowd / quantity \
+that does not appear anywhere). Naming something shown in ANY of the panels is \
+fine — the line covers the whole montage, not one panel.
+2. QUALITY — is it concrete, not vague filler ("something happens", "things \
+change", "a moment passes") and not interface chatter?
 
-Be conservative: only flag a CLEAR problem. If the line is reasonably grounded \
-and not filler, it is ok.
-Reply ONLY JSON: {{"ok": true/false, "issue": "<short — what is mis-grounded \
-or weak; empty if ok>"}}"""
+Be conservative: flag ONLY a clear invention/mis-naming absent from EVERY panel, \
+or genuine filler. If the line is grounded in any panel and not filler, it is ok.
+Reply ONLY JSON: {{"ok": true/false, "issue": "<short — what is invented/mis- \
+named or weak; empty if ok>"}}"""
 
 
 def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                     model: str = "gemma4:26b") -> List[Dict[str, Any]]:
-    """Stronger 'eyes' than semantic_alignment_flags: per shown panel, judge
-    whether the narration is well GROUNDED (names the right subjects, invents
-    nothing) and not weak/filler. Emits a HEALABLE `grounding_weak` WARN so the
-    auto-heal loop re-narrates it — gated by the strictly-better safeguard, so a
-    flagged-but-already-good line can never be replaced by a worse one. Only
-    runs under --semantic-heal (off by default); the existing pipeline is
-    unchanged when it's off."""
+    """Stronger 'eyes' than semantic_alignment_flags: per beat, judge whether the
+    narration INVENTS or MIS-NAMES anything absent from every panel the beat
+    shows, or is weak filler. Judged against the WHOLE montage (all the beat's
+    panels at once) — not the primary panel — so a line grounded in a non-primary
+    panel isn't falsely flagged. Emits a HEALABLE `grounding_weak` WARN; the
+    auto-heal loop re-narrates it and the strictly-better safeguard reverts any
+    non-improvement. Only runs under --semantic-heal (off by default)."""
     try:
         import ollama  # noqa: F401  (local + free; absent on bare boxes)
     except ImportError:
@@ -690,12 +692,12 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                       "ollama not importable — grounding judge skipped")]
     from ollama_compat import chat as _ollama_chat
 
-    def _judge(path: str, text: str) -> Dict[str, Any]:
+    def _judge(paths: List[str], text: str) -> Dict[str, Any]:
         resp = _ollama_chat(
             model=model, think=False,
             messages=[{"role": "user",
                        "content": _GROUND_PROMPT.format(text=text[:400]),
-                       "images": [path]}],
+                       "images": paths}],
             options={"temperature": 0, "num_predict": 200})
         raw = str(resp["message"]["content"] or "")
         m = re.search(r"\{.*\}", raw, re.S)
@@ -710,30 +712,30 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
         cuts = item.get("cuts") or []
         if not text or not cuts:
             continue
-        # judge the PRIMARY shown panel of the beat (the one the line is most
-        # about); one call per beat keeps the pass cheap.
-        prim = None
+        # judge against EVERY panel the beat actually shows (the montage)
+        files: List[str] = []
         for c in cuts:
             if c.get("held"):
                 continue
-            f = str(c.get("file") or "")
-            if f and os.path.exists(os.path.join(clean_dir, f)):
-                prim = f
-                break
-        if not prim:
+            for f in (c.get("file"), c.get("file2")):
+                f = str(f or "")
+                if f and f not in files and os.path.exists(
+                        os.path.join(clean_dir, f)):
+                    files.append(f)
+        if not files:
             continue
         try:
-            v = _judge(os.path.join(clean_dir, prim), text)
+            v = _judge([os.path.join(clean_dir, f) for f in files[:6]], text)
         except Exception as e:                              # noqa: BLE001
             flags.append(_flag("grounding_error", INFO,
-                               f"judge failed on {prim}: {e}", segment_id=seg))
+                               f"judge failed on {seg}: {e}", segment_id=seg))
             continue
         if v.get("ok") is False:
             issue = str(v.get("issue") or "").strip()[:180]
             flags.append(_flag(
                 "grounding_weak", WARN,
                 f"weak/mis-grounded narration: {issue}",
-                scene=prim, segment_id=seg))
+                scene=files[0], segment_id=seg))
     return flags
 
 
