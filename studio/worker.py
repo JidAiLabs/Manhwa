@@ -321,7 +321,17 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         raise RuntimeError(
             f"prep-QA still has ERROR flags after auto-heal ({sorted(codes)}) — "
             f"open the report in {ep}")
-    if _autopilot_clean(con, ch) and not gates._has_approval(
+    # bulk "run range to stage X": a prepare job may carry auto_to (voice|video).
+    # The bulk request IS the story approval, so advance past the voice gate up to
+    # the requested target — QA still had to be green (we raised above otherwise).
+    auto_to = (job.get("payload") or {}).get("auto_to")
+    if auto_to in ("voice", "video") and not gates._has_approval(
+            con, "voice", chapter_id=ch["id"]):
+        log.write(f"[bulk] auto_to={auto_to}: QA green -> voiceover queued\n")
+        gates.approve(con, "voice", chapter_id=ch["id"], note="bulk")
+        jobs.enqueue(con, "voiceover", chapter_id=ch["id"],
+                     payload={"auto_to": auto_to})
+    elif _autopilot_clean(con, ch) and not gates._has_approval(
             con, "voice", chapter_id=ch["id"]):
         log.write("[autopilot] QA spotless → story auto-approved, "
                   "voiceover queued\n")
@@ -359,7 +369,14 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
                  "-safe", "0", "-i", str(lst), "-codec:a", "libmp3lame",
                  "-b:a", "96k", str(ep / "render" / "voice_preview.mp3")],
                 log)
-    if _autopilot_clean(con, ch) and not gates._has_approval(
+    auto_to = (job.get("payload") or {}).get("auto_to")
+    if auto_to == "video" and not gates._has_approval(
+            con, "render", chapter_id=ch["id"]):
+        log.write("[bulk] auto_to=video: voiced QA green -> render queued\n")
+        gates.approve(con, "render", chapter_id=ch["id"], note="bulk")
+        jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
+                     payload={"branding": "both"})
+    elif _autopilot_clean(con, ch) and not gates._has_approval(
             con, "render", chapter_id=ch["id"]):
         log.write("[autopilot] voiced QA spotless → render queued\n")
         gates.approve(con, "render", chapter_id=ch["id"], note="autopilot")

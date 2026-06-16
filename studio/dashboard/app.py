@@ -386,12 +386,71 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     # ---------------- actions (insert-only) ----------------
 
+    @app.get("/partials/duration-estimate", response_class=HTMLResponse)
+    def duration_estimate(series_id: int, num_from: float = 0.0,
+                          num_to: float = 1e12, target: str = "qa"):
+        """Two estimates for a selected range: ~processing time to build it, and
+        the ~length of the final video. Rough (seed/median based)."""
+        from studio.dashboard import eta as _eta
+        seed = getattr(_eta, "SEED_SEC", {})
+        c = con()
+        rows = c.execute(
+            "SELECT ep_dir FROM chapter WHERE series_id=? AND number BETWEEN ? "
+            "AND ? ORDER BY number", (series_id, num_from, num_to)).fetchall()
+        n = len(rows)
+        vid = 0.0
+        have = 0
+        for (ep_dir,) in rows:
+            p = Path(ep_dir or "") / "render.plan.clean.json"
+            if p.exists():
+                try:
+                    vid += float(json.loads(p.read_text()).get(
+                        "total_duration_sec") or 0)
+                    have += 1
+                except Exception:
+                    pass
+        if have and n > have:                       # extrapolate the un-built ones
+            vid += (vid / have) * (n - have)
+        elif not have:
+            vid = n * float(seed.get("voiced", 600))
+        per = (float(seed.get("chain:scripted", 720))
+               + float(seed.get("prepped", 130)) + float(seed.get("qa_scan", 120)))
+        if target in ("voice", "video"):
+            per += (float(seed.get("voiced", 1200))
+                    + float(seed.get("prepped", 130)) + float(seed.get("qa_scan", 120)))
+        if target == "video":
+            per += float(seed.get("render_segment", 2400))
+        proc = per * n
+
+        def fmt(s: float) -> str:
+            s = int(s)
+            h, m = divmod(s // 60, 60)
+            return f"{h}h {m}m" if h else f"{m}m"
+
+        return HTMLResponse(
+            f'<span class="kv">{n} chapters · ~<b>{fmt(proc)}</b> to build ·'
+            f' ~<b>{fmt(vid)}</b> final video</span>')
+
     @app.post("/jobs")
     def post_job(type: str = Form(...), chapter_id: Optional[int] = Form(None),
                  series_id: Optional[int] = Form(None),
                  bundle_id: Optional[int] = Form(None),
-                 target: str = Form(""), branding: str = Form("both")):
+                 target: str = Form(""), branding: str = Form("both"),
+                 num_from: float = Form(0.0), num_to: float = Form(1e12)):
         c = con()
+        if type == "prepare_range":
+            # bulk: run chapters in [num_from..num_to] up to a target stage —
+            # qa (prepare only) | voice (prepare→voiceover) | video (→render).
+            # auto_to is carried on each prepare job; the worker advances past the
+            # approval gates only as far as the target (QA must stay green).
+            auto_to = {"voice": "voice", "video": "video"}.get(target or "qa")
+            rows = c.execute(
+                "SELECT id FROM chapter WHERE series_id=? AND number BETWEEN ? "
+                "AND ? ORDER BY number", (series_id, num_from, num_to)).fetchall()
+            for (cid,) in rows:
+                jobs.enqueue(c, "prepare", chapter_id=cid, series_id=series_id,
+                             payload={"auto_to": auto_to} if auto_to else {})
+            return RedirectResponse(f"/series/{series_id}", status_code=303)
         if type == "prepare_series":
             # expand: one 'prepare' job per chapter that has no QA yet,
             # ordered by chapter number (the serial worker grinds the list)
@@ -412,6 +471,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         jobs.enqueue(c, type, chapter_id=chapter_id, series_id=series_id,
                      bundle_id=bundle_id, payload=payload)
         return RedirectResponse("/", status_code=303)
+
+    @app.post("/add-series-direct")
+    def add_series_direct(source: str = Form(...), url: str = Form(...)):
+        """Manually add a manhwa by source + URL (e.g. asura, webtoon, elftoon)
+        — discovery runs in the background via an add_series job."""
+        jobs.enqueue(con(), "add_series",
+                     payload={"source": source.strip(), "url": url.strip()})
+        return RedirectResponse("/series", status_code=303)
 
     @app.post("/jobs/{job_id}/cancel")
     def post_cancel(job_id: int):
