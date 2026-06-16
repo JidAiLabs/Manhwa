@@ -1078,12 +1078,35 @@ Reply ONLY JSON: {"keep": true/false, "reason": "<short>"}"""
 
 def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
                       exempt: Optional[set] = None,
-                      model: str = "gemma4:26b") -> Dict[str, str]:
+                      model: str = "gemma4:26b",
+                      cache_path: Optional[str] = None,
+                      reuse: bool = False) -> Dict[str, str]:
     """Per-cut VISUAL quality judge — the question no geometric rule fully
     answers ('is this panel worth screen time?'). Returns {file: reason}
-    for junk cuts. Fail-soft: no ollama -> judges nothing. sys/doc exempt."""
+    for junk cuts. Fail-soft: no ollama -> judges nothing. sys/doc exempt.
+
+    The verdict is per-PANEL (the artwork), so it is STABLE across heal cycles
+    (re-narration changes words, not panels). `cache_path` persists the
+    verdicts; `reuse=True` (heal cycles) returns them WITHOUT any model call,
+    so a heal cycle no longer re-pays ~one Gemma vision call per shown cut (the
+    bulk of render_prep's per-cycle cost). The initial pass (reuse=False) always
+    judges fresh and (re)writes the cache, so it never goes stale across runs."""
     ex = exempt or set()
     junk: Dict[str, str] = {}
+    cache: Dict[str, Any] = {}
+    if cache_path and os.path.exists(cache_path):
+        try:
+            cache = json.load(open(cache_path))
+        except Exception:
+            cache = {}
+    if reuse and cache:
+        for f in files:
+            if f in ex:
+                continue
+            v = cache.get(f)
+            if isinstance(v, dict) and v.get("keep") is False:
+                junk[f] = str(v.get("reason") or "")[:120]
+        return junk
     try:
         import sys as _sys
         _here = os.path.dirname(os.path.abspath(__file__))
@@ -1092,6 +1115,7 @@ def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
         from ollama_compat import chat as _chat
     except Exception:
         return junk
+    new_cache: Dict[str, Any] = {}
     for f in files:
         if f in ex:
             continue
@@ -1106,10 +1130,19 @@ def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
             raw = str(resp["message"]["content"] or "")
             m = re.search(r"\{.*\}", raw, re.S)
             v = json.loads(m.group(0)) if m else {}
-            if v.get("keep") is False:
-                junk[f] = str(v.get("reason") or "")[:120]
+            keep = v.get("keep")
+            new_cache[f] = {"keep": keep,
+                            "reason": str(v.get("reason") or "")[:120]}
+            if keep is False:
+                junk[f] = new_cache[f]["reason"]
         except Exception:
             continue
+    if cache_path:
+        try:
+            with open(cache_path, "w") as _cf:
+                json.dump(new_cache, _cf)
+        except Exception:
+            pass
     return junk
 
 
@@ -1256,6 +1289,10 @@ def main() -> int:
     # harmless by construction (no white/black interior -> untouched).
     ap.add_argument("--bubble-conf", type=float, default=0.20)
     ap.add_argument("--no-bubbles", action="store_true", help="skip bubble inpainting")
+    ap.add_argument("--reuse-clean", action="store_true",
+                    help="heal-cycle fast path: reuse the cached per-cut visual "
+                         "judge verdicts (panels are unchanged between heal "
+                         "cycles) instead of re-paying the Gemma vision pass")
     ap.add_argument("--no-trim", action="store_true", help="skip border trimming")
     ap.add_argument("--no-branding", action="store_true",
                     help="skip channel intro/outro insertion (alias for "
@@ -1699,7 +1736,9 @@ def main() -> int:
         [f for f in judged
          if not (scene_dims.get(f) or {}).get("sys")
          and not (scene_dims.get(f) or {}).get("doc")],
-        clean_dir, exempt=exempt_all)
+        clean_dir, exempt=exempt_all,
+        cache_path=os.path.join(clean_dir, ".cut_judge_cache.json"),
+        reuse=args.reuse_clean)
     # operator drops: one click on the dashboard bans a panel for good
     mdp = os.path.join(args.episode_dir, "manual_drops.json")
     if os.path.exists(mdp):

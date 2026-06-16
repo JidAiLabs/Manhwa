@@ -128,7 +128,7 @@ def _autopilot_clean(con: sqlite3.Connection, ch: Dict[str, Any]) -> bool:
 
 def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
                      log: TextIO, *, branding: str = "both",
-                     heal_aware: bool = False) -> set:
+                     heal_aware: bool = False, reuse_clean: bool = False) -> set:
     """render_prep + prep_qa for a chapter; records the qa_scan stage.
     Returns the ERROR flag codes. heal_aware=True lets the caller handle
     stale-narration codes instead of failing the job outright."""
@@ -136,11 +136,17 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
     title = _series_title(con, ch["series_id"])
     with record_stage(con, chapter_id=ch["id"], stage="prepped",
                       series_id=ch["series_id"]):
-        rc = _stream([PY, str(REPO / "tools" / "render_prep.py"),
-                      "--plan", str(ep / "render.plan.json"),
-                      "--scenes-manifest", str(ep / "manifest.scenes.json"),
-                      "--episode-dir", str(ep), "--series-title", title,
-                      "--branding", branding], log)
+        prep_args = [PY, str(REPO / "tools" / "render_prep.py"),
+                     "--plan", str(ep / "render.plan.json"),
+                     "--scenes-manifest", str(ep / "manifest.scenes.json"),
+                     "--episode-dir", str(ep), "--series-title", title,
+                     "--branding", branding]
+        if reuse_clean:
+            # heal cycle: panels are unchanged, only narration moved — reuse the
+            # cached per-cut visual-judge verdicts instead of re-paying the Gemma
+            # pass (cuts a heal cycle from ~8 min to ~1).
+            prep_args.append("--reuse-clean")
+        rc = _stream(prep_args, log)
         if rc != 0:
             raise RuntimeError(f"render_prep exited {rc}")
     t0 = time.time()
@@ -264,7 +270,7 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                         "--out", str(ep / "render.plan.json"),
                         "--mode", "narrated", "--min-cut-sec", "3.5"], log) != 0:
                 raise RuntimeError("timeline_planner (heal) failed")
-        _run_prep_and_qa(con, ch, log, heal_aware=True)
+        _run_prep_and_qa(con, ch, log, heal_aware=True, reuse_clean=True)
     log.write(f"[heal] hit the {_HEAL_MAX}-cycle cap\n")
 
 
