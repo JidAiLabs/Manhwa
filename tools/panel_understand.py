@@ -165,6 +165,81 @@ def _scene_items_in_order(vision: Dict[str, Any]) -> List[Dict[str, Any]]:
     return items
 
 
+# --- in-world screen rescue -------------------------------------------------
+# The classifier reliably mis-buckets an IN-WORLD device/app screen as 'chrome'
+# when it looks like platform UI (an episode list, a feed) — even though the
+# prompt says such screens are story (ORV ep1 p000003: the in-world webnovel's
+# episode list + the reader comment "WHY DOESN'T ANYONE READ THIS? IT'S A
+# MASTERPIECE!" — iconic, must show). Real publication chrome (covers, episode/
+# stat cards, publisher credits) carries NO character speech balloon; an
+# in-world screen showing dialogue does. The balloon SHAPE is the signal — no
+# hardcoded text. Trust the trained bubble detector: a CONFIDENT, COMPACT
+# balloon over the panel's dialogue promotes chrome -> story.
+
+def _is_inworld_balloon(dets, w: int, h: int, *,
+                        conf_min: float = 0.70, area_max: float = 0.40) -> bool:
+    """True when a detection list has a real speech balloon: at least one box
+    that is both confident (>= conf_min) AND compact (<= area_max of the panel).
+    The compactness gate rejects a screen-sized false positive (e.g. the whole
+    stats box at ~0.6 area); the confidence gate rejects low-score UI-row
+    detections (~0.2-0.5). The genuine balloon (ORV p000003: conf 0.96, ~0.14
+    area) clears both."""
+    area = float(max(1, w * h))
+    for d in dets:
+        x1, y1, x2, y2, s = d[0], d[1], d[2], d[3], d[4]
+        af = (abs(int(x2) - int(x1)) * abs(int(y2) - int(y1))) / area
+        if float(s) >= conf_min and af <= area_max:
+            return True
+    return False
+
+
+def _load_bubble_detector(device: str = "mps"):
+    cand = os.path.join(os.path.dirname(_TD), "manhwa-cropper")
+    if cand not in sys.path:
+        sys.path.insert(0, cand)
+    from manhwa_cropper.detectors.bubbles import BubbleDetector
+    return BubbleDetector(device=device)
+
+
+def apply_inworld_screen_overrides(panels: List[Dict[str, Any]],
+                                   items: List[Dict[str, Any]],
+                                   *, device: str = "mps",
+                                   log: Callable[[str], None] = print) -> int:
+    """Promote chrome panels that carry a real speech balloon over dialogue to
+    'story' (an in-world screen). Returns the count promoted. Fail-soft: if the
+    detector or an image is unavailable, the classification is left untouched."""
+    cand = [p for p in panels
+            if p.get("panel_kind") == "chrome" and (p.get("dialogue") or "").strip()]
+    if not cand:
+        return 0
+    path_by_file = {it.get("scene_file"): it.get("scene_path") for it in items}
+    try:
+        import cv2
+        det = _load_bubble_detector(device)
+    except Exception as e:                                            # pragma: no cover
+        log(f"[inworld] bubble detector unavailable ({e}) — override skipped")
+        return 0
+    n = 0
+    for p in cand:
+        sp = path_by_file.get(p.get("scene_file"))
+        img = cv2.imread(sp) if sp else None
+        if img is None:
+            continue
+        h, w = img.shape[:2]
+        try:
+            dets = det.detect(img, imgsz=1024, conf=0.20)
+        except Exception:                                            # pragma: no cover
+            continue
+        if _is_inworld_balloon(dets, w, h):
+            p["panel_kind"] = "story"
+            if not p.get("subjects"):
+                p["subjects"] = ["an in-world screen"]
+            n += 1
+            log(f"[inworld] {p.get('scene_file')}: chrome->story "
+                f"(speech balloon over dialogue {(p.get('dialogue') or '')[:48]!r})")
+    return n
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vision-manifest", required=True)
@@ -214,6 +289,10 @@ def main() -> int:
 
     panels = understand_panels(items, call_fn,
                                log=lambda m: print(m, flush=True), prior=prior)
+    promoted = apply_inworld_screen_overrides(
+        panels, items, log=lambda m: print(m, flush=True))
+    if promoted:
+        print(f"[ok] in-world screen rescue: {promoted} chrome->story")
     dump_json(args.out, {
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
         "model": model, "count": len(panels), "panels": panels})

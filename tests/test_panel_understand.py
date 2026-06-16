@@ -70,3 +70,28 @@ def test_resume_skips_already_understood_panels():
     out = pu.understand_panels(items, stub, prior=prior)
     assert calls == ["p1.jpg"]                       # p0 reused, only p1 called
     assert out[0]["description"] == "kept" and out[1]["description"] == "new"
+
+
+# --- in-world screen rescue (chrome -> story via a real speech balloon) ------
+
+def test_inworld_balloon_promotes_confident_compact():
+    # ORV ep1 p000003: the masterpiece comment balloon (conf 0.96, ~0.14 area)
+    dets = [(56, 768, 499, 1054, 0.96)]
+    assert pu._is_inworld_balloon(dets, 736, 1169) is True
+
+
+def test_inworld_balloon_rejects_screen_sized_false_positive():
+    # ORV ep1 p000004 (stats card): low-conf, ~0.6-area boxes = whole panel
+    dets = [(162, 41, 753, 423, 0.47), (216, 38, 781, 423, 0.36)]
+    assert pu._is_inworld_balloon(dets, 800, 480) is False
+
+
+def test_inworld_balloon_rejects_no_detection():
+    # ORV ep1 p000033 (publisher credit): no balloon at all
+    assert pu._is_inworld_balloon([], 800, 600) is False
+
+
+def test_inworld_balloon_needs_both_confidence_and_compactness():
+    # confident but huge -> rejected; compact but low-conf -> rejected
+    assert pu._is_inworld_balloon([(0, 0, 760, 560, 0.95)], 800, 600) is False
+    assert pu._is_inworld_balloon([(50, 50, 200, 180, 0.45)], 800, 600) is False
