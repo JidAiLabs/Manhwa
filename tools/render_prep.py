@@ -1448,12 +1448,15 @@ def main() -> int:
                 # title/system card: the styled text IS the content (SKY
                 # CORPORATION, age cards) — never blank it
                 cleaned_cache[fname] = (img.copy(), [])
-            elif (_text_rich(fname) or _is_inworld_screen(fname)) and fname not in speech_files:
+            elif _is_inworld_screen(fname) or (_text_rich(fname) and fname not in speech_files):
                 # DOCUMENT panel (word-rich, no speech per Gemini) OR a rescued
                 # in-world screen (episode list / feed): its on-screen text IS
                 # the content and must survive — but a speech bubble floating
                 # OVER it (ORV p000025 stats page, p000003 reader comment) is
-                # dialogue
+                # dialogue. An in-world screen takes this path even in speech
+                # mode: its comment IS voiced (so the bubble blanks below) but
+                # the SCREEN behind it is the story and must be kept — the
+                # speech_files guard only applies to plain document panels.
                 # like any other: blank ONLY words inside speech-SHAPED
                 # boxes; UI rows (wide flat detector boxes) and all
                 # outside-bubble text stay untouched. No orphan pass here.
