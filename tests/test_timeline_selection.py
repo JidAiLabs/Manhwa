@@ -68,6 +68,33 @@ def test_build_cuts_protected_story_panel_survives_redundant_verdict():
     assert "p16.jpg" not in files        # unprotected redundant caption still drops
 
 
+def test_drop_caption_cards_keeps_scenes_and_holds_for_caption_only_beats():
+    caps = {"cap1.jpg", "cap2.jpg"}
+    order = [
+        (1, ["cap1.jpg", "scene1.jpg", "cap2.jpg"]),  # mixed -> scene only, caps out
+        (2, ["cap1.jpg"]),                              # caption-only -> hold a scene
+        (3, ["scene3.jpg"]),
+    ]
+    m = tp.drop_caption_cards(order, caps)
+    assert m[1] == ["scene1.jpg"]      # the bare cards drop; the scene stays
+    assert m[2] == ["scene1.jpg"]      # held the previous real scene (never blank)
+    assert m[3] == ["scene3.jpg"]
+    # nothing flagged -> unchanged
+    assert tp.drop_caption_cards([(1, ["a.jpg"])], set()) == {1: ["a.jpg"]}
+
+
+def test_caption_files_flags_only_captions_not_in_world_screens(tmp_path):
+    import json
+    v = {"items": [
+        {"scene_file": "c.jpg", "panel_kind": "caption"},    # bare monologue card
+        {"scene_file": "s.jpg", "panel_kind": "story"},      # scene
+        {"scene_file": "scr.jpg", "panel_kind": "story"},    # in-world screen = story
+    ]}
+    vp = tmp_path / "v.json"; vp.write_text(json.dumps(v))
+    assert tp.caption_files(str(vp)) == {"c.jpg"}
+    assert tp.caption_files("") == set()
+
+
 def test_protected_story_files_reads_stamped_panel_kind(tmp_path):
     import json
     vision = {"items": [

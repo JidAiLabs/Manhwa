@@ -711,6 +711,54 @@ def protected_story_files(vision_path: str) -> "set":
     return out
 
 
+def caption_files(vision_path: str) -> "set":
+    """Panels the understanding calls a CAPTION — a bare narrative-voice / inner-
+    monologue text card ('BACK THEN, I HAD NO IDEA.', 'AND I...'). Their WORDS are
+    already woven into the narration, so the bare text card is not a shot; it's
+    dropped from the montage. Distinct from a STORY panel (a real scene, or an
+    in-world screen showing the character's own content), which is shown."""
+    out: set = set()
+    try:
+        items = json.load(open(vision_path)).get("items") or []
+    except Exception:
+        return out
+    for it in items:
+        f = os.path.basename(str(it.get("scene_file") or ""))
+        if f and str(it.get("panel_kind") or "").strip().lower() == "caption":
+            out.add(f)
+    return out
+
+
+def drop_caption_cards(group_order: List[tuple], caption_set: "set") -> Dict[int, List[str]]:
+    """Per beat, show its NON-caption panels (real scenes + in-world screens) and
+    drop the bare caption cards — their words ride the narration. A beat left with
+    nothing but captions HOLDS the nearest real panel (previous preferred, else
+    next) so the narration never plays over a blank black card. group_order is an
+    ordered list of (group_id, [panel basenames])."""
+    if not caption_set:
+        return {gid: list(files) for gid, files in group_order}
+    shown: Dict[int, Optional[List[str]]] = {}
+    for gid, files in group_order:
+        keep = [f for f in files if f not in caption_set]
+        shown[gid] = keep or None                       # None -> all-caption, fill
+    prev: Optional[str] = None
+    for gid, _ in group_order:
+        if shown[gid]:
+            prev = shown[gid][-1]
+        elif prev:
+            shown[gid] = [prev]
+    nxt: Optional[str] = None
+    for gid, files in reversed(group_order):
+        if shown[gid]:
+            nxt = shown[gid][0]
+        elif nxt:
+            shown[gid] = [nxt]
+    for gid, files in group_order:                       # whole beat was captions
+        if not shown[gid]:                               # and no scene anywhere
+            shown[gid] = list(files[:1])
+    return {gid: v for gid, v in shown.items()}
+
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -799,6 +847,17 @@ def main() -> int:
     if protected_story:
         print(f"[plan] protected {len(protected_story)} understood story panel(s) "
               f"from the redundant-drop")
+    # bare caption/monologue cards are narrated, not shown: drop them from the
+    # montage (the narration already carries their words), holding a real scene
+    # for any beat that would otherwise be a blank card. In-world screens are
+    # panel_kind 'story', not 'caption', so they stay.
+    caption_set = caption_files(args.vision)
+    montage = drop_caption_cards(
+        [(int(g.get("group_id") or g.get("shot_id") or 0),
+          [os.path.basename(str(x)) for x in (g.get("scene_files") or []) if x])
+         for g in groups], caption_set)
+    if caption_set:
+        print(f"[plan] {len(caption_set)} caption card(s) -> narrated, not shown")
 
     for gobj in groups:
         group_id = int(gobj.get("group_id") or gobj.get("shot_id") or 0)
@@ -808,6 +867,8 @@ def main() -> int:
         if not isinstance(scene_files, list):
             scene_files = []
         scene_files = [str(x) for x in scene_files if x]
+        # caption cards out, real scenes (held if needed) in — words stay in narration
+        scene_files = montage.get(group_id) or scene_files
 
         # Filter (clean preferred)
         if args.prefer_clean and args.clean_scene_dir and scene_files:
