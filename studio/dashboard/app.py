@@ -413,15 +413,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             vid += (vid / have) * (n - have)
         elif not have:
             vid = n * float(seed.get("voiced", 600))
-        per = (float(seed.get("chain:scripted", 720))
-               + float(seed.get("prepped", 130)) + float(seed.get("qa_scan", 120)))
-        if target in ("voice", "video"):
-            per += (float(seed.get("voiced", 1200))
-                    + float(seed.get("prepped", 130)) + float(seed.get("qa_scan", 120)))
-        if target == "video":
-            per += float(seed.get("render_segment", 2400))
-        # wall-clock, not raw compute: the worker runs ~2 GPU lanes in parallel
-        proc = per * n / 2.0
+        # wall-clock build time = the SLOWEST worker lane × chapters. The lanes
+        # (gpu prepare / tts voiceover / cpu render) pipeline in parallel, so
+        # across many chapters the throughput is bounded by the busiest lane, not
+        # the serial sum of every stage. Measured: TTS-bound ~7min/ch -> a 300-ep
+        # series is ~1.5-2 days (the old serial-sum/2 model wrongly read ~211h).
+        proc = _eta.lane_bottleneck_sec(c, series_id, target) * n
 
         def fmt(s: float) -> str:
             s = int(s)
