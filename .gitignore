@@ -5,6 +5,7 @@ __pycache__/
 studio.db
 runs/
 out/
+logs/
 ongoing/*/
 keys/
 *.mp3
