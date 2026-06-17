@@ -34,6 +34,148 @@ from google.genai.errors import ClientError
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_selection import normalize_scene_selection  # noqa: E402
 from usage_cost import UsageAccumulator  # noqa: E402
+from narration_safe_rules import (  # noqa: E402
+    SAFE_NARRATION_RULES,
+    SAFE_OPENING_NOTE,
+)
+
+# --- register-aware narration (opt-in via --register-mode) -------------------
+# Validation finding: a soft "be terse" instruction is IGNORED by the model, so
+# FAST length is ENFORCED by a low max_output_tokens; and the model cannot self-
+# classify register inside the narration call, so a SEPARATE calibrated
+# classifier call decides FAST vs DEEP. The two gear prompts + the classifier
+# prompt below are the exact verified strings — do not soften them.
+
+_REGISTER_CLASSIFIER_PROMPT = (
+    "Classify this manhwa beat as FAST or DEEP. Judge the CORE PURPOSE.\n"
+    "DEEP = core is a character INNER WORLD: an internal monologue that IS the "
+    "point, a MEMORY/flashback, grief/trauma, a quiet emotional realization, a "
+    "confession. Plot PAUSES to feel.\n"
+    "FAST = core is EXTERNAL plot: a fight, an attack, plot-advancing dialogue, "
+    "exposition, a power/system reveal, a scene change. A fight where the fighter "
+    "THINKS \"how is he so strong?!\" is still FAST.\n"
+    "Return {register}."
+)
+
+_REGISTER_CLASSIFIER_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"register": {"type": "STRING"}},
+    "required": ["register"],
+}
+
+_FAST_NARRATION_PROMPT = (
+    "Fast manhwa recap, ACTION beat. ONE or TWO short plain plot-forward "
+    "sentences, MAX 28 words. Only WHAT HAPPENS and the result. NO flowery "
+    "adjectives, NO light/energy/debris description, NO inner feelings. Open with "
+    "a light transition (Then/But/Now) when natural. Present tense. Name "
+    "characters."
+)
+
+_DEEP_NARRATION_PROMPT = (
+    "Manhwa recap, DEEP beat (inner monologue, emotion, or memory). SLOW DOWN: "
+    "3-5 vivid intimate sentences (~70-110 words). Inside the character head; "
+    "capture feeling and inner voice. Open with a transition from the previous "
+    "line. Present tense. Paraphrase dialogue; quote a short punchy fragment."
+)
+
+# Token caps + temperatures are part of the verified spec (FAST must be ENFORCED
+# short; DEEP gets room). The classifier is cheap + low-temp for stability.
+_REGISTER_PARAMS = {
+    "classifier": {"max_output_tokens": 30, "temperature": 0.2},
+    "FAST": {"max_output_tokens": 70, "temperature": 0.3},
+    "DEEP": {"max_output_tokens": 350, "temperature": 0.4},
+}
+
+_REGISTER_NARRATION_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"narration": {"type": "STRING"}},
+    "required": ["narration"],
+}
+
+
+def _classify_register(
+    *,
+    client: Optional[genai.Client],
+    model: str,
+    payload: Dict[str, Any],
+    image_paths: List[str],
+    backoff_max: float,
+    backend: str,
+) -> Tuple[str, Dict[str, int]]:
+    """One calibrated classifier call -> ('FAST'|'DEEP', usage). Defaults FAST on
+    any ambiguity/parse miss, since FAST is the safe terse default."""
+    params = _REGISTER_PARAMS["classifier"]
+    obj, _raw, usage = _call_model_with_backoff(
+        client=client,
+        model=model,
+        system_instruction=_REGISTER_CLASSIFIER_PROMPT,
+        user_payload=payload,
+        image_paths=image_paths,
+        response_schema=_REGISTER_CLASSIFIER_SCHEMA,
+        max_output_tokens=params["max_output_tokens"],
+        temperature=params["temperature"],
+        backoff_max=backoff_max,
+        backend=backend,
+    )
+    reg = ""
+    if isinstance(obj, dict):
+        reg = str(obj.get("register") or "").strip().upper()
+    register = "DEEP" if reg == "DEEP" else "FAST"
+    return register, usage
+
+
+def _build_register_system(register: str, cast_block: str, story_block: str,
+                           is_first: bool) -> str:
+    """Gear prompt (FAST/DEEP) + the SAME grounding context (cast + story spine)
+    the default call uses + advertiser-safety rules. The first group also carries
+    the cold-open note."""
+    gear = _FAST_NARRATION_PROMPT if register == "FAST" else _DEEP_NARRATION_PROMPT
+    blocks = [gear]
+    if cast_block:
+        blocks.append(cast_block)
+    if story_block:
+        blocks.append(story_block)
+    blocks.append(SAFE_NARRATION_RULES)
+    if is_first:
+        blocks.append(SAFE_OPENING_NOTE)
+    return "\n\n".join(blocks)
+
+
+def _register_narration(
+    *,
+    client: Optional[genai.Client],
+    model: str,
+    register: str,
+    cast_block: str,
+    story_block: str,
+    is_first: bool,
+    payload: Dict[str, Any],
+    image_paths: List[str],
+    backoff_max: float,
+    backend: str,
+) -> Tuple[str, Dict[str, int]]:
+    """Generate ONLY the narration line with the register's gear prompt + token
+    cap. Reuses the same client/model/backend + image grounding + cast/story +
+    previous_narration threading as the default call. Empty string on parse miss
+    (the caller keeps the default-call narration as the fallback)."""
+    params = _REGISTER_PARAMS[register]
+    sysmsg = _build_register_system(register, cast_block, story_block, is_first)
+    obj, _raw, usage = _call_model_with_backoff(
+        client=client,
+        model=model,
+        system_instruction=sysmsg,
+        user_payload=payload,
+        image_paths=image_paths,
+        response_schema=_REGISTER_NARRATION_SCHEMA,
+        max_output_tokens=params["max_output_tokens"],
+        temperature=params["temperature"],
+        backoff_max=backoff_max,
+        backend=backend,
+    )
+    line = ""
+    if isinstance(obj, dict):
+        line = str(obj.get("narration") or "").strip()
+    return line, usage
 
 
 def _usage_from_resp(resp: Any) -> Dict[str, int]:
@@ -388,6 +530,13 @@ def main() -> int:
     ap.add_argument("--cast", default="", help="Optional manifest.cast.json for consistent character naming + dialogue attribution")
     ap.add_argument("--story", default="", help="Optional manifest.story.json (chapter spine: logline + ordered arc) so each beat advances ONE connected story")
     ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
+    ap.add_argument("--register-mode", action="store_true",
+                    help="Register-aware narration: per group, a calibrated "
+                         "classifier picks FAST (terse, plot-forward, enforced "
+                         "short) vs DEEP (cinematic inner monologue), and the "
+                         "'narration' line is (re)generated with the matching "
+                         "gear prompt. scene_selection + all other fields still "
+                         "come from the default call. OFF = byte-identical to today.")
     args = ap.parse_args()
 
     groups_m = load_json(args.groups_manifest)
@@ -524,8 +673,10 @@ def main() -> int:
         "  intensity: the emotional energy — 'calm', 'tense', 'intense', or 'explosive'.\n"
         "Return ONLY valid JSON matching the provided schema. No extra text.\n"
     )
-    system = system.replace("{CAST_BLOCK}", _build_cast_block(args.cast))
-    system = system.replace("{STORY_SPINE}", _build_story_block(args.story))
+    cast_block = _build_cast_block(args.cast)
+    story_block = _build_story_block(args.story)
+    system = system.replace("{CAST_BLOCK}", cast_block)
+    system = system.replace("{STORY_SPINE}", story_block)
     corrections: Dict[int, str] = {}
     if args.corrections and os.path.exists(args.corrections):
         try:
@@ -615,10 +766,17 @@ def main() -> int:
         }
         dump_json(args.out, tmp_obj)
 
+    # cold-open detection for register-mode: the FIRST group with a real gid is
+    # the video's opening line and gets the stricter SAFE_OPENING_NOTE. Tracked
+    # by group ordinal so resume/skip don't shift it.
+    seen_first_group = False
+
     for g in groups[:max_groups]:
         gid = int(g.get("shot_id") or g.get("group_id") or 0)
         if not gid:
             continue
+        is_first_group = not seen_first_group
+        seen_first_group = True
 
         # Resume keeps good beats — UNLESS this group has a correction queued
         # (closed-loop grounding gate), in which case we force a regen.
@@ -729,6 +887,36 @@ def main() -> int:
                 "scene_selection": [],
                 "error": "parse_failed_after_retries",
             }
+
+        # REGISTER-AWARE NARRATION (opt-in): the default call above already
+        # produced scene_selection + all analysis fields + a grounded narration.
+        # In register-mode we OVERRIDE only the 'narration' line: a calibrated
+        # classifier picks FAST|DEEP, then a gear-prompted call (re)writes the
+        # line with the matching token cap — keeping the SAME image grounding,
+        # cast names, story spine, and previous_narration threading. We never
+        # touch scene_selection, so dedup/grounding logic is unchanged. On a
+        # parse/classify miss we keep the default-call narration (set above), so
+        # this can only improve or no-op the line, never blank it. Skipped for a
+        # parse-failed husk beat (it has no real content to re-narrate).
+        if args.register_mode and not beat.get("error"):
+            register, ru = _classify_register(
+                client=client, model=args.model, payload=payload,
+                image_paths=img_paths, backoff_max=args.backoff_max,
+                backend=args.backend,
+            )
+            usage.add(input_tokens=ru["input"], output_tokens=ru["output"],
+                      cached_tokens=ru.get("cached", 0))
+            line, nu = _register_narration(
+                client=client, model=args.model, register=register,
+                cast_block=cast_block, story_block=story_block,
+                is_first=is_first_group, payload=payload, image_paths=img_paths,
+                backoff_max=args.backoff_max, backend=args.backend,
+            )
+            usage.add(input_tokens=nu["input"], output_tokens=nu["output"],
+                      cached_tokens=nu.get("cached", 0))
+            beat["register"] = register
+            if line:
+                beat["narration"] = line
 
         # Guarantee exactly one sanitized selection entry per scene (defaults to
         # 'keep' so a parse gap never silently drops a panel).

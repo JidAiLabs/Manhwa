@@ -44,6 +44,15 @@ class Config:
                                              # OFF = current pipeline byte-for-byte
                                              # unchanged. Env STUDIO_SEMANTIC_HEAL
                                              # wins (per-run toggle).
+    narration_register: bool = False        # opt-in register-aware narration:
+                                             # the beated stage passes
+                                             # --register-mode so a calibrated
+                                             # classifier picks FAST (terse,
+                                             # plot-forward) vs DEEP (cinematic
+                                             # inner monologue) PER beat and the
+                                             # narration line adapts. OFF =
+                                             # current uniform-cinematic narration
+                                             # byte-for-byte unchanged.
 
 def _resolve_tts_python(val: str) -> str:
     """Host-agnostic local-TTS interpreter. STUDIO_TTS_PYTHON env wins (per-host
@@ -110,4 +119,7 @@ def load(path: Path | None = None) -> Config:
         semantic_heal=(os.environ.get("STUDIO_SEMANTIC_HEAL", "").lower()
                        in ("1", "true", "yes")
                        or bool(m.get("semantic_heal", False))),
+        narration_register=(os.environ.get("STUDIO_NARRATION_REGISTER", "").lower()
+                            in ("1", "true", "yes")
+                            or bool(m.get("narration_register", False))),
     )

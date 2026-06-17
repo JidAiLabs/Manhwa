@@ -251,6 +251,12 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         if cfg.beats_backend == "ollama":
             beats_args += ["--backend", "ollama",
                            "--ollama-model", cfg.beats_model]
+        if cfg.narration_register:
+            # opt-in register-aware narration: per beat, FAST (terse) vs DEEP
+            # (cinematic) is chosen by a calibrated classifier and the narration
+            # line adapts. scene_selection + grounding are untouched. OFF by
+            # default -> the uniform-cinematic narration is byte-for-byte unchanged.
+            beats_args += ["--register-mode"]
         _run_tool("gemini_narrative_pass.py",
                   beats_args + [
                    # Send enough panels per group that the scene_selection
