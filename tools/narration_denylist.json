@@ -1,0 +1,156 @@
+{
+  "version": "1.0",
+  "meta": {
+    "purpose": "Sanitize manhwa-recap narration before TTS, and screen titles/tags/descriptions, against YouTube advertiser-friendly risk.",
+    "actions": {
+      "replace": "Auto-swap a grammatically-safe token. Applied silently. Use ONLY where the swap fits the same slot in any voice/tense.",
+      "flag": "Do NOT auto-rewrite. Surface for a regenerate/review pass. Used where a dumb swap would break grammar or where framing matters.",
+      "block": "Must not publish as-is. Halt the pipeline. Used for slurs and sexual violence that need a human/LLM rewrite to implication-level."
+    },
+    "scopes": {
+      "spoken": "Applies to narration text only.",
+      "metadata": "Applies to title / thumbnail text / tags / description (stricter).",
+      "both": "Applies to both."
+    },
+    "notes": [
+      "'damn', 'hell', 'crap' are generally advertiser-safe and are intentionally NOT listed.",
+      "Slurs are intentionally NOT enumerated here. Point slur_list_file at your own maintained newline-separated list; every term in it is treated as a hard block.",
+      "Replacement lists rotate per occurrence (seeded by video id) so narration doesn't repeat the same euphemism.",
+      "FIX vs original: sexual_violence 'forced himself/herself' tightened to require on/onto/upon so 'forced himself to stand' is NOT a false hard-block."
+    ],
+    "slur_list_file": null
+  },
+  "categories": {
+    "profanity": [
+      {"id": "fuck", "action": "replace", "scope": "both",
+        "forms": {
+          "fuck": ["screw", "freak"],
+          "fucks": ["screws"],
+          "fucked": ["screwed", "messed up"],
+          "fucking": ["freaking", "blasted"],
+          "motherfucker": ["scumbag", "lowlife"]
+        }},
+      {"id": "shit", "action": "replace", "scope": "both",
+        "forms": {
+          "shit": ["crud", "garbage"],
+          "shitty": ["lousy", "rotten"],
+          "bullshit": ["nonsense", "garbage"]
+        }},
+      {"id": "ass", "action": "replace", "scope": "both",
+        "forms": {
+          "asshole": ["jerk", "scumbag"],
+          "assholes": ["jerks", "scumbags"]
+        }},
+      {"id": "bastard", "action": "replace", "scope": "both",
+        "forms": {
+          "bastard": ["scoundrel", "wretch"],
+          "bastards": ["scoundrels", "wretches"]
+        }},
+      {"id": "piss", "action": "replace", "scope": "spoken",
+        "forms": {
+          "pissed": ["furious", "livid"],
+          "pissing": ["infuriating"]
+        }},
+      {"id": "bitch", "action": "flag", "scope": "both",
+        "pattern": "\\bbitch(es|ing|y)?\\b",
+        "note": "Gendered insult. Paraphrase in narration ('she snapped at her', 'the cruel remark') rather than voicing it."}
+    ],
+    "violence": [
+      {"id": "kill", "action": "replace", "scope": "both",
+        "forms": {
+          "kill": ["eliminate", "end", "get rid of"],
+          "kills": ["eliminates", "ends", "gets rid of"],
+          "killed": ["eliminated", "took out", "got rid of"],
+          "killing": ["eliminating", "ending", "getting rid of"]
+        }},
+      {"id": "murder", "action": "replace", "scope": "both",
+        "forms": {
+          "murder": ["eliminate", "do away with"],
+          "murders": ["eliminates"],
+          "murdered": ["eliminated", "wiped out"],
+          "murdering": ["eliminating"],
+          "murderer": ["killer-figure", "the culprit"]
+        }},
+      {"id": "stab", "action": "replace", "scope": "spoken",
+        "forms": {
+          "stab": ["strike"],
+          "stabs": ["strikes"],
+          "stabbed": ["struck down", "wounded"],
+          "stabbing": ["striking"]
+        }},
+      {"id": "corpse", "action": "replace", "scope": "spoken",
+        "forms": {
+          "corpse": ["body"],
+          "corpses": ["bodies"]
+        }},
+      {"id": "blood", "action": "replace", "scope": "metadata",
+        "forms": {
+          "bloody": ["brutal"],
+          "bloodbath": ["massacre-scene", "carnage"]
+        }},
+      {"id": "torture", "action": "flag", "scope": "both",
+        "pattern": "\\btortur(e|ed|es|ing)\\b",
+        "note": "Soften to 'brutalized', 'made him suffer', or imply off-screen. Don't dwell on method."},
+      {"id": "gore", "action": "flag", "scope": "both",
+        "pattern": "\\b(gore|gory|decapitat\\w*|behead\\w*|dismember\\w*|mutilat\\w*|disembowel\\w*)\\b",
+        "note": "Graphic detail is the main demonetization risk in recaps. Cut the visual; keep only the consequence ('he didn't survive the fight')."},
+      {"id": "massacre", "action": "flag", "scope": "both",
+        "pattern": "\\b(massacre|massacred|slaughter|slaughtered|genocide)\\b",
+        "note": "Intensity term. Reframe to scale without the loaded word ('the whole clan was wiped out')."},
+      {"id": "assault", "action": "flag", "scope": "both",
+        "pattern": "\\bassault(ed|s|ing)?\\b",
+        "note": "Ambiguous between physical and sexual assault. Check context: if sexual, treat as sexual_violence (block/rewrite); if physical, soften ('attacked', 'beat'). NOTE: noisy in action manhwa ('assault on the fortress'); the generator-side rules should pre-soften so this rarely fires."}
+    ],
+    "sexual": [
+      {"id": "naked", "action": "replace", "scope": "spoken",
+        "forms": {
+          "naked": ["undressed", "bare"],
+          "nude": ["undressed", "unclothed"],
+          "nudity": ["a state of undress"]
+        }},
+      {"id": "setting_terms", "action": "replace", "scope": "spoken",
+        "forms": {
+          "concubine": ["consort"],
+          "concubines": ["consorts"],
+          "mistress": ["lover"],
+          "prostitute": ["courtesan"],
+          "prostitutes": ["courtesans"],
+          "brothel": ["pleasure house"],
+          "seduce": ["charm"],
+          "seduced": ["charmed", "won over"]
+        }},
+      {"id": "sex", "action": "flag", "scope": "both",
+        "pattern": "\\b(sex|sexual|intercourse|making love)\\b",
+        "note": "Grammar-sensitive; don't token-swap. Rewrite to imply: 'they slept together', 'spent the night', 'were intimate'."},
+      {"id": "slur_insult", "action": "flag", "scope": "both",
+        "pattern": "\\b(slut|slutty|whore|whores|hooker)\\b",
+        "note": "Paraphrase the insult in narration; don't voice it."},
+      {"id": "sexual_violence", "action": "block", "scope": "both",
+        "pattern": "\\b(rape|raped|rapes|raping|rapist|molest\\w*|sexual assault|sexually assault\\w*|non-?consensual|forced (?:himself|herself) (?:on|onto|upon))\\b",
+        "note": "HARD BLOCK. Never narrate explicitly. Rewrite to implication only ('he crossed a line he never should have', 'violated her trust') or cut the beat. Publishing with this in the transcript risks the whole video. FIX: requires on/onto/upon so 'forced himself to stand' is not a false block."},
+      {"id": "explicit_anatomy", "action": "block", "scope": "both",
+        "pattern": "\\b(genital\\w*|penis|vagina)\\b",
+        "note": "HARD BLOCK in narration/metadata. Rewrite around it."}
+    ],
+    "substance": [
+      {"id": "drugs", "action": "replace", "scope": "both",
+        "forms": {
+          "drugs": ["substances"],
+          "cocaine": ["narcotics"],
+          "heroin": ["narcotics"],
+          "meth": ["narcotics"],
+          "fentanyl": ["narcotics"],
+          "addicted": ["dependent on"],
+          "drunk": ["intoxicated"]
+        }},
+      {"id": "overdose", "action": "flag", "scope": "both",
+        "pattern": "\\boverdose\\w*\\b",
+        "note": "Overlaps self-harm. Frame carefully or imply ('took too much and collapsed')."}
+    ],
+    "self_harm_suicide": [
+      {"id": "suicide", "action": "flag", "scope": "both",
+        "pattern": "\\b(suicide|suicidal|self-?harm|kill (her|him|them)self|kills (her|him|them)self|killed (her|him|them)self|cut (her|him)self|hang (her|him)self|hanged (her|him)self|jumped off|slit (her|his) wrist\\w*)\\b",
+        "note": "SENSITIVE - do not auto-swap and do not sensationalize. Can stay monetized with careful, non-graphic framing. Prefer 'ended her own life', 'couldn't go on', 'chose to leave this world'. Route every hit through manual/LLM framing review; never name a method."}
+    ]
+  }
+}
