@@ -1123,7 +1123,7 @@ def _suppress_grounded_mismatches(
     out: List[Dict[str, Any]] = []
     dropped = 0
     for f in flags:
-        if f.get("code") == "narration_mismatch":
+        if f.get("code") in ("narration_mismatch", "grounding_weak"):
             m = _SEG_GROUP_RE.match(str(f.get("segment_id") or ""))
             gid = int(m.group(1)) if m else None
             if gid is not None and _ocr_grounds_narration(
@@ -1132,7 +1132,7 @@ def _suppress_grounded_mismatches(
                 continue   # grounded in the beat's dialogue — false positive
         out.append(f)
     if dropped:
-        print(f"[qa] suppressed {dropped} OCR-grounded narration_mismatch WARN(s)")
+        print(f"[qa] suppressed {dropped} OCR-grounded grounding WARN(s)")
     return out
 
 
@@ -1243,14 +1243,14 @@ def main() -> int:
     flags.extend(caption_unvoiced_flags(
         _load_manifest("manifest.beats.json"), vitems,
         arbitrate=_judge_caption_carried if args.semantic else None))
-    if args.semantic:
-        flags.extend(semantic_alignment_flags(plan, clean_dir,
-                                              model=args.semantic_model))
-    if args.semantic_heal:
+    if args.semantic or args.semantic_heal:
+        # PER-BEAT montage grounding judge: ALL of a beat's panels go to Gemma in
+        # ONE call (~1 call/group, ~23/chapter), vs the retired per-panel judge
+        # that cost ~1 call PER SHOWN CUT (~61/chapter) for the same check — and
+        # this one is montage-aware, so it has fewer false positives by design.
         flags.extend(grounding_flags(plan, clean_dir, model=args.semantic_model))
-    if args.semantic:
-        # a number/name SPOKEN in a non-shown panel of the beat is grounded —
-        # drop the visual judge's false narration_mismatch in that case
+        # a number/name SPOKEN in a non-shown panel is grounded in the dialogue —
+        # drop the visual judge's false positive in that case
         flags = _suppress_grounded_mismatches(
             flags, _load_manifest("manifest.beats.json"), vitems)
 
