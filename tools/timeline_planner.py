@@ -219,9 +219,13 @@ def compute_duration_sec(
     max_sec = float(max_sec)
 
     if mode == "narrated" and audio_duration_sec and audio_duration_sec > 0.0:
+        # The panel must COVER the whole voiceover — NEVER truncate narration.
+        # max_sec only caps SILENT holds (the no-audio branch below); when audio
+        # is playing, the line's length governs (floored at base_min, no ceiling),
+        # so a long beat just shows its panels longer instead of clipping the line
+        # mid-sentence (the "...had absolutely no neigong at all" cut-off bug).
         dur = float(audio_duration_sec) + float(audio_pad_sec)
-        dur = clamp(dur, base_min, max_sec)
-        return float(dur)
+        return float(max(base_min, dur))
 
     overlay_chars = sum(text_len(o.get("text")) for o in overlays if isinstance(o, dict))
     narr_chars = text_len(tts_text) if mode == "narrated" else 0

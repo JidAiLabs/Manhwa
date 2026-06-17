@@ -120,3 +120,32 @@ def test_is_filler_narration():
     assert tp.is_filler_narration("To be continued")
     assert not tp.is_filler_narration("Prince Cheon flees the dark forest.")
     assert not tp.is_filler_narration("The reason she's special is because...")
+
+
+# --- compute_duration_sec: a narrated panel must COVER its voiceover ----------
+# Regression for the cut-off bug: max_sec=25 was clamping the narrated duration,
+# so any line whose audio ran past 25s got clipped mid-sentence in the video
+# (e.g. "...had absolutely no neigong at all"). max_sec must cap only SILENT
+# holds, never a panel that is playing narration.
+
+def test_compute_duration_never_truncates_narration_audio():
+    d = tp.compute_duration_sec(mode="narrated", tts_text="x", overlays=[],
+                                base_min=2.5, max_sec=25.0, chars_per_sec=18.0,
+                                audio_duration_sec=30.0, audio_pad_sec=0.2)
+    assert abs(d - 30.2) < 1e-6            # full voiceover (+pad), NOT 25.0
+
+
+def test_compute_duration_floors_short_audio_at_base_min():
+    d = tp.compute_duration_sec(mode="narrated", tts_text="x", overlays=[],
+                                base_min=2.5, max_sec=25.0, chars_per_sec=18.0,
+                                audio_duration_sec=1.0, audio_pad_sec=0.2)
+    assert abs(d - 2.5) < 1e-6             # 1.2 -> floored to base_min
+
+
+def test_compute_duration_still_caps_silent_holds_at_max_sec():
+    # narrated mode but NO audio -> reading-time estimate, still capped (silent
+    # linger guard unchanged by the fix).
+    d = tp.compute_duration_sec(mode="narrated", tts_text="y" * 1000, overlays=[],
+                                base_min=2.5, max_sec=25.0, chars_per_sec=18.0,
+                                audio_duration_sec=0.0, audio_pad_sec=0.2)
+    assert abs(d - 25.0) < 1e-6
