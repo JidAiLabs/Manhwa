@@ -72,6 +72,28 @@ def test_resume_skips_already_understood_panels():
     assert out[0]["description"] == "kept" and out[1]["description"] == "new"
 
 
+def test_batched_parallel_shares_prebatch_context_and_preserves_order():
+    # 5 panels at batch size 3 -> batch A {p0,p1,p2}, batch B {p3,p4}. Parallel
+    # execution must still yield ordered, complete output, and every panel in a
+    # batch must see the SAME context (the descriptions emitted BEFORE the batch),
+    # never its batch-mates. That's the only behavioral diff vs sequential, and
+    # it's safe because the window is just the last 2 panels.
+    items = [{"scene_file": f"p{i}.jpg", "scene_path": f"/s/p{i}.jpg"} for i in range(5)]
+    seen = {}                                         # keyed by file: thread order is nondet
+
+    def stub(payload, image_path):
+        seen[payload["scene_file"]] = list(payload["previous_panels"])
+        return {"description": f"d{payload['scene_file']}", "action": "x",
+                "intensity": "calm"}
+
+    out = pu.understand_panels(items, stub, concurrency=3)
+    assert [r["scene_file"] for r in out] == [f"p{i}.jpg" for i in range(5)]  # ordered + complete
+    # batch A: all share the empty pre-batch context (batch-mates invisible to each other)
+    assert seen["p0.jpg"] == seen["p1.jpg"] == seen["p2.jpg"] == []
+    # batch B: all see the last-2 descriptions from BEFORE the batch (p1, p2)
+    assert seen["p3.jpg"] == seen["p4.jpg"] == ["dp1.jpg", "dp2.jpg"]
+
+
 # --- in-world screen rescue (chrome -> story via a real speech balloon) ------
 
 def test_inworld_balloon_promotes_confident_compact():

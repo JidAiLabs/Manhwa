@@ -131,30 +131,60 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
 
 def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
                       *, log: Callable[[str], None] = lambda _m: None,
-                      prior: Optional[Dict[str, Dict[str, Any]]] = None
-                      ) -> List[Dict[str, Any]]:
-    """Describe each panel in order, threading rolling context. `call_fn(payload,
-    image_path) -> parsed dict|None` is injected (the real model, or a stub in
-    tests). `prior` (scene_file -> good record) lets --resume skip done panels."""
+                      prior: Optional[Dict[str, Dict[str, Any]]] = None,
+                      concurrency: int = 1) -> List[Dict[str, Any]]:
+    """Describe each panel in order, threading rolling context (the last 2
+    panels). `call_fn(payload, image_path) -> parsed dict|None` is injected.
+    `prior` (scene_file -> good record) lets --resume skip done panels.
+
+    concurrency>1 runs panels in BATCHES of that size: every panel in a batch
+    shares the SAME context (the descriptions taken BEFORE the batch), so order
+    and continuity are preserved — only batch-mates can't see each other, which
+    is negligible since the window is just 2 panels. The GPU then processes the
+    batch at once (needs ollama OLLAMA_NUM_PARALLEL>=concurrency to parallelize)."""
+    from concurrent.futures import ThreadPoolExecutor
     prior = prior or {}
+    conc = max(1, int(concurrency))
     out: List[Dict[str, Any]] = []
     prev_descs: List[str] = []
+
+    def _understand(it: Dict[str, Any], ctx: List[str]) -> Dict[str, Any]:
+        return assemble_record(
+            it.get("scene_file"),
+            call_fn(build_payload(it, ctx), it.get("scene_path")))
+
+    def _flush(batch: List[Dict[str, Any]]) -> None:
+        if not batch:
+            return
+        ctx = list(prev_descs)          # context snapshot taken BEFORE the batch
+        if conc == 1 or len(batch) == 1:
+            recs = [_understand(it, ctx) for it in batch]
+        else:
+            with ThreadPoolExecutor(max_workers=len(batch)) as ex:
+                recs = list(ex.map(lambda it: _understand(it, ctx), batch))
+        for rec in recs:
+            if rec.get("error"):
+                log(f"[panel] {rec.get('scene_file')}: parse failed")
+            out.append(rec)
+            prev_descs.append(rec.get("description", ""))
+
+    batch: List[Dict[str, Any]] = []
     for it in items:
         sf = it.get("scene_file")
         if not sf:
             continue
         done = prior.get(sf)
         if done and done.get("description") and not done.get("error"):
+            _flush(batch)                # emit the pending batch first (keep order)
+            batch = []
             out.append(done)
             prev_descs.append(done.get("description", ""))
             continue
-        payload = build_payload(it, prev_descs)
-        parsed = call_fn(payload, it.get("scene_path"))
-        rec = assemble_record(sf, parsed)
-        if rec.get("error"):
-            log(f"[panel] {sf}: parse failed")
-        out.append(rec)
-        prev_descs.append(rec.get("description", ""))
+        batch.append(it)
+        if len(batch) >= conc:
+            _flush(batch)
+            batch = []
+    _flush(batch)
     return out
 
 
@@ -257,6 +287,10 @@ def main() -> int:
     ap.add_argument("--max-output-tokens", type=int, default=400)
     ap.add_argument("--resume", action="store_true",
                     help="keep good panel records in --out, redo only failures")
+    ap.add_argument("--concurrency", type=int,
+                    default=int(os.environ.get("STUDIO_UNDERSTAND_CONCURRENCY", "3")),
+                    help="panels understood per batch (needs ollama "
+                         "OLLAMA_NUM_PARALLEL>=this to actually parallelize)")
     args = ap.parse_args()
 
     vision = load_json(args.vision_manifest)
@@ -291,8 +325,13 @@ def main() -> int:
             temperature=args.temperature, backoff_max=60.0, backend=args.backend)
         return parsed
 
+    conc = max(1, int(args.concurrency)) if args.backend == "ollama" else 1
+    if conc > 1:
+        print(f"[understand] batched-parallel: {conc} panels/batch "
+              f"({len(items)} panels)", flush=True)
     panels = understand_panels(items, call_fn,
-                               log=lambda m: print(m, flush=True), prior=prior)
+                               log=lambda m: print(m, flush=True), prior=prior,
+                               concurrency=conc)
     promoted = apply_inworld_screen_overrides(
         panels, items, log=lambda m: print(m, flush=True))
     if promoted:
