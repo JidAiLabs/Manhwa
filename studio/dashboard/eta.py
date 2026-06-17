@@ -59,30 +59,30 @@ def stage_eta(con: sqlite3.Connection, stage: str,
     return _median(con, stage, series_id) or float(SEED_SEC.get(stage, 300))
 
 
+# the four stages of a chapter's "prepare" — all Gemma-bound (understanding +
+# narration + the semantic QA), so all on the ONE GPU.
+_PREP_STAGES = ("chain:scripted", "prepped", "qa_scan", "planned")
+
+
+def readiness_parts(con: sqlite3.Connection,
+                    series_id: Optional[int]) -> tuple:
+    """(prep, voice, render) MEASURED median seconds per chapter — the real
+    averages behind the readiness estimate (seeds only until a real run lands)."""
+    prep = sum(stage_eta(con, s, series_id) for s in _PREP_STAGES)
+    return (prep, stage_eta(con, "voiced", series_id),
+            stage_eta(con, "render_segment", series_id))
+
+
 def lane_bottleneck_sec(con: sqlite3.Connection, series_id: Optional[int],
                         target: str = "video") -> float:
-    """Steady-state per-chapter BUILD time for a bulk run = the slowest worker
-    lane. The lanes (gpu/tts/cpu) run in parallel, so across many chapters the
-    throughput is bounded by the busiest lane — NOT the serial sum of every
-    stage. target: 'qa' (prepare->QA only) | 'voice' (+TTS) | 'video' (+render).
-    Measured reality: TTS (~7min/ch, width 1) is the bottleneck, so a 300-ep
-    series is ~1.5-2 days, not the ~40min/ch the old serial-sum seed implied."""
-    import os
-    width = {"gpu": int(os.environ.get("STUDIO_GPU_WIDTH", "2")),
-             "tts": int(os.environ.get("STUDIO_TTS_WIDTH", "1")),
-             "cpu": int(os.environ.get("STUDIO_CPU_WIDTH", "1"))}
-    stages = ["chain:scripted", "prepped", "qa_scan", "planned"]   # gpu: prepare->QA
-    if target in ("voice", "video"):
-        stages.append("voiced")                                    # tts lane
-    if target == "video":
-        stages.append("render_segment")                           # cpu lane
-    lane_work: dict = {}
-    for s in stages:
-        lane = LANE_OF.get(s, "gpu")
-        lane_work[lane] = lane_work.get(lane, 0.0) + stage_eta(con, s, series_id)
-    if not lane_work:
-        return 0.0
-    return max(w / max(1, width.get(lane, 1)) for lane, w in lane_work.items())
+    """Real-median per-chapter wall time. The ONE GPU serializes BOTH Gemma (the
+    prepare's understanding/narration + semantic QA) AND Qwen (the voiceover) —
+    concurrent jobs SHARE it, so there is no 2x speedup; only the render (CPU /
+    Remotion) overlaps. So per chapter the GPU does prep + voice back-to-back and
+    the build is bounded by that. target: 'qa' | 'voice' | 'video'."""
+    prep, voice, render = readiness_parts(con, series_id)
+    gpu = prep + (voice if target in ("voice", "video") else 0.0)
+    return max(gpu, render if target == "video" else 0.0)
 
 
 def chapter_eta(con: sqlite3.Connection, chapter_id: int,

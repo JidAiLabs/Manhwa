@@ -13,7 +13,7 @@
 <td><span class="bar" style="position:relative" title="prepared {{ s.prepared }} → voiced {{ s.voiced }} → rendered {{ s.rendered }}, of {{ s.total }}"><i style="position:absolute;left:0;width:{{ s.prepared_pct }}%;background:#caa24a"></i><i style="position:absolute;left:0;width:{{ s.voiced_pct }}%;background:#4aa3df"></i><i style="position:absolute;left:0;width:{{ s.rendered_pct }}%;background:var(--ok)"></i></span> <span class="kv"><span style="color:#caa24a" title="prepared / QA-ready">{{ s.prepared }}</span>→<span style="color:#4aa3df" title="voiced">{{ s.voiced }}</span>→<b style="color:var(--ok)" title="rendered video">{{ s.rendered }}</b>/{{ s.total }}</span></td>
 <td class="kv">{% if s.seasons %}{{ s.seasons|join(', ') }}{% else %}—{% endif %}</td>
 <td>{% if s.new %}<span class="b new">+{{ s.new }}</span>{% else %}—{% endif %}</td>
-<td class="kv">{{ s.eta }}</td><td class="kv">{{ s.wall_spent }}</td>
+<td class="kv" title="per chapter (measured medians): prep {{ s.avg_prep }} + voice {{ s.avg_voice }} + render {{ s.avg_render }} — the one GPU runs prep & voice serially; render overlaps"><b>{{ s.eta }}</b><br><span style="opacity:.55;font-size:.82em">{{ s.avg_prep }}+{{ s.avg_voice }}+{{ s.avg_render }}/ch</span></td><td class="kv">{{ s.wall_spent }}</td>
 <td><a href="/series/{{ s.id }}"><button class="ghost">open</button></a>
 <form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="refresh">
 <input type="hidden" name="series_id" value="{{ s.id }}"><button class="ghost">refresh</button></form>

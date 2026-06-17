@@ -159,6 +159,8 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
         voiced = max(_stage_ok("voiced"), rendered)
         prepared = max(_stage_ok("qa_scan"), voiced)
         remaining = max(0, total - rendered)
+        # real measured averages behind the readiness estimate
+        rp_prep, rp_voice, rp_render = eta.readiness_parts(con, sid)
         rows.append({
             "id": sid, "title": title, "source": source,
             "url": _http_url(surl), "autopilot": bool(autopilot),
@@ -169,6 +171,9 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             "prepared_pct": (100 * prepared // total) if total else 0,
             "voiced_pct": (100 * voiced // total) if total else 0,
             "rendered_pct": (100 * rendered // total) if total else 0,
+            "avg_prep": eta.fmt_eta(rp_prep),
+            "avg_voice": eta.fmt_eta(rp_voice),
+            "avg_render": eta.fmt_eta(rp_render),
             "eta": eta.fmt_eta(eta.series_eta(con, sid, remaining)),
             "wall_spent": eta.fmt_eta(cost),
         })
