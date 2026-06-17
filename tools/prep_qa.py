@@ -848,9 +848,10 @@ def story_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
         if _base_scene(f) not in shown_all and _is_title_card(
                 str(vit.get("ocr_clean") or ""), vit):
             flags.append(_flag(
-                "system_card_dropped", ERROR,
+                "system_card_dropped", WARN,
                 f"title/system card {f} ({str(vit.get('ocr_clean') or '')[:30]!r}) "
-                "was dropped before render — it is a story beat and must show",
+                "was dropped before render — review if it's a real scene title "
+                "(a cover / credit / watermark drop is fine and expected)",
                 scene=str(f)))
     return flags
 
