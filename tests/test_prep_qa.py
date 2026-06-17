@@ -635,7 +635,7 @@ def test_story_flags_dropped_system_card():
     fl = pq.story_flags(plan, _beats([]), vitems)
     cards = [f for f in fl if f["code"] == "system_card_dropped"]
     assert [f["scene"] for f in cards] == ["p000113.jpg"]   # only the real card
-    assert cards[0]["severity"] == pq.ERROR
+    assert cards[0]["severity"] == pq.WARN   # WARN, not a hard-fail (cosmetic)
 
 
 def test_story_flags_quiet_on_healthy_plan():
