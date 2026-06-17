@@ -1062,6 +1062,79 @@ th{{background:#263238;color:#fff}}
 # CLI
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# OCR grounding — suppress false narration_mismatch WARNs. The visual judge
+# compares a line to the SHOWN panel; a number/name SPOKEN in another panel of
+# the same beat (e.g. "THERE ARE MORE THAN THREE HUNDRED OF YOU") then reads as
+# "invented" though it is grounded in the on-panel dialogue (OCR).
+# ---------------------------------------------------------------------------
+
+_GROUND_STOP = {
+    "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be",
+    "been", "being", "to", "of", "in", "on", "at", "it", "its", "he", "she",
+    "they", "you", "i", "his", "her", "their", "that", "this", "these", "those",
+    "with", "for", "as", "by", "not", "no", "do", "does", "did", "can", "could",
+    "will", "would", "should", "just", "all", "any", "has", "have", "had", "who",
+    "what", "when", "where", "why", "how", "if", "so", "up", "out", "him", "them",
+    "my", "me", "we", "our", "your", "from", "into", "than", "then", "there",
+    "here", "over", "about", "only", "even", "still", "now", "also", "while",
+    "which", "after", "before", "because", "since",
+}
+
+
+def _content_words(s: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9]+", (s or "").lower())
+            if len(w) >= 3 and w not in _GROUND_STOP}
+
+
+def _ocr_grounds_narration(narration: str, ocr: str,
+                           min_cov: float = 0.5, min_ocr_words: int = 5) -> bool:
+    """True when the narration reproduces the group's on-panel DIALOGUE: at least
+    *min_cov* of the OCR's distinctive words also appear in the narration. Needs
+    enough OCR (*min_ocr_words*) to be a real signal — a textless action beat
+    can't be OCR-grounded, so the visual judge still rules there."""
+    ow = _content_words(ocr)
+    if len(ow) < min_ocr_words:
+        return False
+    nw = _content_words(narration)
+    if not nw:
+        return False
+    return len(ow & nw) / len(ow) >= min_cov
+
+
+def _suppress_grounded_mismatches(
+        flags: List[Dict[str, Any]], beats_obj: Dict[str, Any],
+        vitems: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop narration_mismatch WARNs whose narration is supported by the group's
+    OCR (on-panel dialogue). Conservative: only fires when the beat carries real
+    dialogue AND the line reproduces most of it."""
+    g_narr: Dict[int, str] = {}
+    g_ocr: Dict[int, str] = {}
+    for b in (beats_obj or {}).get("beats") or []:
+        try:
+            gid = int(b.get("group_id"))
+        except (TypeError, ValueError):
+            continue
+        g_narr[gid] = str(b.get("narration") or "")
+        g_ocr[gid] = " ".join(
+            str((vitems.get(str(sf)) or {}).get("ocr_clean") or "")
+            for sf in (b.get("scene_files") or []))
+    out: List[Dict[str, Any]] = []
+    dropped = 0
+    for f in flags:
+        if f.get("code") == "narration_mismatch":
+            m = _SEG_GROUP_RE.match(str(f.get("segment_id") or ""))
+            gid = int(m.group(1)) if m else None
+            if gid is not None and _ocr_grounds_narration(
+                    g_narr.get(gid, ""), g_ocr.get(gid, "")):
+                dropped += 1
+                continue   # grounded in the beat's dialogue — false positive
+        out.append(f)
+    if dropped:
+        print(f"[qa] suppressed {dropped} OCR-grounded narration_mismatch WARN(s)")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--episode-dir", required=True)
@@ -1174,6 +1247,11 @@ def main() -> int:
                                               model=args.semantic_model))
     if args.semantic_heal:
         flags.extend(grounding_flags(plan, clean_dir, model=args.semantic_model))
+    if args.semantic:
+        # a number/name SPOKEN in a non-shown panel of the beat is grounded —
+        # drop the visual judge's false narration_mismatch in that case
+        flags = _suppress_grounded_mismatches(
+            flags, _load_manifest("manifest.beats.json"), vitems)
 
     detector = None
     if not args.no_detector:
