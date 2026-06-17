@@ -7,10 +7,10 @@
 <button class="green">add manhwa</button></form>
 <span class="kv">discovers + tracks all chapters in the background</span>
 </div>
-<table><tr><th>series</th><th>source</th><th>progress</th><th>seasons</th><th>new</th><th>est. finish</th><th>wall spent</th><th></th></tr>
+<table><tr><th>series</th><th>source</th><th>progress <small style="font-weight:400"><span style="color:#caa24a">prep</span>→<span style="color:#4aa3df">voice</span>→<span style="color:var(--ok)">video</span></small></th><th>seasons</th><th>new</th><th>est. finish</th><th>wall spent</th><th></th></tr>
 {% for s in series %}
 <tr><td><b>{{ s.title }}</b>{% if s.url %} <a href="{{ s.url }}" target="_blank" rel="noopener" title="read on {{ s.source }}" style="color:var(--acc);text-decoration:none">↗</a>{% endif %}{% if s.autopilot %} <span class="b ok" title="spotless QA auto-advances">⚡ AUTO</span>{% endif %}{% if s.new_pending %} <span class="b" style="background:#e74c3c;color:#fff" title="a refresh found new chapters since you last ran this series — run them">🔴 {{ s.new_pending }} NEW</span>{% endif %}</td><td>{{ s.source }}</td>
-<td><span class="bar"><i style="width:{{ s.pct }}%"></i></span> <span class="kv">{{ s.done }}/{{ s.total }}</span></td>
+<td><span class="bar" style="position:relative" title="prepared {{ s.prepared }} → voiced {{ s.voiced }} → rendered {{ s.rendered }}, of {{ s.total }}"><i style="position:absolute;left:0;width:{{ s.prepared_pct }}%;background:#caa24a"></i><i style="position:absolute;left:0;width:{{ s.voiced_pct }}%;background:#4aa3df"></i><i style="position:absolute;left:0;width:{{ s.rendered_pct }}%;background:var(--ok)"></i></span> <span class="kv"><span style="color:#caa24a" title="prepared / QA-ready">{{ s.prepared }}</span>→<span style="color:#4aa3df" title="voiced">{{ s.voiced }}</span>→<b style="color:var(--ok)" title="rendered video">{{ s.rendered }}</b>/{{ s.total }}</span></td>
 <td class="kv">{% if s.seasons %}{{ s.seasons|join(', ') }}{% else %}—{% endif %}</td>
 <td>{% if s.new %}<span class="b new">+{{ s.new }}</span>{% else %}—{% endif %}</td>
 <td class="kv">{{ s.eta }}</td><td class="kv">{{ s.wall_spent }}</td>

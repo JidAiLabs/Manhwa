@@ -140,22 +140,35 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             "SELECT status, season FROM chapter WHERE series_id=?",
             (sid,)).fetchall()
         total = len(chs)
-        done = sum(1 for s, _ in chs if _status_idx(s)
-                   >= _status_idx("planned"))
         new = sum(1 for s, _ in chs if s == "discovered")
         seasons = sorted({sea for _, sea in chs if sea})
         cost = con.execute(
             "SELECT COALESCE(SUM(duration_sec),0) FROM stage_run sr JOIN "
             "chapter c ON c.id=sr.chapter_id WHERE c.series_id=?",
             (sid,)).fetchone()[0]
-        remaining = max(0, total - done)
+
+        # 3-segment readiness: prepared (QA-ok) >= voiced >= rendered. 'rendered'
+        # is NOT in STATUS_ORDER, so count it directly; the stage_run table is the
+        # source of truth for the earlier two.
+        def _stage_ok(stage: str) -> int:
+            return con.execute(
+                "SELECT COUNT(DISTINCT chapter_id) FROM stage_run sr JOIN chapter "
+                "c ON c.id=sr.chapter_id WHERE c.series_id=? AND sr.stage=? AND "
+                "sr.ok=1", (sid, stage)).fetchone()[0]
+        rendered = sum(1 for s, _ in chs if s == "rendered")
+        voiced = max(_stage_ok("voiced"), rendered)
+        prepared = max(_stage_ok("qa_scan"), voiced)
+        remaining = max(0, total - rendered)
         rows.append({
             "id": sid, "title": title, "source": source,
             "url": _http_url(surl), "autopilot": bool(autopilot),
-            "total": total,
-            "done": done, "new": new, "seasons": seasons,
+            "total": total, "new": new, "seasons": seasons,
             "new_pending": int(new_pending or 0),
-            "pct": (100 * done // total) if total else 0,
+            "prepared": prepared, "voiced": voiced, "rendered": rendered,
+            "done": rendered,
+            "prepared_pct": (100 * prepared // total) if total else 0,
+            "voiced_pct": (100 * voiced // total) if total else 0,
+            "rendered_pct": (100 * rendered // total) if total else 0,
             "eta": eta.fmt_eta(eta.series_eta(con, sid, remaining)),
             "wall_spent": eta.fmt_eta(cost),
         })
