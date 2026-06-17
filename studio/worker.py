@@ -97,6 +97,17 @@ def _series_env(con: sqlite3.Connection,
 STALE_CODES = {"beats_incomplete", "narration_stale", "fragment_dangle",
                "caption_unvoiced"}
 
+# QA ERRORs that mean a BROKEN video — these (and only these) block a chapter
+# after auto-heal. Everything else (cross_dup, fragment_dangle, visible_text,
+# caption_unvoiced, chrome_leak, …) is a cosmetic/quality nit: the heal tries to
+# fix it, but if it can't, the chapter still SHIPS with a WARN for review rather
+# than hard-failing a whole recap + hours of work over a repeated panel.
+_CRITICAL_QA_CODES = {
+    "audio_index_missing", "audio_missing", "audio_stale", "missing_audio",
+    "missing_file", "missing_dims", "stale_dims",
+    "empty_item", "montage_degenerate", "beats_incomplete",
+}
+
 
 def _qa_error_codes(ep: Path) -> set:
     try:
@@ -156,16 +167,19 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
     if _load_cfg().semantic_heal:
         qa_args.append("--semantic-heal")   # QA-eyes: grounding_weak -> auto-heal
     rc = _stream(qa_args, log)
+    codes = _qa_error_codes(ep)
+    critical = codes & _CRITICAL_QA_CODES
+    # qa_scan 'ok' gates the render — it's ok when no BLOCKING error remains;
+    # cosmetic ERRORs (cross_dup, fragment_dangle, visible_text, …) don't fail it.
     con.execute(
         "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
         "meta_json) VALUES (?,?,?,?, json_object('series_id', ?))",
         (ch["id"], "qa_scan", round(time.time() - t0, 2),
-         1 if rc == 0 else 0, ch["series_id"]))
+         0 if critical else 1, ch["series_id"]))
     con.commit()
-    codes = _qa_error_codes(ep)
-    if rc != 0 and not heal_aware:
-        raise RuntimeError("prep-QA found ERROR-severity flags — open the "
-                           f"report in {ep}")
+    if critical and not heal_aware:
+        raise RuntimeError(f"prep-QA found BLOCKING flags ({sorted(critical)}) — "
+                           f"open the report in {ep}")
     return codes
 
 
@@ -365,10 +379,14 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     # + a re-prep, bounded so a chapter is never gutted.
     _heal_visual_drops(con, ch, ep, log)
     codes = _qa_error_codes(ep)
-    if codes:
+    blocking = codes & _CRITICAL_QA_CODES
+    if blocking:
         raise RuntimeError(
-            f"prep-QA still has ERROR flags after auto-heal ({sorted(codes)}) — "
+            f"prep-QA has BLOCKING errors after auto-heal ({sorted(blocking)}) — "
             f"open the report in {ep}")
+    if codes:
+        log.write("[qa] proceeding with non-blocking QA flags after heal "
+                  f"(cosmetic, flagged for review): {sorted(codes)}\n")
     # bulk "run range to stage X": a prepare job may carry auto_to (voice|video).
     # The bulk request IS the story approval, so advance past the voice gate up to
     # the requested target — QA still had to be green (we raised above otherwise).

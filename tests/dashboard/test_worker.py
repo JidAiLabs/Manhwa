@@ -126,13 +126,13 @@ def test_run_prep_and_qa_heal_aware_returns_instead_of_raising(
     con = _con(tmp_path)
     ep = _seed_chapter(con, tmp_path)
     (ep / "prep_qa.json").write_text(json.dumps({"flags": [
-        {"code": "narration_stale", "severity": "ERROR"}]}))
+        {"code": "missing_audio", "severity": "ERROR"}]}))   # a BLOCKING code
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
                         1 if any("prep_qa.py" in str(c) for c in cmd) else 0)
     ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
     log = open(tmp_path / "log.txt", "w")
     codes = worker._run_prep_and_qa(con, ch, log, heal_aware=True)
-    assert codes == {"narration_stale"}
+    assert codes == {"missing_audio"}
     with pytest.raises(RuntimeError):
         worker._run_prep_and_qa(con, ch, log, heal_aware=False)
 
@@ -161,10 +161,10 @@ def test_prepare_fails_if_heal_cannot_reach_green(tmp_path, monkeypatch):
     _seed_chapter(con, tmp_path)
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
-                        lambda c, ch, log, **kw: {"caption_unvoiced"})
+                        lambda c, ch, log, **kw: {"montage_degenerate"})
     monkeypatch.setattr(worker, "_heal_to_green", lambda c, ch, ep, log: None)
     monkeypatch.setattr(worker, "_qa_error_codes",
-                        lambda ep: {"caption_unvoiced"})   # still red after heal
+                        lambda ep: {"montage_degenerate"})   # BLOCKING, still red
     jid = jobs.enqueue(con, "prepare", chapter_id=5)
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     state, err = con.execute("SELECT state, error FROM job WHERE id=?",
