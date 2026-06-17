@@ -443,7 +443,16 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         rows = c.execute(
             "SELECT ep_dir FROM chapter WHERE series_id=? AND number BETWEEN ? "
             "AND ? ORDER BY number", (series_id, num_from, num_to)).fetchall()
-        n = len(rows)
+        n_total = len(rows)
+        # chapters NOT yet done at the target — what a bulk run ACTUALLY builds
+        # (resume semantics; matches the prepare_range filter).
+        done_stage = {"qa": "qa_scan", "voice": "voiced",
+                      "video": "render_segment"}.get(target or "qa")
+        n_missing = c.execute(
+            "SELECT COUNT(*) FROM chapter WHERE series_id=? AND number BETWEEN ? "
+            "AND ? AND id NOT IN (SELECT chapter_id FROM stage_run WHERE "
+            "stage=? AND ok=1)",
+            (series_id, num_from, num_to, done_stage)).fetchone()[0]
         vid = 0.0
         have = 0
         for (ep_dir,) in rows:
@@ -455,16 +464,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     have += 1
                 except Exception:
                     pass
-        if have and n > have:                       # extrapolate the un-built ones
-            vid += (vid / have) * (n - have)
+        if have and n_total > have:                 # extrapolate the un-built ones
+            vid += (vid / have) * (n_total - have)
         elif not have:
-            vid = n * float(seed.get("voiced", 600))
-        # wall-clock build time = the SLOWEST worker lane × chapters. The lanes
-        # (gpu prepare / tts voiceover / cpu render) pipeline in parallel, so
-        # across many chapters the throughput is bounded by the busiest lane, not
-        # the serial sum of every stage. Measured: TTS-bound ~7min/ch -> a 300-ep
-        # series is ~1.5-2 days (the old serial-sum/2 model wrongly read ~211h).
-        proc = _eta.lane_bottleneck_sec(c, series_id, target) * n
+            vid = n_total * float(seed.get("voiced", 600))
+        # wall-clock build time = the SLOWEST worker lane × the chapters that
+        # actually run (missing-only). The lanes (gpu/tts/cpu) pipeline, so it's
+        # bounded by the busiest lane, not the serial sum of every stage.
+        proc = _eta.lane_bottleneck_sec(c, series_id, target) * n_missing
 
         def fmt(s: float) -> str:
             s = int(s)
@@ -472,8 +479,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             return f"{h}h {m}m" if h else f"{m}m"
 
         return HTMLResponse(
-            f'<span class="kv">{n} chapters · ~<b>{fmt(proc)}</b> to build ·'
-            f' ~<b>{fmt(vid)}</b> final video</span>')
+            f'<span class="kv">{n_missing} of {n_total} chapters to build · '
+            f'~<b>{fmt(proc)}</b> · ~<b>{fmt(vid)}</b> final video</span>')
 
     @app.post("/jobs")
     def post_job(type: str = Form(...), chapter_id: Optional[int] = Form(None),
@@ -488,9 +495,18 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             # auto_to is carried on each prepare job; the worker advances past the
             # approval gates only as far as the target (QA must stay green).
             auto_to = {"voice": "voice", "video": "video"}.get(target or "qa")
+            # RESUME semantics: only enqueue chapters NOT already done at the
+            # target stage (and not already queued/running), so a 1..N bulk run
+            # picks up "whatever is missing" instead of redoing finished chapters.
+            done_stage = {"qa": "qa_scan", "voice": "voiced",
+                          "video": "render_segment"}.get(target or "qa")
             rows = c.execute(
                 "SELECT id FROM chapter WHERE series_id=? AND number BETWEEN ? "
-                "AND ? ORDER BY number", (series_id, num_from, num_to)).fetchall()
+                "AND ? AND id NOT IN (SELECT chapter_id FROM stage_run WHERE "
+                "stage=? AND ok=1) AND id NOT IN (SELECT chapter_id FROM job "
+                "WHERE type='prepare' AND state IN ('queued','running') AND "
+                "chapter_id IS NOT NULL) ORDER BY number",
+                (series_id, num_from, num_to, done_stage)).fetchall()
             for (cid,) in rows:
                 jobs.enqueue(c, "prepare", chapter_id=cid, series_id=series_id,
                              payload={"auto_to": auto_to} if auto_to else {})
