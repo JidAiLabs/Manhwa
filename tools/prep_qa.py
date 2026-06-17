@@ -758,6 +758,12 @@ def _is_title_card(ocr: str, vit: Dict[str, Any]) -> bool:
     from the image) is what separates a real card from all-caps dialogue or a
     screamed SFX sitting on textured artwork — caps text alone cannot."""
     ocr = (ocr or "").strip()
+    # scanlation watermarks / URLs (ASURASCANS.COM, asura.gg, *.net) are SITE
+    # CHROME, never a story title card — they must stay droppable, not "must
+    # show". A real title/system card carries no domain.
+    if re.search(r"[a-z0-9][\w-]*\.(com|net|org|gg|io|co|to|xyz|me|app|tv)\b",
+                 ocr.lower()):
+        return False
     # dialogue & SFX live on flat gutters too — they carry ~ ! ? or trailing
     # ellipses; a title/system card is a clean declarative name/phrase
     if "..." in ocr or any(ch in ocr for ch in "~!?"):
@@ -864,13 +870,12 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                            "cold-open hook before it",
                            segment_id=str(timeline[0].get("segment_id"))))
     brandings = {str(i.get("branding")) for i in timeline if i.get("branding")}
-    if not brandings:
-        flags.append(_flag("no_branding", INFO,
-                           "no intro/outro branding items in plan"))
-    elif brandings != {"intro", "outro"}:
+    # channel design: NO intro on any video, outro only — so the ONLY branding
+    # expectation is the outro. Warn only when the outro is missing.
+    if "outro" not in brandings:
         flags.append(_flag("missing_branding", WARN,
-                           f"branding items present: {sorted(brandings)} — "
-                           "expected intro AND outro"))
+                           f"branding items present: "
+                           f"{sorted(brandings) or 'none'} — expected an outro"))
 
     seen_parent_segments: Dict[str, set] = {}
     for item in timeline:
