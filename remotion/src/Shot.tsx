@@ -36,7 +36,9 @@ export const Shot: React.FC<{
             file={c.file}
             file2={c.layout === 'split2' ? c.file2 : undefined}
             durationInFrames={toFrames(c.dur)}
-            motion={item.motion}
+            // Per-panel motion (its pan ends on THIS panel's face) when the
+            // planner emitted one; else the shot-level default.
+            motion={c.motion ?? item.motion}
             camera={item.camera}
             scenesSubdir={scenesSubdir}
             dims={sceneDims[c.file]}

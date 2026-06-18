@@ -39,6 +39,10 @@ export type Cut = {
   // side by side on one screen.
   file2?: string;
   layout?: string;
+  // Per-panel motion override (timeline_planner): each cut is a different panel,
+  // so its pan ends centered on ITS OWN face. Falls back to the item-level
+  // motion when absent (panels with no face, held/substituted cuts).
+  motion?: Motion;
 };
 
 export type TimelineItem = {

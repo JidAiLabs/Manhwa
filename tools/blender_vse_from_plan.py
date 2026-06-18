@@ -497,12 +497,17 @@ def main():
                     pan_cap_px=pan_cap_px,
                 )
 
-            if (not used) and isinstance(shot.get("motion"), dict):
+            # Per-cut motion (the panel's pan ends on ITS OWN face) overrides the
+            # shot-level default; parity with remotion/src/Shot.tsx. A held or
+            # substituted cut carries no own motion -> falls back to shot.motion.
+            cut_motion = c.get("motion") if isinstance(c.get("motion"), dict) else None
+            eff_shot = {**shot, "motion": cut_motion} if cut_motion else shot
+            if (not used) and isinstance(eff_shot.get("motion"), dict):
                 used = apply_motion_from_plan(
                     fg, cut_fs, cut_len,
                     img_w, img_h,
                     base_scale,
-                    shot=shot,
+                    shot=eff_shot,
                     zoom_cap=zoom_cap,
                     pan_cap_px=pan_cap_px,
                 )

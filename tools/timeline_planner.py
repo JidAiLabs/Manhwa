@@ -362,6 +362,101 @@ def _motion_params_for_mode(mode: str, dur: float, mood_words: List[str]) -> Dic
     }
 
 
+def _bbox_center(bbox: Any) -> Optional[Tuple[float, float]]:
+    """Center (cx, cy) of a normalized [x0,y0,x1,y1] target bbox, or None."""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(bbox[0]), float(bbox[1]),
+                          float(bbox[2]), float(bbox[3]))
+    except Exception:
+        return None
+    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+
+
+def _bbox_area(bbox: Any) -> float:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return 0.0
+    try:
+        return max(0.0, float(bbox[2]) - float(bbox[0])) * \
+               max(0.0, float(bbox[3]) - float(bbox[1]))
+    except Exception:
+        return 0.0
+
+
+def pick_face_target(targets: Any) -> Optional[Dict[str, Any]]:
+    """Choose the face the camera should END on: prefer the LARGEST face (the
+    subject in focus); ties broken toward frame-center. NEVER a text_block — the
+    bubble is inpainted blank, so ending there lands on an empty blob. Returns the
+    chosen face target dict, or None when the panel has no usable face."""
+    if not isinstance(targets, list):
+        return None
+    faces = []
+    for t in targets:
+        if not isinstance(t, dict) or t.get("type") != "face":
+            continue
+        c = _bbox_center(t.get("bbox"))
+        if c is None:
+            continue
+        faces.append((t, c, _bbox_area(t.get("bbox"))))
+    if not faces:
+        return None
+    # largest first; tie -> closest to frame center (0.5, 0.5)
+    faces.sort(key=lambda fc: (-fc[2],
+                               (fc[1][0] - 0.5) ** 2 + (fc[1][1] - 0.5) ** 2))
+    return faces[0][0]
+
+
+def face_end_bias(face_bbox: Any) -> Dict[str, float]:
+    """End-of-move pan bias (normalized, in the engine's [-1..1] pan budget) that
+    lands the FACE centered in frame at the end of the Ken Burns move.
+
+    Convention (verified against remotion/src/Cut.tsx biasOffset + the translate):
+    the bias drives a CSS/Blender translate of the foreground image. A face to the
+    RIGHT of center (cx>0.5) needs the image to move LEFT, i.e. negative x bias, so
+    +(cx-0.5) maps to a NEGATIVE x. For Y, Cut.tsx negates the y term
+    (Blender offset_y is up-positive, CSS translateY is down-positive), so a face
+    BELOW center (cy>0.5) needs a POSITIVE y bias. Magnitude = how far off-center
+    the face is, normalized by the half-frame (0.5) and clamped to the pan budget;
+    PAN_CAP downstream keeps the actual travel subtle."""
+    c = _bbox_center(face_bbox)
+    if c is None:
+        return {"x": 0.0, "y": 0.0}
+    cx, cy = c
+    bx = clamp(-(cx - 0.5) / 0.5, -1.0, 1.0)
+    by = clamp((cy - 0.5) / 0.5, -1.0, 1.0)
+    return {"x": round(float(bx), 3), "y": round(float(by), 3)}
+
+
+def face_aware_motion(base_motion: Dict[str, Any],
+                      targets: Any) -> Dict[str, Any]:
+    """Per-panel motion: if the panel has a FACE target, return a copy of the
+    shot's motion whose pan ENDS centered on that face (start neutral so the move
+    travels TOWARD it); otherwise return the base motion unchanged. Zoom, strength,
+    bg_fill, fg_fit and ease are all preserved — only the pan focal point changes.
+    A 'static' shot stays static (no pan to redirect)."""
+    if not isinstance(base_motion, dict):
+        return base_motion
+    if (base_motion.get("mode") or "").lower() == "static":
+        return base_motion
+    face = pick_face_target(targets)
+    if face is None:
+        return base_motion
+    end_bias = face_end_bias(face.get("bbox"))
+    if end_bias == {"x": 0.0, "y": 0.0}:
+        # face already dead-center: a pan toward it would be a no-op; keep the
+        # shot's generic move rather than freezing the pan.
+        return base_motion
+    motion = dict(base_motion)
+    # travel FROM neutral TO the face; nudge the start slightly opposite so the
+    # move reads as a deliberate push toward the face instead of a static frame.
+    motion["start_bias"] = {"x": round(-end_bias["x"] * 0.25, 3),
+                            "y": round(-end_bias["y"] * 0.25, 3)}
+    motion["end_bias"] = end_bias
+    motion["focus"] = "face"  # debug/QA breadcrumb; renderers ignore unknown keys
+    return motion
+
+
 def _camera_compat_from_motion(motion: Dict[str, Any], avoid_text_zoom: bool) -> Dict[str, Any]:
     mode = (motion.get("mode") or "kenburns").lower()
     if mode == "static":
@@ -715,6 +810,28 @@ def protected_story_files(vision_path: str) -> "set":
     return out
 
 
+def index_targets_by_file(vision_path: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Map scene_file basename -> that panel's camera targets (from
+    vision_extract.make_targets). Used to point each cut's pan at the panel's
+    FACE. Degrades to {} when the manifest is missing/old (no targets)."""
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    if not vision_path or not os.path.exists(vision_path):
+        return out
+    try:
+        with open(vision_path, "r", encoding="utf-8") as fh:
+            items = json.load(fh).get("items") or []
+    except Exception:
+        return out
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        f = os.path.basename(str(it.get("scene_file") or ""))
+        tgts = it.get("targets")
+        if f and isinstance(tgts, list):
+            out[f] = tgts
+    return out
+
+
 def caption_files(vision_path: str) -> "set":
     """Panels the understanding calls a CAPTION — a bare narrative-voice / inner-
     monologue text card ('BACK THEN, I HAD NO IDEA.', 'AND I...'). Their WORDS are
@@ -856,6 +973,10 @@ def main() -> int:
     # for any beat that would otherwise be a blank card. In-world screens are
     # panel_kind 'story', not 'caption', so they stay.
     caption_set = caption_files(args.vision)
+    # per-panel camera targets (faces/objects/text_blocks) so each cut's pan can
+    # END centered on the panel's FACE instead of a generic drift that may land on
+    # an inpainted (blank) speech bubble.
+    targets_by_file = index_targets_by_file(args.vision)
     montage = drop_caption_cards(
         [(int(g.get("group_id") or g.get("shot_id") or 0),
           [os.path.basename(str(x)) for x in (g.get("scene_files") or []) if x])
@@ -982,6 +1103,16 @@ def main() -> int:
                         selection=beat.get("scene_selection"),
                         protected=protected,
                     )
+
+            # PER-CUT motion: each cut is a DIFFERENT panel, so its pan must end on
+            # ITS OWN face. The shot-level `motion` stays the default (and the
+            # fallback for panels with no face / for held cuts that carry no own
+            # motion); a face-bearing panel gets a copy whose end_bias lands the
+            # face centered. The renderer prefers cut.motion over item.motion.
+            for c in cuts:
+                fm = face_aware_motion(motion, targets_by_file.get(str(c.get("file") or "")))
+                if fm is not motion:
+                    c["motion"] = fm
 
             item: Dict[str, Any] = {
                 "segment_id": segment_id,
