@@ -206,6 +206,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("No chapters match the selector.")
         return 0
 
+    failed = False
     for ch in selected:
         from studio.catalog.models import STATUS_ORDER
         if ch.status == "discovered":
@@ -227,8 +228,17 @@ def cmd_run(args: argparse.Namespace) -> int:
                              until=getattr(args, "until", None))
         updated = repo.get_chapter(con, ch.id)
         print(f"    → {updated.status}")
+        # A stage that fail-soft-stops (e.g. the advertiser-safety voiced gate, a
+        # missing credential, or a tool crash caught by run_chapter) leaves the
+        # chapter in a *_failed status. Surface that as a non-zero exit so the
+        # worker's `studio run` rc check raises instead of marching on to build a
+        # preview from clips that were never produced.
+        if updated.status.endswith("_failed"):
+            print(f"  [error] ch{ch.number} stopped at {updated.status}"
+                  + (f": {updated.error}" if getattr(updated, "error", "") else ""))
+            failed = True
 
-    return 0
+    return 1 if failed else 0
 
 
 # ---------------------------------------------------------------------------

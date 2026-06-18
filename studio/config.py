@@ -53,6 +53,29 @@ class Config:
                                              # narration line adapts. OFF =
                                              # current uniform-cinematic narration
                                              # byte-for-byte unchanged.
+    narration_sanitize: bool = True         # advertiser-safety pass over the
+                                             # FINAL narration before TTS: the
+                                             # scripted stage runs
+                                             # narration_sanitize_pass (swap +
+                                             # LLM-reframe flags/blocks +
+                                             # re-sanitize) on manifest.script.json
+                                             # and writes manifest.sanitize.json;
+                                             # the voiced stage REFUSES to voice a
+                                             # chapter with unresolved blocks. ON
+                                             # by default (safety); env
+                                             # STUDIO_NARRATION_SANITIZE wins.
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Tri-state env override for a boolean flag. Unset → *default*; otherwise
+    truthy ('1'/'true'/'yes'/'on') → True, anything else ('0'/'false'/'no'/
+    'off') → False. Unlike the on-only env toggles above, this lets an env var
+    DISABLE a flag that defaults ON (the sanitizer is a safety default, so a run
+    must be able to turn it off explicitly)."""
+    v = os.environ.get(name)
+    if v is None or v == "":
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
 
 def _resolve_tts_python(val: str) -> str:
     """Host-agnostic local-TTS interpreter. STUDIO_TTS_PYTHON env wins (per-host
@@ -122,4 +145,6 @@ def load(path: Path | None = None) -> Config:
         narration_register=(os.environ.get("STUDIO_NARRATION_REGISTER", "").lower()
                             in ("1", "true", "yes")
                             or bool(m.get("narration_register", False))),
+        narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
+                                     bool(m.get("narration_sanitize", True))),
     )

@@ -295,9 +295,88 @@ def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
         _check_openai()
     _run_tool("script_expander.py", args)
 
+    # ADVERTISER-SAFETY: the narration in manifest.script.json is now FINAL (the
+    # exact text the voiced stage reads from sections[].tts_paragraphs_v3). Run
+    # the sanitize+reframe pass over it IN PLACE — deterministic safe swaps, then
+    # an LLM reframe of any flagged/blocked line (softened per the denylist
+    # notes) using the same Gemma/Vertex backend the beated stage resolved, then
+    # re-sanitize. It writes manifest.sanitize.json; _stage_voiced refuses to
+    # voice when that marker lists unresolved blocks. ON by default (safety).
+    if cfg.narration_sanitize:
+        _run_sanitize_pass(ep_dir, cfg, p)
+
+
+def _run_sanitize_pass(ep_dir: Path, cfg: Config, p: dict) -> None:
+    """Run narration_sanitize_pass over the script manifest. The reframe LLM
+    backend mirrors _stage_beated (ollama Gemma, or Vertex via the repo SA key
+    project). Seed = ep dir name so swap rotation is deterministic per chapter."""
+    import json
+    sanitize_args = ["--script", str(p["script"]),
+                     "--seed", ep_dir.name,
+                     "--marker", str(ep_dir / "manifest.sanitize.json")]
+    if cfg.beats_backend == "ollama":
+        sanitize_args += ["--reframe-backend", "ollama",
+                          "--reframe-model", cfg.beats_model]
+    else:
+        keys = _REPO_ROOT / "keys" / "gcp-vision.json"
+        if keys.exists():
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
+            project = json.loads(keys.read_text()).get("project_id", "")
+        else:
+            _check_vertex_adc()
+            project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+        location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+        sanitize_args += ["--reframe-backend", "vertex",
+                          "--reframe-model", cfg.beats_model,
+                          "--project", project, "--location", location]
+    # exit 2 = UNRESOLVED blocks remain. We DON'T fail the scripted stage on
+    # that (the marker is written either way and the QA/voiced gate enforces it);
+    # but a genuine crash (missing backend, bad manifest) must surface. The tool
+    # only returns {0,2}; raise on anything else.
+    try:
+        _run_tool("narration_sanitize_pass.py", sanitize_args)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 2:
+            print("[scripted] sanitize pass left UNRESOLVED blocks -> "
+                  "manifest.sanitize.json written; voiced stage will refuse")
+            return
+        raise
+
+
+def _read_sanitize_unresolved(marker_path: Path) -> list:
+    """Unresolved advertiser-safety blocks from manifest.sanitize.json (written
+    by narration_sanitize_pass). Read directly as JSON so the gate needs no
+    cross-package import. Missing/unreadable marker → [] (the gate only HALTS on
+    a marker that explicitly lists blocks)."""
+    import json
+    if not marker_path.exists():
+        return []
+    try:
+        data = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return [b for b in (data.get("unresolved_blocks") or []) if isinstance(b, dict)]
+
 
 def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
     p = _ep_paths(ep_dir)
+    # ADVERTISER-SAFETY GATE: refuse to spend TTS on a chapter whose narration
+    # still carries a hard BLOCK the reframe couldn't soften (slurs, sexual
+    # violence, explicit anatomy). The scripted stage records these in
+    # manifest.sanitize.json; raising here makes run_chapter set the chapter to
+    # 'voiced_failed' with this error (the existing error/status path), so the
+    # worker surfaces it and never voices. A clean chapter has no unresolved
+    # blocks and proceeds normally.
+    if cfg.narration_sanitize:
+        unresolved = _read_sanitize_unresolved(ep_dir / "manifest.sanitize.json")
+        if unresolved:
+            preview = ", ".join(
+                f"{b.get('segment_id', '?')}:'{b.get('matched', '')}'"
+                for b in unresolved[:5])
+            raise RuntimeError(
+                f"voiced blocked: narration sanitize left {len(unresolved)} "
+                f"unresolved advertiser-safety BLOCK(s) [{preview}] — "
+                f"see {ep_dir / 'manifest.sanitize.json'}")
     backend = (cfg.tts_backend or "elevenlabs").lower()
     if backend != "elevenlabs":   # any local backend (chatterbox[-turbo]/kokoro)
         # Free local TTS — no credential needed. Same tts_index.json contract.
