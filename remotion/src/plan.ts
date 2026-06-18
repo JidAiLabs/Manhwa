@@ -20,6 +20,7 @@ export type Motion = {
   ease?: string;
   start_bias?: Bias;
   end_bias?: Bias;
+  focus?: string; // 'face' when the planner aimed this cut's pan at a face target
   zoom?: {start?: number; end?: number};
   bg_fill?: {enabled?: boolean; amount?: number; dim?: number};
   fg_fit?: {mode?: string; safe_inset_pct?: number};

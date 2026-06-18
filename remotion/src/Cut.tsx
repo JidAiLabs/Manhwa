@@ -74,8 +74,19 @@ export const CutView: React.FC<{
       extrapolateLeft: 'clamp',
       extrapolateRight: 'clamp',
     });
+    // If this tall strip carries a FACE target, SETTLE the scroll so the face
+    // lands vertically centered and HOLDS there — fixes the "starts on a face
+    // then drifts down off it" complaint. Otherwise scroll in reading order
+    // (down; a tilt_up beat scrolls up).
     const up = (motion?.mode ?? '') === 'tilt_up';
-    const y = up ? -travel * (1 - prog) : -travel * prog;
+    let y: number;
+    if (motion?.focus === 'face' && motion?.end_bias) {
+      const faceCy = clamp(0.5 + (motion.end_bias.y ?? 0) * 0.5, 0, 1);
+      const target = clamp(height / 2 - faceCy * scaledH, -travel, 0);
+      y = target * prog; // ease from the top down to the face, then hold
+    } else {
+      y = up ? -travel * (1 - prog) : -travel * prog;
+    }
     return (
       <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
         <Img

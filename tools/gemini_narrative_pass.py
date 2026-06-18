@@ -64,11 +64,14 @@ _REGISTER_CLASSIFIER_SCHEMA = {
 }
 
 _FAST_NARRATION_PROMPT = (
-    "Fast manhwa recap, ACTION beat. Write SHORT plain plot-forward sentences — "
-    "roughly ONE per panel — covering only WHAT HAPPENS and the result in each. "
-    "Keep every sentence tight (~12-15 words); NO flowery adjectives, NO "
-    "light/energy/debris description, NO inner feelings. Open with a light "
-    "transition (Then/But/Now) when natural. Present tense. Name characters."
+    "Fast manhwa recap, ACTION beat. Narrate EACH panel with the weight it "
+    "deserves — a quick hit (a landed punch, a dodge, a flinch) gets a short "
+    "punchy line of a few words; a pivotal or busy panel (a reversal, a revealed "
+    "technique, a turning point) gets up to two sentences. Cover WHAT HAPPENS and "
+    "its impact; MATCH the length to the moment — never pad a simple beat, never "
+    "clip an important one, and never skip a panel. Stay concrete; NO flowery "
+    "adjectives, NO light/energy/debris description, NO inner feelings. Present "
+    "tense. Name characters."
 )
 
 _DEEP_NARRATION_PROMPT = (
@@ -105,11 +108,19 @@ _REGISTER_PARAMS = {
 # crammed Ch20's 6-panel beat into 24 words / 1.7s-per-panel. FAST stays terse PER
 # panel (~one tight line each); DEEP keeps its richer floor. The per-panel caps
 # (FAST 28, DEEP 40 tokens) only RAISE the floor — a 1-panel beat is unchanged.
+# Per-panel token budget. Calibrated so a TYPICAL full chapter (~90 shown panels)
+# lands near the ~10-min YouTube-friendly length WITHOUT a hard clock — short
+# chapters stay short, dense ones run longer. (~16-20 words/panel ≈ these caps; the
+# model fills ~half, so the cap only needs headroom.) 1-panel beats are unchanged.
+_FAST_TOK_PER_PANEL = 36
+_DEEP_TOK_PER_PANEL = 48
+
+
 def _register_token_cap(register: str, n_panels: int) -> int:
     n = max(1, int(n_panels or 1))
     if register == "DEEP":
-        return max(_REGISTER_PARAMS["DEEP"]["max_output_tokens"], 40 * n)
-    return max(_REGISTER_PARAMS["FAST"]["max_output_tokens"], 28 * n)
+        return max(_REGISTER_PARAMS["DEEP"]["max_output_tokens"], _DEEP_TOK_PER_PANEL * n)
+    return max(_REGISTER_PARAMS["FAST"]["max_output_tokens"], _FAST_TOK_PER_PANEL * n)
 
 _REGISTER_NARRATION_SCHEMA = {
     "type": "OBJECT",
@@ -160,10 +171,11 @@ def _build_register_system(register: str, cast_block: str, story_block: str,
     n = max(1, int(n_panels or 1))
     if n > 1:
         blocks.append(
-            f"PANEL COUNT: this beat spans {n} panels — write about {n} short "
-            f"sentences (roughly one per panel) so EVERY panel has a line of "
-            f"narration to play under. Do not pad with fluff, but do NOT collapse "
-            f"{n} distinct panels into a single sentence.")
+            f"PANEL COUNT: this beat spans {n} panels — COVER every one (none "
+            f"skipped, so no panel flashes by silent), but give each the length it "
+            f"DESERVES: a quick hit a few words, a pivotal panel more. Do NOT "
+            f"collapse {n} distinct panels into one sentence, and do NOT pad each "
+            f"to the same length.")
     if cast_block:
         blocks.append(cast_block)
     if story_block:

@@ -258,6 +258,73 @@ def drop_visual_duplicate_cuts(
     return _redistribute(cuts, dropped), dropped
 
 
+def _near_identical_similarity(a: np.ndarray, b: np.ndarray, *, size: int = 64) -> float:
+    """Full-image similarity in [0,1] for two SIMILAR-SIZED panels.
+
+    Both images are downscaled to a fixed *size*x*size* grayscale grid (so a
+    few px of size mismatch don't matter) and compared with normalized
+    cross-correlation. NCC keys on STRUCTURE, not absolute brightness, so a
+    global tone shift between two genuinely-different panels never reads as a
+    match; only the same drawing, barely changed, scores near 1.0. Returns 0.0
+    when either image is featureless (flat) — a zero-variance NCC is undefined
+    and would spuriously match every other flat panel.
+    """
+    def gray64(im: np.ndarray) -> np.ndarray:
+        g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) if im.ndim == 3 else im
+        return cv2.resize(g, (size, size), interpolation=cv2.INTER_AREA).astype(np.float64)
+
+    ga, gb = gray64(a), gray64(b)
+    sa, sb = float(ga.std()), float(gb.std())
+    if sa < 4.0 or sb < 4.0:
+        return 0.0  # flat/featureless panel — NCC is meaningless
+    za, zb = (ga - ga.mean()) / sa, (gb - gb.mean()) / sb
+    return float((za * zb).mean())  # NCC in [-1, 1]; near 1.0 == same drawing
+
+
+def drop_near_identical_cuts(
+    cuts: Sequence[Dict[str, Any]],
+    images_by_file: Dict[str, np.ndarray],
+    *,
+    thresh: float = 0.96,
+    min_area_ratio: float = 0.7,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Drop the LATER of any pair of SIMILAR-SIZED, near-identical cuts.
+
+    Catches the case the containment filter (drop_visual_duplicate_cuts) cannot:
+    two SEPARATE panels of roughly the same size with the same framing and only
+    tiny differences (the Ch20 g0003 'reaction face with ?' pair p000013 /
+    p000016 — area_ratio ~1.0, so neither is "the small one contained in the
+    big one"). We resize both full images to 64x64 grayscale and compare with
+    normalized cross-correlation; a pair is a near-dup only when similarity
+    >= *thresh* AND their areas are close (area ratio >= *min_area_ratio*), so a
+    seam fragment (small-in-big, low area ratio) is left for the containment
+    filter. The EARLIER cut is kept, the later dropped, freed time redistributed.
+    Conservative by design: 0.96 NCC means the same drawing barely changed —
+    two distinct panels (different characters/scenes) score far lower and survive.
+    """
+    dropped: List[str] = []
+    n = len(cuts)
+    for i in range(n):
+        fi = str(cuts[i]["file"])
+        if fi in dropped:
+            continue
+        for j in range(i + 1, n):
+            fj = str(cuts[j]["file"])
+            if fj in dropped or fi == fj:
+                continue
+            a, b = images_by_file.get(fi), images_by_file.get(fj)
+            if a is None or b is None:
+                continue
+            area_a = a.shape[0] * a.shape[1]
+            area_b = b.shape[0] * b.shape[1]
+            ratio = min(area_a, area_b) / max(1, max(area_a, area_b))
+            if ratio < min_area_ratio:
+                continue  # different-sized seam pair — not our case
+            if _near_identical_similarity(a, b) >= thresh:
+                dropped.append(fj)  # keep the earlier cut, drop the later
+    return _redistribute(cuts, dropped), dropped
+
+
 # ---------------------------------------------------------------------------
 # 3. uniform light border trim (pure)
 # ---------------------------------------------------------------------------
@@ -1562,6 +1629,16 @@ def main() -> int:
             imgs = {k: v for k, v in imgs.items() if v is not None}
             new_cuts, vdropped = drop_visual_duplicate_cuts(new_cuts, imgs)
             dropped = list(dropped) + vdropped
+            # near-identical SAME-SIZE pair (the 'reaction face with ?' repeat):
+            # the containment filter above only catches small-in-big seam dups.
+            if len(new_cuts) > 1:
+                imgs = {k: v for k, v in imgs.items()
+                        if k in {str(c["file"]) for c in new_cuts}}
+                new_cuts, ndropped = drop_near_identical_cuts(new_cuts, imgs)
+                dropped = list(dropped) + ndropped
+                if ndropped:
+                    print(f"[ok] {item.get('segment_id')}: "
+                          f"near_identical_dropped={ndropped}")
         if new_cuts:
             cov: Dict[str, float] = {}
             exempt: set = set()

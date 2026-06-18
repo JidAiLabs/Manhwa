@@ -128,7 +128,7 @@ def test_fast_token_cap_scales_with_panel_count(monkeypatch):
     gnp._register_narration(
         client=None, model="m", register="FAST", cast_block="", story_block="",
         is_first=False, payload=payload, image_paths=[], backoff_max=5.0, backend="ollama")
-    assert calls[0]["max_output_tokens"] == max(70, 28 * 6)
+    assert calls[0]["max_output_tokens"] == max(70, gnp._FAST_TOK_PER_PANEL * 6)
     assert calls[0]["max_output_tokens"] > 70
 
 
@@ -149,7 +149,7 @@ def test_deep_token_cap_scales_with_panel_count(monkeypatch):
     gnp._register_narration(
         client=None, model="m", register="DEEP", cast_block="", story_block="",
         is_first=False, payload=payload, image_paths=[], backoff_max=5.0, backend="ollama")
-    assert calls[0]["max_output_tokens"] == max(350, 40 * 10)
+    assert calls[0]["max_output_tokens"] == max(350, gnp._DEEP_TOK_PER_PANEL * 10)
 
 
 def test_register_system_fast_surfaces_panel_count():

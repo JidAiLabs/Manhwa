@@ -105,6 +105,83 @@ def test_visual_distinct_images_kept():
     assert len(out) == 2
 
 
+# ---- 2b. near-identical same-size dedup (the "? face" pair) ------------------
+
+def test_near_identical_same_size_pair_deduped():
+    # two SEPARATE panels, same framing, tiny per-pixel differences — the
+    # "reaction face with ?" case (p000013 / p000016). area_ratio ~1.0 so the
+    # containment filter never fires; this filter must catch it.
+    rng = np.random.default_rng(7)
+    base = rng.integers(0, 256, (400, 300, 3), dtype=np.uint8)
+    noisy = base.astype(np.int16) + rng.integers(-3, 4, base.shape)
+    noisy = noisy.clip(0, 255).astype(np.uint8)
+    cuts = [{"file": "p13.jpg", "start": 0.0, "dur": 4.0},
+            {"file": "p16.jpg", "start": 4.0, "dur": 4.0}]
+    out, dropped = rp.drop_near_identical_cuts(
+        cuts, {"p13.jpg": base, "p16.jpg": noisy})
+    assert dropped == ["p16.jpg"]               # LATER cut dropped, earlier kept
+    assert [c["file"] for c in out] == ["p13.jpg"]
+    assert abs(out[0]["dur"] - 8.0) < 1e-6       # freed time redistributed
+
+
+def test_near_identical_distinct_images_both_kept():
+    # mostly-black vs mostly-white — clearly different, must both survive.
+    black = np.full((400, 300, 3), 8, np.uint8)
+    white = np.full((400, 300, 3), 247, np.uint8)
+    cuts = [{"file": "blk.jpg", "start": 0.0, "dur": 4.0},
+            {"file": "wht.jpg", "start": 4.0, "dur": 4.0}]
+    out, dropped = rp.drop_near_identical_cuts(
+        cuts, {"blk.jpg": black, "wht.jpg": white})
+    assert dropped == []
+    assert len(out) == 2
+
+
+def test_near_identical_distinct_random_images_both_kept():
+    # two independent random panels (different characters/scenes) — kept.
+    rng = np.random.default_rng(11)
+    a = rng.integers(0, 256, (400, 300, 3), dtype=np.uint8)
+    b = rng.integers(0, 256, (380, 300, 3), dtype=np.uint8)
+    cuts = [{"file": "a.jpg", "start": 0.0, "dur": 5.0},
+            {"file": "b.jpg", "start": 5.0, "dur": 3.0}]
+    out, dropped = rp.drop_near_identical_cuts(cuts, {"a.jpg": a, "b.jpg": b})
+    assert dropped == []
+    assert len(out) == 2
+
+
+def test_near_identical_redistributes_total_duration_preserved():
+    base = _pattern(400, 300)
+    near = base.astype(np.int16) + 2             # uniform tiny shift
+    near = near.clip(0, 255).astype(np.uint8)
+    cuts = [{"file": "x.jpg", "start": 0.0, "dur": 3.0},
+            {"file": "y.jpg", "start": 3.0, "dur": 5.0}]
+    total_before = sum(c["dur"] for c in cuts)
+    out, dropped = rp.drop_near_identical_cuts(
+        cuts, {"x.jpg": base, "y.jpg": near})
+    assert dropped == ["y.jpg"]
+    assert abs(sum(c["dur"] for c in out) - total_before) < 1e-6
+    assert out[0]["file"] == "x.jpg"
+
+
+def test_near_identical_different_size_seam_pair_not_handled_here():
+    # a small contained-in-big seam pair has area_ratio well below 0.7, so
+    # this filter leaves it for drop_visual_duplicate_cuts (no double-handling).
+    big = _pattern(400, 300)
+    small = big[300:400, 0:300].copy()           # area ratio 0.25
+    cuts = [{"file": "big.jpg", "start": 0.0, "dur": 4.0},
+            {"file": "small.jpg", "start": 4.0, "dur": 4.0}]
+    out, dropped = rp.drop_near_identical_cuts(
+        cuts, {"big.jpg": big, "small.jpg": small})
+    assert dropped == []
+    assert len(out) == 2
+
+
+def test_near_identical_single_cut_noop():
+    out, dropped = rp.drop_near_identical_cuts(
+        [{"file": "a.jpg", "start": 0.0, "dur": 4.0}], {"a.jpg": _pattern(400, 300)})
+    assert dropped == []
+    assert len(out) == 1
+
+
 # ---- 3. uniform light border trim -------------------------------------------
 
 def test_content_bbox_trims_light_page_margin():
