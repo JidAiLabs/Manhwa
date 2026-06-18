@@ -78,6 +78,18 @@ _DEEP_NARRATION_PROMPT = (
     "line. Present tense. Paraphrase dialogue; quote a short punchy fragment."
 )
 
+# Continuity/anti-echo rule for the register override. The register call builds a
+# FRESH system prompt (gear + cast + story + safe rules) and does NOT inherit the
+# default call's CONTINUITY rule — without this, consecutive DEEP beats both open
+# with the same canonical line (the Ch20 "The sting of battle fades…" echo bug).
+_REGISTER_CONTINUITY_RULE = (
+    "CONTINUITY: INPUT_JSON.previous_narration holds the line(s) the narrator JUST "
+    "SPOKE. Continue that flow — do NOT start with the same opening words, the same "
+    "sentence shape, or the same image as the previous line; vary your opener. If the "
+    "previous line ended mid-thought, your first words complete it. Never re-introduce "
+    "characters or re-describe a setting already established."
+)
+
 # Token caps + temperatures are part of the verified spec (FAST must be ENFORCED
 # short; DEEP gets room). The classifier is cheap + low-temp for stability.
 _REGISTER_PARAMS = {
@@ -136,6 +148,7 @@ def _build_register_system(register: str, cast_block: str, story_block: str,
     if story_block:
         blocks.append(story_block)
     blocks.append(SAFE_NARRATION_RULES)
+    blocks.append(_REGISTER_CONTINUITY_RULE)
     if is_first:
         blocks.append(SAFE_OPENING_NOTE)
     return "\n\n".join(blocks)

@@ -119,6 +119,18 @@ def test_register_system_includes_cast_and_story_grounding():
     assert gnp._DEEP_NARRATION_PROMPT in sysmsg
 
 
+def test_register_system_carries_continuity_antiecho_rule():
+    # the register override builds a FRESH system prompt; it MUST carry the
+    # same previous_narration continuity/anti-echo rule the default call has,
+    # or consecutive DEEP beats echo the same opener (the Ch20 bug).
+    for reg in ("FAST", "DEEP"):
+        sysmsg = gnp._build_register_system(reg, "", "", is_first=False)
+        assert gnp._REGISTER_CONTINUITY_RULE in sysmsg
+        # it must reference previous_narration and forbid reusing the opener
+        assert "previous_narration" in gnp._REGISTER_CONTINUITY_RULE
+        assert "opening words" in gnp._REGISTER_CONTINUITY_RULE
+
+
 def test_register_narration_empty_on_parse_miss(monkeypatch):
     # a non-dict / missing-narration model response -> empty string, so the
     # caller keeps the default-call narration (never blanks the line)
