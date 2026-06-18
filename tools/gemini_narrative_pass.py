@@ -64,11 +64,11 @@ _REGISTER_CLASSIFIER_SCHEMA = {
 }
 
 _FAST_NARRATION_PROMPT = (
-    "Fast manhwa recap, ACTION beat. ONE or TWO short plain plot-forward "
-    "sentences, MAX 28 words. Only WHAT HAPPENS and the result. NO flowery "
-    "adjectives, NO light/energy/debris description, NO inner feelings. Open with "
-    "a light transition (Then/But/Now) when natural. Present tense. Name "
-    "characters."
+    "Fast manhwa recap, ACTION beat. Write SHORT plain plot-forward sentences — "
+    "roughly ONE per panel — covering only WHAT HAPPENS and the result in each. "
+    "Keep every sentence tight (~12-15 words); NO flowery adjectives, NO "
+    "light/energy/debris description, NO inner feelings. Open with a light "
+    "transition (Then/But/Now) when natural. Present tense. Name characters."
 )
 
 _DEEP_NARRATION_PROMPT = (
@@ -97,6 +97,19 @@ _REGISTER_PARAMS = {
     "FAST": {"max_output_tokens": 70, "temperature": 0.3},
     "DEEP": {"max_output_tokens": 350, "temperature": 0.4},
 }
+
+
+# The narration token budget SCALES with the beat's panel count: the planner paces
+# every distinct panel UNDER the voiceover, so a panel-dense beat needs
+# proportionally more narration or the panels flash by. A FLAT cap is exactly what
+# crammed Ch20's 6-panel beat into 24 words / 1.7s-per-panel. FAST stays terse PER
+# panel (~one tight line each); DEEP keeps its richer floor. The per-panel caps
+# (FAST 28, DEEP 40 tokens) only RAISE the floor — a 1-panel beat is unchanged.
+def _register_token_cap(register: str, n_panels: int) -> int:
+    n = max(1, int(n_panels or 1))
+    if register == "DEEP":
+        return max(_REGISTER_PARAMS["DEEP"]["max_output_tokens"], 40 * n)
+    return max(_REGISTER_PARAMS["FAST"]["max_output_tokens"], 28 * n)
 
 _REGISTER_NARRATION_SCHEMA = {
     "type": "OBJECT",
@@ -137,12 +150,20 @@ def _classify_register(
 
 
 def _build_register_system(register: str, cast_block: str, story_block: str,
-                           is_first: bool) -> str:
+                           is_first: bool, n_panels: int = 1) -> str:
     """Gear prompt (FAST/DEEP) + the SAME grounding context (cast + story spine)
-    the default call uses + advertiser-safety rules. The first group also carries
-    the cold-open note."""
+    the default call uses + advertiser-safety rules. The gear is told the beat's
+    PANEL COUNT so a multi-panel beat gets ~one line per panel (enough voiceover to
+    pace every panel). The first group also carries the cold-open note."""
     gear = _FAST_NARRATION_PROMPT if register == "FAST" else _DEEP_NARRATION_PROMPT
     blocks = [gear]
+    n = max(1, int(n_panels or 1))
+    if n > 1:
+        blocks.append(
+            f"PANEL COUNT: this beat spans {n} panels — write about {n} short "
+            f"sentences (roughly one per panel) so EVERY panel has a line of "
+            f"narration to play under. Do not pad with fluff, but do NOT collapse "
+            f"{n} distinct panels into a single sentence.")
     if cast_block:
         blocks.append(cast_block)
     if story_block:
@@ -172,7 +193,9 @@ def _register_narration(
     previous_narration threading as the default call. Empty string on parse miss
     (the caller keeps the default-call narration as the fallback)."""
     params = _REGISTER_PARAMS[register]
-    sysmsg = _build_register_system(register, cast_block, story_block, is_first)
+    n_panels = len(payload.get("scene_files") or [])
+    sysmsg = _build_register_system(register, cast_block, story_block, is_first,
+                                    n_panels)
     obj, _raw, usage = _call_model_with_backoff(
         client=client,
         model=model,
@@ -180,7 +203,7 @@ def _register_narration(
         user_payload=payload,
         image_paths=image_paths,
         response_schema=_REGISTER_NARRATION_SCHEMA,
-        max_output_tokens=params["max_output_tokens"],
+        max_output_tokens=_register_token_cap(register, n_panels),
         temperature=params["temperature"],
         backoff_max=backoff_max,
         backend=backend,

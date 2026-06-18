@@ -457,6 +457,44 @@ def face_aware_motion(base_motion: Dict[str, Any],
     return motion
 
 
+# Distinct camera moves cycled by GLOBAL cut index so neighbouring face-less panels
+# never share the same move. The old kenburns was a single hardcoded diagonal on
+# EVERY panel -> "repetitive, same animation 3x in a row". Applied ONLY to cuts with
+# no face (face cuts keep their face-ending move). Tall scroll panels ignore bias in
+# the renderer, so this is a harmless no-op there. Each entry: (start_bias, end_bias,
+# zoom) — a mix of diagonals (both directions), straight pans, and push-in/pull-out.
+_MOTION_VARIANTS = [
+    {"start": (0.30, 0.18),  "end": (-0.30, -0.18), "zoom": (1.05, 1.12)},  # diag NE->SW
+    {"start": (0.0, 0.0),    "end": (0.0, 0.0),     "zoom": (1.04, 1.18)},  # push in
+    {"start": (-0.30, 0.18), "end": (0.30, -0.18),  "zoom": (1.05, 1.12)},  # diag NW->SE
+    {"start": (0.36, 0.0),   "end": (-0.36, 0.0),   "zoom": (1.04, 1.10)},  # pan L->R
+    {"start": (0.0, 0.0),    "end": (0.0, 0.0),     "zoom": (1.16, 1.04)},  # pull out
+    {"start": (0.30, -0.18), "end": (-0.30, 0.18),  "zoom": (1.05, 1.12)},  # diag SE->NW
+    {"start": (-0.36, 0.0),  "end": (0.36, 0.0),    "zoom": (1.04, 1.10)},  # pan R->L
+    {"start": (-0.30, -0.18),"end": (0.30, 0.18),   "zoom": (1.05, 1.12)},  # diag SW->NE
+]
+
+
+def _vary_motion(base_motion: Dict[str, Any], ordinal: int) -> Dict[str, Any]:
+    """Return a COPY of base_motion with its pan direction + zoom set to the
+    ordinal-th variant, so consecutive face-less cuts never share a move. Strength,
+    ease, bg_fill and fg_fit are preserved. A 'static' shot is returned unchanged."""
+    if not isinstance(base_motion, dict):
+        return base_motion
+    if (base_motion.get("mode") or "").lower() == "static":
+        return base_motion
+    v = _MOTION_VARIANTS[int(ordinal) % len(_MOTION_VARIANTS)]
+    m = dict(base_motion)
+    m["start_bias"] = {"x": round(float(v["start"][0]), 3),
+                       "y": round(float(v["start"][1]), 3)}
+    m["end_bias"] = {"x": round(float(v["end"][0]), 3),
+                     "y": round(float(v["end"][1]), 3)}
+    m["zoom"] = {"start": round(float(v["zoom"][0]), 3),
+                 "end": round(float(v["zoom"][1]), 3)}
+    m["varied"] = True  # QA breadcrumb; renderers ignore unknown keys
+    return m
+
+
 def _camera_compat_from_motion(motion: Dict[str, Any], avoid_text_zoom: bool) -> Dict[str, Any]:
     mode = (motion.get("mode") or "kenburns").lower()
     if mode == "static":
@@ -984,6 +1022,7 @@ def main() -> int:
     if caption_set:
         print(f"[plan] {len(caption_set)} caption card(s) -> narrated, not shown")
 
+    cut_ordinal = 0  # GLOBAL across all beats: drives per-cut motion variation
     for gobj in groups:
         group_id = int(gobj.get("group_id") or gobj.get("shot_id") or 0)
         shot_id = int(gobj.get("shot_id") or group_id or 0)
@@ -1110,9 +1149,16 @@ def main() -> int:
             # motion); a face-bearing panel gets a copy whose end_bias lands the
             # face centered. The renderer prefers cut.motion over item.motion.
             for c in cuts:
-                fm = face_aware_motion(motion, targets_by_file.get(str(c.get("file") or "")))
+                tf = targets_by_file.get(str(c.get("file") or ""))
+                fm = face_aware_motion(motion, tf)
                 if fm is not motion:
-                    c["motion"] = fm
+                    c["motion"] = fm            # face panel: pan ends ON the face
+                else:
+                    # no face: rotate the move by GLOBAL cut index so consecutive
+                    # face-less panels never share the same (previously identical)
+                    # kenburns diagonal.
+                    c["motion"] = _vary_motion(motion, cut_ordinal)
+                cut_ordinal += 1
 
             item: Dict[str, Any] = {
                 "segment_id": segment_id,

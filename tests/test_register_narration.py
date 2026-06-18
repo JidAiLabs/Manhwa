@@ -119,6 +119,48 @@ def test_register_system_includes_cast_and_story_grounding():
     assert gnp._DEEP_NARRATION_PROMPT in sysmsg
 
 
+def test_fast_token_cap_scales_with_panel_count(monkeypatch):
+    # a panel-dense FAST beat must get a BIGGER token budget so the narration can
+    # cover every panel — the Ch20 "6 panels, 24 words, 1.7s/panel" regression.
+    stub, calls = _make_stub("FAST")
+    monkeypatch.setattr(gnp, "_call_model_with_backoff", stub)
+    payload = {**_payload(), "scene_files": [f"p{i}.jpg" for i in range(6)]}
+    gnp._register_narration(
+        client=None, model="m", register="FAST", cast_block="", story_block="",
+        is_first=False, payload=payload, image_paths=[], backoff_max=5.0, backend="ollama")
+    assert calls[0]["max_output_tokens"] == max(70, 28 * 6)
+    assert calls[0]["max_output_tokens"] > 70
+
+
+def test_fast_token_cap_single_panel_unchanged(monkeypatch):
+    # a 1-panel FAST beat stays terse (cap == the old flat 70) — no regression.
+    stub, calls = _make_stub("FAST")
+    monkeypatch.setattr(gnp, "_call_model_with_backoff", stub)
+    gnp._register_narration(
+        client=None, model="m", register="FAST", cast_block="", story_block="",
+        is_first=False, payload=_payload(), image_paths=[], backoff_max=5.0, backend="ollama")
+    assert calls[0]["max_output_tokens"] == 70
+
+
+def test_deep_token_cap_scales_with_panel_count(monkeypatch):
+    stub, calls = _make_stub("DEEP")
+    monkeypatch.setattr(gnp, "_call_model_with_backoff", stub)
+    payload = {**_payload(), "scene_files": [f"p{i}.jpg" for i in range(10)]}
+    gnp._register_narration(
+        client=None, model="m", register="DEEP", cast_block="", story_block="",
+        is_first=False, payload=payload, image_paths=[], backoff_max=5.0, backend="ollama")
+    assert calls[0]["max_output_tokens"] == max(350, 40 * 10)
+
+
+def test_register_system_fast_surfaces_panel_count():
+    # the FAST gear is told how many panels the beat spans so it writes ~one line
+    # per panel (instead of a flat short cap that crams them).
+    multi = gnp._build_register_system("FAST", "", "", is_first=False, n_panels=6)
+    assert "PANEL COUNT" in multi and "6" in multi
+    single = gnp._build_register_system("FAST", "", "", is_first=False, n_panels=1)
+    assert "PANEL COUNT" not in single  # single-panel FAST stays terse
+
+
 def test_register_system_carries_continuity_antiecho_rule():
     # the register override builds a FRESH system prompt; it MUST carry the
     # same previous_narration continuity/anti-echo rule the default call has,

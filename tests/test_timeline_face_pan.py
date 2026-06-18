@@ -144,6 +144,45 @@ def test_face_aware_motion_no_targets_is_passthrough():
     assert tp.face_aware_motion(base, []) is base
 
 
+# ---- _vary_motion: face-less cuts get a VARIED move so neighbours differ ------
+# (the generic kenburns was identical on every face-less panel -> "repetitive,
+#  same animation 3x in a row" complaint; we rotate the move by global cut index.)
+
+def test_vary_motion_consecutive_cuts_never_match():
+    base = _base_motion()
+    keys = []
+    for i in range(len(tp._MOTION_VARIANTS) + 2):
+        m = tp._vary_motion(base, i)
+        keys.append((m["start_bias"]["x"], m["start_bias"]["y"],
+                     m["end_bias"]["x"], m["end_bias"]["y"],
+                     m["zoom"]["start"], m["zoom"]["end"]))
+    for a, b in zip(keys, keys[1:]):
+        assert a != b, "consecutive face-less cuts must not share the same move"
+
+
+def test_vary_motion_preserves_look_fields():
+    base = _base_motion()
+    m = tp._vary_motion(base, 3)
+    assert m is not base
+    assert m["bg_fill"] == base["bg_fill"]
+    assert m["strength"] == base["strength"]
+    assert m.get("varied") is True
+
+
+def test_vary_motion_static_stays_static():
+    base = _base_motion(mode="static")
+    assert tp._vary_motion(base, 1) is base
+
+
+def test_vary_motion_rotates_by_ordinal():
+    base = _base_motion()
+    n = len(tp._MOTION_VARIANTS)
+    a, b = tp._vary_motion(base, 0), tp._vary_motion(base, n)
+    assert a["start_bias"] == b["start_bias"]
+    assert a["end_bias"] == b["end_bias"]
+    assert a["zoom"] == b["zoom"]
+
+
 # ---- index_targets_by_file: basename keying from the vision manifest ---------
 
 def test_index_targets_by_file_keys_on_basename(tmp_path):

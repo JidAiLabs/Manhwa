@@ -19,8 +19,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
@@ -195,6 +196,51 @@ def _scene_items_in_order(vision: Dict[str, Any]) -> List[Dict[str, Any]]:
     return items
 
 
+# --- publication-chrome text signal -----------------------------------------
+# Keyword source of truth lives in two siblings with DIFFERENT match semantics:
+#   tools/prep_qa.py        `_CHROME_NARR_RE`  (does narration mention chrome?)
+#   tools/scene_chrome.py   `_CREDITS_RE`/`_SITE_PLUG_RE` (is OCR a chrome page?)
+# Neither covers the recruitment/ad vocabulary that OVER-FIRES the in-world
+# rescue (a "join our Discord to apply" recruitment card read as in-world chat).
+# We mirror + extend that vocabulary here, kept in sync by the comment above,
+# rather than importing — those regexes are tuned for OCR/narration strings, not
+# the model's free-text description/action which is what we gate on. Phrasing is
+# deliberately broad: a panel that READS like publication furniture is chrome
+# even when it carries a speech-balloon, so the rescue must never promote it.
+_CHROME_FURNITURE_RE = re.compile(
+    r"\b("
+    r"discord|patreon|subscrib\w*|"
+    r"recruit\w*|"                       # "recruiting", "recruitment card"
+    r"translator|translators|translat(?:ion|ed\s+by)|"
+    r"scanlat\w*|typeset\w*|proofread\w*|redraw\w*|cleaner|cleaning\s+team|"
+    r"raw\s+provider|"
+    r"join\s+(?:our|the|us)|"            # "join our Discord", "join the team"
+    r"support\s+(?:us|the\s+team)|"
+    r"follow\s+us|"
+    r"thanks?\s+for\s+reading|"
+    r"next\s+chapter|next\s+episode|"
+    r"end\s*card|"
+    r"watermark|"
+    r"credits?\s+page|staff\s+credits?|"
+    r"read\s+(?:on|the\s+rest|more)\s+(?:at|on)|read\s+it\s+(?:on|at)|"
+    r"early\s+(?:access|chapters?|release)"
+    r")\b",
+    re.IGNORECASE)
+
+
+def _looks_like_chrome_furniture(*texts: str) -> bool:
+    """True when any of the given strings (a panel's description / action /
+    dialogue) reads like PUBLICATION furniture — scanlator credits, a Discord/
+    Patreon promo, a recruitment card, a 'thanks for reading / next chapter'
+    end-card. Such a panel is chrome even when it carries dialogue-like text, so
+    the in-world rescue must NOT promote it to story. In-world chat / game-UI /
+    status screens use none of this vocabulary and pass through untouched."""
+    for t in texts:
+        if t and _CHROME_FURNITURE_RE.search(str(t)):
+            return True
+    return False
+
+
 # --- in-world screen rescue -------------------------------------------------
 # The classifier reliably mis-buckets an IN-WORLD device/app screen as 'chrome'
 # when it looks like platform UI (an episode list, a feed) — even though the
@@ -231,35 +277,54 @@ def _load_bubble_detector(device: str = "mps"):
     return BubbleDetector(device=device)
 
 
-def apply_inworld_screen_overrides(panels: List[Dict[str, Any]],
-                                   items: List[Dict[str, Any]],
-                                   *, device: str = "mps",
-                                   log: Callable[[str], None] = print) -> int:
+def apply_inworld_screen_overrides(
+        panels: List[Dict[str, Any]],
+        items: List[Dict[str, Any]],
+        *, device: str = "mps",
+        detect_fn: Optional[Callable[[str], Optional[Tuple[int, int, Any]]]] = None,
+        log: Callable[[str], None] = print) -> int:
     """Promote chrome panels that carry a real speech balloon over dialogue to
     'story' (an in-world screen). Returns the count promoted. Fail-soft: if the
-    detector or an image is unavailable, the classification is left untouched."""
+    detector or an image is unavailable, the classification is left untouched.
+
+    A panel whose description/action/dialogue reads like PUBLICATION furniture
+    (scanlator credits, a Discord/Patreon recruitment promo, a 'thanks for
+    reading / next chapter' end-card) is NEVER promoted — text-heavy ad/credit
+    cards otherwise over-fire this rescue (Ch141 p000068: a translator-
+    recruitment card was read as in-world chat). Such panels stay chrome so the
+    grouper drops them. `detect_fn(scene_path) -> (w, h, dets) | None` is an
+    injectable seam (defaults to the real cv2 + bubble detector)."""
     cand = [p for p in panels
-            if p.get("panel_kind") == "chrome" and (p.get("dialogue") or "").strip()]
+            if p.get("panel_kind") == "chrome" and (p.get("dialogue") or "").strip()
+            and not _looks_like_chrome_furniture(
+                p.get("description"), p.get("action"), p.get("dialogue"))]
     if not cand:
         return 0
     path_by_file = {it.get("scene_file"): it.get("scene_path") for it in items}
-    try:
-        import cv2
-        det = _load_bubble_detector(device)
-    except Exception as e:                                            # pragma: no cover
-        log(f"[inworld] bubble detector unavailable ({e}) — override skipped")
-        return 0
+    if detect_fn is None:
+        try:
+            import cv2
+            det = _load_bubble_detector(device)
+        except Exception as e:                                       # pragma: no cover
+            log(f"[inworld] bubble detector unavailable ({e}) — override skipped")
+            return 0
+
+        def detect_fn(sp: str):                                      # noqa: F811
+            img = cv2.imread(sp) if sp else None
+            if img is None:
+                return None
+            h, w = img.shape[:2]
+            try:
+                return w, h, det.detect(img, imgsz=1024, conf=0.20)
+            except Exception:                                        # pragma: no cover
+                return None
     n = 0
     for p in cand:
         sp = path_by_file.get(p.get("scene_file"))
-        img = cv2.imread(sp) if sp else None
-        if img is None:
+        res = detect_fn(sp) if sp else None
+        if not res:
             continue
-        h, w = img.shape[:2]
-        try:
-            dets = det.detect(img, imgsz=1024, conf=0.20)
-        except Exception:                                            # pragma: no cover
-            continue
+        w, h, dets = res
         if _is_inworld_balloon(dets, w, h):
             p["panel_kind"] = "story"
             # stamp the marker render_prep keys on to keep the screen text
