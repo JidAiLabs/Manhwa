@@ -123,11 +123,48 @@ class VisionConfig:
 
 
 # -----------------------------
+# OCR garbage scrub
+# -----------------------------
+# A long run of a repeated non-word char (underscores, dots, dashes, etc.) is a
+# garbage OCR scan of SFX / speedlines, NOT text. Fed downstream it corrupts the
+# understanding/narration models (Ch20 g0014: a 50-underscore "word" made the
+# narration model emit JSON meta-commentary that got voiced). Collapse any run of
+# >=6 identical non-word chars to nothing. Conservative: a SHORT run (ellipsis
+# "...", "?!", "--") is real punctuation and is preserved.
+# NOTE: `\w` includes underscore, so we explicitly carve underscore OUT of the
+# "word" class here — a run of underscores must count as garbage punctuation.
+_GARBAGE_RUN_RE = re.compile(r"([_\W])\1{5,}")
+# An OCR "word" with NO letters or digits (all underscores/punctuation) is
+# garbage and gets dropped from ocr_words.
+_ALL_PUNCT_TOKEN_RE = re.compile(r"^[\W_]+$")
+
+
+def _scrub_ocr_garbage(text: str) -> str:
+    """Remove long runs of a repeated non-word char; collapse the whitespace
+    left behind. Real text + short punctuation runs are untouched."""
+    if not text:
+        return text
+    out = _GARBAGE_RUN_RE.sub("", text)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
+
+
+def is_garbage_ocr_token(tok: str) -> bool:
+    """True for an OCR word that is all punctuation/underscores (no letters or
+    digits) — a garbage scan fragment that must never reach narration."""
+    s = (tok or "").strip()
+    if not s:
+        return False
+    return bool(_ALL_PUNCT_TOKEN_RE.match(s))
+
+
+# -----------------------------
 # OCR cleaning / keywords
 # -----------------------------
 def clean_ocr_text(raw: str, cfg: VisionConfig) -> str:
     if not raw:
         return ""
+    raw = _scrub_ocr_garbage(raw)
     lines: List[str] = []
     for line in raw.splitlines():
         s = line.strip()
@@ -235,6 +272,10 @@ def extract_ocr_words(resp, w: int, h: int, max_words: int = 500) -> List[Dict[s
     for ann in anns[1:]:
         txt = (getattr(ann, "description", "") or "").strip()
         if not txt:
+            continue
+        # Drop garbage OCR fragments (all-underscore / all-punctuation tokens) so
+        # downstream understanding/narration never sees a 50-underscore "word".
+        if is_garbage_ocr_token(txt):
             continue
         bp = getattr(ann, "bounding_poly", None)
         if not bp:

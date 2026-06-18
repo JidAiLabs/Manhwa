@@ -193,9 +193,20 @@ def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
         location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
         backend = ["--backend", "vertex", "--model", cfg.beats_model,
                    "--project", project, "--location", location]
-    _run_tool("panel_understand.py",
-              ["--vision-manifest", str(p["vision"]), "--out", str(understood),
-               "--resume"] + backend)
+    understand_args = ["--vision-manifest", str(p["vision"]),
+                       "--out", str(understood), "--resume"] + backend
+    if cfg.beats_backend == "ollama":
+        # Parallelize the per-panel understand to THIS machine's OLLAMA_NUM_PARALLEL
+        # (Mini=4, Air=2) — measured ~2x on the chapter's slowest stage. A no-op
+        # (sequential) when OLLAMA_NUM_PARALLEL is unset/1, and capped so a
+        # mis-set env can't oversubscribe the GPU into OOM.
+        try:
+            conc = max(1, min(int(os.environ.get("OLLAMA_NUM_PARALLEL", "1") or "1"), 6))
+        except ValueError:
+            conc = 1
+        if conc > 1:
+            understand_args += ["--concurrency", str(conc)]
+    _run_tool("panel_understand.py", understand_args)
     _run_tool("story_group.py",
               ["--understood", str(understood),
                "--vision-manifest", str(p["vision"]),

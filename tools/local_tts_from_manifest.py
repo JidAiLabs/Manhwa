@@ -26,9 +26,11 @@ Install (one-time, into the project venv):
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
+import struct
 import sys
 import wave
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -277,6 +279,139 @@ def extract_items_from_manifest(script_obj: Dict[str, Any], text_source: str = "
 
 
 # ---------------------------------------------------------------------------
+# Per-clip watchdog — bounds a single backend generate() call so ONE hung clip
+# never stalls the whole chapter (measured: g0005, a normal 26s line, froze for
+# 48 MINUTES mid-generation while the other 14 clips voiced in ~50s each).
+#
+# Mechanism: we run the (in-process) synth on a worker thread via a
+# ThreadPoolExecutor and wait with `future.result(timeout=...)`. On timeout the
+# MAIN thread stops waiting and moves on, so the chapter is bounded by
+# timeout x (retries+1) regardless of what the worker does.
+#
+# Trade-off (documented on purpose): a Python thread CANNOT be force-killed, and
+# a native MPS/torch generate() holds the GIL while computing, so the hung worker
+# thread keeps running in the background until the process exits — we ABANDON it,
+# we don't truly interrupt it. The only mechanism that could hard-kill a frozen
+# MPS call is a per-clip subprocess, but the model is loaded ONCE in-process
+# (re-loading per clip would cost minutes each and dominate the run), so a
+# subprocess-per-clip is impractical here. Abandoning + a silence placeholder
+# guarantees forward progress without the multi-minute reload tax. The leaked
+# thread is a daemon (executor never shut down on timeout) and dies with the
+# process; worst case it ties up some VRAM until the chapter finishes — far
+# cheaper than a 48-minute (or indefinite) stall.
+# ---------------------------------------------------------------------------
+
+# Wall-clock cap per clip: generous but bounded. A 26s line -> ~208s cap.
+CLIP_TIMEOUT_MIN_SEC = 120.0   # floor — short lines still get a real chance
+CLIP_TIMEOUT_FACTOR = 8.0      # cap = expected_audio_sec * factor (above floor)
+CLIP_RETRIES = 2               # initial try + this many retries on timeout/error
+# Rough narration pace for ESTIMATING a clip's audio length from its text (only
+# used to size the timeout + the silence placeholder; not the real duration).
+_EST_CHARS_PER_SEC = 14.0
+
+
+def expected_audio_sec(text: str) -> float:
+    """Estimate spoken length of *text* (seconds) from its character count.
+
+    Only used to size the per-clip timeout and the silence placeholder written
+    when a clip can't be voiced — never the real duration (that's read off the
+    rendered wav). Deliberately a touch generous so the timeout isn't too tight.
+    """
+    chars = len((text or "").strip())
+    if chars <= 0:
+        return 0.0
+    return chars / _EST_CHARS_PER_SEC
+
+
+def clip_timeout_sec(expected_sec: float) -> float:
+    """Per-clip wall-clock cap: ``max(MIN, expected_audio_sec * FACTOR)``."""
+    return max(CLIP_TIMEOUT_MIN_SEC, float(expected_sec) * CLIP_TIMEOUT_FACTOR)
+
+
+# alias so synthesize_manifest can call the formula even though its own keyword
+# parameter `clip_timeout_sec` (an OVERRIDE value) shadows the function name.
+_clip_timeout_formula = clip_timeout_sec
+
+
+def write_silence_wav(path: str, duration_sec: float, sr: int = 24000) -> None:
+    """Write a mono PCM16 silent wav of *duration_sec* so the render stays
+    aligned even when a clip's audio could not be generated. Floored to a tiny
+    non-zero length so the file is always a valid, non-empty wav."""
+    n = max(1, int(round(max(0.05, float(duration_sec)) * sr)))
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(sr))
+        w.writeframes(struct.pack("<%dh" % n, *([0] * n)))
+
+
+def run_guarded_synth(
+    synth_fn: "SynthFn",
+    text: str,
+    out_path: str,
+    exaggeration: float,
+    *,
+    timeout_sec: float,
+    retries: int,
+    expected_sec: float,
+    segment_id: str = "",
+) -> Dict[str, Any]:
+    """Run one clip's synthesis under a wall-clock watchdog with retries.
+
+    Returns ``{ok, timed_out, attempts}``. On the FINAL failure (all attempts
+    timed out or raised) a silence placeholder of *expected_sec* is written to
+    *out_path* so timeline_planner still aligns the panel under the (silent)
+    voiceover instead of skipping the segment and shifting every later cut.
+    """
+    last_timed_out = False
+    attempts = 0
+    total = int(retries) + 1
+    for attempt in range(total):
+        attempts += 1
+        # a fresh single-thread executor per attempt: on timeout we DON'T wait
+        # for the hung worker (no shutdown(wait=True)), we leak the daemon thread
+        # and move on — that's what lets us abandon a frozen MPS generate().
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(synth_fn, text, out_path, exaggeration)
+        try:
+            fut.result(timeout=timeout_sec)
+            ex.shutdown(wait=False)
+            return {"ok": True, "timed_out": False, "attempts": attempts}
+        except concurrent.futures.TimeoutError:
+            last_timed_out = True
+            ex.shutdown(wait=False)   # do NOT join the hung worker
+            tag = segment_id or os.path.basename(out_path)
+            if attempt < retries:
+                print(f"[tts] clip {tag} timed out after {timeout_sec:.0f}s, "
+                      f"retry {attempt + 1}/{retries}")
+            else:
+                print(f"[tts] clip {tag} timed out after {timeout_sec:.0f}s — "
+                      f"gave up after {total} attempts")
+        except Exception as exc:  # noqa: BLE001 — backend errors must not stall
+            last_timed_out = False
+            ex.shutdown(wait=False)
+            tag = segment_id or os.path.basename(out_path)
+            detail = f"{type(exc).__name__}: {str(exc)[:120]}"
+            if attempt < retries:
+                print(f"[tts] clip {tag} FAILED ({detail}), "
+                      f"retry {attempt + 1}/{retries}")
+            else:
+                print(f"[tts] clip {tag} FAILED ({detail}) — "
+                      f"gave up after {total} attempts")
+
+    # all attempts exhausted — write a silence placeholder so alignment holds
+    try:
+        write_silence_wav(out_path, expected_sec)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tts] could not write silence placeholder for "
+              f"{segment_id or os.path.basename(out_path)}: {exc}")
+    print(f"[tts] ERROR clip {segment_id or os.path.basename(out_path)} "
+          f"unvoiced after {total} attempts -> wrote {expected_sec:.1f}s silence "
+          f"placeholder (timeline kept aligned)")
+    return {"ok": False, "timed_out": last_timed_out, "attempts": attempts}
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator (synth + duration injected -> fully testable without a model)
 # ---------------------------------------------------------------------------
 
@@ -295,12 +430,21 @@ def synthesize_manifest(
     text_source: str = "tts_v3",
     overwrite: bool = False,
     voice_ref: str = "",
+    clip_timeout_sec: Optional[float] = None,
+    clip_retries: int = CLIP_RETRIES,
 ) -> Dict[str, Any]:
     """Drive TTS over every paragraph and build the tts_index.json dict.
 
     *synth_fn* does the actual audio synthesis (injected so tests need no model);
     it receives the tag-stripped text, the target wav path, and the per-paragraph
     exaggeration derived from the mood tag.
+
+    Each clip's synthesis runs under a wall-clock watchdog (see run_guarded_synth)
+    so ONE frozen generate() can never stall the chapter for more than
+    ``timeout x (clip_retries+1)``. *clip_timeout_sec* overrides the per-clip cap
+    (default: ``clip_timeout_sec(expected_audio_sec(text))``); tests pass a tiny
+    value. On final failure a silence placeholder keeps the timeline aligned and
+    the clip is flagged ``tts_failed`` in the index.
     """
     items = extract_items_from_manifest(script_obj, text_source)
     clips_dir = os.path.join(out_dir, "clips")
@@ -350,13 +494,23 @@ def synthesize_manifest(
         cached = (os.path.exists(audio_path) and not overwrite
                   and prior_sha.get(seg_id) == text_sha)
         cond: Dict[str, Any] = {}
+        tts_failed = False
         if not cached:
-            synth_fn(sent_text, audio_path, exaggeration)
-            # uniform lead/tail pads + soft-attack lift (first word audible)
-            cond = condition_wav_file(audio_path)
+            est = expected_audio_sec(sent_text)
+            timeout = float(clip_timeout_sec) if clip_timeout_sec is not None \
+                else _clip_timeout_formula(est)
+            guard = run_guarded_synth(
+                synth_fn, sent_text, audio_path, exaggeration,
+                timeout_sec=timeout, retries=int(clip_retries),
+                expected_sec=est, segment_id=seg_id)
+            tts_failed = not guard["ok"]
+            # condition only a real take; a silence placeholder needs no lift
+            if not tts_failed:
+                # uniform lead/tail pads + soft-attack lift (first word audible)
+                cond = condition_wav_file(audio_path)
         dur = duration_fn(audio_path)
 
-        index["clips"].append({
+        clip_row: Dict[str, Any] = {
             "segment_id": seg_id,
             "group_id": int(it["group_id"]),
             "section_index": int(it["section_index"]),
@@ -371,10 +525,16 @@ def synthesize_manifest(
             "duration_sec": round(dur, 4),
             "cached": cached,
             **cond,
-        })
+        }
+        if tts_failed:
+            clip_row["tts_failed"] = True   # unvoiced: silence placeholder, kept aligned
+        index["clips"].append(clip_row)
         total += dur
         flag = " SOFT-ATTACK-LIFTED" if cond.get("soft_attack") else ""
-        print(f"[{'cache' if cached else 'ok'}] {seg_id} dur={dur:.2f}s mood={tag or '-'}{flag}")
+        if tts_failed:
+            flag = " UNVOICED-SILENCE-PLACEHOLDER"
+        print(f"[{'cache' if cached else ('fail' if tts_failed else 'ok')}] "
+              f"{seg_id} dur={dur:.2f}s mood={tag or '-'}{flag}")
 
     # prune orphan SEGMENT clips (g####_p## no longer in the script) so a stale
     # wav never leaks into the voice-preview concat or a later render. Only

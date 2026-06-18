@@ -40,6 +40,57 @@ from narration_safe_rules import (  # noqa: E402
     SAFE_OPENING_NOTE,
 )
 
+# --- meta-garbage narration guard --------------------------------------------
+# Ch20 g0014: a panel's OCR was a long run of underscores (a garbage SFX scan).
+# The narration model, fed that corruption, returned VALID JSON whose narration
+# was META-COMMENTARY about parsing/JSON — and it got voiced. The beat's `error`
+# was None (the JSON parsed), so nothing caught it. This detector flags a
+# "narration" that is clearly the model talking about its own input/JSON rather
+# than telling the story.
+_META_STRONG_SIGNALS = (
+    r"malformed\s+json",
+    r"json\s+fragment",
+    r"scene_files",
+    r"object\s+schema",
+    r"valid\s+json",
+    r"underscore\s+characters?",
+    r"\bjson\b",
+    r"\bschema\b",
+    r"\bunderscores?\b",
+)
+_META_WEAK_SIGNALS = (
+    r"data\s+structure",
+    r"reconstruct\s+the",
+    r"the\s+input\s+was",
+    r"parsing\s+the",
+    r"the\s+task\s+is\s+to",
+    r"integrity\s+of\s+the",
+)
+_META_STRONG_RE = re.compile("|".join(_META_STRONG_SIGNALS), re.IGNORECASE)
+_META_WEAK_RE = re.compile("|".join(_META_WEAK_SIGNALS), re.IGNORECASE)
+
+
+def _is_meta_garbage(text: str) -> bool:
+    """True when the 'narration' is clearly the model talking about JSON/parsing/
+    its own input rather than the story. Requires at least one STRONG signal
+    (json / schema / scene_files / underscore) to avoid false positives on real
+    narration that merely mentions a 'structure' or 'task'."""
+    if not text:
+        return False
+    return bool(_META_STRONG_RE.search(text))
+
+
+def _clean_fallback_narration(beat_title: str, what_happens: str) -> str:
+    """Last-resort narration when the model keeps returning meta-garbage: use
+    what_happens if it is NOT itself meta-garbage, else the beat_title if clean,
+    else a neutral one-line bridge. NEVER returns meta-garbage."""
+    for cand in (what_happens, beat_title):
+        c = (cand or "").strip()
+        if c and not _is_meta_garbage(c):
+            return c
+    return "The scene shifts."
+
+
 # --- register-aware narration (opt-in via --register-mode) -------------------
 # Validation finding: a soft "be terse" instruction is IGNORED by the model, so
 # FAST length is ENFORCED by a low max_output_tokens; and the model cannot self-
@@ -589,6 +640,12 @@ def _call_model(
         return _extract_json_object(raw), raw, usage
 
 
+# Wall-clock bound on the 429 retry loop (only the vertex/gemini backend can 429;
+# ollama — the production default — never hits this). Generous enough for a
+# transient quota dip, bounded so it can't stall a lane forever.
+_MODEL_429_DEADLINE_SEC = int(os.environ.get("STUDIO_MODEL_429_DEADLINE_SEC", "900") or "900")
+
+
 def _call_model_with_backoff(
     *,
     client: Optional[genai.Client],
@@ -603,6 +660,9 @@ def _call_model_with_backoff(
     backend: str = "vertex",
 ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
     attempt = 0
+    # BOUND the 429 retry: a quota cliff during a 300-chapter run must NOT loop
+    # forever — after the deadline, raise so the stage fails and the lane moves on.
+    deadline = time.time() + _MODEL_429_DEADLINE_SEC
     while True:
         try:
             return _call_model(
@@ -620,10 +680,115 @@ def _call_model_with_backoff(
             msg = str(e)
             if ("429" not in msg) and ("RESOURCE_EXHAUSTED" not in msg):
                 raise
+            if time.time() >= deadline:
+                print(f"[error] 429 RESOURCE_EXHAUSTED persisted > "
+                      f"{_MODEL_429_DEADLINE_SEC}s — giving up (stage fails).")
+                raise
             sleep_s = min(backoff_max, (2 ** min(attempt, 6)) + random.random() * 0.8)
             print(f"[warn] 429 RESOURCE_EXHAUSTED. sleeping {sleep_s:.1f}s then retrying...")
             time.sleep(sleep_s)
             attempt += 1
+
+
+def _generate_beat_for_group(
+    *,
+    client: Any,
+    model: str,
+    system_instruction: str,
+    payload: Dict[str, Any],
+    image_paths: List[str],
+    beat_schema: Any,
+    gid: Any,
+    retries: int,
+    max_output_tokens: int,
+    backoff_max: float,
+    backend: str = "vertex",
+    usage: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """Run the model accept loop for one group. Returns a content-bearing beat
+    dict (group_id + scene_files stamped) or None if every attempt failed to
+    parse. Guards against two silent corruptions:
+      - EMPTY narration: retry, last-attempt fall back to what_happens.
+      - META-GARBAGE narration (the Ch20 g0014 bug — the model narrates about
+        JSON/parsing/underscores instead of the story): retry the FULL
+        generation; on the last attempt fall back to a CLEAN line
+        (what_happens if not itself garbage, else a neutral bridge). The
+        meta-garbage line is NEVER kept as the narration."""
+
+    def _acc(u: Dict[str, int]) -> None:
+        if usage is not None:
+            usage.add(input_tokens=u["input"], output_tokens=u["output"],
+                      cached_tokens=u.get("cached", 0))
+
+    scene_files = payload.get("scene_files", [])
+    raw_text = ""
+
+    for _attempt in range(retries + 1):
+        obj, raw, u = _call_model_with_backoff(
+            client=client,
+            model=model,
+            system_instruction=system_instruction,
+            user_payload=payload,
+            image_paths=image_paths,
+            response_schema=beat_schema,
+            max_output_tokens=max_output_tokens,
+            temperature=0.2,
+            backoff_max=backoff_max,
+            backend=backend,
+        )
+        _acc(u)
+        raw_text = raw
+
+        # Accept any content-bearing dict; we KNOW the group_id (loop var) and
+        # scene_files (payload), so stamp them ourselves rather than forcing the
+        # model to echo group_id correctly — that mismatch was driving needless
+        # repair retries (~70% extra calls) with no quality benefit.
+        if isinstance(obj, dict) and (obj.get("what_happens") or obj.get("beat_title")):
+            narr = (obj.get("narration") or "").strip()
+            # Guard: an EMPTY narration (seen on action beats) OR a META-GARBAGE
+            # narration (the model talking about JSON/parsing its own corrupted
+            # input) must not be silently accepted — retry the full generation
+            # for a real line, and only on the last attempt fall back to a clean
+            # line so it's never blank and never voiced as garbage.
+            if not narr or _is_meta_garbage(narr):
+                if _attempt < retries:
+                    continue
+                obj["narration"] = _clean_fallback_narration(
+                    obj.get("beat_title") or "", obj.get("what_happens") or "")
+            obj["group_id"] = gid
+            obj["scene_files"] = scene_files
+            return obj
+
+        repair_payload = {
+            "group_id": gid,
+            "scene_files": scene_files,
+            "last_output": (raw_text or "")[:4000],
+            "instruction": "Re-output the beat as VALID JSON matching the schema exactly. No extra text.",
+        }
+        obj2, raw2, u2 = _call_model_with_backoff(
+            client=client,
+            model=model,
+            system_instruction="You are a strict JSON formatter. Output valid JSON only.",
+            user_payload=repair_payload,
+            image_paths=[],
+            response_schema=beat_schema,
+            max_output_tokens=max_output_tokens,
+            temperature=0.0,
+            backoff_max=backoff_max,
+            backend=backend,
+        )
+        _acc(u2)
+        raw_text = raw2
+        if isinstance(obj2, dict) and (obj2.get("what_happens") or obj2.get("beat_title")):
+            # A repaired beat can still carry meta-garbage narration — scrub it.
+            if _is_meta_garbage((obj2.get("narration") or "").strip()):
+                obj2["narration"] = _clean_fallback_narration(
+                    obj2.get("beat_title") or "", obj2.get("what_happens") or "")
+            obj2["group_id"] = gid
+            obj2["scene_files"] = scene_files
+            return obj2
+
+    return None
 
 
 def _select_images_for_group(
@@ -970,67 +1135,20 @@ def main() -> int:
             payload["previous_narration"] = prev
         img_paths = _select_images_for_group(payload, vision_by_file, args.max_images_per_group)
 
-        beat: Optional[Dict[str, Any]] = None
-        raw_text = ""
-
-        for _attempt in range(args.retries + 1):
-            obj, raw, u = _call_model_with_backoff(
-                client=client,
-                model=args.model,
-                system_instruction=sys_g,
-                user_payload=payload,
-                image_paths=img_paths,
-                response_schema=beat_schema,
-                max_output_tokens=args.max_output_tokens,
-                temperature=0.2,
-                backoff_max=args.backoff_max,
-                backend=args.backend,
-            )
-            usage.add(input_tokens=u["input"], output_tokens=u["output"], cached_tokens=u.get("cached", 0))
-            raw_text = raw
-
-            # Accept any content-bearing dict; we KNOW the group_id (loop var) and
-            # scene_files (payload), so stamp them ourselves rather than forcing the
-            # model to echo group_id correctly — that mismatch was driving needless
-            # repair retries (~70% extra calls) with no quality benefit.
-            if isinstance(obj, dict) and (obj.get("what_happens") or obj.get("beat_title")):
-                # Guard: a valid beat with an EMPTY narration (seen on action beats) must
-                # not be silently accepted — retry the full generation for a real line,
-                # and only on the last attempt fall back to what_happens so it's never blank.
-                if not (obj.get("narration") or "").strip():
-                    if _attempt < args.retries:
-                        continue
-                    obj["narration"] = obj.get("what_happens") or obj.get("beat_title") or ""
-                obj["group_id"] = gid
-                obj["scene_files"] = payload["scene_files"]
-                beat = obj
-                break
-
-            repair_payload = {
-                "group_id": gid,
-                "scene_files": payload["scene_files"],
-                "last_output": (raw_text or "")[:4000],
-                "instruction": "Re-output the beat as VALID JSON matching the schema exactly. No extra text.",
-            }
-            obj2, raw2, u2 = _call_model_with_backoff(
-                client=client,
-                model=args.model,
-                system_instruction="You are a strict JSON formatter. Output valid JSON only.",
-                user_payload=repair_payload,
-                image_paths=[],
-                response_schema=beat_schema,
-                max_output_tokens=args.max_output_tokens,
-                temperature=0.0,
-                backoff_max=args.backoff_max,
-                backend=args.backend,
-            )
-            usage.add(input_tokens=u2["input"], output_tokens=u2["output"], cached_tokens=u2.get("cached", 0))
-            raw_text = raw2
-            if isinstance(obj2, dict) and (obj2.get("what_happens") or obj2.get("beat_title")):
-                obj2["group_id"] = gid
-                obj2["scene_files"] = payload["scene_files"]
-                beat = obj2
-                break
+        beat = _generate_beat_for_group(
+            client=client,
+            model=args.model,
+            system_instruction=sys_g,
+            payload=payload,
+            image_paths=img_paths,
+            beat_schema=beat_schema,
+            gid=gid,
+            retries=args.retries,
+            max_output_tokens=args.max_output_tokens,
+            backoff_max=args.backoff_max,
+            backend=args.backend,
+            usage=usage,
+        )
 
         if beat is None:
             parse_errors += 1
@@ -1080,7 +1198,11 @@ def main() -> int:
             usage.add(input_tokens=nu["input"], output_tokens=nu["output"],
                       cached_tokens=nu.get("cached", 0))
             beat["register"] = register
-            if line:
+            # Only override with the register line if it's a REAL story line — a
+            # meta-garbage register line (model narrating about JSON/its input)
+            # is rejected, keeping the default-call narration (the Ch20 g0014
+            # corruption could surface here too).
+            if line and not _is_meta_garbage(line):
                 # scrub any bracketed cast token the register call copied in,
                 # before it becomes the final voiced line (register path).
                 beat["narration"] = _resolve_cast_tokens(line, cast_list)

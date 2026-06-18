@@ -62,13 +62,41 @@ def _series_title(con: sqlite3.Connection, series_id: int) -> str:
     return r[0] if r else ""
 
 
+# Catastrophic-hang BACKSTOP: any single stage shell-out is bounded by a generous
+# wall-clock. The longest legit single call is the fresh understand+narrate pass
+# (~50 min), so the default is well above that — this only kills a TRULY wedged
+# child (the 48-min TTS freeze, an infinite 429 loop, a dead CDN socket) so one
+# bad chapter fails and the lane moves on instead of stalling the whole run. The
+# per-clip TTS watchdog handles the fine-grained case; this is the coarse net.
+_STAGE_TIMEOUT_SEC = int(os.environ.get("STUDIO_STAGE_TIMEOUT_SEC", "5400") or "5400")
+
+
 def _stream(cmd, log: TextIO, cwd: str = str(REPO),
-            env: Optional[Dict[str, str]] = None) -> int:
+            env: Optional[Dict[str, str]] = None,
+            timeout: Optional[int] = None) -> int:
+    import signal
     log.write("$ " + " ".join(str(c) for c in cmd) + "\n")
     log.flush()
+    to = _STAGE_TIMEOUT_SEC if timeout is None else timeout
+    # own process group so we can kill the WHOLE tree (remotion's chrome, the TTS
+    # python, ffmpeg children), not just the direct child.
     p = subprocess.Popen(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
-                         text=True, env=env)
-    return p.wait()
+                         text=True, env=env, start_new_session=True)
+    try:
+        return p.wait(timeout=to)
+    except subprocess.TimeoutExpired:
+        log.write(f"\n[worker] HANG BACKSTOP: stage exceeded {to}s wall-clock — "
+                  f"killing the process tree and failing the stage.\n")
+        log.flush()
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except Exception:
+            p.kill()
+        try:
+            p.wait(timeout=30)
+        except Exception:
+            pass
+        return 124  # conventional timeout exit code -> stage fails, lane continues
 
 
 def _series_env(con: sqlite3.Connection,

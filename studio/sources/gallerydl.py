@@ -81,17 +81,22 @@ def run_download(url: str, tmp_dir: Path, sleep: float = 2.0) -> None:
         UnsupportedSource — gallery-dl cannot find an extractor for *url*
         RuntimeError      — any other non-zero exit
     """
-    result = subprocess.run(
-        [
-            *_GDL_CMD,
-            "--dest", str(tmp_dir),
-            "--sleep", str(sleep),
-            "--write-metadata",
-            url,
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                *_GDL_CMD,
+                "--dest", str(tmp_dir),
+                "--sleep", str(sleep),
+                "--write-metadata",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=900,  # a hung CDN socket must not stall the lane forever
+        )
+    except subprocess.TimeoutExpired as exc:
+        # the catalog fetch is resumable — surface as a transient failure
+        raise RuntimeError(f"gallery-dl download timed out (900s) for '{url}'") from exc
 
     if result.returncode == 0:
         return
