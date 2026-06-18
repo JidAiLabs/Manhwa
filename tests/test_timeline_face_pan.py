@@ -183,6 +183,27 @@ def test_vary_motion_rotates_by_ordinal():
     assert a["zoom"] == b["zoom"]
 
 
+# ---- _content_focus_y: tall cover-crop window frames on art, off the bubble ---
+
+def test_content_focus_y_prefers_face():
+    assert abs(tp._content_focus_y([_face([0.3, 0.6, 0.5, 0.8])]) - 0.7) < 0.02
+
+
+def test_content_focus_y_avoids_bottom_bubble():
+    # bubble at the bottom (y 0.7-0.97) -> focus the UPPER content band
+    fy = tp._content_focus_y([_text([0.05, 0.7, 0.69, 0.97])])
+    assert fy < 0.7
+
+
+def test_content_focus_y_picks_largest_band_around_upper_bubble():
+    # bubble upper (y 0.17-0.4) -> the larger band is below it -> focus lower
+    assert tp._content_focus_y([_text([0.22, 0.17, 0.35, 0.4])]) > 0.4
+
+
+def test_content_focus_y_default_when_no_targets():
+    assert tp._content_focus_y([]) == 0.4
+
+
 # ---- index_targets_by_file: basename keying from the vision manifest ---------
 
 def test_index_targets_by_file_keys_on_basename(tmp_path):

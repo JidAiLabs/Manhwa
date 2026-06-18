@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -91,6 +92,20 @@ _REGISTER_CONTINUITY_RULE = (
     "sentence shape, or the same image as the previous line; vary your opener. If the "
     "previous line ended mid-thought, your first words complete it. Never re-introduce "
     "characters or re-describe a setting already established."
+)
+
+# Use the manhwa's OWN words. The narration too often paraphrases a punchy spoken
+# line away ("the antagonist screams") instead of landing the beat on the real
+# line ("...you brought all of this on yourself."). Quote the actual dialogue/
+# caption for impact — but NEVER quote publication chrome (ads/credits/handles).
+_DIALOGUE_RULE = (
+    "SPOKEN LINES: when a panel carries a punchy or emotionally-charged spoken line "
+    "or caption, QUOTE THE REAL WORDS verbatim in the narration for impact — land "
+    "the beat on the actual line (e.g. ...you brought all of this on yourself.) "
+    "rather than a bland paraphrase. Weave the quote in naturally, as the narrator "
+    "voicing it. Use the panel's OWN words (visible in the art / its dialogue). "
+    "NEVER quote publication chrome — ads, credits, 'subscribe/follow/join our "
+    "Discord', watermarks, scanlator or site names."
 )
 
 # Token caps + temperatures are part of the verified spec (FAST must be ENFORCED
@@ -182,6 +197,7 @@ def _build_register_system(register: str, cast_block: str, story_block: str,
         blocks.append(story_block)
     blocks.append(SAFE_NARRATION_RULES)
     blocks.append(_REGISTER_CONTINUITY_RULE)
+    blocks.append(_DIALOGUE_RULE)
     if is_first:
         blocks.append(SAFE_OPENING_NOTE)
     return "\n\n".join(blocks)
@@ -260,26 +276,120 @@ def _build_vision_map(vision_manifest: Dict[str, Any]) -> Dict[str, Dict[str, An
     return {it.get("scene_file"): it for it in items if it.get("scene_file")}
 
 
-def _build_cast_block(cast_path: str) -> str:
-    """Render manifest.cast.json into a prompt block the narration uses to name
-    characters consistently. Empty string when no cast file is given."""
+def _load_cast_list(cast_path: str) -> List[Dict[str, Any]]:
+    """Load manifest.cast.json -> its `cast` array (list of members). Empty list
+    on a missing/unreadable/malformed file (never raises). Reused by the cast
+    block AND the per-beat token resolver so the cast is read once."""
     if not cast_path or not os.path.exists(cast_path):
-        return ""
+        return []
     try:
         with open(cast_path, "r", encoding="utf-8") as f:
             cast = json.load(f)
     except Exception:
+        return []
+    members = cast.get("cast") if isinstance(cast, dict) else None
+    return members if isinstance(members, list) else []
+
+
+def _build_cast_block(cast_path: str) -> str:
+    """Render manifest.cast.json into a prompt block the narration uses to name
+    characters consistently. Empty string when no cast file is given.
+
+    The role is rendered as `(role)` NOT `[role]`: a bracketed `[protagonist]`
+    reads like a canonical reference token and the model copies it verbatim into
+    the narration, where the TTS then voices the literal '[protagonist]'."""
+    cast = _load_cast_list(cast_path)
+    if not cast:
         return ""
-    lines = ["CHAPTER CAST — name these consistently; match each figure by appearance:"]
-    for c in (cast.get("cast") or []):
+    lines = [
+        "CHAPTER CAST — name these consistently; match each figure by appearance. "
+        "Refer to each character by their NAME or a natural pronoun inline — NEVER "
+        "output a bracketed token like [protagonist] or [antagonist]; never invent "
+        "a generic descriptor (e.g. 'an injured man') for a character who is in "
+        "this cast:"
+    ]
+    for c in cast:
         name = c.get("canonical_name") or c.get("id") or "?"
         role = c.get("role") or ""
         desc = (c.get("visual_description") or "").strip()
         aliases = ", ".join(c.get("aliases") or [])
         tag = f" (aka {aliases})" if aliases else ""
-        lines.append(f"  - {name} [{role}]{tag}: {desc}")
+        lines.append(f"  - {name} ({role}){tag}: {desc}")
     lines.append("")  # trailing blank so it reads cleanly before the next section
     return "\n".join(lines) + "\n"
+
+
+# Words that mark an alias as a generic descriptor / epithet rather than a usable
+# proper name (we never substitute a bracketed token with "this bastard").
+_NON_NAME_WORDS = frozenset({
+    "this", "that", "the", "a", "an", "bastard", "guy", "man", "woman", "boy",
+    "girl", "kid", "old", "young", "person", "figure", "one", "thing", "stranger",
+    "people", "lady", "gentleman", "mister", "sir", "fellow", "dude",
+})
+
+
+def _proper_name_alias(aliases: List[str]) -> Optional[str]:
+    """Pick the first alias that looks like a usable PROPER NAME: capitalized,
+    1-4 tokens, and free of generic/role words ('bastard', 'man', 'this', ...).
+    Returns None if none qualifies (caller falls back to canonical_name)."""
+    for a in aliases or []:
+        a = str(a or "").strip()
+        if not a or not a[0].isupper():
+            continue
+        toks = a.split()
+        if not (1 <= len(toks) <= 4):
+            continue
+        if any(t.strip(".,'").lower() in _NON_NAME_WORDS for t in toks):
+            continue
+        return a
+    return None
+
+
+def _cast_member_reference(member: Dict[str, Any]) -> str:
+    """The text a bracketed token for this cast member should become: a proper-
+    name alias when one exists, else the canonical_name (recap-native, e.g.
+    'the antagonist')."""
+    return _proper_name_alias(member.get("aliases") or []) or \
+        str(member.get("canonical_name") or member.get("id") or "").strip()
+
+
+def _resolve_cast_tokens(text: str, cast: List[Dict[str, Any]]) -> str:
+    """Safety net: rewrite any bracketed `[token]` the model copied into the
+    narration into readable prose, so the TTS never voices a literal token.
+
+    (a) A token matching a cast member's role / id / canonical_name (case-
+        insensitive, '_' and ' ' interchangeable) becomes that member's
+        reference (proper-name alias, else canonical_name).
+    (b) Any REMAINING bracket token is stripped to its inner words (e.g.
+        '[someone] runs' -> 'someone runs'). We NEVER blank a line: an unknown
+        token degrades to readable inner text, not emptiness.
+    The possessive form `[protagonist]'s` is preserved (only the bracket part is
+    rewritten, the trailing 's stays)."""
+    if not text or "[" not in text:
+        return text
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[\s_]+", " ", str(s or "").strip().lower())
+
+    lookup: Dict[str, str] = {}
+    for m in cast or []:
+        ref = _cast_member_reference(m)
+        if not ref:
+            continue
+        for key in (m.get("role"), m.get("id"), m.get("canonical_name")):
+            k = _norm(key)
+            if k:
+                lookup.setdefault(k, ref)
+
+    def _sub(match: "re.Match[str]") -> str:
+        inner = match.group(1).strip()
+        hit = lookup.get(_norm(inner))
+        if hit is not None:
+            return hit
+        # unknown token: keep the inner words (readable), drop the brackets.
+        return inner
+
+    return re.sub(r"\[([^\[\]]*)\]", _sub, text)
 
 
 def _build_story_block(story_path: str) -> str:
@@ -722,9 +832,16 @@ def main() -> int:
         "Return ONLY valid JSON matching the provided schema. No extra text.\n"
     )
     cast_block = _build_cast_block(args.cast)
+    # Same cast list (loaded once) feeds the per-beat token resolver, which scrubs
+    # any bracketed cast token the model copied into the final narration.
+    cast_list = _load_cast_list(args.cast)
     story_block = _build_story_block(args.story)
     system = system.replace("{CAST_BLOCK}", cast_block)
     system = system.replace("{STORY_SPINE}", story_block)
+    # Generator-side advertiser-safety rules ride the DEFAULT prompt too (not just
+    # the register override), so register-off narration is also brand-safe at the
+    # source; the sanitize-pass NET still runs downstream regardless.
+    system = system + "\n\n" + SAFE_NARRATION_RULES
     corrections: Dict[int, str] = {}
     if args.corrections and os.path.exists(args.corrections):
         try:
@@ -964,7 +1081,16 @@ def main() -> int:
                       cached_tokens=nu.get("cached", 0))
             beat["register"] = register
             if line:
-                beat["narration"] = line
+                # scrub any bracketed cast token the register call copied in,
+                # before it becomes the final voiced line (register path).
+                beat["narration"] = _resolve_cast_tokens(line, cast_list)
+
+        # Default-call path (and any line not already scrubbed above): strip any
+        # bracketed cast token the model copied into the narration so the TTS
+        # never voices a literal '[protagonist]'. Conservative — never blanks a
+        # line; an unknown token degrades to its readable inner words.
+        if beat.get("narration"):
+            beat["narration"] = _resolve_cast_tokens(beat["narration"], cast_list)
 
         # Guarantee exactly one sanitized selection entry per scene (defaults to
         # 'keep' so a parse gap never silently drops a panel).

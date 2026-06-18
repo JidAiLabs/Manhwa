@@ -407,6 +407,39 @@ def pick_face_target(targets: Any) -> Optional[Dict[str, Any]]:
     return faces[0][0]
 
 
+def _content_focus_y(targets: Any) -> float:
+    """Vertical center (0..1) the TALL cover-crop window should frame on: a FACE if
+    detected, else the middle of the LARGEST band of the panel NOT covered by a
+    text_block (the bubble is inpainted blank, so we keep the window off it). This
+    is what stops a tall close-up from framing the empty bubble. Defaults upper-
+    middle (0.4) when there's nothing to go on (manhwa subjects sit high)."""
+    face = pick_face_target(targets)
+    if face is not None:
+        c = _bbox_center(face.get("bbox"))
+        if c is not None:
+            return float(clamp(c[1], 0.0, 1.0))
+    blanks = []
+    for t in (targets or []):
+        if isinstance(t, dict) and t.get("type") == "text_block":
+            bb = t.get("bbox")
+            if bb and len(bb) >= 4:
+                blanks.append((float(bb[1]), float(bb[3])))
+    if not blanks:
+        return 0.4  # no face, no bubble to avoid -> upper-middle (manhwa subjects sit high)
+    blanks.sort()
+    bands, cur = [], 0.0
+    for y0, y1 in blanks:
+        if y0 > cur:
+            bands.append((cur, y0))
+        cur = max(cur, y1)
+    if cur < 1.0:
+        bands.append((cur, 1.0))
+    if not bands:
+        return 0.4
+    by0, by1 = max(bands, key=lambda b: b[1] - b[0])
+    return float(clamp((by0 + by1) / 2.0, 0.0, 1.0))
+
+
 def face_end_bias(face_bbox: Any) -> Dict[str, float]:
     """End-of-move pan bias (normalized, in the engine's [-1..1] pan budget) that
     lands the FACE centered in frame at the end of the Ken Burns move.
@@ -1152,12 +1185,18 @@ def main() -> int:
                 tf = targets_by_file.get(str(c.get("file") or ""))
                 fm = face_aware_motion(motion, tf)
                 if fm is not motion:
-                    c["motion"] = fm            # face panel: pan ends ON the face
+                    cm = fm                     # face panel: pan ends ON the face
                 else:
                     # no face: rotate the move by GLOBAL cut index so consecutive
                     # face-less panels never share the same (previously identical)
                     # kenburns diagonal.
-                    c["motion"] = _vary_motion(motion, cut_ordinal)
+                    cm = _vary_motion(motion, cut_ordinal)
+                    if cm is motion:            # static shot: still need a per-cut copy
+                        cm = dict(motion)
+                # focus_y frames the TALL cover-crop window on the art (off the blank
+                # bubble); the renderer only uses it on tall strips, a no-op elsewhere.
+                cm["focus_y"] = round(_content_focus_y(tf), 3)
+                c["motion"] = cm
                 cut_ordinal += 1
 
             item: Dict[str, Any] = {

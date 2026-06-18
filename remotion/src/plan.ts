@@ -21,6 +21,7 @@ export type Motion = {
   start_bias?: Bias;
   end_bias?: Bias;
   focus?: string; // 'face' when the planner aimed this cut's pan at a face target
+  focus_y?: number; // 0..1 vertical center the tall cover-crop window frames on
   zoom?: {start?: number; end?: number};
   bg_fill?: {enabled?: boolean; amount?: number; dim?: number};
   fg_fit?: {mode?: string; safe_inset_pct?: number};

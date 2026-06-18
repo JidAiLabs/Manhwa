@@ -59,34 +59,21 @@ export const CutView: React.FC<{
   const boxPct = (1 - 2 * inset) * 100;
 
   if (tall && dims) {
-    // SCROLL SHOT: tall strips are unreadable contain-fitted — display at a
-    // readable width and travel the camera vertically across the artwork,
-    // easing in and HOLDING the final view for the last ~15% of the cut.
-    // Default reads downward (webtoon order); tilt_up beats scroll upward.
-    // readable width, but cap total travel at ~2.4 screen-heights so the
-    // scroll speed stays watchable on very long strips
-    const maxScaledH = height * 3.4;
-    const dispW = Math.min(width * 0.92, maxScaledH * (dims.w / dims.h));
-    const scaledH = dispW * (dims.h / dims.w);
-    const travel = Math.max(0, scaledH - height);
-    const prog = interpolate(frame, [0, Math.max(1, durationInFrames * 0.85)], [0, 1], {
+    // COVER-CROP ZOOM: a tall strip FILLS the frame with a window centred on the
+    // CONTENT (motion.focus_y — the art, off the inpainted-blank bubble) and slowly
+    // pushes in. NO scroll: the old top->down scroll drifted onto the blank bubble
+    // and looked identical on every tall panel. focus_y defaults upper-middle.
+    const focusY = clamp(motion?.focus_y ?? 0.4, 0, 1);
+    const prog = interpolate(frame, [0, Math.max(1, durationInFrames)], [0, 1], {
       easing: Easing.inOut(Easing.ease),
       extrapolateLeft: 'clamp',
       extrapolateRight: 'clamp',
     });
-    // If this tall strip carries a FACE target, SETTLE the scroll so the face
-    // lands vertically centered and HOLDS there — fixes the "starts on a face
-    // then drifts down off it" complaint. Otherwise scroll in reading order
-    // (down; a tilt_up beat scrolls up).
-    const up = (motion?.mode ?? '') === 'tilt_up';
-    let y: number;
-    if (motion?.focus === 'face' && motion?.end_bias) {
-      const faceCy = clamp(0.5 + (motion.end_bias.y ?? 0) * 0.5, 0, 1);
-      const target = clamp(height / 2 - faceCy * scaledH, -travel, 0);
-      y = target * prog; // ease from the top down to the face, then hold
-    } else {
-      y = up ? -travel * (1 - prog) : -travel * prog;
-    }
+    const zoom = 1.04 + 0.09 * prog; // gentle Ken Burns push-in
+    const dispW = width * zoom; // fill the frame width (cover)
+    const dispH = dispW * (dims.h / dims.w); // taller than the frame
+    // centre focusY vertically, clamped so the window never reveals empty edges
+    const ty = clamp(height / 2 - focusY * dispH, height - dispH, 0);
     return (
       <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
         <Img
@@ -100,13 +87,15 @@ export const CutView: React.FC<{
             filter: `blur(${bgBlurPx}px) brightness(${1 - bgDim})`,
           }}
         />
-        <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center'}}>
+        <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center', overflow: 'hidden'}}>
           <Img
             src={src}
             style={{
+              position: 'absolute',
+              top: 0,
+              left: '50%',
               width: dispW,
-              transform: `translateY(${y}px)`,
-              boxShadow: '0 0 50px rgba(0,0,0,0.5)',
+              transform: `translateX(-50%) translateY(${ty}px)`,
             }}
           />
         </AbsoluteFill>
