@@ -57,3 +57,18 @@ def test_align_invariant_length_matches_scene_files():
     out = gnp.align_panel_narration(files, [], {})
     assert len(out) == len(files)
     assert all(p["line"] for p in out)
+
+
+# ---------------------------------------------------------------------------
+# Task 3b: build_beat_schema + panel_narration field
+# ---------------------------------------------------------------------------
+
+def test_beat_schema_requires_panel_narration():
+    schema = gnp.build_beat_schema()
+    props = schema["properties"]
+    assert "panel_narration" in props
+    assert props["panel_narration"]["type"] == "ARRAY"
+    item = props["panel_narration"]["items"]["properties"]
+    assert set(item) >= {"scene_file", "line"}
+    assert "panel_narration" in schema["required"]
+    assert "narration" in props          # joined string kept for back-compat
