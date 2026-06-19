@@ -257,6 +257,130 @@ def test_verbatim_microbeats_split_one_group_across_selected_panels():
         assert rest == para
 
 
+def test_verbatim_microbeats_one_panel_group_is_not_split():
+    """A panel-sparse group (1 distinct shown panel) must HOLD its single image
+    as one continuous shot with the full narration — never re-cut to the same
+    frame N times. Regression for Nano Ch1 g0011 (1-panel group split into 3
+    sub-beats all showing the same back-of-head panel)."""
+    chunk = [{
+        "group_id": 11,
+        "beat_id": 1,
+        "beat_title": "System wakes",
+        "narration": (
+            "The system stirs awake inside his mind. "
+            "A pale window unfolds before his eyes. "
+            "He reads the words and feels the world tilt."
+        ),
+        "what_happens": "The system activates.",
+        "hook": "Everything is about to change.",
+        "mood_words": ["serious"],
+        "scene_files": ["a.jpg"],
+        "scene_selection": [
+            {"scene_file": "a.jpg", "role": "keep", "intensity": "tense"},
+        ],
+    }]
+    payload = {"section_index": 0, "word_target": 120, "beats": [{
+        "beat_id": 1,
+        "group_id": 11,
+        "allowed_scene_files": ["a.jpg"],
+        "scene_files": ["a.jpg"],
+        "ocr_snippets_by_scene_file": {},
+    }]}
+
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="unknown",
+        microbeats=True, microbeat_max_words=8)
+
+    # one distinct panel -> one held shot, full narration, no re-cuts
+    assert len(sec["shots"]) == 1
+    assert [s["group_id"] for s in sec["shots"]] == [11]
+    assert sec["shots"][0]["scene_files"] == ["a.jpg"]
+    assert len(sec["script_paragraphs"]) == 1
+    # the whole narration is kept (nothing dropped)
+    assert "system stirs awake" in sec["script_paragraphs"][0]
+    assert "world tilt" in sec["script_paragraphs"][0]
+
+
+def test_verbatim_microbeats_split_count_never_exceeds_distinct_panels():
+    """A 3-panel group with a long narration may split, but the number of
+    microbeats per group must never exceed the group's distinct shown-panel
+    count (here 2 keep + 1 redundant -> cap of 2)."""
+    chunk = [{
+        "group_id": 12,
+        "beat_id": 1,
+        "beat_title": "Clash",
+        "narration": (
+            "He raises his blade against the storm. "
+            "The first strike lands like thunder. "
+            "The second splits the shield clean. "
+            "And the third drives the enemy back."
+        ),
+        "what_happens": "He attacks.",
+        "hook": "The tide turns.",
+        "mood_words": ["serious"],
+        "scene_files": ["a.jpg", "b.jpg", "c.jpg"],
+        "scene_selection": [
+            {"scene_file": "a.jpg", "role": "keep", "intensity": "tense"},
+            {"scene_file": "b.jpg", "role": "redundant"},
+            {"scene_file": "c.jpg", "role": "keep", "intensity": "tense"},
+        ],
+    }]
+    payload = {"section_index": 0, "word_target": 120, "beats": [{
+        "beat_id": 1,
+        "group_id": 12,
+        "allowed_scene_files": ["a.jpg", "b.jpg", "c.jpg"],
+        "scene_files": ["a.jpg", "b.jpg", "c.jpg"],
+        "ocr_snippets_by_scene_file": {},
+    }]}
+
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="unknown",
+        microbeats=True, microbeat_max_words=6)
+
+    # 2 distinct kept panels -> at most 2 microbeats
+    shots = [s for s in sec["shots"] if s["group_id"] == 12]
+    assert 1 <= len(shots) <= 2
+    assert len(sec["script_paragraphs"]) == len(shots)
+
+
+def test_verbatim_microbeats_short_narration_unchanged_with_four_panels():
+    """A panel-rich group whose narration is already short stays a single beat
+    — capping at panel count does not force extra splits."""
+    chunk = [{
+        "group_id": 13,
+        "beat_id": 1,
+        "beat_title": "Pause",
+        "narration": "He stops and listens.",
+        "what_happens": "He pauses.",
+        "mood_words": [],
+        "scene_files": ["a.jpg", "b.jpg", "c.jpg", "d.jpg"],
+        "scene_selection": [
+            {"scene_file": "a.jpg", "role": "keep"},
+            {"scene_file": "b.jpg", "role": "keep"},
+            {"scene_file": "c.jpg", "role": "keep"},
+            {"scene_file": "d.jpg", "role": "keep"},
+        ],
+    }]
+    payload = {"beats": [{
+        "beat_id": 1,
+        "group_id": 13,
+        "allowed_scene_files": ["a.jpg", "b.jpg", "c.jpg", "d.jpg"],
+        "scene_files": ["a.jpg", "b.jpg", "c.jpg", "d.jpg"],
+        "ocr_snippets_by_scene_file": {},
+    }]}
+
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="unknown",
+        microbeats=True, microbeat_max_words=28)
+
+    assert len(sec["script_paragraphs"]) == 1
+    assert sec["script_paragraphs"][0] == "He stops and listens."
+    assert len(sec["shots"]) == 1
+
+
 def test_verbatim_microbeats_ignore_redundant_scene_selection():
     chunk = [{
         "group_id": 17,

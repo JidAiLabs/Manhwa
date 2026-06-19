@@ -834,9 +834,6 @@ def _build_verbatim_section(
             )
         base = re.sub(r"\s+", " ", base).strip()
         text, had_shouts = normalize_caps_for_tts(base, proper_case)
-        parts = _split_recap_microbeats(text, max_words=microbeat_max_words) if microbeats else [text]
-        if not parts:
-            parts = ["The scene continues."]
 
         gid = int(b.get("group_id") or 0)
         payload_beat = payload_by_gid.get(gid)
@@ -844,6 +841,21 @@ def _build_verbatim_section(
             pbeats = payload.get("beats") or []
             payload_beat = pbeats[idx] if idx < len(pbeats) and isinstance(pbeats[idx], dict) else {}
         panel_files = _selected_scene_files_for_microbeats(b, payload_beat)
+
+        # Never split a group into more script beats than it has distinct shown
+        # panels: each microbeat becomes its own timeline segment, so a 1-panel
+        # group split into N would re-cut to the SAME frame N times (a visible
+        # hitch on a static image). Cap the split at the panel budget so a
+        # panel-sparse group HOLDS its one image as a single continuous shot.
+        max_parts = max(1, len(panel_files))
+        if microbeats:
+            parts = _split_recap_microbeats(
+                text, max_words=microbeat_max_words, max_parts=max_parts
+            )
+        else:
+            parts = [text]
+        if not parts:
+            parts = ["The scene continues."]
 
         for part_index, part in enumerate(parts):
             paras.append(part)
@@ -1332,16 +1344,28 @@ def _selected_scene_files_for_microbeats(
     return _dedupe_scene_files(selected or allowed_files)
 
 
-def _split_recap_microbeats(text: str, *, max_words: int) -> List[str]:
+def _split_recap_microbeats(
+    text: str, *, max_words: int, max_parts: Optional[int] = None
+) -> List[str]:
     """Split a grouped recap line into short spoken beats without rewriting it.
 
     This keeps the Gemini/punchup wording intact while letting TTS/timeline align
     the narration to individual panels. No model call, no new story facts.
+
+    ``max_parts`` caps the number of beats produced: each beat becomes its own
+    timeline segment, so a group must never be split into more beats than it has
+    distinct shown panels (otherwise the video re-cuts to the same frame). When
+    the natural split exceeds the cap, adjacent parts are merged back down so the
+    full narration is preserved across exactly ``max_parts`` beats.
     """
     max_words = max(8, int(max_words or 18))
+    cap = None if max_parts is None else max(1, int(max_parts))
     src = re.sub(r"\s+", " ", str(text or "")).strip()
     if not src:
         return []
+    if cap == 1:
+        # single-panel group: hold the whole narration as one beat, no re-cuts.
+        return [src]
 
     sentences = re.split(r"(?<=[.!?…])\s+(?=[\"'A-Z0-9])", src)
     if not sentences:
@@ -1409,7 +1433,39 @@ def _split_recap_microbeats(text: str, *, max_words: int) -> List[str]:
             if part:
                 final.append(finish(part))
 
-    return [c for c in final if c]
+    final = [c for c in final if c]
+
+    # Cap the beat count at the panel budget: merge adjacent beats (preserving
+    # word order and the full narration) until at most ``cap`` remain, so the
+    # split never produces more shots than the group has distinct panels.
+    if cap is not None and len(final) > cap:
+        final = _merge_parts_to_cap(final, cap)
+
+    return final
+
+
+def _merge_parts_to_cap(parts: List[str], cap: int) -> List[str]:
+    """Merge a list of split beats down to at most ``cap`` beats, preserving
+    word order and content. Distributes the parts as evenly as possible across
+    ``cap`` buckets (front-loading any remainder) and joins each bucket back into
+    one beat. No words are dropped — the full narration is retained."""
+    parts = [p for p in parts if p]
+    cap = max(1, int(cap))
+    if len(parts) <= cap:
+        return parts
+
+    n = len(parts)
+    base, extra = divmod(n, cap)
+    out: List[str] = []
+    i = 0
+    for b in range(cap):
+        take = base + (1 if b < extra else 0)
+        bucket = parts[i : i + take]
+        i += take
+        merged = re.sub(r"\s+", " ", " ".join(bucket)).strip()
+        if merged:
+            out.append(merged)
+    return out
 
 
 def _scene_for_microbeat(files: List[str], index: int, total: int) -> List[str]:

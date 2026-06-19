@@ -899,8 +899,18 @@ def protected_story_files(vision_path: str) -> "set":
         return out
     for it in items:
         f = os.path.basename(str(it.get("scene_file") or ""))
-        if (f and str(it.get("panel_kind") or "").strip().lower() == "story"
-                and not text_context_only_panel(it)):
+        if not f or str(it.get("panel_kind") or "").strip().lower() != "story":
+            continue
+        # An in-world STYLED TEXT / SYSTEM / INFO card (SKY CORPORATION., 7TH
+        # GENERATION NANO MACHINE, STARTING ACTIVATION.) is PLOT and must be
+        # SHOWN. The detector sometimes mis-boxes such a styled card as a
+        # "speech bubble" subject, which makes text_context_only_panel exclude
+        # it. The title-card signal OUTRANKS that exclusion: a real system/info
+        # card is always protected, even when it reads as text-only.
+        if looks_like_system_card(it):
+            out.add(f)
+            continue
+        if not text_context_only_panel(it):
             out.add(f)
     return out
 
@@ -939,6 +949,31 @@ def _looks_like_title_text(ocr: str, text_coverage: float) -> bool:
     if sum(c.isupper() for c in letters) / len(letters) < 0.8:
         return False
     return float(text_coverage or 0.0) < 0.20
+
+
+def looks_like_system_card(vitem: Dict[str, Any]) -> bool:
+    """Manifest-level signal for an in-world STYLED TEXT / SYSTEM / INFO card
+    (SKY CORPORATION., 7TH GENERATION NANO MACHINE, STARTING ACTIVATION.).
+
+    Mirrors render_prep._is_title_card / prep_qa._is_title_card so the stages
+    agree, but uses only the vision MANIFEST fields (we have no image pixels
+    here): a short MOSTLY-CAPS phrase (caps ratio >= 0.8, 2-8 words), with OCR
+    present, low text_coverage (< 0.20), panel_kind story, and not chrome. The
+    pixel flatness test (flat white/black frame) is render_prep's job; this
+    manifest-level signal is enough to PROTECT the panel from being dropped.
+
+    Deliberately conservative: a pure SPEECH bubble of conversational dialogue
+    (lowercase, or caps SHOUT in a big high-coverage bubble) is NOT a card and
+    stays excludable via text_context_only_panel. Only the styled-card case is
+    rescued — never every text panel."""
+    if not isinstance(vitem, dict):
+        return False
+    if str(vitem.get("panel_kind") or "").strip().lower() != "story":
+        return False
+    if is_chrome_scene(vitem):
+        return False
+    return _looks_like_title_text(
+        vitem.get("ocr_clean"), float(vitem.get("text_coverage") or 0.0))
 
 
 def text_context_only_panel(vitem: Dict[str, Any]) -> bool:
