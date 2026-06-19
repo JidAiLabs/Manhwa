@@ -825,7 +825,116 @@ def _select_images_for_group(
     return img_paths[:max_images]
 
 
-def main() -> int:
+def build_beat_schema() -> dict:
+    """Return the Gemini response schema for a narrative beat."""
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "group_id": {"type": "INTEGER"},
+            "scene_files": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "beat_title": {"type": "STRING"},
+            "what_happens": {"type": "STRING"},
+            "narration": {"type": "STRING"},
+            "panel_narration": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "scene_file": {"type": "STRING"},
+                        "line": {"type": "STRING"},
+                    },
+                    "required": ["scene_file", "line"],
+                },
+            },
+            "emotional_turn": {"type": "STRING"},
+            "conflict_or_stakes": {"type": "STRING"},
+            "reveals_or_info": {"type": "STRING"},
+            "hook": {"type": "STRING"},
+            "mood_words": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "rendering_hints": {
+                "type": "OBJECT",
+                "properties": {
+                    "avoid_text_zoom": {"type": "BOOLEAN"},
+                    "preferred_focus": {"type": "STRING"},
+                    "camera_motion": {"type": "STRING"},
+                },
+                "required": ["avoid_text_zoom", "preferred_focus", "camera_motion"],
+            },
+            "scene_selection": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "scene_file": {"type": "STRING"},
+                        "role": {"type": "STRING"},          # keep | redundant
+                        "bubble_mode": {"type": "STRING"},   # spoken|inner_thought|narration|shout|none
+                        "intensity": {"type": "STRING"},     # calm|tense|intense|explosive
+                        "reason": {"type": "STRING"},
+                    },
+                    "required": ["scene_file", "role", "bubble_mode", "intensity"],
+                },
+            },
+        },
+        "required": [
+            "group_id",
+            "scene_files",
+            "beat_title",
+            "what_happens",
+            "narration",
+            "panel_narration",
+            "emotional_turn",
+            "conflict_or_stakes",
+            "reveals_or_info",
+            "hook",
+            "mood_words",
+            "rendering_hints",
+            "scene_selection",
+        ],
+    }
+
+
+def align_panel_narration(scene_files, model_panels, understand_by_file=None):
+    """Return exactly one {scene_file, line} per surviving scene_file, in order.
+
+    Match the model's returned lines to panels by scene_file; fall back to
+    positional fill for any panel the model didn't key; pad any still-missing
+    panel with a grounded line from the understanding (description/action/
+    subjects); fold overflow lines into the LAST panel so nothing is lost. Never
+    invents a panel absent from scene_files. Guarantees len(out)==len(scene_files).
+    """
+    understand_by_file = understand_by_file or {}
+    files = [f for f in (scene_files or []) if f]
+    file_set = set(files)
+    keyed: Dict[str, str] = {}
+    leftover: List[str] = []
+    for item in (model_panels or []):
+        if not isinstance(item, dict):
+            continue
+        line = str(item.get("line") or item.get("narration") or "").strip()
+        if not line:
+            continue
+        sf = str(item.get("scene_file") or "").strip()
+        if sf in file_set and sf not in keyed:
+            keyed[sf] = line
+        else:
+            leftover.append(line)
+    for f in files:                       # positional fill for unkeyed panels
+        if f not in keyed and leftover:
+            keyed[f] = leftover.pop(0)
+    for f in files:                       # grounded pad — never empty
+        if f not in keyed:
+            u = understand_by_file.get(f) or {}
+            subj = ", ".join(str(s) for s in (u.get("subjects") or []) if s)
+            keyed[f] = (str(u.get("description") or u.get("action") or "").strip()
+                        or subj.strip() or "The moment holds.")
+    out = [{"scene_file": f, "line": keyed[f]} for f in files]
+    if leftover and out:                  # fold any remaining overflow into the last panel
+        out[-1]["line"] = (out[-1]["line"] + " " + " ".join(leftover)).strip()
+    return out
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Return the ArgumentParser for gemini_narrative_pass."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--groups-manifest", required=True)
     ap.add_argument("--vision-manifest", required=True)
@@ -853,6 +962,8 @@ def main() -> int:
     ap.add_argument("--cast", default="", help="Optional manifest.cast.json for consistent character naming + dialogue attribution")
     ap.add_argument("--story", default="", help="Optional manifest.story.json (chapter spine: logline + ordered arc) so each beat advances ONE connected story")
     ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
+    ap.add_argument("--understood", default="",
+                    help="manifest.panels.understood.json for per-panel pad grounding")
     ap.add_argument("--register-mode", action="store_true",
                     help="Register-aware narration: per group, a calibrated "
                          "classifier picks FAST (terse, plot-forward, enforced "
@@ -860,10 +971,16 @@ def main() -> int:
                          "'narration' line is (re)generated with the matching "
                          "gear prompt. scene_selection + all other fields still "
                          "come from the default call. OFF = byte-identical to today.")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_arg_parser().parse_args()
 
     groups_m = load_json(args.groups_manifest)
     vision_m = load_json(args.vision_manifest)
+    understood_m = load_json(args.understood) if args.understood and os.path.exists(args.understood) else {}
+    u_by_file = {p.get("scene_file"): p for p in (understood_m.get("panels") or []) if p.get("scene_file")}
 
     groups = _read_groups(groups_m)
     if not groups:
@@ -888,16 +1005,12 @@ def main() -> int:
         "End with a strong hook line.\n"
         "Rendering hints: avoid zooming into text bubbles; focus faces/hands/key objects/wide.\n"
         "\n"
-        "WRITE ONE 'narration' line (NEVER leave it empty) — the sentence(s) a narrator SPEAKS\n"
-        "  over these panels. Its LENGTH MUST MATCH THE PANELS, not a fixed sentence count:\n"
-        "  walk through each distinct moment, and let each panel's CONTENT set how much it\n"
-        "  earns — a busy or action panel earns a full sentence (or two); a simple, quiet\n"
-        "  panel earns a phrase. A group with several panels gets a fuller, multi-beat\n"
-        "  narration; a single-panel group gets one tight line. Do NOT pad a quiet beat, but\n"
-        "  do NOT skip panels — every kept panel earns its moment, so the spoken line\n"
-        "  naturally covers the time those panels are on screen. Write like a top manhwa-\n"
-        "  recap channel: NAME the characters, describe the ACTION, weave in their words.\n"
-        "  This is the final voiced line.\n"
+        "For EACH file in scene_files, in order, WRITE ONE narration line in "
+        "'panel_narration' as {scene_file, line}. Give EVERY panel its own line — "
+        "a quick action panel gets a punchy phrase, a pivotal/quiet panel gets a "
+        "fuller cinematic sentence; match length to what the panel shows. The lines "
+        "must FLOW as one continuous story (continue from previous_narration), not "
+        "isolated captions. Then set 'narration' to all the lines joined with a space.\n"
         "    - PACE = INPUT_JSON.intensity (the beat's energy) AND how many panels this beat\n"
         "      spans. A MULTI-PANEL action or shock beat (a fight, a reveal, a power awakening\n"
         "      shown across SEVERAL panels) is a CINEMATIC SET-PIECE — give it the FULLEST\n"
@@ -1014,58 +1127,7 @@ def main() -> int:
         except Exception:
             corrections = {}
 
-    beat_schema = {
-        "type": "OBJECT",
-        "properties": {
-            "group_id": {"type": "INTEGER"},
-            "scene_files": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "beat_title": {"type": "STRING"},
-            "what_happens": {"type": "STRING"},
-            "narration": {"type": "STRING"},
-            "emotional_turn": {"type": "STRING"},
-            "conflict_or_stakes": {"type": "STRING"},
-            "reveals_or_info": {"type": "STRING"},
-            "hook": {"type": "STRING"},
-            "mood_words": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "rendering_hints": {
-                "type": "OBJECT",
-                "properties": {
-                    "avoid_text_zoom": {"type": "BOOLEAN"},
-                    "preferred_focus": {"type": "STRING"},
-                    "camera_motion": {"type": "STRING"},
-                },
-                "required": ["avoid_text_zoom", "preferred_focus", "camera_motion"],
-            },
-            "scene_selection": {
-                "type": "ARRAY",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "scene_file": {"type": "STRING"},
-                        "role": {"type": "STRING"},          # keep | redundant
-                        "bubble_mode": {"type": "STRING"},   # spoken|inner_thought|narration|shout|none
-                        "intensity": {"type": "STRING"},     # calm|tense|intense|explosive
-                        "reason": {"type": "STRING"},
-                    },
-                    "required": ["scene_file", "role", "bubble_mode", "intensity"],
-                },
-            },
-        },
-        "required": [
-            "group_id",
-            "scene_files",
-            "beat_title",
-            "what_happens",
-            "narration",
-            "emotional_turn",
-            "conflict_or_stakes",
-            "reveals_or_info",
-            "hook",
-            "mood_words",
-            "rendering_hints",
-            "scene_selection",
-        ],
-    }
+    beat_schema = build_beat_schema()
 
     existing_by_id: Dict[int, Dict[str, Any]] = {}
     if args.resume and os.path.exists(args.out):
@@ -1213,6 +1275,20 @@ def main() -> int:
         # line; an unknown token degrades to its readable inner words.
         if beat.get("narration"):
             beat["narration"] = _resolve_cast_tokens(beat["narration"], cast_list)
+
+        # Normalize panel_narration: exactly one line per surviving scene_file.
+        # Runs on BOTH normal and fallback beats (the fallback has no panel_narration
+        # so align_panel_narration will pad every panel from u_by_file / defaults).
+        # Must run AFTER register-mode may have rewritten beat["narration"], but
+        # we derive narration from the panel lines here, overwriting what the model
+        # joined (or register rewrote) so the joined string stays in sync with the
+        # per-panel lines. narration_plain (owned by the punchup stage) is NOT set.
+        surviving = [f for f in (beat.get("scene_files") or payload["scene_files"]) if f]
+        beat["panel_narration"] = align_panel_narration(
+            surviving, beat.get("panel_narration"), u_by_file)
+        assert len(beat["panel_narration"]) == len(surviving), (
+            f"panel_narration/scene_files mismatch in group {gid}")
+        beat["narration"] = " ".join(p["line"] for p in beat["panel_narration"]).strip() or beat.get("narration", "")
 
         # Guarantee exactly one sanitized selection entry per scene (defaults to
         # 'keep' so a parse gap never silently drops a panel).
