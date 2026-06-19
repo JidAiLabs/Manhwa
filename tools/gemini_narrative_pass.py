@@ -825,7 +825,8 @@ def _select_images_for_group(
     return img_paths[:max_images]
 
 
-def main() -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Return the ArgumentParser for gemini_narrative_pass."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--groups-manifest", required=True)
     ap.add_argument("--vision-manifest", required=True)
@@ -853,6 +854,8 @@ def main() -> int:
     ap.add_argument("--cast", default="", help="Optional manifest.cast.json for consistent character naming + dialogue attribution")
     ap.add_argument("--story", default="", help="Optional manifest.story.json (chapter spine: logline + ordered arc) so each beat advances ONE connected story")
     ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
+    ap.add_argument("--understood", default="",
+                    help="manifest.panels.understood.json for per-panel pad grounding")
     ap.add_argument("--register-mode", action="store_true",
                     help="Register-aware narration: per group, a calibrated "
                          "classifier picks FAST (terse, plot-forward, enforced "
@@ -860,10 +863,16 @@ def main() -> int:
                          "'narration' line is (re)generated with the matching "
                          "gear prompt. scene_selection + all other fields still "
                          "come from the default call. OFF = byte-identical to today.")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_arg_parser().parse_args()
 
     groups_m = load_json(args.groups_manifest)
     vision_m = load_json(args.vision_manifest)
+    understood_m = load_json(args.understood) if args.understood and os.path.exists(args.understood) else {}
+    u_by_file = {p.get("scene_file"): p for p in (understood_m.get("panels") or []) if p.get("scene_file")}
 
     groups = _read_groups(groups_m)
     if not groups:

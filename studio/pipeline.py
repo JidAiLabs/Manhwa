@@ -113,6 +113,7 @@ def _ep_paths(ep_dir: Path) -> dict:
         "scenes_manifest": ep_dir / "manifest.scenes.json",
         "vision": ep_dir / "manifest.vision.json",
         "groups": ep_dir / "manifest.groups.json",
+        "understood": ep_dir / "manifest.panels.understood.json",
         "cast": ep_dir / "manifest.cast.json",
         "beats": ep_dir / "manifest.beats.json",
         "script": ep_dir / "manifest.script.json",
@@ -258,7 +259,8 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                       "--cast", str(p["cast"]),
                       # chapter spine (logline + arc) from story_group -> beats
                       # connect into one story instead of isolated panel captions
-                      "--story", str(ep_dir / "manifest.story.json")]
+                      "--story", str(ep_dir / "manifest.story.json"),
+                      "--understood", str(p["understood"])]
         if cfg.beats_backend == "ollama":
             beats_args += ["--backend", "ollama",
                            "--ollama-model", cfg.beats_model]
