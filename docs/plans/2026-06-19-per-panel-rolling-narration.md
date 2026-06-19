@@ -115,49 +115,72 @@ git commit -m "feat(understand): first-class 'system' panel_kind for in-world UI
 
 ---
 
-## Chunk 2: story_group never drops `system` panels
+## Chunk 2: `system` never dropped — across ALL panel_kind consumers
 
-The four drop paths already key on `panel_kind`: `nonstory_files` drops `chrome|empty` (`tools/story_group.py:164-166`), `effect_only_files` acts only on `story` (`:224`), `caption_files` only `caption` (`:246-248`), `merge_caption_solos` only folds caption-only beats (`:260-261`). So a `system` panel already falls through all of them. The ONE gap: `keep_by_understanding` (`:393-395`) lists only `("story","caption")`, so an OCR-regex chrome hit (`ocr_chrome`) could still drop a text-heavy system card. Add `system` there.
+> **Scope expanded from the Chunk 1 code-quality review.** The drop decision isn't only in `story_group`; several modules branch on `panel_kind` and hardcode `("story","caption")` as the never-drop set. A `system` panel must be kept by every one of them. The highest-leverage fix is the **single chrome chokepoint** `scene_chrome.is_chrome_scene`, which `story_group`/`render_prep`/`prep_qa` all route through (per its own docstring at `tools/scene_chrome.py:90-95`).
 
 **Files:**
-- Modify: `tools/story_group.py:393-395`
-- Test: `tests/test_story_group.py` (extend)
+- Modify: `tools/scene_chrome.py:98` (the chokepoint), `tools/story_group.py:393-395` (defense-in-depth), `tools/render_prep.py:1894` (bubble-drop exemption)
+- Test: `tests/test_story_group.py`, `tests/test_scene_chrome.py` (or the file that tests `is_chrome_scene`), `tests/test_prep_qa.py`/render_prep tests
+- [ ] **Step 0: Sweep first.** `grep -rn '("story", *"caption")\|panel_kind' tools/ | grep -i 'story.*caption'` and read every hit. Any site whose intent is "these kinds are kept / not chrome / exempt from drop" must include `"system"`. Confirmed sites below; add `system` to any others the sweep finds, with a one-line note in the commit body.
 
-- [ ] **Step 1: Write the failing test**
+### Task 2a: scene_chrome chokepoint (primary)
 
+- [ ] **Step 1 (test):** in the test file that loads `scene_chrome` (module obj per that file; create `tests/test_scene_chrome.py` with a spec loader if none exists), assert a `system` item is never chrome regardless of OCR/midtones:
+```python
+def test_system_panel_is_never_chrome():
+    # sparse OCR + low midtone would trip the binary-card heuristic for a non-system kind
+    assert sc.is_chrome_scene({"panel_kind": "system", "ocr_clean": ""}, midtone_frac=0.02) is False
+    assert sc.is_chrome_scene({"panel_kind": "system", "ocr_clean": "QUEST DIRECTIONS"}, midtone_frac=0.5) is False
+```
+  (Match `is_chrome_scene`'s real signature — confirm whether `midtone_frac` is a kwarg/positional by reading `tools/scene_chrome.py`.)
+- [ ] **Step 2:** run → FAIL (system falls through to OCR/midtone heuristic and can return True).
+- [ ] **Step 3:** `tools/scene_chrome.py:98` — add `system` to the not-chrome fast-exit:
+```python
+    if kind in ("story", "caption", "system"):
+        return False
+```
+  Update the docstring (`:90-95`) to say a `story`/`caption`/`system` verdict is never chrome.
+- [ ] **Step 4:** run → PASS.
+
+### Task 2b: story_group keep_by_understanding (defense-in-depth)
+
+- [ ] **Step 1 (test):** add to `tests/test_story_group.py` (module obj `sg`):
 ```python
 def test_system_panel_is_never_excluded():
     panels = [
         {"scene_file": "p01.jpg", "panel_kind": "story",  "description": "a man stands", "subjects": ["man"]},
-        # a text-HEAVY system card that an OCR chrome regex might flag:
         {"scene_file": "p02.jpg", "panel_kind": "system", "description": "QUEST DIRECTIONS window",
          "dialogue": "QUEST DIRECTIONS. NUMBER OF PLAYERS TO KILL: 1.", "subjects": []},
     ]
-    # none of the drop helpers may contain the system file
     assert "p02.jpg" not in sg.nonstory_files(panels)
     assert "p02.jpg" not in sg.effect_only_files(panels)
     assert "p02.jpg" not in sg.caption_files(panels)
-    # and it must be in the keep_by_understanding set used to shield it from ocr_chrome
-    keep = {p["scene_file"] for p in panels
-            if str(p.get("panel_kind") or "").lower() in ("story", "caption", "system")}
-    assert "p02.jpg" in keep
 ```
-
-- [ ] **Step 2: Run** `…::test_system_panel_is_never_excluded -v` → expect PASS for the helper asserts but confirm the `keep` membership matches the source. Then verify the *source* still excludes `system` from the shield by reading `:393-395` — it currently lists only `("story","caption")`. Add a stricter assertion that imports the real predicate once it's refactored (Step 3 makes it a named helper).
-
-- [ ] **Step 3: Implement** — `tools/story_group.py:393-395`:
+- [ ] **Step 2:** run → these PASS already (the helpers don't catch `system`); the real gap is `keep_by_understanding` shielding it from `ocr_chrome`. Add the fix anyway for explicitness.
+- [ ] **Step 3:** `tools/story_group.py:393-395`:
 ```python
         keep_by_understanding = {p.get("scene_file") for p in panels
                                  if str(p.get("panel_kind") or "").lower()
                                  in ("story", "caption", "system") and not p.get("error")}
 ```
 
-- [ ] **Step 4: Run** `.eval_venv/bin/python -m pytest tests/test_story_group.py -v` → PASS (all).
+### Task 2c: render_prep bubble-drop exemption
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 1 (test):** assert a text-bearing `system` panel is exempt from `drop_bubble_dominated_cuts` (mirror the existing story/caption exemption test in the render_prep tests; if none, add a focused one).
+- [ ] **Step 2:** run → FAIL.
+- [ ] **Step 3:** `tools/render_prep.py:1894`:
+```python
+                    if recoverable and (vit.get("panel_kind") in ("story", "caption", "system")
+                            and str(vit.get("ocr_clean") or "").strip()):
+                        exempt.add(f)
+```
+- [ ] **Step 4:** run → PASS.
+
+- [ ] **Final: Run** `.eval_venv/bin/python -m pytest tests/test_story_group.py tests/test_scene_chrome.py tests/test_prep_qa.py -v` → PASS (all). Then **Commit**:
 ```bash
-git add tools/story_group.py tests/test_story_group.py
-git commit -m "feat(story_group): never drop in-world 'system' panels"
+git add tools/scene_chrome.py tools/story_group.py tools/render_prep.py tests/
+git commit -m "feat: never drop in-world 'system' panels across chrome/story_group/render_prep"
 ```
 
 ---
