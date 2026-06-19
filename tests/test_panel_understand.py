@@ -117,3 +117,17 @@ def test_inworld_balloon_needs_both_confidence_and_compactness():
     # confident but huge -> rejected; compact but low-conf -> rejected
     assert pu._is_inworld_balloon([(0, 0, 760, 560, 0.95)], 800, 600) is False
     assert pu._is_inworld_balloon([(50, 50, 200, 180, 0.45)], 800, 600) is False
+
+
+# --- system panel_kind (in-world game/system UI cards) -----------------------
+
+def test_norm_panel_kind_accepts_system():
+    assert pu._norm_panel_kind("system") == "system"
+    assert pu._norm_panel_kind("SYSTEM") == "system"
+    assert pu._norm_panel_kind("garbage") == "story"   # unknown -> never-drop side
+
+
+def test_panel_schema_enumerates_system():
+    enum = pu.PANEL_SCHEMA["properties"]["panel_kind"]["enum"]
+    assert "system" in enum
+    assert set(enum) == {"story", "chrome", "empty", "caption", "system"}

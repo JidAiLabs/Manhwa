@@ -41,7 +41,7 @@ PANEL_SCHEMA: Dict[str, Any] = {
         "intensity": {"type": "STRING",
                       "enum": ["calm", "tense", "intense", "explosive"]},
         "panel_kind": {"type": "STRING",
-                       "enum": ["story", "chrome", "empty", "caption"]},
+                       "enum": ["story", "chrome", "empty", "caption", "system"]},
     },
     "required": ["description", "action", "intensity", "panel_kind"],
 }
@@ -74,11 +74,17 @@ SYSTEM = (
     "monologue or scene-setting / transition line (e.g. a black card 'BACK THEN, I HAD "
     "NO IDEA.'). Its words go in 'dialogue'; it is not a picture. A panel with real art "
     "AND a caption is 'story'.\n"
-    "    'story' = the STORY WORLD — real scene art AND in-world INFO / DEVICE screens: "
-    "a character name / AGE / TIME card, an RPG STATUS / SKILL / STAT window, "
-    "a SYSTEM message, a place / organization name, OR a phone/screen a CHARACTER is using in-story (a reader "
-    "app or episode list they browse, a chat, a feed). These carry story and MUST be "
-    "kept. When unsure, 'story'.\n"
+    "    'system' = an IN-WORLD GAME / SYSTEM INTERFACE the CHARACTER perceives — "
+    "a QUEST window, a STATUS / STAT / SKILL screen, a NOTIFICATION / ALARM / level-up "
+    "toast, or a SYSTEM MESSAGE (e.g. 'QUEST DIRECTIONS', 'STATUS', 'NOTIFICATION — You "
+    "have defeated a [Steel-Fanged Lycan]', '7TH GENERATION NANO MACHINE, STARTING "
+    "ACTIVATION'). It can be ANY length, ANY case, ANY color/art style, and may be drawn "
+    "OVER character art. These are PLOT and MUST be kept and shown.\n"
+    "    'story' = the STORY WORLD — real scene art AND in-world device screens a "
+    "character uses in-story (a reader app, chat, feed), a place/organization name card. "
+    "A panel with real character art is 'story' even if a system window is drawn over it. "
+    "When unsure between system/story (both are always kept), pick either; only an AUTHOR "
+    "narrative caption is 'caption' and only platform furniture is 'chrome'.\n"
     "The 'previous_panels' field is context for continuity only — describe THIS "
     "panel, not the previous ones."
 )
@@ -86,7 +92,7 @@ SYSTEM = (
 
 def _norm_panel_kind(v: Any) -> str:
     v = str(v or "").strip().lower()
-    return v if v in ("story", "chrome", "empty", "caption") else "story"
+    return v if v in ("story", "chrome", "empty", "caption", "system") else "story"
 
 
 def build_payload(panel: Dict[str, Any], prev_descs: List[str]) -> Dict[str, Any]:
