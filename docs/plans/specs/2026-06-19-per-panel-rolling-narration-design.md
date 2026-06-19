@@ -37,7 +37,7 @@ Key measurement that reframes the trade-off: **with `narration_microbeats` on, e
 
 **Non-Goals**
 - Changing grouping itself — grouping stays as the **continuity unit** (context for the rolling pass + pacing), it is no longer the narration unit.
-- Changing the understanding pass (`panel_understand.py`), the cast builder, TTS backend, or render.
+- Changing the understanding pass beyond the **`system` `panel_kind` addition** (§6/§6.1) — describe/intensity/subjects logic, the cast builder, TTS backend, and render are untouched.
 - Re-enabling `narration_register` (disabled in production — see `register-off-default-persona-narration`).
 - Any batch run before Ch1 validates side-by-side.
 
@@ -53,9 +53,11 @@ Key measurement that reframes the trade-off: **with `narration_microbeats` on, e
 Stage names are unchanged. The change is what `beated` emits and what `scripted` consumes.
 
 ```
-grouped:   panel_understand.py  → manifest.panels.understood.json   (every panel described — unchanged)
+grouped:   panel_understand.py  → manifest.panels.understood.json
+                                   *** panel_kind gains "system" (multimodal system-card
+                                       recognition — bug b, §6/§6.1); else unchanged ***
            story_group.py       → manifest.groups.json + manifest.story.json
-                                   (grouping unchanged; ONE classification fix — §6)
+                                   (grouping unchanged; NEVER drops story/system panels — §6)
 
 beated:    cast_builder.py      → manifest.cast.json                (unchanged)
            gemini_narrative_pass.py → manifest.beats.json
@@ -107,14 +109,28 @@ Two categories need no bridge:
 
 | File | Change |
 |------|--------|
-| `tools/gemini_narrative_pass.py` | Prompt + emission: for each group, return **one line per listed panel** (`panel_narration[]`), proportional length from understanding+intensity, flowing from `previous_narration` + spine. Thread the prior group's panel-lines as `previous_narration`. Write `narration` as the joined string for back-compat. |
+| `tools/panel_understand.py` | **System-card recognition fix (bug b) — multimodal, not regex.** Add a first-class **`system`** value to the `panel_kind` enum (`tools/panel_understand.py:43`, `_norm_panel_kind:87`). Strengthen the prompt to teach the **system-vs-author-caption boundary** with diverse real exemplars (see §6.1): quest windows full of paragraphs, status/stat blocks in different art styles, short notifications/alarms/welcomes, mixed-case notifications, and system windows composited over character art. `system` = the in-world game/system interface a character sees; `caption` = the author's narrative voice on a card. This is a contract change (new enum value) → requires re-running understanding (delete `manifest.panels.understood.json`) on Ch1. |
+| `tools/gemini_narrative_pass.py` | Prompt + emission: for each group, return **one line per listed panel** (`panel_narration[]`), proportional length from understanding+intensity, flowing from `previous_narration` + spine. Thread the prior group's panel-lines as `previous_narration`. Write `narration` as the joined string for back-compat. For `system` panels, use the game/system persona framing (per `narration-genre-persona-subjects-grounding`). |
 | `tools/narration_punchup.py` | Apply the cinematic persona pass **per panel-line** (iterate `panel_narration`) instead of per beat; keep `narration_plain` semantics; rejoin `narration`. |
 | `tools/script_expander.py` | **Delete the live microbeat path** (`_split_recap_microbeats`, `_scene_for_microbeat`, `_build_microbeat_shot` no longer on the default path). Build one segment per `panel_narration` entry, `scene_files=[panel]`. Keep functions behind the `--microbeats` flag for the A/B fallback (§9). |
 | `tools/timeline_planner.py` | Each segment's `scene_files` is its one panel, so `_pick_for_segment` (`tools/timeline_planner.py:1351`) returns that panel — selection collapses to identity. **Keep** `inject_missing_protected` as a belt-and-suspenders net. Keep system-card protection. |
-| `tools/story_group.py` | **System-card classification fix (bug b) — net-new heuristic gate:** a styled in-world system/info card whose understanding gave `panel_kind == "caption"` is reclassified **story** before it reaches `caption_files()` / `merge_caption_solos` (`tools/story_group.py:242`, `:251`). This gate does **not** exist today — it is new code: ALL-CAPS, 2–8 words, `text_coverage < 0.20`, not chrome. The card then survives into the per-panel set, gets a line, and renders. True external caption boxes still drop. (The understanding pass currently mislabels p000114 as `caption` upstream; this gate corrects it downstream without re-running understanding.) |
-| `tools/prep_qa.py` | Coverage check becomes per-panel: every kept story panel must have a non-empty line and appear in exactly one cut. Drop microbeat-specific assertions. |
+| `tools/story_group.py` | **Never drop `system` panels.** Treat `panel_kind == "system"` exactly like `story` — kept, shown, narrated; never routed through `caption_files()` / `merge_caption_solos` / `nonstory_files` / `effect_only_files` drops (`tools/story_group.py:153`, `:205`, `:242`, `:251`). No regex, no text/word/case heuristic anywhere — the keep decision is the understanding's `panel_kind`. Update the `panel_kind`-consuming helpers to recognize the new value. |
+| `tools/prep_qa.py` | Coverage check becomes per-panel: every kept `story`/`system` panel must have a non-empty line and appear in exactly one cut. Add an explicit assertion that **every `system` panel is shown** (never silently dropped). Drop microbeat-specific assertions. Defer to the understanding's `panel_kind` (no independent regex verdict). |
 | `tools/narration_heal.py` | Heal re-narrates a **group's** `panel_narration` (the existing per-group unit) when QA flags it, never dropping a panel line. |
 | `studio/config.py`, `studio/pipeline.py` | `narration_microbeats` retained as a **switchable fallback** flag through Ch1 validation (default flips to per-panel); removed after per-panel is confirmed. |
+
+### 6.1 What a `system` panel is (prompt exemplars)
+
+System/UI cards **vary in every surface characteristic** — text volume, case, color, art style, and they can be composited onto story art. A regex on text/word-count/case cannot catch them; only the multimodal pass can, because it *sees* "this is a game interface." The understanding prompt is taught with representative real cases (Solo-Leveling / Omniscient-Reader-class system windows):
+
+- **Quest window** — a bordered panel titled e.g. "QUEST DIRECTIONS" with **multiple full sentences** and fields ("NUMBER OF PLAYERS TO KILL: 1"). High text coverage, many words.
+- **Status / stat screen** — "STATUS" with name/level/HP/MP/STR/AGI… stat blocks. Appears in **different art styles** (flat blue UI; dark scratchy textured UI) — same kind, different skin.
+- **Short notice** — "ALARM", "[WELCOME, PLAYER.]", level-up toasts. Few words.
+- **Notification** — "NOTIFICATION — You have defeated a [Steel-Fanged Lycan]." **Mixed case**, brackets, medium length.
+- **System message** — "7TH GENERATION NANO MACHINE, STARTING ACTIVATION" (Nano p000114 — the bug-b card).
+- **Overlay on art** — a status/skill window rendered **over character art** (two characters + a translucent stat panel). The panel is `story` (it has scene art); the system overlay is part of it and is narrated via grounded subjects — it is never dropped regardless.
+
+Boundary the prompt must draw: **`system`** = the in-world game/system interface the *character* perceives (quest, status, notification, alarm, skill, level-up, system message). **`caption`** = the *author's* narrative voice as text on a plain card ("Three days later", "Meanwhile…"). When a card is in-world UI, it is `system` (never dropped); when it is the author narrating, it is `caption`. When unsure between `system` and `story`, choose the never-drop side.
 
 ## 7. Coverage Rule
 
@@ -122,9 +138,9 @@ A panel gets a line **iff** it survives the existing `story_group.py` filters:
 - **chrome** (logos / watermarks / page numbers) — dropped
 - **pure-effect** (a glow / impact streak naming nothing concrete) — dropped
 - **duplicate** (near-identical consecutive frame) — collapsed
-- everything else, **including system/info cards** — kept, one line, one cut.
+- **`story` and `system` panels are NEVER dropped** — kept, one line, one cut.
 
-This matches "explain each meaningful image" while skipping content-free frames. It preserves the filter-quality-**before**-narration ordering (`recap-quality-ordering-and-qa-gap`).
+`system` is a hard keep: an in-world UI card is always shown + narrated, no matter its text volume, case, style, or whether it's composited on art. This matches "explain each meaningful image" while skipping content-free frames, and preserves the filter-quality-**before**-narration ordering (`recap-quality-ordering-and-qa-gap`).
 
 ## 8. Error Handling — coverage can never silently drop
 
@@ -149,7 +165,8 @@ Unit:
 - **N-lines-per-group parse:** a mocked group call returning N lines yields N `panel_narration` entries aligned to `scene_files`.
 - **Repair-fill:** fewer/more/blank lines → invariant holds, missing panels padded from understanding, no phantom panels.
 - **segment_id alignment:** `script_expander` emits one segment per panel, `g####_p##` byte-identical to the panel index; TTS/timeline lookups resolve 1:1.
-- **System-card survives:** a `panel_kind == "caption"` ALL-CAPS 2–8-word low-coverage card (p000114 fixture) is reclassified story by the new gate and appears in the final cuts; a true external caption box of the same kind still drops.
+- **System-card recognition (understanding):** representative fixtures spanning the §6.1 variety — a text-heavy quest window, a status/stat block, a short alarm/welcome, a mixed-case notification, the Nano p000114 system message — are all labeled `panel_kind == "system"`; a true author caption ("Three days later") stays `caption`.
+- **System-card never dropped (story_group):** every `system` panel survives all four drop paths (`nonstory_files`, `effect_only_files`, `caption_files`, `merge_caption_solos`) and reaches the per-panel set; `prep_qa` asserts each `system` panel appears in exactly one cut. End-to-end: p000114 appears in the final Ch1 cuts.
 - **punchup per-line:** persona applied to each line; `narration_plain` preserved; rejoined `narration` matches.
 
 Integration / E2E:
@@ -167,7 +184,8 @@ Regression:
 | Model still under-returns lines for dense groups | Deterministic repair-fill guarantees coverage; invariant assert fails loud on misalignment. |
 | Contract change breaks a downstream reader | `narration` joined-string kept for legacy readers; `segment_id` scheme unchanged; per-consumer audit in §6; full suite must stay green. |
 | TTS time regresses | Clip count ≈ unchanged (already one clip/panel under microbeats-**on**, the production config in `studio.toml`). Pin the Ch1 A/B baseline to a microbeats-on prepare so the clip-count comparison is apples-to-apples; verify Ch1 timing before batch. |
-| System-card reclassification over-captures true captions | Tight signal (ALL-CAPS, 2–8 words, `text_coverage<0.20`, not chrome); unit test asserts a true external caption still drops. |
+| New `system` enum value breaks a `panel_kind` consumer | `panel_kind` is read by `story_group`, `render_prep`, `prep_qa`, and narration persona/subjects (`recap-quality-ordering-and-qa-gap`: "consumers must carry panel_kind"). Implementation audits every consumer to treat `system` as never-drop story; full suite must stay green. |
+| Understanding model mislabels a system card (the original bug b) | Both `story` and `system` are never-dropped, so a `system`↔`story` confusion is harmless — the only dangerous error is `system`→`caption`/`chrome`. The strengthened prompt (§6.1 exemplars) draws the system-vs-author-caption line explicitly, and "when unsure, choose the never-drop side" biases away from dropping. No regex fallback — robustness comes from the multimodal verdict. |
 
 ## 12. Open Questions
 
