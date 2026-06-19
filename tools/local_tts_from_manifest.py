@@ -301,10 +301,14 @@ def extract_items_from_manifest(script_obj: Dict[str, Any], text_source: str = "
 # cheaper than a 48-minute (or indefinite) stall.
 # ---------------------------------------------------------------------------
 
-# Wall-clock cap per clip: generous but bounded. A 26s line -> ~208s cap.
-CLIP_TIMEOUT_MIN_SEC = 120.0   # floor — short lines still get a real chance
-CLIP_TIMEOUT_FACTOR = 8.0      # cap = expected_audio_sec * factor (above floor)
-CLIP_RETRIES = 2               # initial try + this many retries on timeout/error
+# Wall-clock cap per clip: only meant to catch a true HANG, never a slow-but-valid
+# generation. Qwen on MPS is ~2x realtime SOLO but 3-5x under GPU contention, so a
+# tight cap silenced valid clips (the Ch7 gaps). Floor 600s (10 min) + factor 20 so
+# even a contended long clip finishes; a real freeze (the 48-min stall) still trips
+# it. Env-tunable so the rig can be adjusted without a redeploy.
+CLIP_TIMEOUT_MIN_SEC = float(os.environ.get("STUDIO_TTS_CLIP_TIMEOUT_SEC", "600"))
+CLIP_TIMEOUT_FACTOR = float(os.environ.get("STUDIO_TTS_CLIP_TIMEOUT_FACTOR", "20"))
+CLIP_RETRIES = int(os.environ.get("STUDIO_TTS_CLIP_RETRIES", "2"))  # initial + retries
 # Rough narration pace for ESTIMATING a clip's audio length from its text (only
 # used to size the timeout + the silence placeholder; not the real duration).
 _EST_CHARS_PER_SEC = 14.0
