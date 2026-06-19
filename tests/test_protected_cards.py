@@ -124,3 +124,95 @@ def test_protected_story_keeps_normal_art_panel(tmp_path):
     vp = tmp_path / "manifest.vision.json"
     vp.write_text(json.dumps(vision))
     assert "art.jpg" in tp.protected_story_files(str(vp))
+
+
+# ---- END-TO-END: the group-protected card propagates into a rendered segment --
+# The half-working protection: protected_story_files() now includes the in-world
+# card AND the group keeps it in scene_files, but the planner emits ONE item per
+# SCRIPT segment whose panels come from the script's per-shot list — which the
+# narration LLM trimmed of the card ('redundant'). Drive the real main() loop and
+# assert the card actually lands in a rendered cut. Control: a non-protected
+# redundant panel the per-shot list excluded stays dropped.
+
+def _write_planner_inputs(tmp_path, *, group_scene_files, shot_scene_files):
+    vision = {"items": [
+        # the in-world system card -> protected_story_files protects it
+        {"scene_file": "card.jpg", "panel_kind": "story",
+         "subjects": ["text"], "ocr_clean": "SKY CORPORATION.",
+         "text_coverage": 0.04},
+        {"scene_file": "art1.jpg", "panel_kind": "story",
+         "subjects": ["a swordsman"], "ocr_clean": "", "text_coverage": 0.0},
+        {"scene_file": "art2.jpg", "panel_kind": "story",
+         "subjects": ["a mountain"], "ocr_clean": "", "text_coverage": 0.0},
+        # a non-protected caption card the per-shot list excluded: its words ride
+        # the narration, so it must NOT be re-injected (only story/system cards are)
+        {"scene_file": "dup.jpg", "panel_kind": "caption",
+         "subjects": ["text"], "ocr_clean": "Meanwhile...", "text_coverage": 0.2},
+    ]}
+    groups = {"groups": [
+        {"group_id": 1, "shot_id": 1, "segment": "present",
+         "scene_files": group_scene_files},
+    ]}
+    script = {"sections": [
+        {"section_index": 0,
+         "script_paragraphs": [
+             {"text": "A swordsman climbs the mountain toward the corporation."}],
+         "shots": [
+             {"group_id": 1, "segment_id": "g0001_p00",
+              "scene_files": shot_scene_files}],
+         }]}
+    vp = tmp_path / "manifest.vision.json"; vp.write_text(json.dumps(vision))
+    gp = tmp_path / "manifest.groups.json"; gp.write_text(json.dumps(groups))
+    sp = tmp_path / "manifest.script.json"; sp.write_text(json.dumps(script))
+    outp = tmp_path / "render.plan.json"
+    return str(vp), str(gp), str(sp), str(outp)
+
+
+def _run_planner(tmp_path, *, group_scene_files, shot_scene_files):
+    import sys
+    vp, gp, sp, outp = _write_planner_inputs(
+        tmp_path, group_scene_files=group_scene_files,
+        shot_scene_files=shot_scene_files)
+    argv = ["timeline_planner", "--groups", gp, "--script", sp,
+            "--vision", vp, "--out", outp, "--mode", "narrated"]
+    old = sys.argv
+    try:
+        sys.argv = argv
+        tp.main()
+    finally:
+        sys.argv = old
+    return json.loads(Path(outp).read_text())
+
+
+def test_e2e_protected_card_excluded_by_shot_still_renders(tmp_path):
+    # the card IS in the group's scene_files but the script's per-shot list
+    # EXCLUDED it -> it must still appear in some segment's cuts.
+    plan = _run_planner(
+        tmp_path,
+        group_scene_files=["card.jpg", "art1.jpg", "art2.jpg"],
+        shot_scene_files=["art1.jpg", "art2.jpg"])           # card omitted by LLM
+    rendered = {c["file"] for item in plan["timeline"] for c in item.get("cuts", [])}
+    assert "card.jpg" in rendered            # protected card propagated + rendered
+
+
+def test_e2e_non_protected_excluded_panel_stays_dropped(tmp_path):
+    # 'dup.jpg' is a non-protected near-duplicate the per-shot list excluded ->
+    # it must NOT be re-injected (only protected cards are).
+    plan = _run_planner(
+        tmp_path,
+        group_scene_files=["card.jpg", "art1.jpg", "dup.jpg"],
+        shot_scene_files=["art1.jpg"])                       # both card+dup omitted
+    rendered = {c["file"] for item in plan["timeline"] for c in item.get("cuts", [])}
+    assert "card.jpg" in rendered            # protected card injected
+    assert "dup.jpg" not in rendered         # non-protected drop stays dropped
+
+
+def test_e2e_panel_rich_group_unaffected(tmp_path):
+    # no protected card missing -> the per-shot selection is untouched (the LLM's
+    # two-panel pick renders exactly, no injection).
+    plan = _run_planner(
+        tmp_path,
+        group_scene_files=["art1.jpg", "art2.jpg", "dup.jpg"],
+        shot_scene_files=["art1.jpg", "art2.jpg"])
+    rendered = {c["file"] for item in plan["timeline"] for c in item.get("cuts", [])}
+    assert rendered == {"art1.jpg", "art2.jpg"}   # exactly the picks, nothing extra
