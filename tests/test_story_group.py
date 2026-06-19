@@ -207,3 +207,18 @@ def test_annotate_intensity_takes_the_peak_per_beat():
     assert shots[0]["intensity"] == "explosive"   # one explosive panel sets pace
     assert shots[1]["intensity"] == "tense"
     assert shots[2]["intensity"] == "calm"
+
+
+def test_system_panel_is_never_excluded():
+    # In-world quest/status/notification cards are PLOT — the three filter helpers
+    # must never drop them. keep_by_understanding (in run()) is covered at the
+    # scene_chrome chokepoint: is_chrome_scene returns False for panel_kind="system",
+    # so ocr_chrome can never include a system panel (it always stays in the keep-set).
+    panels = [
+        {"scene_file": "p01.jpg", "panel_kind": "story",  "description": "a man stands", "subjects": ["man"]},
+        {"scene_file": "p02.jpg", "panel_kind": "system", "description": "QUEST DIRECTIONS window",
+         "dialogue": "QUEST DIRECTIONS. NUMBER OF PLAYERS TO KILL: 1.", "subjects": []},
+    ]
+    assert "p02.jpg" not in sg.nonstory_files(panels)
+    assert "p02.jpg" not in sg.effect_only_files(panels)
+    assert "p02.jpg" not in sg.caption_files(panels)

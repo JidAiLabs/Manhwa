@@ -195,3 +195,10 @@ def test_korean_staff_credits_are_chrome():
 
 def test_single_korean_role_word_is_not_chrome():
     assert _is("그림 속의 검은 그림자가 움직인다") is False   # story prose using 그림
+
+
+def test_system_panel_is_never_chrome():
+    # In-world game/UI cards (quest/status/notification/system-message) are PLOT —
+    # they must never be classified as chrome regardless of sparse OCR or midtones.
+    assert sc.is_chrome_scene({"panel_kind": "system", "ocr_clean": ""}, midtone_frac=0.02) is False
+    assert sc.is_chrome_scene({"panel_kind": "system", "ocr_clean": "QUEST DIRECTIONS"}, midtone_frac=0.5) is False

@@ -1891,7 +1891,7 @@ def main() -> int:
                     # inpainted away, leaving blank outlines over a gradient) is NOT
                     # recoverable — so it is NOT exempted here and drops as the husk
                     # it is, with a real neighbour held in its place.
-                    if recoverable and (vit.get("panel_kind") in ("story", "caption")
+                    if recoverable and (vit.get("panel_kind") in ("story", "caption", "system")
                             and str(vit.get("ocr_clean") or "").strip()):
                         exempt.add(f)
                 cov[f] = score

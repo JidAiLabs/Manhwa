@@ -89,13 +89,15 @@ def is_chrome_scene(
 
     The multimodal UNDERSTANDING is authoritative when present: if the vision item
     carries a panel_kind (stamped onto the vision manifest by panel_understand),
-    a 'story'/'caption' verdict is NEVER chrome (whatever the OCR says) and 'chrome'
-    is chrome. This is the SINGLE source of truth — story_group, render_prep and
-    prep_qa all reach chrome detection through here, so none of them re-derive it
-    from OCR and disagree (e.g. the beast panel whose only OCR was '1').
+    a 'story'/'caption'/'system' verdict is NEVER chrome (whatever the OCR says)
+    and 'chrome' is chrome. This is the SINGLE source of truth — story_group,
+    render_prep and prep_qa all reach chrome detection through here, so none of
+    them re-derive it from OCR and disagree (e.g. the beast panel whose only OCR
+    was '1'). 'system' = in-world game/UI cards (quest/status/notification/alarm/
+    system-message) — always PLOT, never decorative chrome.
     """
     kind = str(item.get("panel_kind") or "").strip().lower()
-    if kind in ("story", "caption"):
+    if kind in ("story", "caption", "system"):
         return False
     if kind == "chrome":
         return True

@@ -392,7 +392,7 @@ def main() -> int:
         # story panels — the regex vetoed a 'story' verdict on garbled OCR).
         keep_by_understanding = {p.get("scene_file") for p in panels
                                  if str(p.get("panel_kind") or "").lower()
-                                 in ("story", "caption") and not p.get("error")}
+                                 in ("story", "caption", "system") and not p.get("error")}
         ocr_chrome = chrome_files(list(vmap.values()),
                                   args.series_title) - keep_by_understanding
         # NEVER drop a story title/system card (age/time/status/org card) even if the
