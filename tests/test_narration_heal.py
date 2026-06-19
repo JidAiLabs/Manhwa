@@ -64,19 +64,32 @@ def test_empty_report_is_empty():
     assert nh.corrections_from_qa({"flags": []}) == {}
 
 
-# --- grounding_weak: the QA-eyes flag that drives quality heal (WARN-severity) -
+# --- grounding_weak: QA-eyes report by default, opt-in quality heal ----------
 
-def test_grounding_weak_heals_at_warn_severity():
-    # most codes heal only as ERROR; grounding_weak (like chrome_narration) heals
-    # at ANY severity so a weak-but-valid line gets a regen attempt
+def test_grounding_weak_warn_is_report_only_by_default():
     rep = {"flags": [_flag("grounding_weak", "WARN",
                            "weak/mis-grounded narration: beasts called 'dogs'",
                            "g0004_p03")]}
     corr = nh.corrections_from_qa(rep)
+    assert corr == {}
+
+
+def test_grounding_weak_warn_heals_when_enabled():
+    rep = {"flags": [_flag("grounding_weak", "WARN",
+                           "weak/mis-grounded narration: beasts called 'dogs'",
+                           "g0004_p03")]}
+    corr = nh.corrections_from_qa(rep, include_grounding_warn=True)
     assert 4 in corr
     note = corr[4].lower()
     assert "mis-grounded" in note or "name exactly what the panel shows" in note
     assert "dogs" in note          # the specific issue is threaded into the note
+
+
+def test_grounding_weak_error_still_heals():
+    rep = {"flags": [_flag("grounding_weak", "ERROR",
+                           "weak/mis-grounded narration: beasts called 'dogs'",
+                           "g0004_p03")]}
+    assert set(nh.corrections_from_qa(rep)) == {4}
 
 
 def test_grounding_weak_in_healable_set():

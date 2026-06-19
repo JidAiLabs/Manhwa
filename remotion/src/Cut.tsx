@@ -59,21 +59,8 @@ export const CutView: React.FC<{
   const boxPct = (1 - 2 * inset) * 100;
 
   if (tall && dims) {
-    // COVER-CROP ZOOM: a tall strip FILLS the frame with a window centred on the
-    // CONTENT (motion.focus_y — the art, off the inpainted-blank bubble) and slowly
-    // pushes in. NO scroll: the old top->down scroll drifted onto the blank bubble
-    // and looked identical on every tall panel. focus_y defaults upper-middle.
-    const focusY = clamp(motion?.focus_y ?? 0.4, 0, 1);
-    const prog = interpolate(frame, [0, Math.max(1, durationInFrames)], [0, 1], {
-      easing: Easing.inOut(Easing.ease),
-      extrapolateLeft: 'clamp',
-      extrapolateRight: 'clamp',
-    });
-    const zoom = 1.04 + 0.09 * prog; // gentle Ken Burns push-in
-    const dispW = width * zoom; // fill the frame width (cover)
-    const dispH = dispW * (dims.h / dims.w); // taller than the frame
-    // centre focusY vertically, clamped so the window never reveals empty edges
-    const ty = clamp(height / 2 - focusY * dispH, height - dispH, 0);
+    // Tall panels are complete cuts, not footage to crop into a 16:9 close-up.
+    // Keep the whole panel visible and let the blurred fill carry the frame.
     return (
       <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
         <Img
@@ -83,19 +70,17 @@ export const CutView: React.FC<{
             width: '100%',
             height: '100%',
             objectFit: 'cover',
-            transform: 'scale(1.1)',
+            transform: 'scale(1.08)',
             filter: `blur(${bgBlurPx}px) brightness(${1 - bgDim})`,
           }}
         />
-        <AbsoluteFill style={{justifyContent: 'flex-start', alignItems: 'center', overflow: 'hidden'}}>
+        <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center', overflow: 'hidden'}}>
           <Img
             src={src}
             style={{
-              position: 'absolute',
-              top: 0,
-              left: '50%',
-              width: dispW,
-              transform: `translateX(-50%) translateY(${ty}px)`,
+              maxWidth: '100%',
+              maxHeight: '100%',
+              objectFit: 'contain',
             }}
           />
         </AbsoluteFill>
@@ -148,7 +133,9 @@ export const CutView: React.FC<{
   }
 
   if (wide) {
-    // Full-bleed: the panel IS the frame — no margins, no blur layer.
+    // Wide/full-screen panels must stay readable as complete panels. Cover-crop
+    // plus Ken Burns was cutting off the intended composition, so the wide path
+    // uses a blurred fill behind a static contained foreground.
     return (
       <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
         <Img
@@ -158,9 +145,20 @@ export const CutView: React.FC<{
             width: '100%',
             height: '100%',
             objectFit: 'cover',
-            transform: `translate(${ox}px, ${oy}px) scale(${Math.max(zoom, 1.0)})`,
+            transform: 'scale(1.08)',
+            filter: `blur(${bgBlurPx}px) brightness(${1 - bgDim})`,
           }}
         />
+        <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center'}}>
+          <Img
+            src={src}
+            style={{
+              maxWidth: '100%',
+              maxHeight: '100%',
+              objectFit: 'contain',
+            }}
+          />
+        </AbsoluteFill>
       </AbsoluteFill>
     );
   }

@@ -189,13 +189,27 @@ def test_image_flags_extreme_tall_is_info():
 
 
 def test_image_flags_sys_panel_exempt_from_text_and_card_checks():
-    # system-message cards (Sky Corporation / activation captions) keep their
+    # system-message/status cards keep their
     # text BY DESIGN — no visible_text/ghost/binary_card/dead_box/husk flags
     img, box = _bubble_panel(visible_text=True, ghost=True)
     flags = pq.image_flags("p000114.jpg", img, [box], doc=False,
                            dims_entry={"w": 300, "h": 400, "doc": False},
                            sys=True)
     assert flags == []
+
+
+def test_image_flags_binary_card_exempts_story_visual_panel():
+    img = np.full((400, 300, 3), 250, dtype=np.uint8)
+    img[40:100, 40:120] = 20        # enough structure to avoid blank_crop
+    img[240:320, 170:240] = 20
+    flags = pq.image_flags(
+        "p000049.jpg", img, [], doc=False,
+        dims_entry={"w": 300, "h": 400, "doc": False},
+        vitem={"panel_kind": "story",
+               "subjects": ["dark-haired character", "character with ponytail"],
+               "ocr_clean": "CAN DOCTOR BAEK USE MARTIAL ARTS TOO?",
+               "text_coverage": 0.07})
+    assert not any(f["code"] == "binary_card" for f in flags)
 
 
 def test_image_flags_visible_text_needs_glyph_look():
@@ -255,6 +269,16 @@ def test_vision_flags_chrome_leak_via_title_dominance():
                          series_title="Omniscient Reader")
     assert any(f["code"] == "chrome_leak" and f["severity"] == "ERROR"
                for f in fl)
+
+
+def test_vision_flags_empty_bubble_shown_errors():
+    vitem = {"panel_kind": "empty", "subjects": ["speech bubble"],
+             "ocr_clean": "DAMN IT,", "text_coverage": 0.0299}
+    fl = pq.vision_flags("p000047.jpg", vitem,
+                         dims_entry={"doc": False, "sys": False},
+                         series_title=None)
+    assert any(f["code"] == "empty_bubble_shown"
+               and f["severity"] == "ERROR" for f in fl)
 
 
 def test_vision_flags_doc_flag_missing_only_when_text_renders_unprotected():
@@ -453,6 +477,33 @@ def test_alignment_flags_narration_stale():
     assert fl[0]["severity"] == pq.ERROR and fl[0]["segment_id"] == "g0002_p01"
 
 
+def test_alignment_microbeats_compare_group_text():
+    plan = {"timeline": [
+        _seg("g0002_p00", "The train rattles along.", ["a.jpg"]),
+        _seg("g0002_p01", "He stares at his phone.", ["b.jpg"]),
+    ]}
+    beats = {"beats": [{"group_id": 2, "narration":
+                        "The train rattles along; he stares at his phone."}]}
+    groups = {"shots": [{"group_id": 2}]}
+    script = {"narration_source": "gemini_verbatim", "microbeats": True}
+    assert pq.alignment_flags(plan, beats, groups, script) == []
+
+
+def test_alignment_title_card_compares_against_story_hook():
+    plan = {"timeline": [
+        _seg("g0005_p00", "The truth is finally about to surface.", ["a.jpg"]),
+    ]}
+    beats = {"beats": [{
+        "group_id": 5,
+        "beat_title": "Chapter Title Card",
+        "narration": "As the truth surfaces, we reach Chapter 7: The Trap.",
+        "hook": "The truth is finally about to surface.",
+    }]}
+    groups = {"shots": [{"group_id": 5}]}
+    script = {"narration_source": "gemini_verbatim", "microbeats": True}
+    assert pq.alignment_flags(plan, beats, groups, script) == []
+
+
 def test_alignment_skips_nonverbatim_script():
     plan = {"timeline": [_seg("g0001_p00", "totally different words",
                               ["a.jpg"])]}
@@ -626,8 +677,21 @@ def test_story_flags_dropped_system_card():
     plan = {"timeline": [_item("g0001_p00", ["p000005.jpg"], tts_text="ok")]}
     vitems = {
         # clean flat-frame title card → flagged
-        "p000113.jpg": {"ocr_clean": "SKY CORPORATION.", "text_only": False,
+        "p000113.jpg": {"ocr_clean": "SYSTEM ACTIVATION.", "text_only": False,
                         "text_coverage": 0.09, "flat_frac": 0.88},
+        # publication/title chrome → intentionally absent from recap visuals
+        "p000008.jpg": {"ocr_clean": "Nano Machine CHAPTER 7 그림 각색 원작",
+                        "panel_kind": "chrome", "text_only": False,
+                        "text_coverage": 0.12, "flat_frac": 0.91},
+        # pure text/bubble context panels → narrated context, not system cards
+        "p000047.jpg": {"ocr_clean": "DAMN IT,", "panel_kind": "empty",
+                        "subjects": ["speech bubble"], "text_only": False,
+                        "text_coverage": 0.03, "flat_frac": 0.82},
+        "p000059.jpg": {"ocr_clean": "HE'LL HAVE NO PROBLEM WITH OPERATING FORMATION.",
+                        "panel_kind": "story",
+                        "subjects": ["speech bubble", "character's hair"],
+                        "text_only": False, "text_coverage": 0.098,
+                        "flat_frac": 0.78},
         # all-caps SFX on textured art (low flat_frac) → NOT a card, not flagged
         "p000099.jpg": {"ocr_clean": "ACK!!! KEUACK KKK!!!", "text_only": False,
                         "text_coverage": 0.04, "flat_frac": 0.12},

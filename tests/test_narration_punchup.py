@@ -29,12 +29,27 @@ def test_classify_beats_by_scene_intensity():
         1: "CONNECTIVE", 2: "DRAMATIC", 3: "DRAMATIC", 4: "CONNECTIVE"}
 
 
+def test_classify_visual_gag_overrides_intense_as_comic():
+    beats = {"beats": [{
+        "group_id": 1,
+        "mood_words": ["manic", "mocking", "humiliated", "intense"],
+        "narration": ("He bursts into uncontrollable laughter, pointing at "
+                      "Heo Bong and shouting, 'Where did all your hair "
+                      "disappear to overnight?!'"),
+        "scene_selection": [{"intensity": "intense"}],
+    }]}
+    assert npu.classify_beats(beats) == {1: "COMIC"}
+
+
 def test_cinematic_prompt_tags_lines_with_class_and_both_rules():
-    lines = [{"group_id": 1, "narration": "a"}, {"group_id": 2, "narration": "b"}]
-    classes = {1: "DRAMATIC", 2: "CONNECTIVE"}
+    lines = [{"group_id": 1, "narration": "a"},
+             {"group_id": 2, "narration": "b"},
+             {"group_id": 3, "narration": "c"}]
+    classes = {1: "DRAMATIC", 2: "CONNECTIVE", 3: "COMIC"}
     p = npu.build_prompt(lines, [], "cinematic", genre="murim", classes=classes)
-    assert "DRAMATIC" in p and "CONNECTIVE" in p
+    assert "DRAMATIC" in p and "CONNECTIVE" in p and "COMIC" in p
     assert "cinematic" in p.lower()
+    assert "visual gag" in p and "recap-channel punch" in p
     assert '"style"' in p                      # per-line class threaded
     # full mode is unchanged — no per-line style tags
     assert '"style"' not in npu.build_prompt(lines, [], "full", genre="murim")
@@ -61,6 +76,21 @@ def test_merge_uses_dramatic_budget_for_dramatic_beats():
                      classes={1: "CONNECTIVE"})["stats"]["punchup_applied"] == 0
     assert npu.merge(beats, punched, ["Prince Cheon"],
                      classes={1: "DRAMATIC"})["stats"]["punchup_applied"] == 1
+
+
+def test_merge_uses_comic_budget_for_punchline_lines():
+    original = ("Heo Bong stands there bald and humiliated while the man laughs "
+                "at his missing hair.")
+    punched = ("Heo Bong stands there bald and humiliated while the man loses "
+               "it laughing at his missing hair, because apparently the real "
+               "casualty tonight was his entire dignity taking a public sect "
+               "beating.")
+    beats = {"beats": [{"group_id": 1, "narration": original}]}
+    cand = [{"group_id": 1, "narration": punched}]
+    assert npu.merge(beats, cand, [],
+                     classes={1: "CONNECTIVE"})["stats"]["punchup_applied"] == 0
+    assert npu.merge(beats, cand, [],
+                     classes={1: "COMIC"})["stats"]["punchup_applied"] == 1
 
 
 def test_validate_accepts_styled_same_facts():

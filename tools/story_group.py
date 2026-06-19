@@ -315,8 +315,8 @@ def chrome_files(vision_items: List[Dict[str, Any]], series_title: str) -> set:
 
 
 def title_card_files(vision_items: List[Dict[str, Any]]) -> set:
-    """Story title/system cards — 'SKY CORPORATION.', 'LIN ZICHEN - AGE: 5 MONTHS',
-    an RPG status window — that the QA layer treats as UNDROPPABLE story beats.
+    """Story title/system cards — 'SYSTEM ACTIVATION.', an age/time card, an RPG
+    status window — that the QA layer treats as UNDROPPABLE story beats.
     Detected with prep_qa's EXACT `_is_title_card` heuristic (same flat-frame test)
     so story_group and prep_qa always agree: a card kept here can never be flagged
     'system_card_dropped'. These are protected from chrome/empty exclusion even when

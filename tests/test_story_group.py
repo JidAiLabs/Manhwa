@@ -176,7 +176,7 @@ def test_caption_solo_beat_folds_into_previous_same_segment_beat():
 def test_title_card_files_protects_story_system_cards_not_chrome():
     # flat_frac pre-set so the detector skips image I/O; reuses prep_qa._is_title_card
     items = [
-        {"scene_file": "c", "ocr_clean": "SKY CORPORATION.", "flat_frac": 0.9,
+        {"scene_file": "c", "ocr_clean": "CENTRAL TOWER.", "flat_frac": 0.9,
          "text_coverage": 0.05, "text_only": False},                       # story org card
         {"scene_file": "a", "ocr_clean": "LIN ZICHEN - AGE: 5 MONTHS", "flat_frac": 0.9,
          "text_coverage": 0.05, "text_only": False},                       # story time card

@@ -14,12 +14,16 @@ PLANNER = REPO / "tools" / "timeline_planner.py"
 
 def test_multi_paragraph_group_yields_two_items(tmp_path):
     groups = {"shots": [{"group_id": 1, "shot_id": 1,
-                         "scene_files": ["p001.jpg", "p002.jpg"]}]}
+                         "scene_files": ["p001.jpg", "p002.jpg", "p003.jpg"]}]}
     script = {"sections": [{
         "section_index": 0,
         "script_paragraphs": [{"text": "Paragraph zero."}, {"text": "Paragraph one."}],
-        "shots": [{"group_id": 1, "segment_id": "g0001_p00"},
-                  {"group_id": 1, "segment_id": "g0001_p01"}],
+        "shots": [
+            {"group_id": 1, "segment_id": "g0001_p00",
+             "scene_files": ["p001.jpg"], "fallback_scene_files": ["p003.jpg"]},
+            {"group_id": 1, "segment_id": "g0001_p01",
+             "scene_files": ["p002.jpg"], "fallback_scene_files": ["p003.jpg"]},
+        ],
     }]}
     tts = {"clips": [
         {"segment_id": "g0001_p00", "group_id": 1, "audio_file": "g0001_p00.mp3", "duration_sec": 3.0},
@@ -51,6 +55,8 @@ def test_multi_paragraph_group_yields_two_items(tmp_path):
     assert audios[0].endswith("g0001_p00.mp3"), audios
     assert audios[1].endswith("g0001_p01.mp3"), audios
     assert audios[0] != audios[1]
+    assert [c["file"] for c in items[0]["cuts"]] == ["p001.jpg"]
+    assert [c["file"] for c in items[1]["cuts"]] == ["p002.jpg"]
 
     # sequential timing: paragraph two starts no earlier than paragraph one ends
     assert items[1]["start_sec"] >= items[0]["end_sec"] - 1e-3

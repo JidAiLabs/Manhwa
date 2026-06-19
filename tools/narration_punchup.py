@@ -96,17 +96,52 @@ native voice here — it's literally how this world works; use it freely.""",
 
 
 # intensity ranking from beats' scene_selection — the deterministic signal that
-# guards persona: cinematic is the baseline everywhere; only CONNECTIVE beats may
-# take an occasional persona touch, DRAMATIC beats stay purely cinematic.
+# guards persona: cinematic is the baseline everywhere; only CONNECTIVE/COMIC
+# beats may take persona, DRAMATIC beats stay purely cinematic.
 _INTENSITY_RANK = {"": 0, "unknown": 0, "calm": 0, "tense": 1,
                    "intense": 2, "explosive": 3}
+
+_COMIC_CUE_RE = re.compile(
+    r"\b("
+    r"mock|mocking|taunt|taunting|tease|ridicule|laugh|laughter|howl|"
+    r"smirk|cocky|smug|manic|humiliat|embarrass|bald|hair disappear|"
+    r"where did all your hair|face[- ]?slap|fooling everyone"
+    r")\b",
+    re.I,
+)
+
+
+def _comic_cue_score(beat: Dict[str, Any]) -> int:
+    """Cheap visual-gag detector for the cinematic/persona blend.
+
+    High panel intensity alone should not suppress humor when the beat itself is
+    explicitly a joke, taunt, humiliation, or face-slap. This keeps fight/death
+    beats serious while letting recap-channel persona fire on drawn comic relief.
+    """
+    if not isinstance(beat, dict):
+        return 0
+    fields: List[str] = []
+    for key in ("narration_plain", "narration", "what_happens", "beat_title",
+                "hook", "stakes"):
+        v = beat.get(key)
+        if isinstance(v, str):
+            fields.append(v)
+    fields.extend(str(x) for x in (beat.get("mood_words") or []) if x)
+    for e in beat.get("scene_selection") or []:
+        if isinstance(e, dict):
+            fields.extend(str(e.get(k) or "") for k in (
+                "visual_summary", "ocr_clean", "dialogue", "bubble_mode"))
+    blob = " ".join(fields)
+    return len(_COMIC_CUE_RE.findall(blob))
 
 
 def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
     """Per-group DRAMATIC/CONNECTIVE label from the strongest scene intensity in
     the beat. Cinematic is the baseline for ALL beats; the tag only guards where
-    an OCCASIONAL persona touch is allowed — DRAMATIC (intense/explosive) stays
-    purely cinematic, CONNECTIVE may take a light wink. Deterministic — no LLM."""
+    persona is allowed — DRAMATIC (intense/explosive) stays purely cinematic,
+    CONNECTIVE may take a light wink, and COMIC beats require a short grounded
+    punch because the art/text is already playing the moment for mockery or
+    humiliation. Deterministic — no LLM."""
     out: Dict[int, str] = {}
     for b in (beats_obj or {}).get("beats") or []:
         try:
@@ -115,7 +150,10 @@ def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
             continue
         ranks = [_INTENSITY_RANK.get(str(s.get("intensity") or "").lower(), 0)
                  for s in (b.get("scene_selection") or []) if isinstance(s, dict)]
-        out[gid] = "DRAMATIC" if (max(ranks) if ranks else 0) >= 2 else "CONNECTIVE"
+        if _comic_cue_score(b) > 0:
+            out[gid] = "COMIC"
+        else:
+            out[gid] = "DRAMATIC" if (max(ranks) if ranks else 0) >= 2 else "CONNECTIVE"
     return out
 
 
@@ -130,10 +168,14 @@ channel PERSONA VOICE: internet-native, dry, confident, intimate ("our guy"/
 "our boy"), a little hyperbole, and only the genre-appropriate framing the GENRE
 block allows (no game framing off-genre). That is a few touches per chapter to
 make it funnier — NOT every line, never a quota, never pasted onto a serious beat.
-Use the DRAMATIC/CONNECTIVE tag as the guard:
+Use the DRAMATIC/CONNECTIVE/COMIC tag as the guard:
 - DRAMATIC, somber, eerie, tense, awe or tragic beats stay PURELY cinematic —
   any wink there deflates the moment;
 - only a CONNECTIVE / mundane-aside beat may take the occasional persona touch;
+- COMIC means the beat itself is mockery, humiliation, a visual gag, or a
+  face-slap: keep the cinematic facts, but add ONE sharp recap-channel punch
+  or audience aside so the joke actually lands. The punch must be clearly
+  figurative/framing, never a new story event;
 - when unsure, stay cinematic.
 STORY CAPTIONS / narration-box text: WEAVE them into the line in the story's own
 first-person voice — you MAY rephrase for flow, but keep their MEANING and any key
@@ -277,7 +319,13 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
         original = str(b.get("narration_plain") or b.get("narration") or "")
         b["narration_plain"] = original
         cand = by_gid.get(gid, "").replace("*", "")  # md emphasis -> TTS-safe
-        max_ratio = 3.0 if classes.get(gid) == "DRAMATIC" else 1.5
+        cls = classes.get(gid)
+        if cls == "DRAMATIC":
+            max_ratio = 3.0
+        elif cls == "COMIC":
+            max_ratio = 2.2
+        else:
+            max_ratio = 1.5
         if cand and validate_line(original, cand, cast_names,
                                   required=caption_words.get(gid),
                                   max_ratio=max_ratio):

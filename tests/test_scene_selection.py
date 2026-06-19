@@ -116,7 +116,7 @@ def test_choose_does_not_pad_with_redundant():
 def test_choose_protects_title_card_marked_redundant():
     files = ["a.jpg", "card.jpg", "b.jpg"]
     sel = _sel({"a.jpg": "keep", "card.jpg": "redundant", "b.jpg": "keep"})
-    # SKY CORPORATION-class card: protected → kept despite 'redundant', in order
+    # title/system-card class: protected -> kept despite 'redundant', in order
     out = ss.choose_kept_scenes(files, sel, max_keep=3, protected={"card.jpg"})
     assert out == ["a.jpg", "card.jpg", "b.jpg"]
 

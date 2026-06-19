@@ -124,6 +124,31 @@ def test_guarded_synth_retry_recovers_after_failures(tmp_path):
     assert out.read_bytes() == b"RIFFgood"
 
 
+def test_guarded_synth_timeout_then_success_leaves_only_daemon_worker(tmp_path):
+    state = {"n": 0}
+
+    def first_hangs_then_succeeds(text, out_path, exaggeration):
+        state["n"] += 1
+        if state["n"] == 1:
+            time.sleep(5.0)
+            Path(out_path).write_bytes(b"late")
+            return
+        Path(out_path).write_bytes(b"RIFFgood")
+
+    out = tmp_path / "g0004_p00.wav"
+    res = lt.run_guarded_synth(
+        first_hangs_then_succeeds, "recovers", str(out), 0.5,
+        timeout_sec=0.2, retries=1, expected_sec=1.0, segment_id="g0004_p00")
+
+    assert res["ok"] is True
+    assert res["attempts"] == 2
+    assert out.read_bytes() == b"RIFFgood"
+    leaked = [t for t in threading.enumerate()
+              if t.name.startswith("tts-synth-g0004_p00") and t.is_alive()]
+    assert leaked
+    assert all(t.daemon for t in leaked)
+
+
 def test_guarded_synth_exhausts_retries_on_persistent_error(tmp_path):
     def always_fail(text, out_path, exaggeration):
         raise RuntimeError("nope")

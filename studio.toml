@@ -34,6 +34,11 @@ vision_backend = "apple"
 # regenerates them, and the strictly-better safeguard reverts any non-improvement. false = current
 # pipeline unchanged. Env STUDIO_SEMANTIC_HEAL=1 toggles per-run (used for the A/B comparison).
 semantic_heal = false
+# Split long grouped narration into shorter panel-aligned script beats after
+# punchup. This keeps grouped understanding, adds no model pass, and gives
+# timeline/TTS more manhwa-recap pacing.
+narration_microbeats = true
+narration_microbeat_max_words = 28
 
 [tts]
 # voiced backend: "qwen" (local MPS, LOCKED narrator clone — production) |

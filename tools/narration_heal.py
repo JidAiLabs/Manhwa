@@ -62,14 +62,18 @@ def _note_for(code: str, detail: str) -> str:
     return "Rewrite the narration to match exactly what is shown in the panel."
 
 
-def corrections_from_qa(report: Dict[str, Any]) -> Dict[int, str]:
+def corrections_from_qa(report: Dict[str, Any], *,
+                        include_grounding_warn: bool = False) -> Dict[int, str]:
     """{group_id: combined correction note} from the ERROR flags QA can heal."""
     notes: Dict[int, List[str]] = {}
     for f in report.get("flags") or []:
         code = f.get("code")
-        # a chrome/meta leak is a rule violation at ANY severity (the channel
-        # never voices interface chatter); other codes only heal as ERRORs.
-        if code in ("chrome_narration", "grounding_weak"):
+        # A chrome/meta leak is a rule violation at ANY severity (the channel
+        # never voices interface chatter). Grounding WARNs are report-only by
+        # default; opt in when running the slower semantic-heal experiment.
+        if code == "chrome_narration":
+            pass
+        elif code == "grounding_weak" and include_grounding_warn:
             pass   # a rule/quality violation worth healing at ANY severity
         elif f.get("severity") == "ERROR" and code in HEALABLE:
             pass
@@ -89,12 +93,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--qa", required=True, help="prep_qa.json")
     ap.add_argument("--out", required=True, help="corrections.json to write")
+    ap.add_argument("--include-grounding-warn", action="store_true",
+                    help="treat WARN-level grounding_weak flags as healable; "
+                         "default keeps them in QA but does not regenerate")
     args = ap.parse_args()
     try:
         report = json.load(open(args.qa))
     except Exception:
         report = {}
-    corr = corrections_from_qa(report)
+    corr = corrections_from_qa(
+        report, include_grounding_warn=args.include_grounding_warn)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({str(k): v for k, v in corr.items()}, f,
                   ensure_ascii=False, indent=2)

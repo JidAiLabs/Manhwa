@@ -200,6 +200,39 @@ def test_heal_to_green_regenerates_only_flagged_then_stops(tmp_path, monkeypatch
     assert regen == [1]          # exactly one heal cycle, then corrections empty
 
 
+def test_heal_to_green_fast_qa_then_final_semantic(tmp_path, monkeypatch):
+    import json
+    import types
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": []}))
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep), "number": 1}
+    seq = [{"3": "cover the caption"}, {}]
+    heal_cmds = []
+    qa_cmds = []
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        if "narration_heal.py" in s:
+            heal_cmds.append(cmd)
+            out = cmd[cmd.index("--out") + 1]
+            json.dump(seq.pop(0) if seq else {}, open(out, "w"))
+        if "prep_qa.py" in s:
+            qa_cmds.append(cmd)
+        return 0
+
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
+        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
+                              punchup="cinematic", script_model="s"), "p", "l"))
+    worker._heal_to_green(con, ch, ep, open(tmp_path / "log.txt", "w"))
+
+    assert all("--include-grounding-warn" not in c for c in heal_cmds)
+    assert len(qa_cmds) == 2
+    assert "--semantic" not in qa_cmds[0]
+    assert "--semantic" in qa_cmds[1]
+
+
 # ---- autopilot: spotless QA advances without human clicks -------------------
 
 def _autopilot_series(con, tmp_path, *, autopilot=1, flags=()):

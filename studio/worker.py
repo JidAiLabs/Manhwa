@@ -167,7 +167,8 @@ def _autopilot_clean(con: sqlite3.Connection, ch: Dict[str, Any]) -> bool:
 
 def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
                      log: TextIO, *, branding: str = "both",
-                     heal_aware: bool = False, reuse_clean: bool = False) -> set:
+                     heal_aware: bool = False, reuse_clean: bool = False,
+                     semantic: bool = True) -> set:
     """render_prep + prep_qa for a chapter; records the qa_scan stage.
     Returns the ERROR flag codes. heal_aware=True lets the caller handle
     stale-narration codes instead of failing the job outright."""
@@ -190,9 +191,12 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
             raise RuntimeError(f"render_prep exited {rc}")
     t0 = time.time()
     qa_args = [PY, str(REPO / "tools" / "prep_qa.py"),
-               "--episode-dir", str(ep), "--series-title", title, "--semantic"]
+               "--episode-dir", str(ep), "--series-title", title]
     from studio.config import load as _load_cfg
-    if _load_cfg().semantic_heal:
+    cfg = _load_cfg()
+    if semantic:
+        qa_args.append("--semantic")
+    if cfg.semantic_heal:
         qa_args.append("--semantic-heal")   # QA-eyes: grounding_weak -> auto-heal
     rc = _stream(qa_args, log)
     codes = _qa_error_codes(ep)
@@ -230,7 +234,7 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
     beats, cast = str(ep / "manifest.beats.json"), str(ep / "manifest.cast.json")
     vision = str(ep / "manifest.vision.json")
     preheal = ep / "manifest.beats.preheal.json"
-    if cfg.semantic_heal:
+    if getattr(cfg, "semantic_heal", False):
         preheal.write_text(Path(beats).read_text())   # snapshot the pre-heal lines
     gargs = [PY, str(REPO / "tools" / "gemini_narrative_pass.py"),
              "--groups-manifest", str(ep / "manifest.groups.json"),
@@ -253,7 +257,7 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
             pargs += ["--backend", "vertex", "--model", cfg.beats_model,
                       "--project", project, "--location", location]
         _stream(pargs, log, env=env)
-    if cfg.semantic_heal:
+    if getattr(cfg, "semantic_heal", False):
         # strictly-better safeguard: keep each regenerated line ONLY if a judge
         # rules it beats the pre-heal line on the panel; else revert to the
         # original. Auto-heal can then only improve or hold a beat, never make
@@ -272,6 +276,9 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
              "--vision", vision, "--out", str(ep / "manifest.script.json"),
              "--model", cfg.script_model, "--narration-source",
              "gemini_verbatim", "--cast", cast]
+    if getattr(cfg, "narration_microbeats", False):
+        sargs += ["--microbeats", "--microbeat-max-words",
+                  str(getattr(cfg, "narration_microbeat_max_words", 28))]
     if _stream(sargs, log, env=env) != 0:
         raise RuntimeError("script_expander (heal) failed")
 
@@ -285,18 +292,30 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
     re-derive, up to _HEAL_MAX cycles, until no narration-healable ERROR remains.
     A failing line is re-narrated from the art — never dropped to satisfy QA."""
     corr = ep / "heal_corrections.json"
-    cfg = project = location = env = None
+    from studio.config import load as _load_cfg
+    cfg = _load_cfg()
+    semantic_heal = bool(getattr(cfg, "semantic_heal", False))
+    project = location = env = None
+    used_fast_qa = False
     for cycle in range(1, _HEAL_MAX + 1):
-        _stream([PY, str(REPO / "tools" / "narration_heal.py"),
-                 "--qa", str(ep / "prep_qa.json"), "--out", str(corr)], log)
+        heal_args = [PY, str(REPO / "tools" / "narration_heal.py"),
+                     "--qa", str(ep / "prep_qa.json"), "--out", str(corr)]
+        if semantic_heal:
+            heal_args.append("--include-grounding-warn")
+        _stream(heal_args, log)
         try:
             ncorr = len(json.loads(corr.read_text()))
         except Exception:
             ncorr = 0
         if ncorr == 0:
+            if used_fast_qa:
+                log.write("[heal] final semantic QA scan after mechanical "
+                          "heal cycle(s)\n")
+                _run_prep_and_qa(con, ch, log, heal_aware=True,
+                                 reuse_clean=True, semantic=True)
             log.write("[heal] no narration-healable flags remain\n")
             return
-        if cfg is None:                       # load config lazily — only if healing
+        if project is None:                   # load cloud/ollama routing lazily
             cfg, project, location = _beats_cfg()
             env = _series_env(con, ch["series_id"])
         log.write(f"[heal] cycle {cycle}/{_HEAL_MAX}: re-narrating {ncorr} "
@@ -312,7 +331,14 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                         "--out", str(ep / "render.plan.json"),
                         "--mode", "narrated", "--min-cut-sec", "3.5"], log) != 0:
                 raise RuntimeError("timeline_planner (heal) failed")
-        _run_prep_and_qa(con, ch, log, heal_aware=True, reuse_clean=True)
+        cycle_semantic = semantic_heal
+        used_fast_qa = used_fast_qa or not cycle_semantic
+        _run_prep_and_qa(con, ch, log, heal_aware=True, reuse_clean=True,
+                         semantic=cycle_semantic)
+    if used_fast_qa:
+        log.write("[heal] final semantic QA scan after hitting heal cap\n")
+        _run_prep_and_qa(con, ch, log, heal_aware=True,
+                         reuse_clean=True, semantic=True)
     log.write(f"[heal] hit the {_HEAL_MAX}-cycle cap\n")
 
 

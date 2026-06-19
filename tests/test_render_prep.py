@@ -230,6 +230,14 @@ def test_clean_scene_image_blanks_text_keeps_bubble():
     assert abs(int(out[10:30, 10:30].mean()) - 90) <= 2   # art untouched
 
 
+def test_clean_scene_image_flattens_faint_blank_bubble_residue():
+    img = _bubble_scene()
+    img[92:108, 72:128] = 175                       # faint ghost, not ink
+    out = rp.clean_scene_image(img, [(30, 50, 170, 150)])
+    assert out[92:108, 72:128].mean() > 235
+    assert out[100, 41].mean() < 60                 # outline still preserved
+
+
 def test_clean_scene_image_black_shout_bubble():
     img = _bubble_scene(bg=160, fill=15, ring=240)   # black bubble, light ring
     img[95:105, 70:130] = 235                        # light text inside
@@ -334,7 +342,7 @@ def test_bubble_filter_never_empties_a_shot():
     assert dropped == ["a.jpg"]
 
 
-# ---- system-message protection (the Sky Corporation cliffhanger was dropped:
+# ---- system-message protection (a flat in-world system card was dropped:
 # ogkalu false-positives system windows as bubbles; our model's system_box
 # class works on crops and must veto both the gate and the text blanking) -----
 
@@ -517,6 +525,53 @@ def test_document_panel_recoverable_and_not_shredded():
     # text_rich forces whole-panel judgment — exactly one span, the panel
     spans = rp.split_spans_for_panel(img, text_rich=True)
     assert spans == [(0, img.shape[0])]
+
+
+def test_empty_bubble_panel_metadata_is_hard_junk():
+    assert rp.empty_bubble_panel({
+        "panel_kind": "empty",
+        "subjects": ["speech bubble"],
+        "ocr_clean": "DAMN IT,",
+        "text_coverage": 0.0299,
+    })
+    assert rp.empty_bubble_panel({
+        "panel_kind": "empty",
+        "ocr_clean": "Hah, geez. YOU'RE DOING ALL SORTS OF THINGS.",
+        "text_coverage": 0.0735,
+    })
+    assert rp.empty_bubble_panel({
+        "panel_kind": "story",
+        "subjects": ["speech bubble"],
+        "ocr_clean": "AS I THOUGHT, THIS GUY IS A GENIUS!",
+        "text_coverage": 0.1552,
+    })
+    assert not rp.empty_bubble_panel({
+        "panel_kind": "story",
+        "subjects": ["speech bubble", "three men"],
+        "ocr_clean": "SHIT... WE THOUGHT EVERYTHING WAS FINE...",
+        "text_coverage": 0.0537,
+    })
+    assert rp.empty_bubble_panel({
+        "panel_kind": "story",
+        "subjects": ["speech bubble", "character's hair"],
+        "ocr_clean": "HE'LL HAVE NO PROBLEM WITH OPERATING FORMATION.",
+        "text_coverage": 0.0984,
+    })
+
+
+def test_story_visual_panel_keeps_text_plus_characters_not_hair_only():
+    assert rp.story_visual_panel({
+        "panel_kind": "story",
+        "subjects": ["dark-haired character", "character with ponytail"],
+        "ocr_clean": "CAN DOCTOR BAEK USE MARTIAL ARTS TOO?",
+        "text_coverage": 0.0702,
+    })
+    assert not rp.story_visual_panel({
+        "panel_kind": "story",
+        "subjects": ["speech bubble", "character's hair"],
+        "ocr_clean": "HE'LL HAVE NO PROBLEM WITH OPERATING FORMATION.",
+        "text_coverage": 0.0984,
+    })
 
 
 def test_non_text_rich_panel_still_splits():

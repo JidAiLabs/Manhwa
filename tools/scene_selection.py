@@ -86,7 +86,7 @@ def choose_kept_scenes(
     order. If a shot has NO keepers (all redundant), it falls back to the first
     *max_keep* panels so the shot is never empty.
 
-    *protected* files (title/system cards — SKY CORPORATION) are story beats that
+    *protected* files (title/system/status cards) are story beats that
     must NEVER be dropped, even when the LLM scene-selection marks them redundant
     (its verdict is non-deterministic — the same card is kept on one run, dropped
     on another). They are always kept, ahead of the *max_keep* budget.

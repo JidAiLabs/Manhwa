@@ -10,6 +10,7 @@ Each stub simply touches the expected output marker file.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -56,7 +57,7 @@ def _make_chapter(con: sqlite3.Connection, ep_dir: Path, status: str = "download
 
 MARKERS = {
     "stitched":  "manifest.stitch.json",
-    "detected":  "manifest.panels.json",
+    "detected":  "manifest.panels.expanded.json",
     "scened":    "manifest.scenes.json",
     "visioned":  "manifest.vision.json",
     "grouped":   "manifest.groups.json",
@@ -74,27 +75,37 @@ def _tool_stub(ep_dir_ref: list[Path]):
     # Map script name → marker filename
     SCRIPT_TO_MARKER = {
         "chunk_stitch_adaptive.py":   "manifest.stitch.json",
-        "expand_boxes_to_gutters.py": "manifest.panels.json",
+        "expand_boxes_to_gutters.py": "manifest.panels.expanded.json",
         "panels_to_scenes.py":        "manifest.scenes.json",
         "vision_extract.py":          "manifest.vision.json",
         "scene_group_builder.py":     "manifest.groups.json",   # legacy grouper
         "panel_understand.py":        "manifest.panels.understood.json",  # Pass 1
         "story_group.py":             "manifest.groups.json",   # Pass 2 (grouped marker)
-        "timeline_planner.py":        "manifest.beat.json",
+        "cast_builder.py":            "manifest.cast.json",
+        "gemini_narrative_pass.py":   "manifest.beats.json",
+        "narration_punchup.py":       "manifest.beats.json",
+        "narration_sanitize_pass.py": "manifest.beats.json",
         "script_expander.py":         "manifest.script.json",
-        "elevenlabs_tts_from_manifest.py": "manifest.voiced.json",
-        "blender_vse_from_plan.py":   "manifest.plan.json",
+        "elevenlabs_tts_from_manifest.py": "tts/tts_index.json",
+        "local_tts_from_manifest.py": "tts/tts_index.json",
+        "timeline_planner.py":        "render.plan.json",
+        "blender_vse_from_plan.py":   "render.plan.json",
     }
 
     calls: list[str] = []
+    call_args: list[tuple[str, list[str]]] = []
 
     def stub(script_name: str, args_list: list[str]) -> None:
         calls.append(script_name)
+        call_args.append((script_name, list(args_list)))
         marker = SCRIPT_TO_MARKER.get(script_name)
         if marker and ep_dir_ref[0] is not None:
-            (ep_dir_ref[0] / marker).touch()
+            mp = ep_dir_ref[0] / marker
+            mp.parent.mkdir(parents=True, exist_ok=True)
+            mp.touch()
 
     stub.calls = calls  # type: ignore[attr-defined]
+    stub.call_args = call_args  # type: ignore[attr-defined]
     return stub
 
 
@@ -263,6 +274,36 @@ class TestIdempotency:
             f"Second run invoked tools: {tool_stub.calls[first_call_count:]}"
         )
 
+    def test_missing_marker_for_completed_status_reruns_that_stage(self, tmp_path, monkeypatch):
+        import studio.pipeline as pipeline_mod
+
+        ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+        ep_dir_ref = [ep_dir]
+        # Catalog says grouped, but the grouped marker is gone. Earlier markers
+        # are intact, so only grouped should be rebuilt before beated is tried.
+        for marker in ["manifest.stitch.json", "manifest.panels.expanded.json",
+                       "manifest.scenes.json", "manifest.vision.json"]:
+            (ep_dir / marker).touch()
+
+        tool_stub = _tool_stub(ep_dir_ref)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", tool_stub)
+        monkeypatch.setattr("studio.detect.yolo_panels.detect_panels",
+                            _detect_stub(ep_dir_ref))
+        _block_cred_gated_stages(monkeypatch, pipeline_mod)
+
+        con = connect(tmp_path / "test.db")
+        chapter = _make_chapter(con, ep_dir, status="grouped")
+        cfg = _make_cfg(tmp_path)
+
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+
+        assert "panel_understand.py" in tool_stub.calls
+        assert "story_group.py" in tool_stub.calls
+        assert "chunk_stitch_adaptive.py" not in tool_stub.calls
+        assert (ep_dir / "manifest.groups.json").exists()
+        assert repo.get_chapter(con, chapter.id).status == "beated_failed"
+
 
 class TestResumability:
     """Failure at a stage → status=<stage>_failed; re-run resumes from that stage."""
@@ -280,7 +321,7 @@ class TestResumability:
             # Touch markers for earlier stages
             SCRIPT_TO_MARKER = {
                 "chunk_stitch_adaptive.py":   "manifest.stitch.json",
-                "expand_boxes_to_gutters.py": "manifest.panels.json",
+                "expand_boxes_to_gutters.py": "manifest.panels.expanded.json",
             }
             marker = SCRIPT_TO_MARKER.get(script_name)
             if marker:
@@ -310,7 +351,7 @@ class TestResumability:
         # Set up a chapter that is already at scened_failed
         # with stitched+detected markers already present
         (ep_dir / "manifest.stitch.json").touch()
-        (ep_dir / "manifest.panels.json").touch()
+        (ep_dir / "manifest.panels.expanded.json").touch()
 
         con = connect(tmp_path / "test.db")
         sid = repo.upsert_series(con, "test", "https://x.test/s2", "test-s2", "Test S2", added_at=FIXED_NOW)
@@ -348,7 +389,7 @@ class TestMissingCredential:
         ep_dir.mkdir()
 
         # Pre-populate markers up through grouped
-        for marker in ["manifest.stitch.json", "manifest.panels.json",
+        for marker in ["manifest.stitch.json", "manifest.panels.expanded.json",
                        "manifest.scenes.json", "manifest.vision.json",
                        "manifest.groups.json"]:
             (ep_dir / marker).touch()
@@ -441,7 +482,7 @@ def _chapter_at(con, ep_dir: Path, status: str, markers: list[str]):
     return repo.get_chapter(con, cid)
 
 
-_GROUPED_MARKERS = ["manifest.stitch.json", "manifest.panels.json",
+_GROUPED_MARKERS = ["manifest.stitch.json", "manifest.panels.expanded.json",
                     "manifest.scenes.json", "manifest.vision.json",
                     "manifest.groups.json"]
 
@@ -525,6 +566,30 @@ class TestScriptedNarrationSource:
         assert ch.status == "voiced_failed"
         assert "ELEVENLABS_API_KEY" in (ch.error or "")
 
+    def test_microbeats_flag_threads_to_script_expander(self, tmp_path, monkeypatch):
+        import studio.pipeline as pipeline_mod
+
+        ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        stub = _capturing_stub(ep_dir)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
+
+        con = connect(tmp_path / "test.db")
+        chapter = _chapter_at(con, ep_dir, "beated",
+                              _GROUPED_MARKERS + ["manifest.beats.json", "manifest.cast.json"])
+        cfg = replace(_make_cfg(tmp_path),
+                      narration_microbeats=True,
+                      narration_microbeat_max_words=14)
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+
+        se_args = next(a for n, a in stub.calls if n == "script_expander.py")
+        assert "--microbeats" in se_args
+        assert se_args[se_args.index("--microbeat-max-words") + 1] == "14"
+
 
 class TestConfigNarrationSource:
     def test_load_parses_models_narration_source(self, tmp_path):
@@ -538,6 +603,18 @@ class TestConfigNarrationSource:
         toml = tmp_path / "studio.toml"
         toml.write_text("")
         assert load(toml).narration_source == "gemini_verbatim"
+
+    def test_load_parses_microbeats(self, tmp_path):
+        from studio.config import load
+        toml = tmp_path / "studio.toml"
+        toml.write_text(
+            '[models]\n'
+            'narration_microbeats = true\n'
+            'narration_microbeat_max_words = 14\n'
+        )
+        cfg = load(toml)
+        assert cfg.narration_microbeats is True
+        assert cfg.narration_microbeat_max_words == 14
 
 
 class TestMissingEpDir:
@@ -624,3 +701,30 @@ def test_beated_keep_base_skips_regeneration_but_keeps_punchup(tmp_path, monkeyp
 def test_beated_without_marker_regenerates(tmp_path, monkeypatch):
     stub = _beated_fixture(tmp_path, monkeypatch, marker=False)
     assert "gemini_narrative_pass.py" in stub.calls       # normal regeneration
+
+
+def test_beated_register_mode_still_runs_punchup(tmp_path, monkeypatch):
+    import json
+    import studio.pipeline as pipeline_mod
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    for m in ("manifest.cast.json", "manifest.groups.json",
+              "manifest.vision.json"):
+        (ep / m).write_text("{}")
+    (tmp_path / "keys").mkdir()
+    (tmp_path / "keys" / "gcp-vision.json").write_text(
+        json.dumps({"project_id": "t"}))
+    monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", tmp_path)
+    stub = _tool_stub([ep])
+    monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
+    cfg = Config(sites={}, yolo_weights=tmp_path / "f.pt",
+                 detect_backend="yolo", gallerydl_sleep=0.0,
+                 punchup="cinematic", beats_backend="ollama",
+                 narration_register=True)
+
+    pipeline_mod._stage_beated(ep, cfg)
+
+    gemini = [args for script, args in stub.call_args
+              if script == "gemini_narrative_pass.py"]
+    assert gemini and "--register-mode" in gemini[0]
+    assert "narration_punchup.py" in stub.calls

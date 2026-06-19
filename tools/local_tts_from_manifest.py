@@ -26,12 +26,13 @@ Install (one-time, into the project venv):
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import json
 import os
+import queue
 import re
 import struct
 import sys
+import threading
 import wave
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -283,10 +284,10 @@ def extract_items_from_manifest(script_obj: Dict[str, Any], text_source: str = "
 # never stalls the whole chapter (measured: g0005, a normal 26s line, froze for
 # 48 MINUTES mid-generation while the other 14 clips voiced in ~50s each).
 #
-# Mechanism: we run the (in-process) synth on a worker thread via a
-# ThreadPoolExecutor and wait with `future.result(timeout=...)`. On timeout the
-# MAIN thread stops waiting and moves on, so the chapter is bounded by
-# timeout x (retries+1) regardless of what the worker does.
+# Mechanism: we run the (in-process) synth on an explicit DAEMON worker thread
+# and wait with `join(timeout=...)`. On timeout the MAIN thread stops waiting
+# and moves on, so the chapter is bounded by timeout x (retries+1) regardless
+# of what the worker does.
 #
 # Trade-off (documented on purpose): a Python thread CANNOT be force-killed, and
 # a native MPS/torch generate() holds the GIL while computing, so the hung worker
@@ -295,10 +296,11 @@ def extract_items_from_manifest(script_obj: Dict[str, Any], text_source: str = "
 # MPS call is a per-clip subprocess, but the model is loaded ONCE in-process
 # (re-loading per clip would cost minutes each and dominate the run), so a
 # subprocess-per-clip is impractical here. Abandoning + a silence placeholder
-# guarantees forward progress without the multi-minute reload tax. The leaked
-# thread is a daemon (executor never shut down on timeout) and dies with the
-# process; worst case it ties up some VRAM until the chapter finishes — far
-# cheaper than a 48-minute (or indefinite) stall.
+# guarantees forward progress without the multi-minute reload tax. The abandoned
+# thread is explicitly daemonized and dies with the process; each attempt writes
+# to a temp wav so a late abandoned attempt cannot overwrite a successful retry.
+# Worst case it ties up some VRAM until the chapter finishes — far cheaper than
+# a 48-minute (or indefinite) stall.
 # ---------------------------------------------------------------------------
 
 # Wall-clock cap per clip: only meant to catch a true HANG, never a slow-but-valid
@@ -370,38 +372,68 @@ def run_guarded_synth(
     last_timed_out = False
     attempts = 0
     total = int(retries) + 1
+    tag = segment_id or os.path.basename(out_path)
+
+    def _attempt_path(attempt_no: int) -> str:
+        root, ext = os.path.splitext(out_path)
+        return f"{root}.attempt{attempt_no}.{os.getpid()}.tmp{ext or '.wav'}"
+
     for attempt in range(total):
         attempts += 1
-        # a fresh single-thread executor per attempt: on timeout we DON'T wait
-        # for the hung worker (no shutdown(wait=True)), we leak the daemon thread
-        # and move on — that's what lets us abandon a frozen MPS generate().
-        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        fut = ex.submit(synth_fn, text, out_path, exaggeration)
-        try:
-            fut.result(timeout=timeout_sec)
-            ex.shutdown(wait=False)
-            return {"ok": True, "timed_out": False, "attempts": attempts}
-        except concurrent.futures.TimeoutError:
+        attempt_out = _attempt_path(attempts)
+        result_q: "queue.Queue[Tuple[str, Any]]" = queue.Queue(maxsize=1)
+
+        def _target() -> None:
+            try:
+                synth_fn(text, attempt_out, exaggeration)
+                result_q.put(("ok", None))
+            except BaseException as exc:  # noqa: BLE001 - relay backend failures
+                result_q.put(("err", exc))
+
+        th = threading.Thread(
+            target=_target,
+            name=f"tts-synth-{tag}-attempt-{attempts}",
+            daemon=True,
+        )
+        th.start()
+        th.join(timeout=timeout_sec)
+
+        if th.is_alive():
             last_timed_out = True
-            ex.shutdown(wait=False)   # do NOT join the hung worker
-            tag = segment_id or os.path.basename(out_path)
             if attempt < retries:
                 print(f"[tts] clip {tag} timed out after {timeout_sec:.0f}s, "
                       f"retry {attempt + 1}/{retries}")
             else:
                 print(f"[tts] clip {tag} timed out after {timeout_sec:.0f}s — "
                       f"gave up after {total} attempts")
-        except Exception as exc:  # noqa: BLE001 — backend errors must not stall
-            last_timed_out = False
-            ex.shutdown(wait=False)
-            tag = segment_id or os.path.basename(out_path)
-            detail = f"{type(exc).__name__}: {str(exc)[:120]}"
-            if attempt < retries:
-                print(f"[tts] clip {tag} FAILED ({detail}), "
-                      f"retry {attempt + 1}/{retries}")
-            else:
-                print(f"[tts] clip {tag} FAILED ({detail}) — "
-                      f"gave up after {total} attempts")
+            continue
+
+        try:
+            state, payload = result_q.get_nowait()
+        except queue.Empty:
+            state, payload = "err", RuntimeError("synth thread exited without a result")
+
+        if state == "ok":
+            if os.path.exists(attempt_out):
+                os.replace(attempt_out, out_path)
+                return {"ok": True, "timed_out": False, "attempts": attempts}
+            state = "err"
+            payload = RuntimeError("synth completed without writing audio")
+
+        last_timed_out = False
+        try:
+            if os.path.exists(attempt_out):
+                os.remove(attempt_out)
+        except OSError:
+            pass
+        exc = payload if isinstance(payload, BaseException) else RuntimeError(str(payload))
+        detail = f"{type(exc).__name__}: {str(exc)[:120]}"
+        if attempt < retries:
+            print(f"[tts] clip {tag} FAILED ({detail}), "
+                  f"retry {attempt + 1}/{retries}")
+        else:
+            print(f"[tts] clip {tag} FAILED ({detail}) — "
+                  f"gave up after {total} attempts")
 
     # all attempts exhausted — write a silence placeholder so alignment holds
     try:

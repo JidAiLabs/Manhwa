@@ -490,6 +490,48 @@ def _flat_surround_fill(
     return None
 
 
+def _flatten_blank_bubble_residue(
+    out: np.ndarray,
+    box: Tuple[int, int, int, int],
+    fill: Optional[int],
+) -> None:
+    """Final cleanup for bubbles that are already blank.
+
+    The oval mask intentionally avoids outlines, but clipped/spiky bubbles can
+    leave faint gray anti-aliased text just outside that mask while still inside
+    the viewer-visible blank bubble. Flatten only a safe inset rectangle, and
+    only when that interior is already white/black and low-ink.
+    """
+    if fill is None:
+        return
+    gray = out.mean(axis=2) if out.ndim == 3 else out.astype(float)
+    h, w = gray.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in box]
+    dx = max(4, int(0.12 * max(1, x2 - x1)))
+    dy = max(4, int(0.12 * max(1, y2 - y1)))
+    rx1, ry1 = max(0, x1 + dx), max(0, y1 + dy)
+    rx2, ry2 = min(w, x2 - dx), min(h, y2 - dy)
+    if rx2 <= rx1 or ry2 <= ry1:
+        return
+    roi = gray[ry1:ry2, rx1:rx2]
+    if roi.size == 0:
+        return
+    if int(fill) >= 128:
+        white_frac = float((roi >= 235).mean())
+        ink_frac = float((roi <= 120).mean())
+        if white_frac >= 0.70 and ink_frac < 0.03:
+            mask = (roi >= 140) & (roi < 235)
+            if mask.any():
+                out[ry1:ry2, rx1:rx2][mask] = fill
+    else:
+        black_frac = float((roi <= 25).mean())
+        ink_frac = float((roi >= 180).mean())
+        if black_frac >= 0.70 and ink_frac < 0.03:
+            mask = (roi > 25) & (roi <= 120)
+            if mask.any():
+                out[ry1:ry2, rx1:rx2][mask] = fill
+
+
 def clean_scene_image(
     img: np.ndarray,
     boxes: Sequence[Tuple[int, int, int, int]],
@@ -560,6 +602,7 @@ def clean_scene_image(
                 residue = (inside > 0) & ~flat
                 if residue.any():
                     out[residue] = fill
+            _flatten_blank_bubble_residue(out, b, fill)
 
     if words:
         grown = [(int(b[0]) - 6, int(b[1]) - 6, int(b[2]) + 6, int(b[3]) + 6)
@@ -629,8 +672,8 @@ def drop_bubble_dominated_cuts(
     exempt: Optional[set] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Drop cuts that are mostly bubble/text (a cleaned bubble-only panel is a
-    near-blank blob on screen). *exempt* files (system-message panels — story
-    beats like the Sky Corporation cliffhanger) are never dropped. Never
+    near-blank blob on screen). *exempt* files (system-message/status panels —
+    story beats) are never dropped. Never
     empties a shot — the least bubbly cut survives."""
     ex = exempt or set()
     over = [c for c in cuts
@@ -910,6 +953,154 @@ def doc_like(
     outside = len(word_boxes) - inside
     return (inside / len(word_boxes) < max_in_bubble_frac
             or outside >= min_outside_words)
+
+
+_TEXT_CONTEXT_SUBJECT_TERMS = (
+    "speech bubble",
+    "bubble",
+    "thought bubble",
+    "text bubble",
+    "caption",
+    "text",
+    "sfx",
+    "sound effect",
+    "onomatopoeia",
+)
+
+_MINOR_FRAGMENT_SUBJECT_TERMS = (
+    "hair",
+    "character's hair",
+    "character hair",
+)
+
+_STORY_VISUAL_SUBJECT_TERMS = (
+    "character",
+    "man",
+    "woman",
+    "person",
+    "boy",
+    "girl",
+    "doctor",
+    "prince",
+    "face",
+    "figure",
+    "body",
+    "head",
+    "eyes",
+    "hand",
+    "hands",
+    "foot",
+    "feet",
+)
+
+
+def _looks_like_title_text(ocr: str, text_coverage: float) -> bool:
+    ocr = str(ocr or "").strip()
+    if not ocr or "..." in ocr or any(c in ocr for c in "~!?"):
+        return False
+    words = [w for w in re.split(r"[^A-Za-z0-9']+", ocr)
+             if any(c.isalpha() for c in w)]
+    letters = [c for c in ocr if c.isalpha()]
+    if not (2 <= len(words) <= 8) or not letters:
+        return False
+    if sum(c.isupper() for c in letters) / len(letters) < 0.8:
+        return False
+    return float(text_coverage or 0.0) < 0.20
+
+
+def text_context_only_panel(vitem: Dict[str, Any]) -> bool:
+    """True when the panel's only usable signal is text/bubble content.
+
+    The OCR still belongs in narration context, but after dialogue blanking the
+    image is not a story visual. This closes the gap where panel_understand can
+    stamp a pure thought bubble as panel_kind=story.
+    """
+    kind = str(vitem.get("panel_kind") or "").strip().lower()
+    ocr = str(vitem.get("ocr_clean") or "").strip()
+    text_cov = float(vitem.get("text_coverage") or 0.0)
+    subjects = [str(s or "").strip().lower()
+                for s in (vitem.get("subjects") or []) if str(s or "").strip()]
+    if kind in {"caption", "empty"}:
+        return True
+    if not subjects:
+        return False
+
+    def is_text_subject(subj: str) -> bool:
+        return any(term in subj for term in _TEXT_CONTEXT_SUBJECT_TERMS)
+
+    def is_minor_fragment_subject(subj: str) -> bool:
+        s = subj.strip().lower()
+        return (s in _MINOR_FRAGMENT_SUBJECT_TERMS
+                or s.endswith("'s hair")
+                or s.endswith(" hair"))
+
+    has_text_subject = any(is_text_subject(s) for s in subjects)
+    has_real_subject = any(
+        not is_text_subject(s) and not is_minor_fragment_subject(s)
+        for s in subjects)
+    has_text_signal = bool(ocr) or text_cov >= 0.02 or bool(vitem.get("text_only"))
+    if has_text_subject and not has_real_subject and has_text_signal:
+        has_bubble_subject = any("bubble" in s for s in subjects)
+        return bool(has_bubble_subject or not _looks_like_title_text(ocr, text_cov))
+    if _looks_like_title_text(ocr, text_cov):
+        return False
+    return False
+
+
+def story_visual_panel(vitem: Dict[str, Any]) -> bool:
+    """A story panel with a real visual subject, even when text/bubbles also
+    occupy much of the frame. This protects chibi/info and reaction panels from
+    being mistaken for blank text husks after dialogue removal, while pure
+    bubble-only/context panels still drop through empty_bubble_panel()."""
+    if str(vitem.get("panel_kind") or "").strip().lower() != "story":
+        return False
+    if text_context_only_panel(vitem):
+        return False
+    subjects = [str(s or "").strip().lower()
+                for s in (vitem.get("subjects") or []) if str(s or "").strip()]
+
+    def is_text_subject(subj: str) -> bool:
+        return any(term in subj for term in _TEXT_CONTEXT_SUBJECT_TERMS)
+
+    def is_minor_fragment_subject(subj: str) -> bool:
+        s = subj.strip().lower()
+        return (s in _MINOR_FRAGMENT_SUBJECT_TERMS
+                or s.endswith("'s hair")
+                or s.endswith(" hair"))
+
+    for subj in subjects:
+        if is_text_subject(subj) or is_minor_fragment_subject(subj):
+            continue
+        if any(term in subj for term in _STORY_VISUAL_SUBJECT_TERMS):
+            return True
+    return False
+
+
+def empty_bubble_panel(
+    vitem: Dict[str, Any],
+    *,
+    max_text_coverage: float = 0.10,
+    max_words: int = 10,
+) -> bool:
+    """Deterministic junk signal from panel understanding.
+
+    `panel_kind=empty` means the understanding found no story-bearing art. A
+    pure bubble/text panel can also be mislabeled as story; in both cases the
+    cleaned cut becomes a blank bubble blob on screen and must be covered by a
+    neighboring story panel instead of rendered directly.
+    """
+    if text_context_only_panel(vitem):
+        return True
+    if str(vitem.get("panel_kind") or "").strip().lower() != "empty":
+        return False
+    subjects = [str(s).lower() for s in (vitem.get("subjects") or [])]
+    has_bubble_subject = any("bubble" in s for s in subjects)
+    ocr = str(vitem.get("ocr_clean") or "")
+    words = [w for w in re.split(r"[^A-Za-z0-9']+", ocr)
+             if any(c.isalpha() for c in w)]
+    low_text = (float(vitem.get("text_coverage") or 0.0) <= max_text_coverage
+                and len(words) <= max_words)
+    return has_bubble_subject or low_text
 
 
 def split_spans_for_panel(img: np.ndarray, *, text_rich: bool) -> List[Tuple[int, int]]:
@@ -1519,13 +1710,17 @@ def main() -> int:
         return any("in-world screen" in str(s).lower() for s in subj)
 
     def _is_title_card(fname: str) -> bool:
-        """Styled title/system card (SKY CORPORATION., LIN ZICHEN - AGE: 3
-        YEARS) — short mostly-caps phrase on a flat (white/black) frame. These
+        """Styled title/system card (SYSTEM ACTIVATION., AGE: 3 YEARS) — short
+        mostly-caps phrase on a flat (white/black) frame. These
         are story beats: the timeline protects them from the LLM's 'redundant'
         verdict, and render_prep must NOT then drop them as low-art text.
         Same signal as prep_qa/timeline_planner."""
         vit = vision_item.get(fname, {})
         ocr = str(vit.get("ocr_clean") or "").strip()
+        if is_chrome_scene(vit, series_title=args.series_title or None):
+            return False
+        if empty_bubble_panel(vit):
+            return False
         if not ocr or "..." in ocr or any(c in ocr for c in "~!?"):
             return False
         words = [w for w in re.split(r"[^A-Za-z0-9']+", ocr)
@@ -1653,10 +1848,13 @@ def main() -> int:
                         str(vit.get("ocr_clean") or "")):
                     g = img.mean(axis=2)
                     mid = float(((g > 60) & (g < 200)).mean())
-                if is_chrome_scene(vit, series_title=args.series_title or None,
+                if empty_bubble_panel(vit):
+                    score = 1.0  # understanding says no story art; cover it
+                elif is_chrome_scene(vit, series_title=args.series_title or None,
                                    midtone_frac=mid):
                     score = 1.0  # chrome (per the understanding-aware chokepoint)
                 else:
+                    visual_story = story_visual_panel(vit)
                     cimg, cboxes = _cleaned(f)
                     rich = _text_rich(f)
                     recoverable = (cimg is None) or panel_recoverable(
@@ -1672,18 +1870,22 @@ def main() -> int:
                             and bubble_coverage(cimg.shape, cboxes) >= 0.20
                             and float(vit.get("text_coverage") or 0.0) <= 0.02):
                         recoverable = False
+                    if visual_story:
+                        recoverable = True
                     if not recoverable:
                         score = 1.0  # no recoverable region after cleaning
                     # System / title / document cards are story beats whose TEXT is
                     # the content — it sits on a flat card, NOT in an inpainted
                     # bubble, so it survives cleaning. Keep them unconditionally,
-                    # even at low art (SKY CORPORATION, 'LIN ZICHEN - AGE: 5 MONTHS').
+                    # even at low art (SYSTEM ACTIVATION, age/time cards).
                     if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
                         exempt.add(f)  # system-message panel — story beat
                     if rich:
                         exempt.add(f)  # document panel: its text IS the content
                     if _is_title_card(f):
                         exempt.add(f)  # styled title/system card (age/org/title)
+                    if visual_story:
+                        exempt.add(f)  # real story visual despite text-heavy layout
                     # The BROAD 'story/caption carries OCR' exemption ONLY holds when
                     # the panel SURVIVES cleaning. An empty-bubble husk (its text was
                     # inpainted away, leaving blank outlines over a gradient) is NOT

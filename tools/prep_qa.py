@@ -165,6 +165,7 @@ def image_flags(
     sys: bool = False,
     segment_id: str = "",
     min_art_score: float = 0.012,
+    vitem: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """All image-level checks for one shown scenes_clean/ file.
 
@@ -218,7 +219,7 @@ def image_flags(
                                   "borderline art detail, eyeball it"),
                                scene=name, segment_id=segment_id))
         midtone = float(((gray > 60) & (gray < 200)).mean())
-        if midtone < 0.08:
+        if midtone < 0.08 and not rp.story_visual_panel(vitem or {}):
             flags.append(_flag("binary_card", WARN,
                                f"midtone_frac={midtone:.3f} — near-binary "
                                "card (chrome-like), verify it is story",
@@ -293,6 +294,11 @@ def vision_flags(parent: str, vitem: Dict[str, Any], *,
                            f"chrome per scene_chrome rules is SHOWN — "
                            f"ocr={str(vitem.get('ocr_clean'))[:80]!r}",
                            scene=parent, segment_id=segment_id))
+    if rp.empty_bubble_panel(vitem):
+        flags.append(_flag("empty_bubble_shown", ERROR,
+                           "panel understanding marks this as empty / "
+                           "speech-bubble-only, but it is still shown",
+                           scene=parent, segment_id=segment_id))
     text_rich = (float(vitem.get("text_coverage") or 0.0) >= 0.22
                  or int(vitem.get("n_words") or 0) >= 15)
     unprotected = (not d.get("doc") and not d.get("sys")
@@ -357,11 +363,24 @@ _DANGLING_QUOTE_RE = re.compile(
 _MOOD_TAG_RE = re.compile(r"\[[a-z][a-z _-]{1,18}\]", re.I)
 _NORM_NARR_RE = re.compile(r"[^a-z0-9]+")
 _SEG_GROUP_RE = re.compile(r"g(\d{4})_p\d+$")
+_CHAPTER_HEADING_RE = re.compile(r"\b(?:chapter|episode)\s+\d+\b", re.I)
+_TITLE_CARD_RE = re.compile(r"\b(?:chapter|episode|title)\s+card\b", re.I)
 
 
 def _norm_narr(s: str) -> str:
     return _NORM_NARR_RE.sub(" ", _MOOD_TAG_RE.sub(" ", s or "").lower()
                              ).strip()
+
+
+def _alignment_beat_narration(beat: Dict[str, Any]) -> str:
+    narr = strip_chrome_opener(str((beat or {}).get("narration") or ""))
+    title = str((beat or {}).get("beat_title") or "")
+    if _CHAPTER_HEADING_RE.search(narr) or _TITLE_CARD_RE.search(title):
+        hook = strip_chrome_opener(str((beat or {}).get("hook") or ""))
+        if hook and not _CHAPTER_HEADING_RE.search(hook):
+            return hook
+        return "The truth is about to surface."
+    return narr
 
 
 def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
@@ -376,7 +395,7 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
     bn: Dict[int, str] = {}
     for b in (beats_obj or {}).get("beats") or []:
         try:
-            bn[int(b.get("group_id"))] = str(b.get("narration") or "")
+            bn[int(b.get("group_id"))] = _alignment_beat_narration(b)
         except (TypeError, ValueError):
             continue
     gids = set()
@@ -395,6 +414,7 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
     if str((script_obj or {}).get("narration_source")) != "gemini_verbatim":
         return flags        # non-verbatim text legitimately diverges
     from difflib import SequenceMatcher
+    plan_items = []
     for item in (plan or {}).get("timeline") or []:
         if item.get("branding"):
             continue
@@ -402,11 +422,27 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
         m = _SEG_GROUP_RE.match(seg)
         if not m:
             continue
-        narr = bn.get(int(m.group(1)))
+        plan_items.append((int(m.group(1)), seg, str(item.get("tts_text") or "")))
+
+    if bool((script_obj or {}).get("microbeats")):
+        grouped: Dict[int, List[str]] = {}
+        first_seg: Dict[int, str] = {}
+        for gid, seg, text in plan_items:
+            grouped.setdefault(gid, []).append(text)
+            first_seg.setdefault(gid, seg)
+        compare_items = [
+            (gid, first_seg.get(gid, f"g{gid:04d}_p00"), " ".join(texts))
+            for gid, texts in grouped.items()
+        ]
+    else:
+        compare_items = plan_items
+
+    for gid, seg, text in compare_items:
+        narr = bn.get(gid)
         # scrub series-intro/title-card chrome from the beats side too, matching
         # what the script stage voices — otherwise a legitimately-scrubbed plan
         # reads as "stale" against an un-scrubbed beats line (false positive).
-        a, b = _norm_narr(item.get("tts_text") or ""), _norm_narr(strip_chrome_opener(narr or ""))
+        a, b = _norm_narr(text), _norm_narr(strip_chrome_opener(narr or ""))
         if not a or not b:
             continue
         sim = SequenceMatcher(None, a, b).ratio()
@@ -752,12 +788,16 @@ _FILLER_RE = re.compile(
 
 
 def _is_title_card(ocr: str, vit: Dict[str, Any]) -> bool:
-    """A styled title/system card (SKY CORPORATION., STARTING ACTIVATION.) —
+    """A styled title/system card (SYSTEM ACTIVATION., STARTING ACTIVATION.) —
     a short, mostly-uppercase phrase CENTERED ON A FLAT FRAME. The flat-frame
     test (*flat_frac*: fraction of near-white/near-black pixels, set by main()
     from the image) is what separates a real card from all-caps dialogue or a
     screamed SFX sitting on textured artwork — caps text alone cannot."""
     ocr = (ocr or "").strip()
+    if is_chrome_scene(vit):
+        return False
+    if rp.empty_bubble_panel(vit):
+        return False
     # scanlation watermarks / URLs (ASURASCANS.COM, asura.gg, *.net) are SITE
     # CHROME, never a story title card — they must stay droppable, not "must
     # show". A real title/system card carries no domain.
@@ -1178,6 +1218,7 @@ def main() -> int:
                     "ocr_clean": it.get("ocr_clean"),
                     "text_only": it.get("text_only"),
                     "text_coverage": it.get("text_coverage"),
+                    "subjects": it.get("subjects") or [],
                     "n_words": len((it.get("vision") or {}).get("ocr_words") or []),
                     # carry the understanding so is_chrome_scene defers to it (no
                     # false chrome_leak on a 'story' panel whose OCR is just '1')
@@ -1278,7 +1319,8 @@ def main() -> int:
                          img, imgsz=1024, conf=args.bubble_conf)]
         flags.extend(image_flags(
             fname, img, boxes, doc=doc, dims_entry=d if d else None,
-            sys=sys_panel, segment_id=seg_by_file[fname]))
+            sys=sys_panel, segment_id=seg_by_file[fname],
+            vitem=vitems.get(parent_scene(fname)) or vitems.get(fname)))
 
     # consecutive on-screen near-duplicates (zoom pairs included)
     _imc: Dict[str, Any] = {}

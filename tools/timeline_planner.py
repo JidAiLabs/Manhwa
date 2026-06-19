@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Tuple, Optional
 # Shared keep/redundant selection logic (sibling tool module).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_selection import choose_kept_scenes  # noqa: E402
+from scene_chrome import is_chrome_scene  # noqa: E402
 
 try:
     from PIL import Image, ImageStat, ImageFilter
@@ -71,6 +72,19 @@ def _norm_words(words: Any) -> List[str]:
         s = str(w).strip().lower()
         if s:
             out.append(s)
+    return out
+
+
+def _scene_file_basenames(items: Any) -> List[str]:
+    if not isinstance(items, list):
+        return []
+    out: List[str] = []
+    seen = set()
+    for x in items:
+        f = os.path.basename(str(x or "").strip())
+        if f and f not in seen:
+            out.append(f)
+            seen.add(f)
     return out
 
 
@@ -143,6 +157,11 @@ def index_script(script_obj: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 "beat_id": int(s.get("beat_id") or i),
                 "paragraph": paragraph_text,
                 "delivery_tag": delivery_tag,
+                "scene_files": _scene_file_basenames(s.get("scene_files") or []),
+                "fallback_scene_files": _scene_file_basenames(s.get("fallback_scene_files") or []),
+                "avoid_text_zoom": bool(s.get("avoid_text_zoom", True)),
+                "camera": _safe_str(s.get("camera")),
+                "focus": _safe_str(s.get("focus")),
                 "cliffhanger_line": _safe_str(sec.get("cliffhanger_line")),
             }
 
@@ -809,7 +828,7 @@ def is_filler_narration(text: str) -> bool:
 
 
 def protected_card_files(vision_path: str, scene_dirs: List[str]) -> "set":
-    """Title/system cards (SKY CORPORATION., STARTING ACTIVATION.) — short
+    """Title/system cards (SYSTEM ACTIVATION., STARTING ACTIVATION.) — short
     mostly-uppercase phrases centered on a flat (white/black) frame. They are
     story beats and must survive the LLM's non-deterministic 'redundant'
     verdict and the husk filter. Mirrors prep_qa._is_title_card; the flat-frame
@@ -829,6 +848,10 @@ def protected_card_files(vision_path: str, scene_dirs: List[str]) -> "set":
     import re as _re
     import cv2  # lazy — keeps timeline_planner importable without the CV stack
     for it in items:
+        if (not isinstance(it, dict)
+                or is_chrome_scene(it)
+                or text_context_only_panel(it)):
+            continue
         f = os.path.basename(str(it.get("scene_file") or ""))
         ocr = str(it.get("ocr_clean") or "").strip()
         if not f or it.get("text_only") or "..." in ocr \
@@ -876,7 +899,121 @@ def protected_story_files(vision_path: str) -> "set":
         return out
     for it in items:
         f = os.path.basename(str(it.get("scene_file") or ""))
-        if f and str(it.get("panel_kind") or "").strip().lower() == "story":
+        if (f and str(it.get("panel_kind") or "").strip().lower() == "story"
+                and not text_context_only_panel(it)):
+            out.add(f)
+    return out
+
+
+_TEXT_CONTEXT_SUBJECT_TERMS = (
+    "speech bubble",
+    "bubble",
+    "thought bubble",
+    "text bubble",
+    "caption",
+    "text",
+    "sfx",
+    "sound effect",
+    "onomatopoeia",
+)
+
+_MINOR_FRAGMENT_SUBJECT_TERMS = (
+    "hair",
+    "character's hair",
+    "character hair",
+)
+
+
+def _looks_like_title_text(ocr: str, text_coverage: float) -> bool:
+    """Short uppercase title/system cards are visual story beats, not context-only
+    bubbles. This mirrors the text half of protected_card_files without requiring
+    image IO."""
+    ocr = str(ocr or "").strip()
+    if not ocr or "..." in ocr or any(ch in ocr for ch in "~!?"):
+        return False
+    words = [w for w in re.split(r"[^A-Za-z0-9']+", ocr)
+             if any(c.isalpha() for c in w)]
+    letters = [c for c in ocr if c.isalpha()]
+    if not (2 <= len(words) <= 8) or not letters:
+        return False
+    if sum(c.isupper() for c in letters) / len(letters) < 0.8:
+        return False
+    return float(text_coverage or 0.0) < 0.20
+
+
+def text_context_only_panel(vitem: Dict[str, Any]) -> bool:
+    """Panel whose only story signal is text/bubble content.
+
+    Its words still feed narration context, but after bubble text is blanked it
+    is not a useful visual cut. This catches the failure where understanding
+    stamped a pure thought bubble as panel_kind=story, which then made the
+    planner protect an empty bubble on screen.
+    """
+    kind = str(vitem.get("panel_kind") or "").strip().lower()
+    ocr = str(vitem.get("ocr_clean") or "").strip()
+    text_cov = float(vitem.get("text_coverage") or 0.0)
+    if is_chrome_scene(vitem):
+        return True
+    subjects = [str(s or "").strip().lower()
+                for s in (vitem.get("subjects") or []) if str(s or "").strip()]
+    if kind == "caption":
+        return True
+    if kind == "empty":
+        return True
+    if not subjects:
+        return False
+
+    def is_text_subject(subj: str) -> bool:
+        return any(term in subj for term in _TEXT_CONTEXT_SUBJECT_TERMS)
+
+    def is_minor_fragment_subject(subj: str) -> bool:
+        s = subj.strip().lower()
+        return (s in _MINOR_FRAGMENT_SUBJECT_TERMS
+                or s.endswith("'s hair")
+                or s.endswith(" hair"))
+
+    has_text_subject = any(is_text_subject(s) for s in subjects)
+    has_real_subject = any(
+        not is_text_subject(s) and not is_minor_fragment_subject(s)
+        for s in subjects)
+    has_text_signal = bool(ocr) or text_cov >= 0.02 or bool(vitem.get("text_only"))
+    if has_text_subject and not has_real_subject and has_text_signal:
+        # A clean flat system/title card is story content; a speech/thought
+        # bubble plus only a sliver of hair is context once dialogue is blanked.
+        has_bubble_subject = any("bubble" in s for s in subjects)
+        return bool(has_bubble_subject or not _looks_like_title_text(ocr, text_cov))
+    if _looks_like_title_text(ocr, text_cov):
+        return False
+    return False
+
+
+def text_context_only_files(vision_path: str) -> "set":
+    out: set = set()
+    try:
+        items = json.load(open(vision_path)).get("items") or []
+    except Exception:
+        return out
+    for it in items:
+        f = os.path.basename(str(it.get("scene_file") or ""))
+        if f and text_context_only_panel(it):
+            out.add(f)
+    return out
+
+
+def publication_chrome_files(vision_path: str) -> "set":
+    """Publication/platform/credit/title pages. These are neither rendered nor
+    voiced as standalone recap beats; in-world screens/stat cards remain
+    panel_kind='story' and are preserved by the story/system-card paths."""
+    out: set = set()
+    try:
+        items = json.load(open(vision_path)).get("items") or []
+    except Exception:
+        return out
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        f = os.path.basename(str(it.get("scene_file") or ""))
+        if f and is_chrome_scene(it):
             out.add(f)
     return out
 
@@ -1024,8 +1161,8 @@ def main() -> int:
     dropped_summary: List[Dict[str, Any]] = []
 
     # title/system cards are mandatory story beats — protect them from the
-    # husk filter and the LLM's 'redundant' verdict (which is non-deterministic;
-    # SKY CORPORATION was kept on one host, dropped on another)
+    # husk filter and the LLM's 'redundant' verdict, which is non-deterministic
+    # across runs for flat in-world info cards.
     protected_cards = protected_card_files(
         args.vision, [args.clean_scene_dir, args.raw_scene_dir])
     if protected_cards:
@@ -1043,7 +1180,8 @@ def main() -> int:
     # montage (the narration already carries their words), holding a real scene
     # for any beat that would otherwise be a blank card. In-world screens are
     # panel_kind 'story', not 'caption', so they stay.
-    caption_set = caption_files(args.vision)
+    chrome_set = publication_chrome_files(args.vision)
+    context_only_set = chrome_set | caption_files(args.vision) | text_context_only_files(args.vision)
     # per-panel camera targets (faces/objects/text_blocks) so each cut's pan can
     # END centered on the panel's FACE instead of a generic drift that may land on
     # an inpainted (blank) speech bubble.
@@ -1051,9 +1189,9 @@ def main() -> int:
     montage = drop_caption_cards(
         [(int(g.get("group_id") or g.get("shot_id") or 0),
           [os.path.basename(str(x)) for x in (g.get("scene_files") or []) if x])
-         for g in groups], caption_set)
-    if caption_set:
-        print(f"[plan] {len(caption_set)} caption card(s) -> narrated, not shown")
+         for g in groups], context_only_set)
+    if context_only_set:
+        print(f"[plan] {len(context_only_set)} text/context-only panel(s) -> narrated, not shown")
 
     cut_ordinal = 0  # GLOBAL across all beats: drives per-cut motion variation
     for gobj in groups:
@@ -1063,7 +1201,11 @@ def main() -> int:
         scene_files = gobj.get("scene_files") or []
         if not isinstance(scene_files, list):
             scene_files = []
-        scene_files = [str(x) for x in scene_files if x]
+        scene_files = [os.path.basename(str(x)) for x in scene_files if x]
+        if scene_files and all(f in chrome_set for f in scene_files):
+            dropped_summary.append({"group_id": group_id,
+                                    "dropped_publication_chrome": scene_files})
+            continue
         # caption cards out, real scenes (held if needed) in — words stay in narration
         scene_files = montage.get(group_id) or scene_files
 
@@ -1091,7 +1233,6 @@ def main() -> int:
         beat = beats_by_gid.get(group_id, {"group_id": group_id})
         mood_words = _norm_words(beat.get("mood_words") or [])
         rh = beat.get("rendering_hints") or {}
-        avoid_text_zoom = bool(rh.get("avoid_text_zoom", False))
 
         # B2: a group may have several narration paragraphs (segment_id g####_p##).
         # Emit ONE timeline item per paragraph so each paragraph keeps its own
@@ -1106,6 +1247,22 @@ def main() -> int:
         for segment_id, srow in segments:
             paragraph = _safe_str(srow.get("paragraph")) if srow else ""
             delivery_tag = _safe_str(srow.get("delivery_tag")) if srow else ""
+            avoid_text_zoom = bool((srow or {}).get(
+                "avoid_text_zoom", rh.get("avoid_text_zoom", False)))
+            shot_scene_files = _scene_file_basenames((srow or {}).get("scene_files") or [])
+            shot_fallback_files = _scene_file_basenames((srow or {}).get("fallback_scene_files") or [])
+
+            # Microbeat shots carry their own selected panel(s). Keep the story
+            # group as context, but render the shot-level visual subset. If that
+            # subset was context-only/filtered away, fall back to the nearest real
+            # scene chosen for the group so narration never plays over a blank.
+            segment_scene_files = scene_files
+            if shot_scene_files:
+                allowed = set(scene_files)
+                picked = [f for f in shot_scene_files if f in allowed]
+                if not picked:
+                    picked = [f for f in shot_fallback_files if f in allowed]
+                segment_scene_files = picked or scene_files[:1]
 
             # a degenerate beat (empty narration → "The scene continues."
             # placeholder) is dropped: never voice filler over a stand-in panel
@@ -1157,20 +1314,20 @@ def main() -> int:
                 display_strategy = "multi_cut"
 
             # If no usable files: keep shot (audio still plays) but no cuts
-            primary_scene_file = scene_files[0] if scene_files else ""
+            primary_scene_file = segment_scene_files[0] if segment_scene_files else ""
 
             # Cuts drive the montage. COVERAGE: build_cuts shows EVERY distinct
             # panel within `dur` (drops only near-duplicate frames) — no panel is
             # truncated to fit a short line, and with no music we never stretch
             # into silence. One panel + a long line = a long hold.
             cuts: List[Dict[str, Any]] = []
-            if scene_files:
+            if segment_scene_files:
                 if display_strategy == "single_hold":
                     cuts = build_cuts([primary_scene_file], dur,
                                       min_cut_sec=float(args.min_cut_sec))
                 else:
                     cuts = build_cuts(
-                        scene_files, dur,
+                        segment_scene_files, dur,
                         min_cut_sec=float(args.min_cut_sec),
                         selection=beat.get("scene_selection"),
                         protected=protected,
@@ -1209,7 +1366,7 @@ def main() -> int:
                 "display_strategy": display_strategy,
                 "primary_scene_file": primary_scene_file,
                 "group_scene_files": scene_files,
-                "scene_files": scene_files if display_strategy == "multi_cut" else ([primary_scene_file] if primary_scene_file else []),
+                "scene_files": segment_scene_files if display_strategy == "multi_cut" else ([primary_scene_file] if primary_scene_file else []),
 
                 # NEW: montage plan for Blender
                 "cuts": cuts,

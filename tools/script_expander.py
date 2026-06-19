@@ -562,6 +562,17 @@ def _sanitize_single_leading_tts_tag(para: str) -> str:
 
     return f"[{tag}] {raw}".strip()
 
+
+_COMIC_TTS_CUE_RE = re.compile(
+    r"\b("
+    r"mock|mocking|taunt|taunting|tease|ridicule|laugh|laughter|howl|"
+    r"smirk|cocky|smug|manic|humiliat|embarrass|bald|hair disappear|"
+    r"where did all your hair|face[- ]?slap|fooling everyone"
+    r")\b",
+    re.I,
+)
+
+
 def _ensure_tts_tags_from_beats(beats_chunk: List[Dict[str, Any]], tts_paragraphs: List[str]) -> List[str]:
     """
     Ensure each paragraph starts with a valid V3 mood tag.
@@ -584,6 +595,8 @@ def _ensure_tts_tags_from_beats(beats_chunk: List[Dict[str, Any]], tts_paragraph
             tag = "sad"
         elif any(k in blob for k in ["angry", "rage", "furious"]):
             tag = "angry"
+        elif _COMIC_TTS_CUE_RE.search(blob):
+            tag = "excited"
         elif any(k in blob for k in ["awe", "reveal", "miracle", "divine"]):
             tag = "awe"
         elif any(k in blob for k in ["fight", "battle", "clash", "attack", "explosion", "blood"]):
@@ -754,6 +767,25 @@ if _TD not in _sys.path:
     _sys.path.insert(0, _TD)
 from narration_consistency import strip_chrome_opener  # noqa: E402,F401
 
+_CHAPTER_HEADING_RE = re.compile(r"\b(?:chapter|episode)\s+\d+\b", re.I)
+_TITLE_CARD_RE = re.compile(r"\b(?:chapter|episode|title)\s+card\b", re.I)
+
+
+def _dechrome_verbatim_base(text: str, beat: Dict[str, Any]) -> str:
+    """Remove publication/title-card phrasing before it reaches TTS.
+
+    Pure chapter-title cards are useful structure for the reader, but the recap
+    should bridge them as story momentum instead of voicing "Chapter 7".
+    """
+    base = strip_chrome_opener(str(text or "").strip())
+    title = str((beat or {}).get("beat_title") or "")
+    if _CHAPTER_HEADING_RE.search(base) or _TITLE_CARD_RE.search(title):
+        hook = strip_chrome_opener(str((beat or {}).get("hook") or "").strip())
+        if hook and not _CHAPTER_HEADING_RE.search(hook):
+            return hook
+        return "The truth is about to surface."
+    return base
+
 
 def _build_verbatim_section(
     *,
@@ -764,6 +796,8 @@ def _build_verbatim_section(
     genre_mode: str,
     proper_case: Optional[Dict[str, str]] = None,
     wpm: int = 135,
+    microbeats: bool = False,
+    microbeat_max_words: int = 28,
 ) -> Dict[str, Any]:
     """Materialize one script section directly from beats[].narration — the
     image-grounded Gemini line (A/B Variant B) — with NO LLM call.
@@ -775,7 +809,15 @@ def _build_verbatim_section(
     """
     paras: List[str] = []
     shout_flags: List[bool] = []
-    for b in chunk:
+    para_beats: List[Dict[str, Any]] = []
+    shots: List[Dict[str, Any]] = []
+    payload_by_gid = {
+        int(pb.get("group_id") or 0): pb
+        for pb in (payload.get("beats") or [])
+        if isinstance(pb, dict)
+    }
+
+    for idx, b in enumerate(chunk):
         b = b if isinstance(b, dict) else {}
         if b.get("error"):
             # never voice the parse-failure placeholder text
@@ -785,29 +827,55 @@ def _build_verbatim_section(
             # into spoken narration); if that empties the line, fall back to the
             # image-grounded action so the beat is never silent.
             base = (
-                strip_chrome_opener(str(b.get("narration") or "").strip())
-                or strip_chrome_opener(str(b.get("what_happens") or "").strip())
+                _dechrome_verbatim_base(str(b.get("narration") or "").strip(), b)
+                or _dechrome_verbatim_base(str(b.get("what_happens") or "").strip(), b)
                 or str(b.get("beat_title") or "").strip()
                 or "The scene continues."
             )
         base = re.sub(r"\s+", " ", base).strip()
         text, had_shouts = normalize_caps_for_tts(base, proper_case)
-        paras.append(text)
-        shout_flags.append(had_shouts)
+        parts = _split_recap_microbeats(text, max_words=microbeat_max_words) if microbeats else [text]
+        if not parts:
+            parts = ["The scene continues."]
+
+        gid = int(b.get("group_id") or 0)
+        payload_beat = payload_by_gid.get(gid)
+        if payload_beat is None:
+            pbeats = payload.get("beats") or []
+            payload_beat = pbeats[idx] if idx < len(pbeats) and isinstance(pbeats[idx], dict) else {}
+        panel_files = _selected_scene_files_for_microbeats(b, payload_beat)
+
+        for part_index, part in enumerate(parts):
+            paras.append(part)
+            shout_flags.append(had_shouts)
+            para_beats.append(b)
+            if microbeats:
+                shots.append(
+                    _build_microbeat_shot(
+                        payload_beat,
+                        part,
+                        _scene_for_microbeat(panel_files, part_index, len(parts)),
+                        wpm=wpm,
+                    )
+                )
 
     # Mood tag per beat from its mood_words/stakes, escalated by panel
     # intensity and shout-caps; text is the script paragraph verbatim.
-    tagged = _ensure_tts_tags_from_beats(chunk, paras)
+    tagged = _ensure_tts_tags_from_beats(para_beats or chunk, paras)
     tts: List[str] = []
     for i, tp in enumerate(tagged):
         tag, _rest = _split_leading_bracket_tag(str(tp))
-        rank = _intensity_rank_for_beat(chunk[i] if isinstance(chunk[i], dict) else {})
+        beat_for_para = para_beats[i] if i < len(para_beats) else (chunk[i] if i < len(chunk) and isinstance(chunk[i], dict) else {})
+        rank = _intensity_rank_for_beat(beat_for_para)
         if shout_flags[i]:
             rank = max(rank, 2)
         tag = _escalate_tag_for_intensity(tag or "serious", rank)
         tts.append(f"[{tag}] {paras[i]}".strip())
 
-    shots = _normalize_shots(_build_default_shots_from_payload(payload, paras, wpm=wpm))
+    if microbeats:
+        shots = _normalize_shots(shots)
+    else:
+        shots = _normalize_shots(_build_default_shots_from_payload(payload, paras, wpm=wpm))
 
     titles = [str(b.get("beat_title") or "").strip() for b in chunk if isinstance(b, dict)]
     summary = " · ".join(t for t in titles if t)[:300]
@@ -1218,6 +1286,210 @@ def _build_default_shots_from_payload(payload: Dict[str, Any], script_paragraphs
         )
     return shots
 
+
+def _dedupe_scene_files(items: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for x in items or []:
+        s = str(x or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _selected_scene_files_for_microbeats(
+    source_beat: Dict[str, Any],
+    payload_beat: Dict[str, Any],
+) -> List[str]:
+    allowed = payload_beat.get("allowed_scene_files") or payload_beat.get("scene_files") or []
+    if not isinstance(allowed, list):
+        allowed = []
+    allowed_files = _dedupe_scene_files([str(x) for x in allowed if x])
+    allowed_set = set(allowed_files)
+
+    selected: List[str] = []
+    for e in source_beat.get("scene_selection") or []:
+        if not isinstance(e, dict):
+            continue
+        role = str(e.get("role") or "keep").strip().lower()
+        if role in {"drop", "redundant", "skip"}:
+            continue
+        sf = str(e.get("scene_file") or "").strip()
+        if sf and (not allowed_set or sf in allowed_set):
+            selected.append(sf)
+
+    if not selected:
+        raw = source_beat.get("scene_files") or []
+        if not isinstance(raw, list):
+            raw = []
+        selected = [str(x) for x in raw if x]
+
+    if allowed_set:
+        selected = [x for x in selected if x in allowed_set]
+
+    return _dedupe_scene_files(selected or allowed_files)
+
+
+def _split_recap_microbeats(text: str, *, max_words: int) -> List[str]:
+    """Split a grouped recap line into short spoken beats without rewriting it.
+
+    This keeps the Gemini/punchup wording intact while letting TTS/timeline align
+    the narration to individual panels. No model call, no new story facts.
+    """
+    max_words = max(8, int(max_words or 18))
+    src = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not src:
+        return []
+
+    sentences = re.split(r"(?<=[.!?…])\s+(?=[\"'A-Z0-9])", src)
+    if not sentences:
+        sentences = [src]
+
+    slack = max(4, max_words // 3)
+
+    def finish(part: str) -> str:
+        s = re.sub(r"\s+", " ", str(part or "")).strip()
+        if s and s[0].islower():
+            s = s[0].upper() + s[1:]
+        if s.endswith((",", ";", ":")):
+            s = s[:-1].rstrip() + "."
+        return s
+
+    def merge_short(parts: List[str]) -> List[str]:
+        min_words = max(7, max_words // 2)
+        merged: List[str] = []
+        for part in [p for p in parts if p]:
+            if not merged:
+                merged.append(part)
+                continue
+            prev = merged[-1]
+            combo = f"{prev} {part}".strip()
+            if (_words(prev) < min_words or _words(part) < min_words) and _words(combo) <= max_words + slack:
+                merged[-1] = combo
+            else:
+                merged.append(part)
+        if len(merged) >= 2 and _words(merged[-1]) < min_words:
+            combo = f"{merged[-2]} {merged[-1]}".strip()
+            if _words(combo) <= max_words + slack:
+                merged[-2] = combo
+                merged.pop()
+        return merged
+
+    chunks: List[str] = []
+    for sentence in [s.strip() for s in sentences if s.strip()]:
+        if _words(sentence) <= max_words:
+            chunks.append(sentence)
+            continue
+
+        # Prefer natural clause seams before falling back to word chunks.
+        clauses = re.split(r"(?<=[,;:])\s+", sentence)
+        buf: List[str] = []
+        for clause in [c.strip() for c in clauses if c.strip()]:
+            trial = " ".join(buf + [clause]).strip()
+            if buf and _words(trial) > max_words:
+                chunks.append(" ".join(buf).strip())
+                buf = [clause]
+            else:
+                buf.append(clause)
+        if buf:
+            chunks.append(" ".join(buf).strip())
+
+    chunks = merge_short(chunks)
+
+    final: List[str] = []
+    for chunk in chunks:
+        words = chunk.split()
+        if _words(chunk) <= max_words + slack:
+            final.append(finish(chunk))
+            continue
+        for i in range(0, len(words), max_words):
+            part = " ".join(words[i : i + max_words]).strip()
+            if part:
+                final.append(finish(part))
+
+    return [c for c in final if c]
+
+
+def _scene_for_microbeat(files: List[str], index: int, total: int) -> List[str]:
+    files = _dedupe_scene_files(files)
+    if not files:
+        return []
+    if total <= 1:
+        return files[:1]
+    pos = min(len(files) - 1, int((index * len(files)) / max(1, total)))
+    return files[pos : pos + 1]
+
+
+def _build_microbeat_shot(
+    payload_beat: Dict[str, Any],
+    paragraph: str,
+    scene_files: List[str],
+    *,
+    wpm: int,
+) -> Dict[str, Any]:
+    gid = int(payload_beat.get("group_id") or 0)
+    bid = int(payload_beat.get("beat_id") or 0)
+
+    allowed = payload_beat.get("allowed_scene_files") or payload_beat.get("scene_files") or []
+    if not isinstance(allowed, list):
+        allowed = []
+    allowed = _dedupe_scene_files([str(x) for x in allowed if x])
+
+    scene_files = _dedupe_scene_files(scene_files)
+    if not scene_files:
+        scene_files = allowed[:1]
+
+    fallback = [x for x in allowed if x not in set(scene_files)][:2] or scene_files[:1]
+
+    rh = payload_beat.get("rendering_hints") or {}
+    if not isinstance(rh, dict):
+        rh = {}
+    avoid_text_zoom = bool(rh.get("avoid_text_zoom", True))
+    preferred_focus = str(rh.get("preferred_focus") or "wide")
+    camera_motion = str(rh.get("camera_motion") or "slow_pan")
+
+    wc = _words(paragraph)
+    est_sec = (wc / max(80, int(wpm))) * 60.0
+    est_sec = _clamp(est_sec, 3.0, 18.0)
+    min_hold = _clamp(est_sec * 0.80, 2.5, 16.0)
+    max_hold = _clamp(est_sec * 1.25, 3.5, 22.0)
+
+    ocr_map = payload_beat.get("ocr_snippets_by_scene_file") or {}
+    diag: List[str] = []
+    if isinstance(ocr_map, dict):
+        for sf in scene_files:
+            lines = ocr_map.get(sf) or []
+            if isinstance(lines, list):
+                for ln in lines[:2]:
+                    s = str(ln).strip()
+                    if s:
+                        diag.append(s)
+            if len(diag) >= 3:
+                break
+
+    weak = payload_beat.get("weak_scene_files") or []
+    weak_set = set([str(x) for x in weak if x])
+
+    return {
+        "beat_id": bid,
+        "group_id": gid,
+        "scene_files": scene_files,
+        "fallback_scene_files": fallback,
+        "duration_s": float(est_sec),
+        "min_hold_s": float(min_hold),
+        "max_hold_s": float(max_hold),
+        "camera": camera_motion,
+        "focus": preferred_focus,
+        "avoid_text_zoom": avoid_text_zoom,
+        "use_dialogue": bool(diag),
+        "dialogue_snippets": diag[:3],
+        "is_optional": any(sf in weak_set for sf in scene_files),
+        "notes": "auto_microbeat_from_beat",
+    }
+
+
 def _normalize_shots(shots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for s in shots or []:
@@ -1381,7 +1653,7 @@ Turn beats + OCR + scene data into a recap that feels like a movie trailer, not 
   "he refuses to fall, swearing to tear his enemy apart", NOT a copy of the line.)
 - KEEP AS-IS (do NOT paraphrase): short, punchy DIRECT lines (e.g. "Come here.",
   "You're dead.", "It's him!") and proper nouns/titles (character names,
-  "Sky Corporation", "7th Generation Nano Machine"). Name or quote these
+  organization names, named techniques, system titles). Name or quote these
   directly — only longer dialogue/monologue must be reworded.
 - NEVER repeat the same phrase, sentence, or fact across paragraphs — if a beat
   echoes an earlier one, advance it or rephrase with new emphasis.
@@ -1525,6 +1797,17 @@ def main() -> int:
         default="",
         help="Optional manifest.cast.json; gemini_verbatim uses its names to keep "
         "proper nouns cased when normalizing shout-caps OCR dialogue.",
+    )
+    ap.add_argument(
+        "--microbeats",
+        action="store_true",
+        help="For gemini_verbatim, split long grouped narration into short panel-aligned beats.",
+    )
+    ap.add_argument(
+        "--microbeat-max-words",
+        type=int,
+        default=28,
+        help="Target maximum words per deterministic microbeat when --microbeats is set.",
     )
     ap.add_argument("--max-output-tokens", type=int, default=2600)
     ap.add_argument("--retries", type=int, default=2)
@@ -1791,6 +2074,8 @@ def main() -> int:
                 genre_mode=genre_mode,
                 proper_case=proper_case,
                 wpm=int(args.wpm),
+                microbeats=bool(args.microbeats),
+                microbeat_max_words=int(args.microbeat_max_words),
             )
 
         for _attempt in range(0 if obj is not None else args.retries + 1):
@@ -1974,6 +2259,8 @@ def main() -> int:
         "source_vision_manifest": os.path.abspath(args.vision) if args.vision else "",
         "model": args.model,
         "narration_source": args.narration_source,
+        "microbeats": bool(args.microbeats),
+        "microbeat_max_words": int(args.microbeat_max_words),
         "minutes_range": {"min": args.min_minutes, "max": args.max_minutes},
         "duration_mode": args.duration_mode,
         "words_per_beat": int(args.words_per_beat),

@@ -178,6 +178,31 @@ def test_verbatim_explosive_beat_gets_escalated_tag():
     assert tag0 == "excited"
 
 
+def test_verbatim_comic_beat_gets_energetic_tag():
+    chunk = [{
+        "group_id": 1,
+        "beat_id": 1,
+        "beat_title": "Bald joke",
+        "narration": ("He loses it, pointing right at Heo Bong and howling, "
+                      "'Where did all your hair go overnight?!'"),
+        "mood_words": ["manic", "mocking", "humiliated", "intense"],
+        "scene_files": ["a.jpg"],
+        "scene_selection": [{"scene_file": "a.jpg", "role": "keep",
+                             "intensity": "intense"}],
+    }]
+    payload = {"section_index": 0, "word_target": 120, "beats": [{
+        "beat_id": 1,
+        "group_id": 1,
+        "allowed_scene_files": ["a.jpg"],
+        "scene_files": ["a.jpg"],
+    }]}
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="unknown")
+    tag, _ = se._split_leading_bracket_tag(sec["tts_paragraphs_v3"][0])
+    assert tag == "excited"
+
+
 def test_verbatim_section_is_valid_with_one_shot_per_beat():
     chunk, payload = _chunk_and_payload()
     sec = se._build_verbatim_section(
@@ -188,6 +213,105 @@ def test_verbatim_section_is_valid_with_one_shot_per_beat():
     assert [s["group_id"] for s in shots] == [7, 8, 9]
     assert shots[0]["scene_files"] == ["a.jpg"]
     assert sec["cliffhanger_line"]  # taken from the last beat's hook chain
+
+
+def test_verbatim_microbeats_split_one_group_across_selected_panels():
+    chunk = [{
+        "group_id": 16,
+        "beat_id": 1,
+        "beat_title": "Counter",
+        "narration": (
+            "The prince absorbs the insult without flinching. "
+            "Then he steps in and turns the attack back on them."
+        ),
+        "what_happens": "The prince counters.",
+        "hook": "They realize too late.",
+        "mood_words": ["serious"],
+        "scene_files": ["a.jpg", "b.jpg"],
+        "scene_selection": [
+            {"scene_file": "a.jpg", "role": "keep", "intensity": "calm"},
+            {"scene_file": "b.jpg", "role": "keep", "intensity": "tense"},
+        ],
+    }]
+    payload = {"section_index": 0, "word_target": 120, "beats": [{
+        "beat_id": 1,
+        "group_id": 16,
+        "allowed_scene_files": ["a.jpg", "b.jpg"],
+        "scene_files": ["a.jpg", "b.jpg"],
+        "ocr_snippets_by_scene_file": {},
+    }]}
+
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="unknown",
+        microbeats=True, microbeat_max_words=12)
+
+    assert sec["script_paragraphs"] == [
+        "The prince absorbs the insult without flinching.",
+        "Then he steps in and turns the attack back on them.",
+    ]
+    assert [s["group_id"] for s in sec["shots"]] == [16, 16]
+    assert [s["scene_files"] for s in sec["shots"]] == [["a.jpg"], ["b.jpg"]]
+    for para, tts in zip(sec["script_paragraphs"], sec["tts_paragraphs_v3"]):
+        _tag, rest = se._split_leading_bracket_tag(tts)
+        assert rest == para
+
+
+def test_verbatim_microbeats_ignore_redundant_scene_selection():
+    chunk = [{
+        "group_id": 17,
+        "beat_id": 1,
+        "beat_title": "Read",
+        "narration": "He reads the message, and the room goes cold.",
+        "what_happens": "He reads.",
+        "mood_words": [],
+        "scene_files": ["a.jpg", "b.jpg"],
+        "scene_selection": [
+            {"scene_file": "a.jpg", "role": "redundant"},
+            {"scene_file": "b.jpg", "role": "keep"},
+        ],
+    }]
+    payload = {"beats": [{
+        "beat_id": 1,
+        "group_id": 17,
+        "allowed_scene_files": ["a.jpg", "b.jpg"],
+        "scene_files": ["a.jpg", "b.jpg"],
+        "ocr_snippets_by_scene_file": {},
+    }]}
+
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="unknown", microbeats=True)
+
+    assert sec["shots"][0]["scene_files"] == ["b.jpg"]
+
+
+def test_verbatim_title_card_uses_story_hook_not_chapter_heading():
+    chunk = [{
+        "group_id": 5,
+        "beat_id": 1,
+        "beat_title": "Chapter Title Card",
+        "narration": "As the truth surfaces, we reach Chapter 7: The Trap.",
+        "what_happens": "The chapter title card appears.",
+        "hook": "The truth is finally about to surface.",
+        "mood_words": [],
+        "scene_files": ["card.jpg"],
+        "scene_selection": [{"scene_file": "card.jpg", "role": "redundant"}],
+    }]
+    payload = {"beats": [{
+        "beat_id": 1,
+        "group_id": 5,
+        "allowed_scene_files": ["card.jpg"],
+        "scene_files": ["card.jpg"],
+        "ocr_snippets_by_scene_file": {},
+    }]}
+
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="unknown", microbeats=True)
+
+    assert sec["script_paragraphs"] == ["The truth is finally about to surface."]
+    assert "Chapter" not in sec["tts_paragraphs_v3"][0]
 
 
 # ---- CLI end-to-end: gemini_verbatim needs NO OpenAI key -------------------

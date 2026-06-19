@@ -161,7 +161,9 @@ def test_synthesize_manifest_revoices_only_changed_segments(tmp_path):
         changed, str(tmp_path), backend="kokoro",
         synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0)
     # only g0002_p01 re-voiced; g0001_p00 kept (deterministic gate, incremental)
-    assert [os.path.basename(c) for c in calls] == ["g0002_p01.wav"]
+    assert len(calls) == 1
+    assert os.path.basename(calls[0]).startswith("g0002_p01.attempt")
+    assert (tmp_path / "clips" / "g0002_p01.wav").exists()
 
 
 def test_synthesize_manifest_prunes_orphan_clips(tmp_path):

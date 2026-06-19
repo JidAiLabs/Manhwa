@@ -95,6 +95,93 @@ def test_caption_files_flags_only_captions_not_in_world_screens(tmp_path):
     assert tp.caption_files("") == set()
 
 
+def test_text_context_only_files_flags_story_bubble_without_subject(tmp_path):
+    import json
+    v = {"items": [
+        {
+            "scene_file": "bubble.jpg",
+            "panel_kind": "story",
+            "subjects": ["speech bubble"],
+            "ocr_clean": "AS I THOUGHT, THIS GUY IS A GENIUS!",
+            "text_coverage": 0.1552,
+        },
+        {
+            "scene_file": "thought_hair.jpg",
+            "panel_kind": "story",
+            "subjects": ["speech bubble", "character's hair"],
+            "ocr_clean": "HE'LL HAVE NO PROBLEM WITH OPERATING FORMATION.",
+            "text_coverage": 0.0984,
+        },
+        {
+            "scene_file": "dialogue_scene.jpg",
+            "panel_kind": "story",
+            "subjects": ["young man", "speech bubble"],
+            "ocr_clean": "You really are smart!",
+            "text_coverage": 0.08,
+        },
+        {
+            "scene_file": "system.jpg",
+            "panel_kind": "story",
+            "subjects": ["text"],
+            "ocr_clean": "SYSTEM ACTIVATION",
+            "text_coverage": 0.05,
+        },
+        {
+            "scene_file": "chapter_title.jpg",
+            "panel_kind": "chrome",
+            "subjects": ["title logo"],
+            "ocr_clean": "Nano Machine CHAPTER 7 그림 각색 원작",
+            "text_coverage": 0.12,
+        },
+    ]}
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(v))
+    assert tp.text_context_only_files(str(vp)) == {
+        "bubble.jpg", "thought_hair.jpg", "chapter_title.jpg"}
+
+
+def test_publication_chrome_files_does_not_catch_story_screens(tmp_path):
+    import json
+    v = {"items": [
+        {
+            "scene_file": "chapter_title.jpg",
+            "panel_kind": "chrome",
+            "ocr_clean": "Nano Machine CHAPTER 7 그림 각색 원작",
+        },
+        {
+            "scene_file": "status.jpg",
+            "panel_kind": "story",
+            "subjects": ["in-world screen"],
+            "ocr_clean": "STRENGTH 12 AGILITY 9",
+        },
+    ]}
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(v))
+    assert tp.publication_chrome_files(str(vp)) == {"chapter_title.jpg"}
+
+
+def test_protected_card_files_skips_context_bubbles(tmp_path):
+    import cv2
+    import json
+    import numpy as np
+
+    scene_dir = tmp_path / "scenes"
+    scene_dir.mkdir()
+    img = np.full((240, 320, 3), 248, np.uint8)
+    cv2.imwrite(str(scene_dir / "system.jpg"), img)
+    cv2.imwrite(str(scene_dir / "bubble.jpg"), img)
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps({"items": [
+        {"scene_file": "system.jpg", "panel_kind": "story",
+         "subjects": ["text"], "ocr_clean": "SYSTEM ACTIVATION",
+         "text_coverage": 0.05},
+        {"scene_file": "bubble.jpg", "panel_kind": "empty",
+         "subjects": ["speech bubble"], "ocr_clean": "YES, PRINCE.",
+         "text_coverage": 0.03},
+    ]}))
+    assert tp.protected_card_files(str(vp), [str(scene_dir)]) == {"system.jpg"}
+
+
 def test_protected_story_files_reads_stamped_panel_kind(tmp_path):
     import json
     vision = {"items": [
@@ -102,6 +189,9 @@ def test_protected_story_files_reads_stamped_panel_kind(tmp_path):
         {"scene_file": "p2.jpg", "panel_kind": "caption"},        # not story
         {"scene_file": "p3.jpg", "panel_kind": "empty"},          # not story
         {"scene_file": "p4.jpg", "panel_kind": "story"},
+        {"scene_file": "p6.jpg", "panel_kind": "story",
+         "subjects": ["speech bubble"], "ocr_clean": "As I thought, this guy is a genius!",
+         "text_coverage": 0.12},                                  # context only
         {"scene_file": "p5.jpg"},                                 # unstamped
     ]}
     vp = tmp_path / "manifest.vision.json"

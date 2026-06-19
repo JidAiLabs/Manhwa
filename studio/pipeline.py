@@ -302,6 +302,9 @@ def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
         # (A/B winner) — zero LLM calls, so no OpenAI credential gate. --cast
         # keeps proper nouns cased when shout-caps OCR dialogue is normalized.
         args += ["--cast", str(p["cast"])]
+        if cfg.narration_microbeats:
+            args += ["--microbeats", "--microbeat-max-words",
+                     str(cfg.narration_microbeat_max_words)]
     else:
         _check_openai()
     _run_tool("script_expander.py", args)
@@ -489,7 +492,12 @@ def run_chapter(
                     break
             except ValueError:
                 raise ValueError(f"Unknown --until status '{until}'")
-        # Skip stages already completed (result_status <= effective_status in order)
+        marker_path = ep_dir / marker_rel
+
+        # Skip stages already completed only when the stage's output marker is
+        # actually present. A cleaned/restored workspace can leave the catalog at
+        # "grouped" while manifest.groups.json is missing; trusting status alone
+        # just fails later in beated with a confusing FileNotFoundError.
         try:
             result_idx = STATUS_ORDER.index(result_status)
             current_idx = STATUS_ORDER.index(effective_status)
@@ -497,13 +505,13 @@ def run_chapter(
             continue
 
         if result_idx <= current_idx:
-            # Already past this stage — verify idempotency via marker
-            # (even if marker is missing we trust the catalog status)
-            continue
+            if marker_path.exists():
+                continue
+            print(f"[resume] catalog status is past {result_status}, but "
+                  f"{marker_rel} is missing; rebuilding that stage")
 
         # This stage needs to run.  Check idempotency: if marker exists AND
         # the catalog status is already at or past result_status, skip.
-        marker_path = ep_dir / marker_rel
         if marker_path.exists() and result_idx <= current_idx:
             # Redundant check (covered above) but kept for clarity
             continue
