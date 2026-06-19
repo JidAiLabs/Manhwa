@@ -24,3 +24,36 @@ def test_build_arg_parser_understood_flag():
         "--understood", "x.json",
     ])
     assert args.understood == "x.json"
+
+
+# ---------------------------------------------------------------------------
+# Task 3a: align_panel_narration repair-fill helper
+# ---------------------------------------------------------------------------
+
+def test_align_pads_missing_panels_from_understanding():
+    files = ["a.jpg", "b.jpg", "c.jpg"]
+    model = [{"scene_file": "a.jpg", "line": "He draws the blade."},
+             {"scene_file": "c.jpg", "line": "Silence falls."}]   # b missing
+    u = {"b.jpg": {"description": "the beast lunges"}}
+    out = gnp.align_panel_narration(files, model, u)
+    assert [p["scene_file"] for p in out] == files
+    assert out[1]["line"] == "the beast lunges"
+
+def test_align_is_positional_when_model_omits_scene_file():
+    files = ["a.jpg", "b.jpg"]
+    model = [{"line": "First."}, {"line": "Second."}]
+    out = gnp.align_panel_narration(files, model, {})
+    assert [p["line"] for p in out] == ["First.", "Second."]
+
+def test_align_folds_overflow_into_last_panel_no_phantoms():
+    files = ["a.jpg"]
+    model = [{"scene_file": "a.jpg", "line": "One."}, {"scene_file": "zzz.jpg", "line": "Two."}]
+    out = gnp.align_panel_narration(files, model, {})
+    assert len(out) == 1 and out[0]["scene_file"] == "a.jpg"
+    assert out[0]["line"] == "One. Two."
+
+def test_align_invariant_length_matches_scene_files():
+    files = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+    out = gnp.align_panel_narration(files, [], {})
+    assert len(out) == len(files)
+    assert all(p["line"] for p in out)

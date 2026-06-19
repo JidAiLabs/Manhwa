@@ -825,6 +825,46 @@ def _select_images_for_group(
     return img_paths[:max_images]
 
 
+def align_panel_narration(scene_files, model_panels, understand_by_file=None):
+    """Return exactly one {scene_file, line} per surviving scene_file, in order.
+
+    Match the model's returned lines to panels by scene_file; fall back to
+    positional fill for any panel the model didn't key; pad any still-missing
+    panel with a grounded line from the understanding (description/action/
+    subjects); fold overflow lines into the LAST panel so nothing is lost. Never
+    invents a panel absent from scene_files. Guarantees len(out)==len(scene_files).
+    """
+    understand_by_file = understand_by_file or {}
+    files = [f for f in (scene_files or []) if f]
+    file_set = set(files)
+    keyed: Dict[str, str] = {}
+    leftover: List[str] = []
+    for item in (model_panels or []):
+        if not isinstance(item, dict):
+            continue
+        line = str(item.get("line") or item.get("narration") or "").strip()
+        if not line:
+            continue
+        sf = str(item.get("scene_file") or "").strip()
+        if sf in file_set and sf not in keyed:
+            keyed[sf] = line
+        else:
+            leftover.append(line)
+    for f in files:                       # positional fill for unkeyed panels
+        if f not in keyed and leftover:
+            keyed[f] = leftover.pop(0)
+    for f in files:                       # grounded pad — never empty
+        if f not in keyed:
+            u = understand_by_file.get(f) or {}
+            subj = ", ".join(str(s) for s in (u.get("subjects") or []) if s)
+            keyed[f] = (str(u.get("description") or u.get("action") or "").strip()
+                        or subj.strip() or "The moment holds.")
+    out = [{"scene_file": f, "line": keyed[f]} for f in files]
+    if leftover and out:                  # fold any remaining overflow into the last panel
+        out[-1]["line"] = (out[-1]["line"] + " " + " ".join(leftover)).strip()
+    return out
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Return the ArgumentParser for gemini_narrative_pass."""
     ap = argparse.ArgumentParser()
