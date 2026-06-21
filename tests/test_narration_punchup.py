@@ -295,11 +295,12 @@ def test_apply_punchup_preserves_alignment_and_plain():
         {"scene_file": "a.jpg", "line": "He stands."},
         {"scene_file": "b.jpg", "line": "The system speaks."}]}
     rewrites = {(1, 0): "He rises, blade ready.", (1, 1): "The System hums to life."}
-    npu.apply_panel_punchup(beat, rewrites)
+    accepted = npu.apply_panel_punchup(beat, rewrites)
     pn = beat["panel_narration"]
     assert [p["line"] for p in pn] == ["He rises, blade ready.", "The System hums to life."]
     assert pn[0]["line_plain"] == "He stands."
     assert beat["narration"] == "He rises, blade ready. The System hums to life."
+    assert accepted == 2   # both panels accepted
 
 
 def test_apply_punchup_rejects_chrome_and_keeps_plain():
@@ -314,7 +315,7 @@ def test_apply_punchup_rejects_chrome_and_keeps_plain():
         # wildly overlong (30× the original) — must be rejected
         (2, 1): "He survives. " * 30,
     }
-    npu.apply_panel_punchup(beat, rewrites, cast_names=["Prince Cheon"])
+    accepted = npu.apply_panel_punchup(beat, rewrites, cast_names=["Prince Cheon"])
     pn = beat["panel_narration"]
     # both rewrites rejected; lines stay as grounded originals
     assert pn[0]["line"] == "Prince Cheon flees through the fog."
@@ -323,3 +324,4 @@ def test_apply_punchup_rejects_chrome_and_keeps_plain():
     assert pn[1]["line_plain"] == "He survives."
     # joined narration reflects the (unchanged) lines
     assert beat["narration"] == "Prince Cheon flees through the fog. He survives."
+    assert accepted == 0   # both rewrites rejected

@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -467,12 +468,14 @@ def apply_panel_punchup(
     cast_names: Optional[List[str]] = None,
     caption_words: Optional[Dict[int, Any]] = None,
     classes: Optional[Dict[int, str]] = None,
-) -> None:
+) -> int:
     """Apply validated per-panel rewrites in-place; set line_plain; rejoin narration.
 
     *rewrites* maps ``(group_id, panel_index) -> candidate string``.
     Per-line grounding gate (validate_line) mirrors the per-beat merge() logic.
     The joined beat["narration"] and beat["narration_plain"] are always updated.
+    Returns the count of panels whose rewrite was accepted (candidate passed the
+    gate and differs from the grounded original).
     """
     gid = int(beat.get("group_id") or 0)
     cast_names = cast_names or []
@@ -490,6 +493,7 @@ def apply_panel_punchup(
     required = caption_words.get(gid)
 
     panel_narration = beat.get("panel_narration") or []
+    accepted = 0
     for i, panel in enumerate(panel_narration):
         original = str(panel.get("line_plain") or panel.get("line") or "")
         panel["line_plain"] = original
@@ -502,6 +506,7 @@ def apply_panel_punchup(
                                                         required=required,
                                                         max_ratio=max_ratio):
             line = cand
+            accepted += 1
         else:
             line = original
         panel["line"] = strip_chrome_opener(line)
@@ -509,6 +514,7 @@ def apply_panel_punchup(
 
     beat["narration"] = " ".join(p["line"] for p in panel_narration)
     beat["narration_plain"] = " ".join(p["line_plain"] for p in panel_narration)
+    return accepted
 
 
 def main() -> int:
@@ -601,15 +607,11 @@ def main() -> int:
                     str(p.get("narration") or "")
                     for p in punched if isinstance(p, dict)
                     and "panel_index" in p}
-        import copy
         out = copy.deepcopy(beats_obj)
         applied = 0
         for b in out.get("beats") or []:
-            old_narration = b.get("narration", "")
-            apply_panel_punchup(b, rewrites, cast_names=cast_names,
-                                caption_words=cap_words, classes=classes)
-            if b.get("narration") != old_narration:
-                applied += 1
+            applied += apply_panel_punchup(b, rewrites, cast_names=cast_names,
+                                           caption_words=cap_words, classes=classes)
         out.setdefault("stats", {})["punchup_applied"] = applied
     else:
         out = merge(beats_obj, punched, cast_names, caption_words=cap_words,
