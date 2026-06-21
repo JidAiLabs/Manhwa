@@ -99,3 +99,42 @@ def test_grounding_weak_in_healable_set():
 def test_grounding_weak_without_segment_is_skipped():
     rep = {"flags": [_flag("grounding_weak", "WARN", "weak: x", None)]}
     assert nh.corrections_from_qa(rep) == {}
+
+
+# ---- panel_narration coverage: heal path preserves group granularity ---------
+# narration_heal.corrections_from_qa produces a {group_id: note} dict keyed
+# on INTEGER group ids. gemini_narrative_pass re-narrates each flagged group
+# from its source panels and calls align_panel_narration to rebuild
+# panel_narration — so the 1:1 alignment invariant is satisfied by the
+# subprocess, not by narration_heal itself (which has no manifest access).
+#
+# What we can guard here: the corrections dict is keyed on group_id integers
+# (not segment ids), so the re-narration subprocess receives the right group
+# context to rebuild panel_narration for all panels in that group.
+
+def test_heal_corrections_keyed_on_group_id_int_for_realignment():
+    """A flagged segment g0003_p01 maps to group 3 — the integer group_id
+    that gemini_narrative_pass uses to look up the group's scene_files and
+    rebuild panel_narration.  If the key were a string or segment-id the
+    re-narration would silently get no panels and produce no panel_narration."""
+    rep = {"flags": [_flag("caption_unvoiced", "ERROR",
+                           "caption missing: 'I WILL BECOME THE STRONGEST'",
+                           "g0003_p01")]}
+    corr = nh.corrections_from_qa(rep)
+    # key must be a plain int (group 3), not "g0003_p01" or "3"
+    assert 3 in corr
+    assert isinstance(list(corr.keys())[0], int)
+
+
+def test_heal_multi_panel_group_single_correction_entry():
+    """A group with three panels that generated two different QA flags
+    (on two different segment ids) still produces exactly ONE correction
+    entry — so gemini_narrative_pass re-narrates the whole group once and
+    align_panel_narration covers all three panels."""
+    rep = {"flags": [
+        _flag("caption_unvoiced", "ERROR", "... : 'PANEL 1'", "g0007_p00"),
+        _flag("chrome_narration", "ERROR", "screenshot", "g0007_p02"),
+    ]}
+    corr = nh.corrections_from_qa(rep)
+    assert list(corr.keys()) == [7]          # one entry, not two
+    assert "PANEL 1" in corr[7]             # both notes merged
