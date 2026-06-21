@@ -296,3 +296,26 @@ def test_compute_duration_still_caps_silent_holds_at_max_sec():
                                 base_min=2.5, max_sec=25.0, chars_per_sec=18.0,
                                 audio_duration_sec=0.0, audio_pad_sec=0.2)
     assert abs(d - 25.0) < 1e-6
+
+
+# ---- per-panel (one-panel-per-segment) identity ---------------------------
+# Regression guard: with per-panel narration each script segment carries exactly
+# one panel. build_cuts must return that one panel as the single cut — not zero
+# (dropped) and not >1 (phantom extra). The _pick_for_segment closure inside
+# main() also returns scene_files[:1] for a one-element list, but the observable
+# contract is build_cuts.
+
+def test_one_panel_segment_yields_exactly_one_cut():
+    cuts = tp.build_cuts(["only.jpg"], 6.0, min_cut_sec=3.0)
+    assert len(cuts) == 1
+    assert cuts[0]["file"] == "only.jpg"
+    assert abs(cuts[0]["dur"] - 6.0) < 1e-6
+
+
+def test_one_panel_segment_with_selection_still_one_cut():
+    # Even when the panel is tagged 'redundant' by the beats LLM, a one-element
+    # segment has no alternative — it must still produce exactly one cut.
+    sel = [{"scene_file": "only.jpg", "role": "redundant"}]
+    cuts = tp.build_cuts(["only.jpg"], 5.0, min_cut_sec=3.0, selection=sel)
+    assert len(cuts) == 1
+    assert cuts[0]["file"] == "only.jpg"
