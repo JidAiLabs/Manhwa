@@ -276,3 +276,50 @@ def test_config_env_override_for_punchup(tmp_path, monkeypatch):
     assert load(toml).punchup == "light"
     monkeypatch.delenv("STUDIO_PUNCHUP")
     assert load(toml).punchup == "full"
+
+
+# ---- per-panel punchup (Chunk 4) ------------------------------------------
+
+def test_punchup_payload_is_per_panel_line():
+    beats = {"beats": [{"group_id": 1, "panel_narration": [
+        {"scene_file": "a.jpg", "line": "He stands."},
+        {"scene_file": "b.jpg", "line": "The system speaks."}]}]}
+    payload = npu.build_panel_payload(beats)
+    assert payload == [
+        {"group_id": 1, "panel_index": 0, "narration": "He stands."},
+        {"group_id": 1, "panel_index": 1, "narration": "The system speaks."}]
+
+
+def test_apply_punchup_preserves_alignment_and_plain():
+    beat = {"group_id": 1, "panel_narration": [
+        {"scene_file": "a.jpg", "line": "He stands."},
+        {"scene_file": "b.jpg", "line": "The system speaks."}]}
+    rewrites = {(1, 0): "He rises, blade ready.", (1, 1): "The System hums to life."}
+    npu.apply_panel_punchup(beat, rewrites)
+    pn = beat["panel_narration"]
+    assert [p["line"] for p in pn] == ["He rises, blade ready.", "The System hums to life."]
+    assert pn[0]["line_plain"] == "He stands."
+    assert beat["narration"] == "He rises, blade ready. The System hums to life."
+
+
+def test_apply_punchup_rejects_chrome_and_keeps_plain():
+    """The grounding gate must fire per line: chrome-leaking or overlong
+    rewrites are rejected and the grounded plain line is restored."""
+    beat = {"group_id": 2, "panel_narration": [
+        {"scene_file": "c.jpg", "line": "Prince Cheon flees through the fog."},
+        {"scene_file": "d.jpg", "line": "He survives."}]}
+    rewrites = {
+        # chrome injection — must be rejected
+        (2, 0): "Prince Cheon flees — go read chapter 2 on elftoon.com!",
+        # wildly overlong (30× the original) — must be rejected
+        (2, 1): "He survives. " * 30,
+    }
+    npu.apply_panel_punchup(beat, rewrites, cast_names=["Prince Cheon"])
+    pn = beat["panel_narration"]
+    # both rewrites rejected; lines stay as grounded originals
+    assert pn[0]["line"] == "Prince Cheon flees through the fog."
+    assert pn[1]["line"] == "He survives."
+    assert pn[0]["line_plain"] == "Prince Cheon flees through the fog."
+    assert pn[1]["line_plain"] == "He survives."
+    # joined narration reflects the (unchanged) lines
+    assert beat["narration"] == "Prince Cheon flees through the fog. He survives."

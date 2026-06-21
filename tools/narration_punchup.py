@@ -200,22 +200,52 @@ def genre_key(genre_text: str) -> str:
 def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
                  humor: str, genre: str = "",
                  classes: Optional[Dict[int, str]] = None) -> str:
+    """Build the LLM prompt for either per-beat or per-panel lines.
+
+    When *lines* contain ``panel_index``, the contract is per-panel:
+    the LLM must return the SAME array with ``{group_id, panel_index,
+    narration}`` objects in the same order. Without ``panel_index`` the
+    legacy per-beat contract (``{group_id, narration}``) applies.
+    """
     cast = ", ".join(cast_names) if cast_names else "(none listed)"
     addon = GENRE_ADDONS.get(genre_key(genre), "")
     guide = BASE_PERSONA + ("\n\n" + addon if addon else "")
+    per_panel = lines and "panel_index" in lines[0]
     if humor == "cinematic":
         guide += "\n\n" + CINEMATIC_RULES
         cls = classes or {}
-        payload = [{"group_id": l["group_id"],
-                    "style": cls.get(int(l["group_id"]), "CONNECTIVE"),
-                    "narration": l["narration"]} for l in lines]
+        if per_panel:
+            payload = [{"group_id": l["group_id"],
+                        "panel_index": l["panel_index"],
+                        "style": cls.get(int(l["group_id"]), "CONNECTIVE"),
+                        "narration": l["narration"]} for l in lines]
+        else:
+            payload = [{"group_id": l["group_id"],
+                        "style": cls.get(int(l["group_id"]), "CONNECTIVE"),
+                        "narration": l["narration"]} for l in lines]
     else:
-        payload = [{"group_id": l["group_id"], "narration": l["narration"]}
-                   for l in lines]
+        if per_panel:
+            payload = [{"group_id": l["group_id"],
+                        "panel_index": l["panel_index"],
+                        "narration": l["narration"]} for l in lines]
+        else:
+            payload = [{"group_id": l["group_id"], "narration": l["narration"]}
+                       for l in lines]
+    if per_panel:
+        return_schema = (
+            "{\"group_id\": int, \"panel_index\": int, \"narration\": str} — "
+            "SAME length, SAME group_id+panel_index pairs, same order, "
+            "rewrite each narration line in the persona, keep length "
+            "proportional to the original, NEVER merge or drop lines"
+        )
+    else:
+        return_schema = (
+            "{\"group_id\": int, \"narration\": str} — same "
+            "group_ids, same order, no commentary"
+        )
     return (f"{guide}\n\nHUMOR={humor}\nCAST NAMES (verbatim): {cast}\n\n"
             "Rewrite EVERY line below in the persona. Return ONLY a JSON "
-            "array of objects {\"group_id\": int, \"narration\": str} — same "
-            "group_ids, same order, no commentary.\n\nLINES:\n"
+            f"array of objects {return_schema}.\n\nLINES:\n"
             + json.dumps(payload, ensure_ascii=False, indent=1))
 
 
@@ -415,6 +445,72 @@ def infer_genre_from_content(beats_obj: Dict[str, Any], ep_dir: str = "") -> str
     return "modern"
 
 
+def build_panel_payload(beats_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Flatten every beat's panel_narration into a per-panel list for the LLM.
+
+    Each entry is ``{group_id, panel_index, narration}`` where ``narration``
+    is ``panel["line_plain"] or panel["line"]`` — idempotent, always punches
+    from the grounded original even on a re-run.
+    """
+    out: List[Dict[str, Any]] = []
+    for b in beats_obj.get("beats") or []:
+        gid = int(b.get("group_id") or 0)
+        for i, panel in enumerate(b.get("panel_narration") or []):
+            narration = str(panel.get("line_plain") or panel.get("line") or "")
+            out.append({"group_id": gid, "panel_index": i, "narration": narration})
+    return out
+
+
+def apply_panel_punchup(
+    beat: Dict[str, Any],
+    rewrites: Dict[tuple, str],
+    cast_names: Optional[List[str]] = None,
+    caption_words: Optional[Dict[int, Any]] = None,
+    classes: Optional[Dict[int, str]] = None,
+) -> None:
+    """Apply validated per-panel rewrites in-place; set line_plain; rejoin narration.
+
+    *rewrites* maps ``(group_id, panel_index) -> candidate string``.
+    Per-line grounding gate (validate_line) mirrors the per-beat merge() logic.
+    The joined beat["narration"] and beat["narration_plain"] are always updated.
+    """
+    gid = int(beat.get("group_id") or 0)
+    cast_names = cast_names or []
+    caption_words = caption_words or {}
+    classes = classes or {}
+
+    cls = classes.get(gid)
+    if cls == "DRAMATIC":
+        max_ratio = 3.0
+    elif cls == "COMIC":
+        max_ratio = 2.2
+    else:
+        max_ratio = 1.5
+
+    required = caption_words.get(gid)
+
+    panel_narration = beat.get("panel_narration") or []
+    for i, panel in enumerate(panel_narration):
+        original = str(panel.get("line_plain") or panel.get("line") or "")
+        panel["line_plain"] = original
+        cand = str(rewrites.get((gid, i), "") or "").replace("*", "")
+        # Absolute length cap: validate_line skips length for ow<5, but we
+        # must reject absurdly bloated rewrites regardless of original length.
+        ow, pw = _word_count(original), _word_count(cand)
+        cand_too_long = pw > max_ratio * ow + 8
+        if cand and not cand_too_long and validate_line(original, cand, cast_names,
+                                                        required=required,
+                                                        max_ratio=max_ratio):
+            line = cand
+        else:
+            line = original
+        panel["line"] = strip_chrome_opener(line)
+        panel["line_plain"] = strip_chrome_opener(original)
+
+    beat["narration"] = " ".join(p["line"] for p in panel_narration)
+    beat["narration_plain"] = " ".join(p["line_plain"] for p in panel_narration)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--beats", required=True)
@@ -452,15 +548,28 @@ def main() -> int:
     # runs before the script exists), read it from the chapter's own content.
     if not args.genre:
         args.genre = infer_genre_from_content(beats_obj, args.episode_dir)
-    # idempotent: always punch from the GROUNDED line — re-running on an
-    # already-punched file must not punch the punch (closed-loop drift)
-    lines = [{"group_id": int(b.get("group_id") or 0),
-              "narration": str(b.get("narration_plain")
-                               or b.get("narration") or "")}
-             for b in beats_obj.get("beats") or []
-             if (b.get("narration_plain") or b.get("narration"))]
+
     cast_names = _cast_names(args.cast)
     classes = classify_beats(beats_obj) if args.humor == "cinematic" else {}
+    cap_words = (_caption_words_by_group(args.episode_dir, beats_obj)
+                 if args.episode_dir else {})
+
+    # Per-panel path: any beat that carries panel_narration activates this mode.
+    # Fall back to the legacy per-beat path for old manifests without panel_narration.
+    use_per_panel = any(b.get("panel_narration")
+                        for b in beats_obj.get("beats") or [])
+
+    if use_per_panel:
+        lines = build_panel_payload(beats_obj)
+    else:
+        # idempotent: always punch from the GROUNDED line — re-running on an
+        # already-punched file must not punch the punch (closed-loop drift)
+        lines = [{"group_id": int(b.get("group_id") or 0),
+                  "narration": str(b.get("narration_plain")
+                                   or b.get("narration") or "")}
+                 for b in beats_obj.get("beats") or []
+                 if (b.get("narration_plain") or b.get("narration"))]
+
     prompt = build_prompt(lines, cast_names, args.humor, genre=args.genre,
                           classes=classes)
 
@@ -485,14 +594,31 @@ def main() -> int:
         raw = resp.text or ""
 
     punched = _extract_json_array(raw)
-    cap_words = (_caption_words_by_group(args.episode_dir, beats_obj)
-                 if args.episode_dir else {})
-    out = merge(beats_obj, punched, cast_names, caption_words=cap_words,
-                classes=classes)
+
+    if use_per_panel:
+        # Build (group_id, panel_index) -> narration lookup from the LLM response
+        rewrites = {(int(p.get("group_id") or 0), int(p.get("panel_index") or 0)):
+                    str(p.get("narration") or "")
+                    for p in punched if isinstance(p, dict)
+                    and "panel_index" in p}
+        import copy
+        out = copy.deepcopy(beats_obj)
+        applied = 0
+        for b in out.get("beats") or []:
+            old_narration = b.get("narration", "")
+            apply_panel_punchup(b, rewrites, cast_names=cast_names,
+                                caption_words=cap_words, classes=classes)
+            if b.get("narration") != old_narration:
+                applied += 1
+        out.setdefault("stats", {})["punchup_applied"] = applied
+    else:
+        out = merge(beats_obj, punched, cast_names, caption_words=cap_words,
+                    classes=classes)
+        applied = out["stats"]["punchup_applied"]
+
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
-    n = out["stats"]["punchup_applied"]
-    print(f"[ok] wrote={args.out} punched={n}/{len(lines)} "
+    print(f"[ok] wrote={args.out} punched={applied}/{len(lines)} "
           f"(rejected lines keep the grounded original)")
     return 0
 
