@@ -591,6 +591,35 @@ class TestScriptedNarrationSource:
         assert se_args[se_args.index("--microbeat-max-words") + 1] == "14"
 
 
+    def test_microbeats_false_by_default_not_passed_to_script_expander(
+            self, tmp_path, monkeypatch):
+        """narration_microbeats defaults to False — the per-panel path is taken
+        automatically when the flag is absent (script_expander branches on
+        panel_narration presence, not --microbeats).  Guard that the flag is
+        never injected when the config default is used."""
+        import studio.pipeline as pipeline_mod
+
+        ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        stub = _capturing_stub(ep_dir)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
+
+        con = connect(tmp_path / "test.db")
+        chapter = _chapter_at(con, ep_dir, "beated",
+                              _GROUPED_MARKERS + ["manifest.beats.json", "manifest.cast.json"])
+        cfg = _make_cfg(tmp_path)
+        assert cfg.narration_microbeats is False   # production default
+
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+
+        se_args = next(a for n, a in stub.calls if n == "script_expander.py")
+        assert "--microbeats" not in se_args
+
+
 class TestConfigNarrationSource:
     def test_load_parses_models_narration_source(self, tmp_path):
         from studio.config import load
