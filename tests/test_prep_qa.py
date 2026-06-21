@@ -951,7 +951,7 @@ def test_system_coverage_flags_absent_system_panel_errors():
     assert len(fl) == 1
     assert fl[0]["code"] == "system_card_unshown"
     assert fl[0]["severity"] == pq.ERROR
-    assert "sys.jpg" in fl[0]["scene"] or "sys.jpg" in fl[0]["detail"]
+    assert "sys.jpg" in fl[0]["scene"]
 
 
 def test_system_coverage_flags_caption_panel_not_flagged():
@@ -967,3 +967,36 @@ def test_system_coverage_flags_caption_panel_not_flagged():
     }
     fl = pq.system_coverage_flags(beats, plan, vitems)
     assert fl == []
+
+
+def test_system_coverage_flags_split_half_shown_does_not_false_positive():
+    # Regression: vitems key is the unsplit name p044.jpg, but the plan shows
+    # the _a half (p044_a.jpg).  _base_scene normalises both to p044.jpg so
+    # the panel IS considered shown — no system_card_unshown ERROR.
+    plan = _plan([_item("g0001_p00", ["p044_a.jpg"])])
+    beats = _beats_with_scene_files([
+        {"group_id": 1, "narration": "ok", "scene_files": ["p044.jpg"]}
+    ])
+    vitems = {"p044.jpg": {"panel_kind": "system"}}
+    fl = pq.system_coverage_flags(beats, plan, vitems)
+    assert fl == [], f"unexpected flags: {fl}"
+
+
+def test_system_coverage_flags_absent_system_also_heuristic_fires_error():
+    # Documents accepted double-report behaviour: a panel_kind=="system" panel
+    # that is absent from the plan AND trips the OCR title-card heuristic will
+    # produce system_card_unshown (ERROR) from system_coverage_flags.
+    # The system_card_dropped WARN from story_flags may also fire (intentional
+    # belt-and-suspenders, slated for Ch7 removal); we only assert the ERROR.
+    plan = _plan([_item("g0001_p00", ["other.jpg"])])
+    beats = _beats_with_scene_files([
+        {"group_id": 1, "narration": "ok", "scene_files": ["sys.jpg", "other.jpg"]}
+    ])
+    vitems = {
+        "sys.jpg": {"panel_kind": "system",
+                    "ocr_clean": "CHAPTER 3: THE AWAKENING"},
+        "other.jpg": {"panel_kind": "story"},
+    }
+    fl = pq.system_coverage_flags(beats, plan, vitems)
+    assert any(f["code"] == "system_card_unshown" and f["severity"] == pq.ERROR
+               for f in fl), f"expected system_card_unshown ERROR, got: {fl}"

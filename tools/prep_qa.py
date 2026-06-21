@@ -566,16 +566,14 @@ def system_coverage_flags(beats_obj: Dict[str, Any],
     — that check stays as a belt-and-suspenders signal; this one is the hard
     ERROR gate that defers entirely to the stamped kind (no regex)."""
     flags: List[Dict[str, Any]] = []
-    shown = {str(c["file"]) for c in iter_shown_cuts(plan)}
+    shown = {_base_scene(str(c["file"])) for c in iter_shown_cuts(plan)}
     for b in (beats_obj or {}).get("beats") or []:
-        for sf in b.get("scene_files") or []:
-            sf = str(sf)
+        for sf_raw in b.get("scene_files") or []:
+            sf = str(sf_raw)
             vit = vitems.get(sf) or {}
             if str(vit.get("panel_kind") or "").lower() != "system":
                 continue
-            # basename match (iter_shown_cuts already returns basenames)
-            base = os.path.basename(sf)
-            if base not in shown and sf not in shown:
+            if _base_scene(sf) not in shown:
                 flags.append(_flag(
                     "system_card_unshown", ERROR,
                     f"in-world system panel {sf!r} is not shown in any cut — "
@@ -910,6 +908,15 @@ def story_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
     # (its words ride the narration); it is SUPPOSED to be narrated, not shown,
     # so its absence from the montage is intended — never a system_card_dropped,
     # even when its short caps text looks like a title card to the heuristic.
+    #
+    # NOTE: the authoritative signal for in-world system panels is
+    # system_card_unshown (ERROR, keyed on stamped panel_kind in
+    # system_coverage_flags).  This OCR-heuristic WARN is retained as
+    # belt-and-suspenders (it fires on title/cover/credit cards the
+    # understanding may not stamp as "system") and is slated for removal
+    # in the per-panel Ch7 cleanup.  An absent panel_kind=="system" that
+    # also trips this heuristic will produce BOTH the ERROR and this WARN;
+    # the ERROR is the actionable one.
     for f, vit in (vitems or {}).items():
         if str(vit.get("panel_kind") or "").lower() == "caption":
             continue
