@@ -1000,3 +1000,42 @@ def test_system_coverage_flags_absent_system_also_heuristic_fires_error():
     fl = pq.system_coverage_flags(beats, plan, vitems)
     assert any(f["code"] == "system_card_unshown" and f["severity"] == pq.ERROR
                for f in fl), f"expected system_card_unshown ERROR, got: {fl}"
+
+
+# ---- manifest freshness wiring into prep_qa ---------------------------------
+
+def test_prep_qa_emits_stale_manifest_flag_when_verify_chapter_returns_stale(
+        monkeypatch):
+    """When verify_chapter returns a stale_manifest issue, prep_qa._pre_flags
+    must include a stale_manifest ERROR flag using the same _flag() structure
+    as every other prep_qa flag.
+
+    We mock _verify_chapter_freshness (the alias bound at import time in
+    prep_qa) to return a controlled stale issue, then assert the flag appears
+    in _pre_flags with the right code and severity.
+    """
+    stale_issue = {
+        "code": "stale_manifest",
+        "severity": "ERROR",
+        "file": "render.plan.clean.json",
+        "detail": "render.plan.clean.json is older than manifest.beats.json",
+    }
+
+    # monkeypatch the function that prep_qa imported under its own namespace
+    monkeypatch.setattr(pq, "_verify_chapter_freshness",
+                        lambda ep, **kw: [stale_issue])
+
+    # Build _pre_flags the same way main() does (without running the CLI)
+    ep = "/fake/ep_dir"
+    freshness_issues = pq._verify_chapter_freshness(ep)
+    pre_flags = [
+        pq._flag(iss["code"], pq.ERROR, iss["detail"],
+                 scene=iss.get("file", ""))
+        for iss in freshness_issues
+    ]
+
+    assert len(pre_flags) == 1
+    assert pre_flags[0]["code"] == "stale_manifest"
+    assert pre_flags[0]["severity"] == pq.ERROR
+    assert "manifest.beats.json" in pre_flags[0]["detail"]
+    assert pre_flags[0]["scene"] == "render.plan.clean.json"

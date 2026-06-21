@@ -52,6 +52,7 @@ from render_prep import multi_scale_contained
 from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 from narration_consistency import audio_consistency, strip_chrome_opener
+from manifest_freshness import verify_chapter as _verify_chapter_freshness
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
@@ -1236,6 +1237,16 @@ def main() -> int:
     args = ap.parse_args()
 
     ep = args.episode_dir.rstrip("/")
+
+    # Manifest completeness + staleness guard — runs before we open any file
+    # so a missing or stale plan is flagged immediately rather than surfacing
+    # as a confusing open() error or silent use of old cuts.
+    _freshness_issues = _verify_chapter_freshness(ep)
+    _pre_flags: List[Dict[str, Any]] = [
+        _flag(iss["code"], ERROR, iss["detail"], scene=iss.get("file", ""))
+        for iss in _freshness_issues
+    ]
+
     plan_path = args.plan or os.path.join(ep, "render.plan.clean.json")
     with open(plan_path, "r", encoding="utf-8") as f:
         plan = json.load(f)
@@ -1270,7 +1281,7 @@ def main() -> int:
         except Exception:
             pass
 
-    flags: List[Dict[str, Any]] = plan_flags(
+    flags: List[Dict[str, Any]] = _pre_flags + plan_flags(
         plan, clean_files=clean_files, audio_exists=os.path.exists)
 
     def _load_manifest(name: str) -> Dict[str, Any]:

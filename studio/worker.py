@@ -134,6 +134,8 @@ _CRITICAL_QA_CODES = {
     "audio_index_missing", "audio_missing", "audio_stale", "missing_audio",
     "missing_file", "missing_dims", "stale_dims",
     "empty_item", "montage_degenerate", "beats_incomplete",
+    # manifest freshness — stale or missing manifests block render
+    "stale_manifest", "missing_manifest",
 }
 
 

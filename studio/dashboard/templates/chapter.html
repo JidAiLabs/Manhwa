@@ -9,8 +9,9 @@
 </div>
 
 <h2>Step 1 — story approval <small>(read the QA report + the narration below)</small></h2>
-<div class="row">
-{% if qa_ok %}<span class="b ok">QA REPORT GREEN</span>{% else %}<span class="b warn">no QA report yet — “prepare → QA” first</span>{% endif %}
+<div class=”row”>
+{% if plan_stale %}<span class=”b warn” title=”{{ plan_stale_detail | join(' | ') }}”>⚠ STALE MANIFESTS — plan or beats regenerated after last prep; re-run “prepare → QA” before rendering</span>{% endif %}
+{% if qa_ok %}<span class=”b ok”>QA REPORT GREEN</span>{% else %}<span class=”b warn”>no QA report yet — “prepare → QA” first</span>{% endif %}
 {% if voice_allowed %}<span class="b ok">story approved → voiceover queued automatically</span>{% else %}
 <form class="inline" method="post" action="/approve">
 <input type="hidden" name="gate" value="voice"><input type="hidden" name="chapter_id" value="{{ ch.id }}">

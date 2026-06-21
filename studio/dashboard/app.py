@@ -29,6 +29,12 @@ from studio.dashboard import bundles, discovery, eta, gates, jobs
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 
+# manifest_freshness lives in tools/ — add to path once at import time
+_TOOLS = str(REPO / "tools")
+if _TOOLS not in __import__("sys").path:
+    __import__("sys").path.insert(0, _TOOLS)
+from manifest_freshness import verify_chapter as _verify_chapter_freshness  # noqa: E402
+
 # stages shown on the chapter timeline, in pipeline order
 TIMELINE = ["fetched", "stitched", "detected", "scened", "visioned",
             "grouped", "beated", "scripted", "voiced", "planned",
@@ -367,6 +373,16 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         qa_html = Path(ch["ep_dir"] or "") / "prep_qa.html"
         qa_v = int(qa_html.stat().st_mtime) if (
             ch["ep_dir"] and qa_html.exists()) else 0
+        # manifest freshness — detect stale/missing plan files before render
+        _freshness = (_verify_chapter_freshness(ch["ep_dir"])
+                      if ch["ep_dir"] else [])
+        plan_stale_issues = [i for i in _freshness
+                             if i["code"] in ("stale_manifest", "missing_manifest")
+                             and i["file"] in
+                             ("render.plan.clean.json", "render.plan.json",
+                              "manifest.beats.json", "manifest.script.json")]
+        plan_stale = bool(plan_stale_issues)
+        plan_stale_detail = [i["detail"] for i in plan_stale_issues]
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
                     qa_ok=gates.latest_qa_ok(c, cid),
@@ -375,7 +391,9 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     has_voice_preview=has_preview, qa_v=qa_v,
                     render_url=render_url,
                     cost=_chapter_costs(ch["ep_dir"]),
-                    gallery=_gallery(ch["ep_dir"]), ep_rel=ep_rel)
+                    gallery=_gallery(ch["ep_dir"]), ep_rel=ep_rel,
+                    plan_stale=plan_stale,
+                    plan_stale_detail=plan_stale_detail)
 
     @app.get("/videos", response_class=HTMLResponse)
     def videos_page(request: Request):
