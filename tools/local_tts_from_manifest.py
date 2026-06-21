@@ -74,6 +74,46 @@ def strip_bracket_tags(text: str) -> str:
     return re.sub(r"\s+", " ", _TAG_RE.sub(" ", text or "")).strip()
 
 
+def normalize_tts_text(text: str) -> str:
+    """Normalize punctuation patterns that trigger filler vocalization in TTS.
+
+    Applied ONLY to the text sent to the synthesizer — the visible
+    narration/script in the manifest is never modified.
+
+    Rules (in order):
+    - Collapse ellipsis (Unicode … or runs of 2+ dots) → a single full stop.
+    - Em-dash / en-dash / spaced double-hyphen → ", " (natural pause).
+    - Collapse repeated terminal punctuation: !!! → !, ?? → ?, ?!/!? → ?.
+    - Strip leading dots/commas/spaces at the very start of the string or
+      immediately after an opening quotation mark (so a line / quote never
+      begins with punctuation that invites a filler pause).
+    - Collapse whitespace and trim.
+    """
+    t = str(text or "")
+
+    # 1. Ellipsis and dot-runs → single full stop
+    t = t.replace("…", ".")          # Unicode …
+    t = re.sub(r"\.{2,}", ".", t)        # .. / ... / ....
+
+    # 2. Dashes → comma-space (natural prosodic pause)
+    t = t.replace("—", ", ")        # em-dash —
+    t = t.replace("–", ", ")        # en-dash –
+    t = re.sub(r"\s*--\s*", ", ", t)    # spaced double-hyphen
+
+    # 3. Repeated terminal punctuation
+    t = re.sub(r"!{2,}", "!", t)
+    t = re.sub(r"\?{2,}", "?", t)
+    t = re.sub(r"[?!][!?]+", "?", t)   # ?! / !? / !?! → ?
+
+    # 4. Strip leading punctuation at start of string or after opening quote
+    #    Matches: optional opening quote, then dots/commas/spaces
+    t = re.sub(r'^(["\'‘’“”]?)[.,\s]+', r'\1', t)
+
+    # 5. Collapse whitespace, trim
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
 def mood_to_exaggeration(tag: Optional[str]) -> float:
     """Map a mood tag (or intensity word) to a Chatterbox exaggeration value."""
     if not tag:
@@ -518,7 +558,7 @@ def synthesize_manifest(
         seg_id = it["segment_id"]
         source_text = str(it["text"])
         tag = leading_tag(source_text)
-        sent_text = strip_bracket_tags(source_text)
+        sent_text = normalize_tts_text(strip_bracket_tags(source_text))
         if not sent_text:
             continue
         text_sha = narration_sha(source_text)

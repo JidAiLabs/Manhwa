@@ -251,3 +251,132 @@ def test_condition_wav_file_fails_soft_on_unreadable_file(tmp_path):
     info = lt.condition_wav_file(str(p))
     assert "condition_error" in info          # visible in the index, not silent
     assert p.read_bytes() == b"FAKEWAV"       # original file left untouched
+
+
+# ---- Fix A: normalize_tts_text -------------------------------------------
+
+def test_normalize_ellipsis_collapsed_to_period():
+    """Unicode ellipsis and dot-runs → single period; no ... in result."""
+    result = lt.normalize_tts_text("'Damn it all...' he hissed")
+    assert "..." not in result
+    assert "…" not in result
+    # dot should still be present (sentence close), just not repeated
+    assert result == "'Damn it all.' he hissed"
+
+
+def test_normalize_unicode_ellipsis_collapsed():
+    result = lt.normalize_tts_text("Wait… I see it now.")
+    assert "…" not in result
+    assert result == "Wait. I see it now."
+
+
+def test_normalize_em_dash_becomes_comma_space():
+    """Em-dash between phrases → ', ' (natural pause, no filler trigger)."""
+    result = lt.normalize_tts_text("the branch—the assassins")
+    assert "—" not in result
+    assert result == "the branch, the assassins"
+
+
+def test_normalize_en_dash_becomes_comma_space():
+    result = lt.normalize_tts_text("victory–defeat, two sides.")
+    assert "–" not in result
+    assert ", " in result
+
+
+def test_normalize_double_hyphen_becomes_comma_space():
+    result = lt.normalize_tts_text("He turned -- then stopped.")
+    assert "--" not in result
+    assert ", " in result
+
+
+def test_normalize_leading_ellipsis_stripped():
+    """A line that starts with ellipsis/dot must not begin with punctuation."""
+    result = lt.normalize_tts_text("…serves you all right")
+    assert not result.startswith(".")
+    assert not result.startswith("…")
+    assert "serves" in result
+
+
+def test_normalize_leading_ellipsis_after_opening_quote():
+    """An opening quote followed by ellipsis: quote stays, dot stripped."""
+    result = lt.normalize_tts_text('"…serves you all right"')
+    assert result.startswith('"')
+    # The dot from collapsed ellipsis immediately after the opening quote is stripped
+    assert not result.startswith('".')
+    assert "serves" in result
+
+
+def test_normalize_repeated_exclamation_collapsed():
+    """Three or more ! → single !"""
+    assert lt.normalize_tts_text("wide!!!") == "wide!"
+    assert lt.normalize_tts_text("Run!!") == "Run!"
+
+
+def test_normalize_repeated_question_collapsed():
+    assert lt.normalize_tts_text("Really??") == "Really?"
+
+
+def test_normalize_interrobang_becomes_question():
+    assert lt.normalize_tts_text("What?!") == "What?"
+    assert lt.normalize_tts_text("No!?") == "No?"
+
+
+def test_normalize_clean_line_unchanged():
+    """A normal line with no problematic punctuation comes through verbatim."""
+    line = "He steps forward into the light."
+    assert lt.normalize_tts_text(line) == line
+
+
+def test_normalize_quoted_dialogue_unchanged():
+    """Quotation marks must not be stripped — dialogue stays intact."""
+    line = 'She said, "You have to go now."'
+    assert lt.normalize_tts_text(line) == line
+
+
+def test_synth_site_uses_normalized_text(tmp_path):
+    """The text passed to the synthesizer must have no ellipsis or em-dash.
+
+    We inject a stubbed synth_fn that captures the text it receives, then
+    call synthesize_clips with a manifest item containing both markers.
+    The stub writes a minimal valid WAV so duration_fn doesn't crash.
+    """
+    import struct
+    import wave as _wave
+
+    captured: list = []
+
+    def stub_synth(text: str, out_path: str, exaggeration: float) -> None:
+        captured.append(text)
+        # Write a minimal silent WAV so the pipeline can measure duration
+        with _wave.open(out_path, "w") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(b"\x00\x00" * 2400)
+
+    script_obj = {
+        "narration_source": "gemini_verbatim",
+        "sections": [{
+            "section_index": 0,
+            "script_paragraphs": ["[tense] Silence… then—the blade falls."],
+            "tts_paragraphs_v3": ["[tense] Silence… then—the blade falls."],
+            "shots": [{"segment_id": "g0001_p00", "group_id": 1,
+                       "beat_id": 1, "section_index": 0, "paragraph_index": 0}],
+            "tts_meta": [{"segment_id": "g0001_p00", "group_id": 1,
+                          "beat_id": 1, "section_index": 0, "paragraph_index": 0,
+                          "text": "[tense] Silence… then—the blade falls."}],
+        }],
+    }
+
+    lt.synthesize_manifest(
+        script_obj=script_obj,
+        out_dir=str(tmp_path),
+        synth_fn=stub_synth,
+        backend="stub",
+        text_source="tts_v3",
+    )
+
+    assert captured, "synth_fn was never called"
+    synth_text = captured[0]
+    assert "…" not in synth_text, f"ellipsis reached synth: {synth_text!r}"
+    assert "—" not in synth_text, f"em-dash reached synth: {synth_text!r}"
