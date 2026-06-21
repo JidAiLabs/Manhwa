@@ -556,6 +556,34 @@ def caption_unvoiced_flags(beats_obj: Dict[str, Any],
     return flags
 
 
+def system_coverage_flags(beats_obj: Dict[str, Any],
+                          plan: Dict[str, Any],
+                          vitems: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Authoritative check keyed on the stamped panel_kind=='system': every
+    panel the understanding labelled 'system' (an in-world status screen,
+    system message, etc.) MUST appear in at least one shown cut.  This is
+    independent of the OCR-heuristic system_card_dropped WARN in story_flags
+    — that check stays as a belt-and-suspenders signal; this one is the hard
+    ERROR gate that defers entirely to the stamped kind (no regex)."""
+    flags: List[Dict[str, Any]] = []
+    shown = {str(c["file"]) for c in iter_shown_cuts(plan)}
+    for b in (beats_obj or {}).get("beats") or []:
+        for sf in b.get("scene_files") or []:
+            sf = str(sf)
+            vit = vitems.get(sf) or {}
+            if str(vit.get("panel_kind") or "").lower() != "system":
+                continue
+            # basename match (iter_shown_cuts already returns basenames)
+            base = os.path.basename(sf)
+            if base not in shown and sf not in shown:
+                flags.append(_flag(
+                    "system_card_unshown", ERROR,
+                    f"in-world system panel {sf!r} is not shown in any cut — "
+                    "system cards are story beats and must appear on screen",
+                    scene=sf))
+    return flags
+
+
 def montage_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Cross-segment visual degeneracy — the class the per-segment checks
     (and the per-segment LLM judge) cannot see: one panel carrying many
@@ -1264,6 +1292,8 @@ def main() -> int:
     flags.extend(audio_flags(plan, _load_manifest("tts/tts_index.json")))
     flags.extend(montage_flags(plan))
     flags.extend(story_flags(plan, _load_manifest("manifest.beats.json"), vitems))
+    flags.extend(system_coverage_flags(
+        _load_manifest("manifest.beats.json"), plan, vitems))
 
     def _judge_caption_carried(caption: str, narration: str) -> bool:
         try:

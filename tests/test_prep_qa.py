@@ -918,3 +918,52 @@ def test_audio_flags_missing_clip_for_voiced_chapter():
     out = pq.audio_flags(plan, _idx(("g0001_p00", "Has audio.")))
     assert [f["code"] for f in out] == ["audio_missing"]
     assert out[0]["segment_id"] == "g0002_p01"
+
+
+# ---- system_coverage_flags: stamped panel_kind="system" must be shown --------
+
+def _beats_with_scene_files(items):
+    return {"beats": items}
+
+
+def test_system_coverage_flags_shown_system_panel_is_clean():
+    # a panel with panel_kind="system" that IS in the shown cuts → no flag
+    plan = _plan([_item("g0001_p00", ["sys.jpg"])])
+    beats = _beats_with_scene_files([
+        {"group_id": 1, "narration": "ok", "scene_files": ["sys.jpg"]}
+    ])
+    vitems = {"sys.jpg": {"panel_kind": "system"}}
+    fl = pq.system_coverage_flags(beats, plan, vitems)
+    assert fl == []
+
+
+def test_system_coverage_flags_absent_system_panel_errors():
+    # a panel with panel_kind="system" NOT in the shown cuts → ERROR
+    plan = _plan([_item("g0001_p00", ["other.jpg"])])
+    beats = _beats_with_scene_files([
+        {"group_id": 1, "narration": "ok", "scene_files": ["sys.jpg", "other.jpg"]}
+    ])
+    vitems = {
+        "sys.jpg": {"panel_kind": "system"},
+        "other.jpg": {"panel_kind": "story"},
+    }
+    fl = pq.system_coverage_flags(beats, plan, vitems)
+    assert len(fl) == 1
+    assert fl[0]["code"] == "system_card_unshown"
+    assert fl[0]["severity"] == pq.ERROR
+    assert "sys.jpg" in fl[0]["scene"] or "sys.jpg" in fl[0]["detail"]
+
+
+def test_system_coverage_flags_caption_panel_not_flagged():
+    # a caption panel folded into its neighbor has panel_kind="caption" —
+    # it is intentionally absent from the plan and must NOT be flagged
+    plan = _plan([_item("g0001_p00", ["story.jpg"])])
+    beats = _beats_with_scene_files([
+        {"group_id": 1, "narration": "ok", "scene_files": ["cap.jpg", "story.jpg"]}
+    ])
+    vitems = {
+        "cap.jpg": {"panel_kind": "caption"},
+        "story.jpg": {"panel_kind": "story"},
+    }
+    fl = pq.system_coverage_flags(beats, plan, vitems)
+    assert fl == []
