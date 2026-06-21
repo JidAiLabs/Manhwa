@@ -833,14 +833,14 @@ def _build_verbatim_section(
                 or "The scene continues."
             )
         base = re.sub(r"\s+", " ", base).strip()
-        text, had_shouts = normalize_caps_for_tts(base, proper_case)
 
         gid = int(b.get("group_id") or 0)
         payload_beat = payload_by_gid.get(gid)
         if payload_beat is None:
             pbeats = payload.get("beats") or []
             payload_beat = pbeats[idx] if idx < len(pbeats) and isinstance(pbeats[idx], dict) else {}
-        panel_lines = b.get("panel_narration") or []
+        # Error beats must be silenced even if panel_narration was padded in.
+        panel_lines = [] if b.get("error") else (b.get("panel_narration") or [])
         if panel_lines and not microbeats:
             # Per-panel path (Chunk 5): each panel's line → its own paragraph +
             # shot, aligned by construction (no positional guessing).
@@ -850,9 +850,11 @@ def _build_verbatim_section(
                 if str(p.get("line") or "").strip()
             ]
             if not items:
-                items = [(text, [])]
+                # base is un-normalized here; the inner loop normalizes each line
+                items = [(base, [])]
         else:
             # Legacy / microbeat A-B path: single paragraph or word-count split.
+            text, _ = normalize_caps_for_tts(base, proper_case)
             panel_files = _selected_scene_files_for_microbeats(b, payload_beat)
             # Never split a group into more script beats than it has distinct shown
             # panels: each microbeat becomes its own timeline segment, so a 1-panel

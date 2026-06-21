@@ -562,6 +562,21 @@ def test_cli_segment_ids_per_panel(tmp_path):
     assert len(sec["tts_paragraphs_v3"]) == 3
 
 
+def test_error_beat_is_silenced_even_with_panel_narration():
+    """An error beat with a padded panel_narration must still produce a single
+    'The scene continues.' paragraph — the panel line must not be voiced."""
+    beats = [{"group_id": 5, "error": "parse_failed", "scene_files": ["p1.jpg"],
+              "panel_narration": [{"scene_file": "p1.jpg", "line": "Some hallucinated line."}]}]
+    payload = {"beats": [{"group_id": 5, "scene_files": ["p1.jpg"]}]}
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=beats, payload=payload,
+        word_target=120, genre_mode="action", proper_case=None, wpm=170, microbeats=False)
+    joined = " ".join(sec["script_paragraphs"]).lower()
+    assert "hallucinated" not in joined
+    assert "the scene continues" in joined
+    assert len(sec["shots"]) == 1
+
+
 def test_legacy_path_unchanged_when_no_panel_narration():
     """Beats without panel_narration fall back to the legacy single-para-per-beat
     path. The existing _chunk_and_payload fixture has no panel_narration; confirm
