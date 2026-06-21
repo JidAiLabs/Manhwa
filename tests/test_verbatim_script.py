@@ -505,12 +505,13 @@ def test_cli_verbatim_runs_without_openai_key(tmp_path):
 
 def test_one_segment_per_panel_aligned():
     """Each panel_narration entry becomes its own paragraph + shot, aligned by
-    construction (no positional guessing). Three panels → three everything."""
+    construction (no positional guessing). Three panels with long-enough lines
+    (> short_words=6) → three everything (merge does not fire)."""
     beats = [{"group_id": 7, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"],
               "panel_narration": [
-                  {"scene_file": "p1.jpg", "line": "He steps in."},
-                  {"scene_file": "p2.jpg", "line": "The quest window flares."},
-                  {"scene_file": "p3.jpg", "line": "Numbers tick down."}]}]
+                  {"scene_file": "p1.jpg", "line": "He steps into the arena and draws his sword."},
+                  {"scene_file": "p2.jpg", "line": "The quest window flares bright inside his vision."},
+                  {"scene_file": "p3.jpg", "line": "Numbers tick down toward the final threshold."}]}]
     payload = {"beats": [{"group_id": 7, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"]}]}
     sec = se._build_verbatim_section(
         section_index=0, chunk=beats, payload=payload, word_target=120,
@@ -523,21 +524,22 @@ def test_one_segment_per_panel_aligned():
 
 
 def test_cli_segment_ids_per_panel(tmp_path):
-    """CLI: one group with 3 panel_narration entries → segment_ids g0007_p00,
-    g0007_p01, g0007_p02 (one per panel, not one per beat)."""
+    """CLI: one group with 3 panel_narration entries using long lines (>6 words
+    each) → segment_ids g0007_p00, g0007_p01, g0007_p02 (one per panel, no
+    merge fires because each line is above the short_words=6 threshold)."""
     beats = {"beats": [
         {
             "group_id": 7,
             "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"],
             "beat_title": "System Flash",
-            "narration": "He steps in. The quest window flares. Numbers tick down.",
+            "narration": "He steps into the arena. The quest window flares brightly. Numbers tick toward zero.",
             "what_happens": "System activates.",
             "hook": "The count begins.",
             "mood_words": ["serious"],
             "panel_narration": [
-                {"scene_file": "p1.jpg", "line": "He steps in."},
-                {"scene_file": "p2.jpg", "line": "The quest window flares."},
-                {"scene_file": "p3.jpg", "line": "Numbers tick down."},
+                {"scene_file": "p1.jpg", "line": "He steps into the arena and draws his blade."},
+                {"scene_file": "p2.jpg", "line": "The quest window flares bright inside his vision."},
+                {"scene_file": "p3.jpg", "line": "Numbers tick down toward the final threshold."},
             ],
         }
     ]}
@@ -592,3 +594,177 @@ def test_legacy_path_unchanged_when_no_panel_narration():
     assert [s["group_id"] for s in shots] == [7, 8, 9]
     assert len(sec["script_paragraphs"]) == 3
     assert len(sec["tts_paragraphs_v3"]) == 3
+
+
+# ---- Fix C: merge_short_panel_items unit tests -----------------------------
+
+def test_merge_short_two_short_lines_become_one_bucket():
+    """Two short lines (≤ short_words each) → one bucket with both scene_files
+    and the joined line."""
+    items = [
+        ("He turns.", ["p1.jpg"]),
+        ("Silence falls.", ["p2.jpg"]),
+    ]
+    result = se.merge_short_panel_items(items)
+    assert len(result) == 1
+    line, files = result[0]
+    assert "He turns" in line
+    assert "Silence falls" in line
+    assert files == ["p1.jpg", "p2.jpg"]
+
+
+def test_merge_short_long_line_stays_alone():
+    """A 25-word line is above both short_words and max_words; stays solo."""
+    long_line = "He draws his sword and faces the crowd as silence falls across the entire arena floor below him."
+    items = [(long_line, ["p1.jpg"])]
+    result = se.merge_short_panel_items(items)
+    assert len(result) == 1
+    assert result[0][0] == long_line
+
+
+def test_merge_short_short_then_long_flushes():
+    """Short line followed by long line: short is flushed alone when the long
+    line would push the bucket over max_words."""
+    short = "He waits."  # 2 words
+    long = ("The assassins descend from the rooftop one by one, silent as death, "
+            "blades already drawn and hungry for blood.")  # > 20 words
+    items = [
+        (short, ["p1.jpg"]),
+        (long, ["p2.jpg"]),
+    ]
+    result = se.merge_short_panel_items(items)
+    # short can't merge into long without exceeding max_words=20
+    assert len(result) == 2
+    assert result[0] == (short, ["p1.jpg"])
+    assert result[1] == (long, ["p2.jpg"])
+
+
+def test_merge_short_flatten_invariant():
+    """Every input scene_file appears in exactly one output bucket (no drops,
+    no duplicates, original order preserved)."""
+    import itertools
+    items = [
+        ("Run.", ["a.jpg"]),
+        ("Dodge.", ["b.jpg"]),
+        ("Strike.", ["c.jpg"]),
+        ("Fall.", ["d.jpg"]),
+        ("Rise.", ["e.jpg"]),
+    ]
+    result = se.merge_short_panel_items(items)
+    all_input_files = [f for _, files in items for f in files]
+    all_output_files = [f for _, files in result for f in files]
+    assert all_output_files == all_input_files, (
+        f"panel order/coverage broken: {all_output_files} != {all_input_files}"
+    )
+
+
+def test_merge_short_max_panels_cap_respected():
+    """Four short lines, max_panels=3 → the fourth cannot join the first bucket."""
+    items = [
+        ("Go.", ["p1.jpg"]),
+        ("Run.", ["p2.jpg"]),
+        ("Hide.", ["p3.jpg"]),
+        ("Wait.", ["p4.jpg"]),   # would push to 4 panels → new bucket
+    ]
+    result = se.merge_short_panel_items(items, max_panels=3)
+    # All 4 files must still be present
+    all_files = [f for _, files in result for f in files]
+    assert all_files == ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg"]
+    # The fourth panel must be in a separate bucket (not the first)
+    assert len(result) >= 2
+    first_bucket_files = result[0][1]
+    assert "p4.jpg" not in first_bucket_files
+
+
+def test_merge_short_empty_input():
+    assert se.merge_short_panel_items([]) == []
+
+
+# ---- Fix C: integration tests via _build_verbatim_section ------------------
+
+def _panel_beat(gid, panels):
+    """Helper: build a beat dict with panel_narration entries."""
+    return {
+        "group_id": gid,
+        "scene_files": [p["scene_file"] for p in panels],
+        "beat_title": "Beat",
+        "narration": " ".join(p["line"] for p in panels),
+        "what_happens": "Things happen.",
+        "hook": "Something shifts.",
+        "mood_words": [],
+        "panel_narration": panels,
+    }
+
+
+def test_merge_integration_four_short_lines_fewer_shots():
+    """Four 1-word panel lines → fewer than 4 shots (merged); the contract
+    len(script_paragraphs) == len(shots) == len(tts_paragraphs_v3) holds;
+    every input scene_file appears across the shots."""
+    panels = [
+        {"scene_file": "p1.jpg", "line": "Run."},
+        {"scene_file": "p2.jpg", "line": "Dodge."},
+        {"scene_file": "p3.jpg", "line": "Strike."},
+        {"scene_file": "p4.jpg", "line": "Fall."},
+    ]
+    chunk = [_panel_beat(1, panels)]
+    payload = {"beats": [{"group_id": 1, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg"]}]}
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="action", microbeats=False)
+
+    shots = sec["shots"]
+    paras = sec["script_paragraphs"]
+    tts = sec["tts_paragraphs_v3"]
+
+    # Contract: all three parallel lists are the same length
+    assert len(paras) == len(shots) == len(tts), (
+        f"contract broken: paras={len(paras)} shots={len(shots)} tts={len(tts)}"
+    )
+    # Merged: should have fewer shots than input panels
+    assert len(shots) < 4, f"expected merge to reduce shot count, got {len(shots)}"
+    # Coverage: every input scene_file appears in exactly one shot
+    all_shot_files = [f for s in shots for f in (s.get("scene_files") or [])]
+    assert sorted(all_shot_files) == ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg"], (
+        f"panel coverage broken: {all_shot_files}"
+    )
+
+
+def test_merge_integration_long_lines_no_merge():
+    """Long panel lines (>6 words each) → one shot per panel (no over-merge)."""
+    panels = [
+        {"scene_file": "p1.jpg",
+         "line": "He draws his sword and faces the assembled crowd below."},
+        {"scene_file": "p2.jpg",
+         "line": "The assassins fan out across the rooftop one by one."},
+        {"scene_file": "p3.jpg",
+         "line": "Prince Cheon stands alone against the entire inner circle."},
+    ]
+    chunk = [_panel_beat(2, panels)]
+    payload = {"beats": [{"group_id": 2, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"]}]}
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="action", microbeats=False)
+
+    assert len(sec["shots"]) == 3, "long lines must not be over-merged"
+    assert len(sec["script_paragraphs"]) == 3
+    assert len(sec["tts_paragraphs_v3"]) == 3
+
+
+def test_merge_integration_disabled_by_flag():
+    """tts_merge_short=False → strict 1 shot per panel even for short lines."""
+    panels = [
+        {"scene_file": "p1.jpg", "line": "Run."},
+        {"scene_file": "p2.jpg", "line": "Hide."},
+        {"scene_file": "p3.jpg", "line": "Wait."},
+    ]
+    chunk = [_panel_beat(3, panels)]
+    payload = {"beats": [{"group_id": 3, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"]}]}
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="action", microbeats=False,
+        tts_merge_short=False)
+
+    assert len(sec["shots"]) == 3, "merge disabled → must be 1 shot per panel"
+    assert len(sec["script_paragraphs"]) == 3
+    assert [s.get("scene_files") for s in sec["shots"]] == [
+        ["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]

@@ -787,6 +787,61 @@ def _dechrome_verbatim_base(text: str, beat: Dict[str, Any]) -> str:
     return base
 
 
+def merge_short_panel_items(
+    items: "List[Tuple[str, List[str]]]",
+    *,
+    max_words: int = 20,
+    max_panels: int = 3,
+    short_words: int = 6,
+) -> "List[Tuple[str, List[str]]]":
+    """Merge runs of short adjacent panel-lines into one TTS clip bucket.
+
+    *items* is a list of ``(line, [scene_file, ...])`` tuples produced by the
+    per-panel path of ``_build_verbatim_section``.  The merger greedily
+    accumulates consecutive items into a bucket when:
+
+    - The line being added, OR the bucket accumulated so far, is "short"
+      (≤ *short_words* words).
+    - Adding it would not push the bucket over *max_panels* panels.
+    - Adding it would not push the bucket over *max_words* total words.
+
+    A long line (> *short_words*) that cannot merge with its neighbours
+    becomes its own bucket unchanged.
+
+    **Invariant**: every input scene_file appears in exactly one output
+    bucket, in original order — no panel is ever dropped or duplicated.
+
+    Returns a list of ``(joined_line, [all scene_files in order])`` tuples.
+    """
+    if not items:
+        return []
+
+    result: List[Tuple[str, List[str]]] = []
+    bucket_line, bucket_files = items[0]
+    bucket_words = _words(bucket_line)
+
+    for line, sfiles in items[1:]:
+        w = _words(line)
+        new_panels = len(sfiles)
+        # Merge if: at least one side is short, and both caps hold after merge
+        can_merge = (
+            (bucket_words <= short_words or w <= short_words)
+            and bucket_words + w <= max_words
+            and len(bucket_files) + new_panels <= max_panels
+        )
+        if can_merge:
+            sep = " " if bucket_line and line else ""
+            bucket_line = (bucket_line + sep + line).strip()
+            bucket_files = bucket_files + sfiles
+            bucket_words = bucket_words + w
+        else:
+            result.append((bucket_line, bucket_files))
+            bucket_line, bucket_files, bucket_words = line, sfiles, w
+
+    result.append((bucket_line, bucket_files))
+    return result
+
+
 def _build_verbatim_section(
     *,
     section_index: int,
@@ -798,6 +853,7 @@ def _build_verbatim_section(
     wpm: int = 135,
     microbeats: bool = False,
     microbeat_max_words: int = 28,
+    tts_merge_short: bool = True,
 ) -> Dict[str, Any]:
     """Materialize one script section directly from beats[].narration — the
     image-grounded Gemini line (A/B Variant B) — with NO LLM call.
@@ -852,6 +908,12 @@ def _build_verbatim_section(
             if not items:
                 # base is un-normalized here; the inner loop normalizes each line
                 items = [(base, [])]
+            elif tts_merge_short:
+                # Merge very-short adjacent lines into one clip: fewer/longer
+                # clips → steadier voice prosody across panels.  Every input
+                # scene_file is preserved (invariant); the timeline still cuts
+                # per-panel because each shot carries all its scene_files.
+                items = merge_short_panel_items(items)
         else:
             # Legacy / microbeat A-B path: single paragraph or word-count split.
             text, _ = normalize_caps_for_tts(base, proper_case)
