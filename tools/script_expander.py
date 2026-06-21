@@ -840,36 +840,43 @@ def _build_verbatim_section(
         if payload_beat is None:
             pbeats = payload.get("beats") or []
             payload_beat = pbeats[idx] if idx < len(pbeats) and isinstance(pbeats[idx], dict) else {}
-        panel_files = _selected_scene_files_for_microbeats(b, payload_beat)
-
-        # Never split a group into more script beats than it has distinct shown
-        # panels: each microbeat becomes its own timeline segment, so a 1-panel
-        # group split into N would re-cut to the SAME frame N times (a visible
-        # hitch on a static image). Cap the split at the panel budget so a
-        # panel-sparse group HOLDS its one image as a single continuous shot.
-        max_parts = max(1, len(panel_files))
-        if microbeats:
-            parts = _split_recap_microbeats(
-                text, max_words=microbeat_max_words, max_parts=max_parts
-            )
+        panel_lines = b.get("panel_narration") or []
+        if panel_lines and not microbeats:
+            # Per-panel path (Chunk 5): each panel's line → its own paragraph +
+            # shot, aligned by construction (no positional guessing).
+            items = [
+                (str(p.get("line") or "").strip(), [str(p.get("scene_file") or "").strip()])
+                for p in panel_lines
+                if str(p.get("line") or "").strip()
+            ]
+            if not items:
+                items = [(text, [])]
         else:
-            parts = [text]
-        if not parts:
-            parts = ["The scene continues."]
+            # Legacy / microbeat A-B path: single paragraph or word-count split.
+            panel_files = _selected_scene_files_for_microbeats(b, payload_beat)
+            # Never split a group into more script beats than it has distinct shown
+            # panels: each microbeat becomes its own timeline segment, so a 1-panel
+            # group split into N would re-cut to the SAME frame N times (a visible
+            # hitch on a static image). Cap the split at the panel budget so a
+            # panel-sparse group HOLDS its one image as a single continuous shot.
+            max_parts = max(1, len(panel_files))
+            parts = (
+                _split_recap_microbeats(text, max_words=microbeat_max_words, max_parts=max_parts)
+                if microbeats else [text]
+            )
+            if not parts:
+                parts = ["The scene continues."]
+            items = [
+                (part, _scene_for_microbeat(panel_files, i, len(parts)))
+                for i, part in enumerate(parts)
+            ]
 
-        for part_index, part in enumerate(parts):
-            paras.append(part)
-            shout_flags.append(had_shouts)
+        for line, sfiles in items:
+            t2, had = normalize_caps_for_tts(line, proper_case)
+            paras.append(t2)
+            shout_flags.append(had)
             para_beats.append(b)
-            if microbeats:
-                shots.append(
-                    _build_microbeat_shot(
-                        payload_beat,
-                        part,
-                        _scene_for_microbeat(panel_files, part_index, len(parts)),
-                        wpm=wpm,
-                    )
-                )
+            shots.append(_build_microbeat_shot(payload_beat, t2, sfiles, wpm=wpm))
 
     # Mood tag per beat from its mood_words/stakes, escalated by panel
     # intensity and shout-caps; text is the script paragraph verbatim.
@@ -884,7 +891,11 @@ def _build_verbatim_section(
         tag = _escalate_tag_for_intensity(tag or "serious", rank)
         tts.append(f"[{tag}] {paras[i]}".strip())
 
-    if microbeats:
+    # shots is now always built in the loop via _build_microbeat_shot; fall back
+    # to payload-derived shots only for old manifests where NO beat in the chunk
+    # has panel_narration AND microbeats is off (i.e. the old one-shot-per-beat
+    # default path that predates Chunk 5).
+    if shots:
         shots = _normalize_shots(shots)
     else:
         shots = _normalize_shots(_build_default_shots_from_payload(payload, paras, wpm=wpm))

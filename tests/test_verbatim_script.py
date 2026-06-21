@@ -499,3 +499,81 @@ def test_cli_verbatim_runs_without_openai_key(tmp_path):
     assert [it["segment_id"] for it in items] == ["g0007_p00", "g0008_p01"]
     for it in items:
         assert "PRINCE CHEON" not in it["text"]         # caps never reach TTS
+
+
+# ---- Chunk 5: one segment per panel (panel_narration path) ------------------
+
+def test_one_segment_per_panel_aligned():
+    """Each panel_narration entry becomes its own paragraph + shot, aligned by
+    construction (no positional guessing). Three panels → three everything."""
+    beats = [{"group_id": 7, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"],
+              "panel_narration": [
+                  {"scene_file": "p1.jpg", "line": "He steps in."},
+                  {"scene_file": "p2.jpg", "line": "The quest window flares."},
+                  {"scene_file": "p3.jpg", "line": "Numbers tick down."}]}]
+    payload = {"beats": [{"group_id": 7, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"]}]}
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=beats, payload=payload, word_target=120,
+        genre_mode="action", proper_case=None, wpm=170, microbeats=False)
+    assert len(sec["shots"]) == 3
+    assert [s.get("scene_files") for s in sec["shots"]] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
+    assert len(sec["script_paragraphs"]) == 3
+    assert len(sec["tts_paragraphs_v3"]) == 3
+    assert any("quest window" in p.lower() for p in sec["script_paragraphs"])
+
+
+def test_cli_segment_ids_per_panel(tmp_path):
+    """CLI: one group with 3 panel_narration entries → segment_ids g0007_p00,
+    g0007_p01, g0007_p02 (one per panel, not one per beat)."""
+    beats = {"beats": [
+        {
+            "group_id": 7,
+            "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"],
+            "beat_title": "System Flash",
+            "narration": "He steps in. The quest window flares. Numbers tick down.",
+            "what_happens": "System activates.",
+            "hook": "The count begins.",
+            "mood_words": ["serious"],
+            "panel_narration": [
+                {"scene_file": "p1.jpg", "line": "He steps in."},
+                {"scene_file": "p2.jpg", "line": "The quest window flares."},
+                {"scene_file": "p3.jpg", "line": "Numbers tick down."},
+            ],
+        }
+    ]}
+    beats_p = tmp_path / "manifest.beats.json"
+    out_p = tmp_path / "manifest.script.json"
+    beats_p.write_text(json.dumps(beats))
+
+    env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
+    r = subprocess.run(
+        [sys.executable, str(_TOOLS / "script_expander.py"),
+         "--beats", str(beats_p), "--out", str(out_p),
+         "--narration-source", "gemini_verbatim"],
+        capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, f"expander failed:\nSTDOUT:{r.stdout}\nSTDERR:{r.stderr}"
+
+    obj = json.loads(out_p.read_text())
+    sec = obj["sections"][0]
+    segment_ids = [s["segment_id"] for s in sec["shots"]]
+    assert segment_ids == ["g0007_p00", "g0007_p01", "g0007_p02"]
+    assert len(sec["script_paragraphs"]) == 3
+    assert len(sec["tts_paragraphs_v3"]) == 3
+
+
+def test_legacy_path_unchanged_when_no_panel_narration():
+    """Beats without panel_narration fall back to the legacy single-para-per-beat
+    path. The existing _chunk_and_payload fixture has no panel_narration; confirm
+    it still produces one shot per beat (groups 7, 8, 9)."""
+    chunk, payload = _chunk_and_payload()
+    # Confirm none of the test beats carry panel_narration
+    assert all("panel_narration" not in b for b in chunk)
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="unknown")
+    shots = sec["shots"]
+    # Legacy: one shot per beat
+    assert [s["group_id"] for s in shots] == [7, 8, 9]
+    assert len(sec["script_paragraphs"]) == 3
+    assert len(sec["tts_paragraphs_v3"]) == 3
