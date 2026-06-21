@@ -383,6 +383,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                               "manifest.beats.json", "manifest.script.json")]
         plan_stale = bool(plan_stale_issues)
         plan_stale_detail = [i["detail"] for i in plan_stale_issues]
+        video_stale_issues = [i for i in _freshness if i["code"] == "stale_video"]
+        video_stale = bool(video_stale_issues)
+        video_stale_detail = next(
+            (i["detail"] for i in video_stale_issues), "")
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
                     qa_ok=gates.latest_qa_ok(c, cid),
@@ -393,7 +397,9 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     cost=_chapter_costs(ch["ep_dir"]),
                     gallery=_gallery(ch["ep_dir"]), ep_rel=ep_rel,
                     plan_stale=plan_stale,
-                    plan_stale_detail=plan_stale_detail)
+                    plan_stale_detail=plan_stale_detail,
+                    video_stale=video_stale,
+                    video_stale_detail=video_stale_detail)
 
     @app.get("/videos", response_class=HTMLResponse)
     def videos_page(request: Request):

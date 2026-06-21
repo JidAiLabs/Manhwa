@@ -43,6 +43,7 @@
 
 <h2>Rendered video <small>(the final segment for this chapter)</small></h2>
 <div class="row">
+{% if video_stale %}<span class="b warn" title="{{ video_stale_detail }}">⚠ VIDEO STALE vs narration — re-render</span>{% endif %}
 {% if render_url %}<video controls preload="metadata" src="{{ render_url }}" style="max-width:560px;border-radius:8px;vertical-align:middle"></video>
 <a href="{{ render_url }}" download style="color:var(--acc)">download mp4</a>
 {% else %}<span class="kv">the rendered video appears here once you approve voiceover → render (Step 2)</span>{% endif %}

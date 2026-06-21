@@ -184,4 +184,22 @@ def verify_chapter(ep_dir: str,
                     f"that produces {output_name}"))
                 break  # one stale report per output is enough
 
+    # ---- optional video freshness check ----------------------------------------
+    # A rendered video older than the plan it was built from means the chapter was
+    # re-prepared after the last render.  This is NOT an ERROR — a chapter that has
+    # been re-prepared but not yet re-rendered is the normal state between approvals.
+    # WARN so the dashboard can flag the mismatch visibly without blocking the pipeline.
+    video = os.path.join(ep_dir, "render", "segment_both.mp4")
+    clean_plan = p("render.plan.clean.json")
+    if os.path.exists(video) and os.path.exists(clean_plan):
+        try:
+            if os.path.getmtime(video) < os.path.getmtime(clean_plan):
+                issues.append(_issue(
+                    "stale_video", "WARN",
+                    "render/segment_both.mp4",
+                    "render/segment_both.mp4 is older than render.plan.clean.json"
+                    " — re-voice + re-render to match the current narration"))
+        except OSError:
+            pass
+
     return issues

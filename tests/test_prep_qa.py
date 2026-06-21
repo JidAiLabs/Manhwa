@@ -1039,3 +1039,36 @@ def test_prep_qa_emits_stale_manifest_flag_when_verify_chapter_returns_stale(
     assert pre_flags[0]["severity"] == pq.ERROR
     assert "manifest.beats.json" in pre_flags[0]["detail"]
     assert pre_flags[0]["scene"] == "render.plan.clean.json"
+
+
+def test_stale_video_emits_warn_not_error(monkeypatch):
+    """A stale_video issue returned by verify_chapter must surface as WARN,
+    not ERROR — a re-prepared-but-not-yet-rendered chapter is the normal state
+    and must not block the pipeline."""
+    stale_issue = {
+        "code": "stale_video",
+        "severity": "WARN",
+        "file": "render/segment_both.mp4",
+        "detail": "render/segment_both.mp4 is older than render.plan.clean.json"
+                  " — re-voice + re-render to match the current narration",
+    }
+
+    monkeypatch.setattr(pq, "_verify_chapter_freshness",
+                        lambda ep, **kw: [stale_issue])
+
+    ep = "/fake/ep_dir"
+    freshness_issues = pq._verify_chapter_freshness(ep)
+
+    # stale_video issues must be surfaced at WARN — never promoted to ERROR
+    warn_flags = [
+        pq._flag(iss["code"], pq.WARN, iss["detail"],
+                 scene=iss.get("file", ""))
+        for iss in freshness_issues
+        if iss["severity"] == "WARN"
+    ]
+    error_flags = [iss for iss in freshness_issues if iss["severity"] == pq.ERROR]
+
+    assert len(warn_flags) == 1
+    assert warn_flags[0]["code"] == "stale_video"
+    assert warn_flags[0]["severity"] == pq.WARN
+    assert error_flags == [], f"stale_video must not be ERROR, got: {error_flags}"

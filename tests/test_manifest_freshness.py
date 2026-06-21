@@ -287,3 +287,77 @@ def test_no_manifests_at_all_returns_empty(tmp_path):
     """If no sentinel exists at all, status cannot be inferred → return []."""
     issues = mf.verify_chapter(str(tmp_path))  # empty dir, status=None
     assert issues == []
+
+
+# ---------------------------------------------------------------------------
+# stale_video: rendered MP4 older than the clean plan it was rendered from
+# ---------------------------------------------------------------------------
+
+def _fresh_prepped_chain(root: Path, base: float) -> None:
+    """Create a complete fresh prepped chain under *root* at mtimes base+0..+5."""
+    files = [
+        "manifest.vision.json",
+        "manifest.panels.understood.json",
+        "manifest.groups.json",
+        "manifest.beats.json",
+        "manifest.script.json",
+        "render.plan.clean.json",
+    ]
+    for i, name in enumerate(files):
+        _touch(root / name, base + i)
+
+
+def test_stale_video_older_than_plan(tmp_path):
+    """Video exists, plan exists, video is older → one WARN with code stale_video.
+    Full chain present (status='prepped' inferred) so no missing_manifest noise."""
+    T0 = 1_000_000.0
+    _fresh_prepped_chain(tmp_path, T0)
+    render_dir = tmp_path / "render"
+    render_dir.mkdir()
+    # video predates the chain; plan.clean is the freshest file (T0+5)
+    _touch(render_dir / "segment_both.mp4", T0 - 1)   # older than everything
+
+    issues = mf.verify_chapter(str(tmp_path))
+    stale = [i for i in issues if i["code"] == "stale_video"]
+    assert len(stale) == 1, f"expected one stale_video, got: {issues}"
+    assert stale[0]["severity"] == "WARN", stale[0]
+    assert stale[0]["file"] == "render/segment_both.mp4"
+    assert "render.plan.clean.json" in stale[0]["detail"]
+
+
+def test_stale_video_newer_than_plan(tmp_path):
+    """Video exists, plan exists, video is NEWER than the plan → no stale_video."""
+    T0 = 1_000_000.0
+    _fresh_prepped_chain(tmp_path, T0)
+    render_dir = tmp_path / "render"
+    render_dir.mkdir()
+    # video is newer than render.plan.clean.json (T0+5)
+    _touch(render_dir / "segment_both.mp4", T0 + 3600)
+
+    issues = mf.verify_chapter(str(tmp_path))
+    stale = [i for i in issues if i["code"] == "stale_video"]
+    assert stale == [], f"unexpected stale_video when video is current: {issues}"
+
+
+def test_stale_video_absent(tmp_path):
+    """Video does NOT exist, plan exists → no stale_video (not rendered ≠ stale)."""
+    T0 = 1_000_000.0
+    _fresh_prepped_chain(tmp_path, T0)
+    # no render/segment_both.mp4
+
+    issues = mf.verify_chapter(str(tmp_path))
+    stale = [i for i in issues if i["code"] == "stale_video"]
+    assert stale == [], f"absent video must not produce stale_video: {issues}"
+
+
+def test_stale_video_plan_absent(tmp_path):
+    """Video exists, plan does NOT exist → no stale_video (nothing to compare against)."""
+    T0 = 1_000_000.0
+    render_dir = tmp_path / "render"
+    render_dir.mkdir()
+    _touch(render_dir / "segment_both.mp4", T0)
+    # no render.plan.clean.json → status cannot be inferred, returns []
+
+    issues = mf.verify_chapter(str(tmp_path))
+    stale = [i for i in issues if i["code"] == "stale_video"]
+    assert stale == [], f"absent plan must not produce stale_video: {issues}"
