@@ -23,13 +23,20 @@ from typing import Dict, List, Optional
 # manifest.cast.json is OPTIONAL for beats (only checked when present).
 # ---------------------------------------------------------------------------
 MANIFEST_DAG: Dict[str, List[str]] = {
-    "manifest.panels.understood.json": ["manifest.vision.json"],
+    # NOTE: manifest.panels.understood.json → manifest.vision.json edge is
+    # intentionally absent.  The understanding stage (panel_understand.py)
+    # reads vision.json then stamps panel_kind BACK onto it, so vision's mtime
+    # ends up ~0.03s AFTER understood's.  The understood→vision edge would fire
+    # a false stale on every fresh run.  Understood's freshness is still
+    # enforced by the downstream groups.json → understood edge.
     "manifest.groups.json":            ["manifest.panels.understood.json"],
     "manifest.story.json":             ["manifest.panels.understood.json"],
     "manifest.beats.json":             ["manifest.groups.json", "manifest.cast.json"],
     "manifest.script.json":            ["manifest.beats.json"],
-    "render.plan.json":                ["manifest.script.json"],
-    "render.plan.clean.json":          ["render.plan.json", "manifest.beats.json"],
+    # NOTE: render.plan.json is a transient intermediate consumed by render_prep
+    # and does not persist after the prepped stage.  Only render.plan.clean.json
+    # persists; it is checked directly against its real upstream inputs.
+    "render.plan.clean.json":          ["manifest.script.json", "manifest.beats.json"],
 }
 
 # manifest.cast.json is optional — only staleness-checked when the file exists
@@ -66,7 +73,7 @@ STATUS_REQUIRED: Dict[str, List[str]] = {
         "manifest.groups.json",
         "manifest.beats.json",
         "manifest.script.json",
-        "render.plan.json",
+        # render.plan.json is transient — only the clean plan persists
         "render.plan.clean.json",
     ],
     "prepped": [
@@ -75,7 +82,7 @@ STATUS_REQUIRED: Dict[str, List[str]] = {
         "manifest.groups.json",
         "manifest.beats.json",
         "manifest.script.json",
-        "render.plan.json",
+        # render.plan.json is transient — only the clean plan persists
         "render.plan.clean.json",
     ],
 }
@@ -83,17 +90,17 @@ STATUS_REQUIRED: Dict[str, List[str]] = {
 # Ordered from shallowest to deepest for inference
 _STATUS_ORDER = ["visioned", "grouped", "beated", "scripted", "planned", "prepped"]
 
-# Primary output that marks a stage as "reached" (first required manifest)
-_STATUS_PRIMARY: Dict[str, str] = {
-    s: files[0] for s, files in STATUS_REQUIRED.items()
-}
-# For inference, pick the deepest unique output per stage
+# For inference, pick the deepest unique output per stage.
+# render.plan.json is transient, so "planned" uses render.plan.clean.json as
+# sentinel (same as "prepped") — when clean.json exists we infer "prepped";
+# "planned" without clean.json is not distinguishable from "scripted" by
+# file presence alone, which is acceptable (the check chain is the same).
 _STAGE_SENTINEL: Dict[str, str] = {
     "visioned": "manifest.vision.json",
     "grouped":  "manifest.groups.json",
     "beated":   "manifest.beats.json",
     "scripted": "manifest.script.json",
-    "planned":  "render.plan.json",
+    "planned":  "render.plan.clean.json",
     "prepped":  "render.plan.clean.json",
 }
 

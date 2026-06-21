@@ -44,10 +44,8 @@ def test_stale_plan_clean_older_than_beats_flags_stale(tmp_path):
     sat next to fresh manifest.beats.json (mtime T0+3d).  Nothing caught it;
     dashboard silently rendered old cuts.
 
-    When beats is 3 days newer, ALL derived outputs (script.json, render.plan.json,
-    render.plan.clean.json) that predate it are stale — the guardrail correctly
-    reports each one.  We assert that render.plan.clean.json is among the stale
-    files (the headline case) and that all stale issues are ERROR severity.
+    render.plan.clean.json → manifest.beats.json is now a direct DAG edge, so
+    the guardrail catches this without going through the transient render.plan.json.
     """
     T0 = 1_000_000.0   # epoch seconds (arbitrary base)
     THREE_DAYS = 3 * 86_400
@@ -59,7 +57,7 @@ def test_stale_plan_clean_older_than_beats_flags_stale(tmp_path):
     # … except beats was regenerated 3 days after all downstream files were built
     _touch(tmp_path / "manifest.beats.json",               T0 + THREE_DAYS)
     _touch(tmp_path / "manifest.script.json",              T0 + 3)
-    _touch(tmp_path / "render.plan.json",                  T0 + 4)
+    # render.plan.json intentionally absent (transient intermediate)
     # THE KEY STALE FILE: plan.clean predates the freshly-regenerated beats
     _touch(tmp_path / "render.plan.clean.json",            T0 + 5)
 
@@ -68,7 +66,7 @@ def test_stale_plan_clean_older_than_beats_flags_stale(tmp_path):
     stale = [i for i in issues if i["code"] == "stale_manifest"]
     stale_files = {i["file"] for i in stale}
 
-    # The headline case: plan.clean must be reported stale
+    # The headline case: plan.clean must be reported stale via the direct edge
     assert "render.plan.clean.json" in stale_files, (
         f"render.plan.clean.json not in stale flags; got: {stale}")
     # All stale issues are ERROR
@@ -84,7 +82,8 @@ def test_stale_plan_clean_older_than_beats_flags_stale(tmp_path):
 
 def test_fresh_chain_produces_no_issues(tmp_path):
     """A complete chain where every output is newer than all its inputs
-    must produce zero issues."""
+    must produce zero issues.  render.plan.json is intentionally absent —
+    it is a transient intermediate that does not persist."""
     base = 1_000_000.0
     files = [
         "manifest.vision.json",
@@ -92,7 +91,6 @@ def test_fresh_chain_produces_no_issues(tmp_path):
         "manifest.groups.json",
         "manifest.beats.json",
         "manifest.script.json",
-        "render.plan.json",
         "render.plan.clean.json",
     ]
     for i, name in enumerate(files):
@@ -100,6 +98,47 @@ def test_fresh_chain_produces_no_issues(tmp_path):
 
     issues = mf.verify_chapter(str(tmp_path), status="prepped")
     assert issues == [], f"expected no issues on fresh chain, got: {issues}"
+
+
+# ---------------------------------------------------------------------------
+# Real-pipeline false-positive regression
+# ---------------------------------------------------------------------------
+
+def test_real_pipeline_mtimes_no_false_positive(tmp_path):
+    """Encodes the EXACT real-world mtimes from a freshly-prepared Ch1 run that
+    was incorrectly flagged as stale/missing before the fix.
+
+    Real mtimes (seconds since epoch):
+      vision=801.493, understood=801.464, groups=882.223, beats=4834.513,
+      script=4835.313, render.plan.clean.json=4883.417, render.plan.json ABSENT.
+
+    Key: vision is ~0.03s NEWER than understood because panel_understand.py
+    stamps panel_kind back onto manifest.vision.json after writing understood.
+    The old understood→vision DAG edge fired a false stale on every fresh run.
+    render.plan.json is absent (transient) — the old STATUS_REQUIRED entry
+    fired a false missing_manifest at status='prepped'.
+
+    Both false positives must produce zero issues after the fix.
+    """
+    # Use real relative offsets so the mtime relationships match exactly
+    BASE = 1_000_000.0
+    _touch(tmp_path / "manifest.vision.json",             BASE + 801.493)
+    _touch(tmp_path / "manifest.panels.understood.json",  BASE + 801.464)   # older than vision
+    _touch(tmp_path / "manifest.groups.json",             BASE + 882.223)
+    _touch(tmp_path / "manifest.beats.json",              BASE + 4834.513)
+    _touch(tmp_path / "manifest.script.json",             BASE + 4835.313)
+    _touch(tmp_path / "render.plan.clean.json",           BASE + 4883.417)
+    # render.plan.json intentionally absent — transient intermediate
+
+    issues = mf.verify_chapter(str(tmp_path), status="prepped")
+    assert issues == [], (
+        f"false positives on real Ch1 mtimes (vision newer than understood, "
+        f"render.plan.json absent): {issues}")
+
+    # Also check status='planned' — same files, same expectation
+    issues_planned = mf.verify_chapter(str(tmp_path), status="planned")
+    assert issues_planned == [], (
+        f"false positives at status='planned': {issues_planned}")
 
 
 # ---------------------------------------------------------------------------
@@ -219,16 +258,20 @@ def test_cast_file_absent_beats_fresh_otherwise_no_stale(tmp_path):
 
 def test_inferred_status_from_deepest_sentinel(tmp_path):
     """With status=None, verify_chapter infers the deepest stage whose sentinel
-    exists and checks that chain — a stale edge within it must still be caught."""
+    exists and checks that chain — a stale edge within it must still be caught.
+
+    render.plan.json is transient; the deepest persistent sentinel is
+    render.plan.clean.json (infers 'prepped').  A stale script.json (beats
+    newer) must still be caught via the beats→script edge.
+    """
     base = 1_000_000.0
     _touch(tmp_path / "manifest.vision.json",            base)
     _touch(tmp_path / "manifest.panels.understood.json", base + 1)
     _touch(tmp_path / "manifest.groups.json",            base + 2)
     _touch(tmp_path / "manifest.beats.json",             base + 3)
     _touch(tmp_path / "manifest.script.json",            base + 4)
-    # render.plan.json present (sentinel for "planned") — inference should stop here
-    _touch(tmp_path / "render.plan.json",                base + 5)
-    # render.plan.clean.json absent — don't infer "prepped"
+    _touch(tmp_path / "render.plan.clean.json",          base + 5)
+    # render.plan.json intentionally absent (transient)
 
     # Now make script.json stale relative to beats.json (simulate re-beat)
     os.utime(str(tmp_path / "manifest.beats.json"),
