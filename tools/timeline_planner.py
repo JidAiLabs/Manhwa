@@ -326,35 +326,61 @@ def _normalize_camera_motion_hint(beat: Dict[str, Any]) -> str:
     return cm
 
 
-def _choose_motion_mode(beat: Dict[str, Any]) -> str:
+# Fallback rotation: a run of plain beats cycles through these four CLEAN
+# directional slides so adjacent panels move in DIFFERENT directions. kenburns
+# (a diagonal drift) used to be the fallback and landed on ~80% of cuts — a muddy,
+# repetitive look. It is now reserved as an explicit accent only. static is no
+# longer a fallback either: calm panels get a gentle slide, never a frozen frame.
+_DIRECTIONAL_CYCLE = ("slide_left", "slide_right", "tilt_up", "tilt_down")
+
+
+def _choose_motion_mode(beat: Dict[str, Any], ordinal: int = 0) -> str:
+    """Pick a camera-motion MODE for a beat.
+
+    `ordinal` (beat index) rotates the directional fallback so consecutive plain
+    beats move in different directions. It is optional/back-compatible — callers
+    that omit it get the first direction in the cycle.
+
+    Priority: explicit `rendering_hints.camera_motion` > mood/emotional cues >
+    a rotating directional-slide fallback. `static` is emitted ONLY when the hint
+    explicitly asks to hold; "calm" maps to a gentle slide, not a freeze.
+    """
     hint = _normalize_camera_motion_hint(beat)
     mood_words = _norm_words(beat.get("mood_words") or [])
     emotional_turn = _safe_str(beat.get("emotional_turn")).lower()
 
+    # Explicit hints win. "hold" is an alias for an intentional static frame.
     direct_ok = {
         "static", "kenburns", "slow_pan", "pan", "zoom_in", "zoom_out",
         "tilt_up", "tilt_down", "slide_left", "slide_right", "push_in", "pull_out",
     }
+    if hint in ("hold", "freeze"):
+        return "static"
     if hint in direct_ok:
         if hint in ("slow_pan", "pan"):
-            return "kenburns"
+            # a plain "pan" is a lateral slide, not a diagonal kenburns
+            return _DIRECTIONAL_CYCLE[int(ordinal) % 2]  # slide_left / slide_right
         if hint == "push_in":
             return "zoom_in"
         if hint == "pull_out":
             return "zoom_out"
         return hint
 
+    # Mood-driven directional intent.
     if _has_any(mood_words, ["action", "panic", "chase", "fight", "impact", "chaos"]):
-        return "slide_left"
+        # alternate the lateral whip so back-to-back action beats don't repeat
+        return "slide_left" if int(ordinal) % 2 == 0 else "slide_right"
     if _has_any(mood_words, ["reveal", "introduction", "hero", "awe", "arrival"]):
         return "tilt_up"
     if _has_any(mood_words, ["sad", "regret", "defeat", "loss", "mourning"]):
         return "tilt_down"
     if _has_any(mood_words, ["tension", "mystery", "horror", "threat", "danger"]):
         return "zoom_in"
-    if "calm" in emotional_turn or _has_any(mood_words, ["calm", "reflection", "peace"]):
-        return "static"
-    return "kenburns"
+
+    # Calm: a gentle slide, NOT static. (static is hint-only above.)
+    # Fallback for everything else: rotate through clean directional slides so the
+    # sequence reads varied instead of the old diagonal-on-every-panel kenburns.
+    return _DIRECTIONAL_CYCLE[int(ordinal) % len(_DIRECTIONAL_CYCLE)]
 
 
 def _motion_params_for_mode(mode: str, dur: float, mood_words: List[str]) -> Dict[str, Any]:
@@ -571,20 +597,24 @@ def face_aware_motion(base_motion: Dict[str, Any],
 
 
 # Distinct camera moves cycled by GLOBAL cut index so neighbouring face-less panels
-# never share the same move. The old kenburns was a single hardcoded diagonal on
-# EVERY panel -> "repetitive, same animation 3x in a row". Applied ONLY to cuts with
-# no face (face cuts keep their face-ending move). Tall scroll panels ignore bias in
-# the renderer, so this is a harmless no-op there. Each entry: (start_bias, end_bias,
-# zoom) — a mix of diagonals (both directions), straight pans, and push-in/pull-out.
+# never share the same move. The old table was MOSTLY diagonals (kenburns drift) ->
+# "repetitive, same animation 3x in a row" + a muddy diagonal on every panel. It is
+# now biased toward CLEAN directional slides — pure lateral (L/R) and pure vertical
+# (U/D) — rotating L->R->U->D so adjacent cuts move in DIFFERENT directions. A single
+# gentle diagonal remains as a rare accent. Applied ONLY to cuts with no face (face
+# cuts keep their face-ending move). Tall scroll panels ignore bias in the renderer,
+# so this is a harmless no-op there. Each entry: (start_bias, end_bias, zoom).
+_SLIDE_TRAVEL = 0.75   # matches slide_left/right magnitude in _motion_params_for_mode
+_TILT_TRAVEL  = 0.70   # matches tilt_up/down magnitude in _motion_params_for_mode
 _MOTION_VARIANTS = [
-    {"start": (0.30, 0.18),  "end": (-0.30, -0.18), "zoom": (1.05, 1.12)},  # diag NE->SW
-    {"start": (0.12, 0.08),  "end": (-0.12, -0.08), "zoom": (1.04, 1.18)},  # subtle diag + push in
-    {"start": (-0.30, 0.18), "end": (0.30, -0.18),  "zoom": (1.05, 1.12)},  # diag NW->SE
-    {"start": (0.36, 0.0),   "end": (-0.36, 0.0),   "zoom": (1.04, 1.10)},  # pan L->R
-    {"start": (-0.12, 0.08), "end": (0.12, -0.08),  "zoom": (1.16, 1.04)},  # subtle diag + pull out
-    {"start": (0.30, -0.18), "end": (-0.30, 0.18),  "zoom": (1.05, 1.12)},  # diag SE->NW
-    {"start": (-0.36, 0.0),  "end": (0.36, 0.0),    "zoom": (1.04, 1.10)},  # pan R->L
-    {"start": (-0.30, -0.18),"end": (0.30, 0.18),   "zoom": (1.05, 1.12)},  # diag SW->NE
+    {"start": ( _SLIDE_TRAVEL, 0.0), "end": (-_SLIDE_TRAVEL, 0.0), "zoom": (1.03, 1.10)},  # slide: image L
+    {"start": (0.0, -_TILT_TRAVEL),  "end": (0.0,  _TILT_TRAVEL),  "zoom": (1.04, 1.14)},  # tilt: image up
+    {"start": (-_SLIDE_TRAVEL, 0.0), "end": ( _SLIDE_TRAVEL, 0.0), "zoom": (1.03, 1.10)},  # slide: image R
+    {"start": (0.0,  _TILT_TRAVEL),  "end": (0.0, -_TILT_TRAVEL),  "zoom": (1.04, 1.10)},  # tilt: image down
+    {"start": ( _SLIDE_TRAVEL, 0.0), "end": (-_SLIDE_TRAVEL, 0.0), "zoom": (1.05, 1.16)},  # slide L + push in
+    {"start": (0.0, -_TILT_TRAVEL),  "end": (0.0,  _TILT_TRAVEL),  "zoom": (1.16, 1.05)},  # tilt up + pull out
+    {"start": (-_SLIDE_TRAVEL, 0.0), "end": ( _SLIDE_TRAVEL, 0.0), "zoom": (1.05, 1.16)},  # slide R + push in
+    {"start": (0.22, 0.14),          "end": (-0.22, -0.14),        "zoom": (1.05, 1.12)},  # rare gentle diagonal accent
 ]
 
 
@@ -1447,6 +1477,7 @@ def main() -> int:
         print(f"[plan] {len(context_only_set)} text/context-only panel(s) -> narrated, not shown")
 
     cut_ordinal = 0  # GLOBAL across all beats: drives per-cut motion variation
+    beat_ordinal = 0  # GLOBAL across all beats: rotates the directional-slide fallback
     for gobj in groups:
         group_id = int(gobj.get("group_id") or gobj.get("shot_id") or 0)
         shot_id = int(gobj.get("shot_id") or group_id or 0)
@@ -1484,6 +1515,10 @@ def main() -> int:
             scene_files = [f for f in scene_files if f in keep_set]  # orig order
 
         beat = beats_by_gid.get(group_id, {"group_id": group_id})
+        # one ordinal per beat — rotates the directional-slide fallback so adjacent
+        # beats move in different directions (slide_left -> slide_right -> tilt ...).
+        this_beat_ordinal = beat_ordinal
+        beat_ordinal += 1
         mood_words = _norm_words(beat.get("mood_words") or [])
         rh = beat.get("rendering_hints") or {}
 
@@ -1546,7 +1581,7 @@ def main() -> int:
                 cut_dur = float(entry["end_sec"]) - cut_start
 
                 # Per-cut motion — same logic as per-panel path
-                motion_mode = _choose_motion_mode(beat)
+                motion_mode = _choose_motion_mode(beat, ordinal=this_beat_ordinal)
                 base_motion = _motion_params_for_mode(motion_mode, cut_dur, mood_words)
                 tf = targets_by_file.get(fbase)
                 fm = face_aware_motion(base_motion, tf)
@@ -1568,7 +1603,7 @@ def main() -> int:
                 })
 
             avoid_text_zoom = bool(rh.get("avoid_text_zoom", False))
-            motion_mode = _choose_motion_mode(beat)
+            motion_mode = _choose_motion_mode(beat, ordinal=this_beat_ordinal)
             group_motion = _motion_params_for_mode(motion_mode, group_clip_dur, mood_words)
             group_camera = _camera_compat_from_motion(group_motion, avoid_text_zoom=avoid_text_zoom)
 
@@ -1714,7 +1749,7 @@ def main() -> int:
                 audio_pad_sec=args.audio_pad_sec,
             )
 
-            motion_mode = _choose_motion_mode(beat)
+            motion_mode = _choose_motion_mode(beat, ordinal=this_beat_ordinal)
             motion = _motion_params_for_mode(motion_mode, dur, mood_words)
             camera = _camera_compat_from_motion(motion, avoid_text_zoom=avoid_text_zoom)
 

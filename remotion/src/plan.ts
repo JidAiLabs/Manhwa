@@ -9,7 +9,7 @@ export const HEIGHT = 1080;
 // Parity with the Blender script's caps (its CLI defaults).
 export const MAX_ZOOM_CAP = 1.35;
 export const TEXT_ZOOM_CAP = 1.06;
-export const PAN_CAP_FRAC = 0.1;
+export const PAN_CAP_FRAC = 0.2;
 export const DEFAULT_SAFE_INSET = 0.06;
 
 export type Bias = {x?: number; y?: number};

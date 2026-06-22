@@ -60,7 +60,21 @@ export const CutView: React.FC<{
 
   if (tall && dims) {
     // Tall panels are complete cuts, not footage to crop into a 16:9 close-up.
-    // Keep the whole panel visible and let the blurred fill carry the frame.
+    // Keep the whole panel visible and let the blurred fill carry the frame —
+    // but DON'T sit still: drift the panel vertically (a gentle scroll shot)
+    // from the top toward the planner's focus_y so the eye travels the strip.
+    // The foreground is scaled up just enough to give vertical headroom for the
+    // drift; the clip's overflow:hidden trims the off-frame sliver, and the
+    // travel is slow + small so the whole panel reads over the cut's duration.
+    const tallScale = 1.12;
+    const fy = clamp(motion?.focus_y ?? 0.5, 0, 1);
+    // Vertical headroom (px) created by the upscale, on a contain-fit panel that
+    // already fills the frame height. Drift from the top of that headroom down
+    // toward focus_y (a centered focus → a slow, even downward drift).
+    const tallTravel = ((tallScale - 1) * height) / 2;
+    const tallY0 = tallTravel; // start: top of the panel in view
+    const tallY1 = tallTravel * (1 - 2 * fy); // end: biased toward focus_y
+    const tallY = tallY0 + (tallY1 - tallY0) * t;
     return (
       <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
         <Img
@@ -81,6 +95,7 @@ export const CutView: React.FC<{
               maxWidth: '100%',
               maxHeight: '100%',
               objectFit: 'contain',
+              transform: `translateY(${tallY}px) scale(${tallScale})`,
             }}
           />
         </AbsoluteFill>
@@ -135,7 +150,16 @@ export const CutView: React.FC<{
   if (wide) {
     // Wide/full-screen panels must stay readable as complete panels. Cover-crop
     // plus Ken Burns was cutting off the intended composition, so the wide path
-    // uses a blurred fill behind a static contained foreground.
+    // uses a blurred fill behind a contained foreground — but with a GENTLE
+    // horizontal drift (left→right) so the panel isn't motionless. The upscale
+    // gives just enough horizontal headroom for the pan; overflow:hidden on the
+    // clip trims the off-frame sliver, and the travel is small + slow so the
+    // whole panel still reads across the cut's duration.
+    const wideScale = 1.12;
+    // Horizontal headroom (px) from the upscale on a contain-fit panel that
+    // already fills the frame width. Drift from left edge toward the right.
+    const wideTravel = ((wideScale - 1) * width) / 2;
+    const wideX = interpolate(t, [0, 1], [wideTravel, -wideTravel]);
     return (
       <AbsoluteFill style={{backgroundColor: '#000', overflow: 'hidden'}}>
         <Img
@@ -149,13 +173,14 @@ export const CutView: React.FC<{
             filter: `blur(${bgBlurPx}px) brightness(${1 - bgDim})`,
           }}
         />
-        <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center'}}>
+        <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center', overflow: 'hidden'}}>
           <Img
             src={src}
             style={{
               maxWidth: '100%',
               maxHeight: '100%',
               objectFit: 'contain',
+              transform: `translateX(${wideX}px) scale(${wideScale})`,
             }}
           />
         </AbsoluteFill>
