@@ -435,6 +435,7 @@ def run_guarded_synth(
     retries: int,
     expected_sec: float,
     segment_id: str = "",
+    in_thread: bool = True,
 ) -> Dict[str, Any]:
     """Run one clip's synthesis under a wall-clock watchdog with retries.
 
@@ -442,6 +443,12 @@ def run_guarded_synth(
     timed out or raised) a silence placeholder of *expected_sec* is written to
     *out_path* so timeline_planner still aligns the panel under the (silent)
     voiceover instead of skipping the segment and shifting every later cut.
+
+    ``in_thread`` (default True) runs each attempt in a daemon thread so a hung
+    backend (the torch 48-min-hang case) can be abandoned at *timeout_sec*. Set
+    False for backends whose GPU work is thread-local (MLX streams) — they crash
+    in a worker thread; they run inline instead (still retried, still placeholder
+    on failure), with no per-clip timeout since they're fast + bounded.
     """
     last_timed_out = False
     attempts = 0
@@ -455,37 +462,47 @@ def run_guarded_synth(
     for attempt in range(total):
         attempts += 1
         attempt_out = _attempt_path(attempts)
-        result_q: "queue.Queue[Tuple[str, Any]]" = queue.Queue(maxsize=1)
+        if in_thread:
+            result_q: "queue.Queue[Tuple[str, Any]]" = queue.Queue(maxsize=1)
 
-        def _target() -> None:
+            def _target() -> None:
+                try:
+                    synth_fn(text, attempt_out, exaggeration)
+                    result_q.put(("ok", None))
+                except BaseException as exc:  # noqa: BLE001 - relay backend failures
+                    result_q.put(("err", exc))
+
+            th = threading.Thread(
+                target=_target,
+                name=f"tts-synth-{tag}-attempt-{attempts}",
+                daemon=True,
+            )
+            th.start()
+            th.join(timeout=timeout_sec)
+
+            if th.is_alive():
+                last_timed_out = True
+                if attempt < retries:
+                    print(f"[tts] clip {tag} timed out after {timeout_sec:.0f}s, "
+                          f"retry {attempt + 1}/{retries}")
+                else:
+                    print(f"[tts] clip {tag} timed out after {timeout_sec:.0f}s — "
+                          f"gave up after {total} attempts")
+                continue
+
+            try:
+                state, payload = result_q.get_nowait()
+            except queue.Empty:
+                state, payload = "err", RuntimeError("synth thread exited without a result")
+        else:
+            # Inline: MLX (and other thread-local-GPU backends) must run in the
+            # calling thread — a worker thread has no GPU stream. No timeout here;
+            # these backends are bounded (max_tokens) and fast.
             try:
                 synth_fn(text, attempt_out, exaggeration)
-                result_q.put(("ok", None))
+                state, payload = "ok", None
             except BaseException as exc:  # noqa: BLE001 - relay backend failures
-                result_q.put(("err", exc))
-
-        th = threading.Thread(
-            target=_target,
-            name=f"tts-synth-{tag}-attempt-{attempts}",
-            daemon=True,
-        )
-        th.start()
-        th.join(timeout=timeout_sec)
-
-        if th.is_alive():
-            last_timed_out = True
-            if attempt < retries:
-                print(f"[tts] clip {tag} timed out after {timeout_sec:.0f}s, "
-                      f"retry {attempt + 1}/{retries}")
-            else:
-                print(f"[tts] clip {tag} timed out after {timeout_sec:.0f}s — "
-                      f"gave up after {total} attempts")
-            continue
-
-        try:
-            state, payload = result_q.get_nowait()
-        except queue.Empty:
-            state, payload = "err", RuntimeError("synth thread exited without a result")
+                state, payload = "err", exc
 
         if state == "ok":
             if os.path.exists(attempt_out):
@@ -634,6 +651,7 @@ def _synthesize_group_mode(
             synth_fn, joined_text, group_clip_path, group_exag,
             timeout_sec=timeout, retries=int(clip_retries),
             expected_sec=est_sec, segment_id=group_label,
+            in_thread=(str(backend).lower() != "qwen-mlx"),
         )
         tts_failed = not guard["ok"]
 
@@ -813,7 +831,8 @@ def synthesize_manifest(
             guard = run_guarded_synth(
                 synth_fn, sent_text, audio_path, exaggeration,
                 timeout_sec=timeout, retries=int(clip_retries),
-                expected_sec=est, segment_id=seg_id)
+                expected_sec=est, segment_id=seg_id,
+                in_thread=(str(backend).lower() != "qwen-mlx"))
             tts_failed = not guard["ok"]
             # condition only a real take; a silence placeholder needs no lift
             if not tts_failed:
