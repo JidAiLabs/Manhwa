@@ -69,6 +69,46 @@ _META_WEAK_SIGNALS = (
 _META_STRONG_RE = re.compile("|".join(_META_STRONG_SIGNALS), re.IGNORECASE)
 _META_WEAK_RE = re.compile("|".join(_META_WEAK_SIGNALS), re.IGNORECASE)
 
+# --- repeated-phrase detector ------------------------------------------------
+_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "as", "by", "from", "is", "was", "are", "were", "be",
+    "been", "being", "it", "its", "he", "she", "his", "her", "they",
+    "their", "this", "that", "his", "her", "its", "our", "your", "my",
+    "into", "through", "across", "over", "under", "up", "down", "out",
+    "not", "no", "nor", "so", "yet", "both", "each", "than", "too",
+    "very", "just", "even", "still", "also", "then", "there", "here",
+})
+
+
+def repeated_phrases(
+    lines: List[str],
+    n: int = 3,
+    min_count: int = 2,
+) -> List[Tuple[str, int]]:
+    """Return (phrase, count) for size-n n-grams of non-stopwords occurring
+    >= min_count times across all narration lines, sorted by count desc.
+
+    Useful for QA flagging of heavy atmospheric repetition in a chapter's
+    narration. Does NOT gate the pipeline — call site decides what to do.
+    """
+    from collections import Counter
+    import re as _re
+
+    counts: Counter = Counter()
+    for line in lines:
+        words = [w for w in _re.findall(r"[a-z]+", line.lower())
+                 if w not in _STOPWORDS]
+        for i in range(len(words) - n + 1):
+            counts[" ".join(words[i:i + n])] += 1
+
+    return sorted(
+        [(phrase, count) for phrase, count in counts.items()
+         if count >= min_count],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
 
 def _is_meta_garbage(text: str) -> bool:
     """True when the 'narration' is clearly the model talking about JSON/parsing/
@@ -1079,6 +1119,13 @@ def main() -> int:
         "      ('and then, just like that, the chaos stilled...' / 'but the quiet\n"
         "      didn't last—') so the pace flows. Match the energy, but TRANSITION into\n"
         "      it; never start cold in a wildly different tone from the previous line.\n"
+        "    - VOCABULARY FRESHNESS: do NOT reuse the same atmospheric or descriptive\n"
+        "      words you already used in previous_narration. If you wrote 'moon',\n"
+        "      'shadow', 'pale', or 'mist' earlier in the chapter, find fresh phrasing\n"
+        "      now — describe what is concretely drawn (a scar, a fist, a doorway)\n"
+        "      rather than reaching for generic atmosphere. Avoid stock clichés such as\n"
+        "      'under the pale moonlight', 'shadows dance', 'mist rolls in'. Vary the\n"
+        "      vocabulary: one strong specific image beats three recycled mood words.\n"
         "    - STORY SPINE: a CHAPTER STORY SPINE (logline + the ordered arc) is given\n"
         "      below, and INPUT_JSON.arc_label is THIS beat's place in it. Write the\n"
         "      line to ADVANCE that story — connect it to what came before, set up what\n"
