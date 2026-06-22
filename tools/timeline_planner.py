@@ -221,6 +221,67 @@ def _wav_duration_sec(path: str) -> float:
 
 
 # -----------------------------
+# Align manifest index
+# -----------------------------
+def _load_align_index(align_path: str, base_dir: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Load manifest.align.json and return a dict keyed by GROUP id (g####)
+    whose value is the ordered list of per-panel align entries for that group.
+
+    Each entry: {segment_id, group_clip (abs path), start_sec, end_sec, method}.
+    Panels within a group are sorted by segment_id (g####_p00 < g####_p01).
+    Returns {} when the file is absent or malformed.
+    """
+    if not align_path or not os.path.exists(align_path):
+        return {}
+    try:
+        obj = load_json(align_path)
+    except Exception:
+        return {}
+    segments = obj.get("segments") or []
+    if not isinstance(segments, list):
+        return {}
+
+    by_group: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in segments:
+        if not isinstance(entry, dict):
+            continue
+        sid = _safe_str(entry.get("segment_id"))
+        if not sid:
+            continue
+        # group key: g#### (everything up to but not including _p##)
+        m = re.match(r"^(g\d+)", sid)
+        if not m:
+            continue
+        gkey = m.group(1)
+
+        clip_rel = _safe_str(entry.get("group_clip") or "")
+        if clip_rel and not os.path.isabs(clip_rel):
+            clip_abs = os.path.normpath(os.path.join(base_dir, clip_rel))
+        else:
+            clip_abs = clip_rel
+
+        try:
+            start = float(entry.get("start_sec") or 0.0)
+            end = float(entry.get("end_sec") or 0.0)
+        except Exception:
+            start, end = 0.0, 0.0
+
+        by_group.setdefault(gkey, []).append({
+            "segment_id": sid,
+            "group_clip": clip_abs,
+            "start_sec": start,
+            "end_sec": end,
+            "method": _safe_str(entry.get("method") or "proportional"),
+        })
+
+    # sort each group's panels by segment_id
+    for gkey in by_group:
+        by_group[gkey].sort(key=lambda e: e["segment_id"])
+
+    return by_group
+
+
+# -----------------------------
 # Duration (FIXED: returns float)
 # -----------------------------
 def compute_duration_sec(
@@ -1274,6 +1335,7 @@ def main() -> int:
     ap.add_argument("--script", default="", help="manifest.script.json (preferred)")
     ap.add_argument("--vision", default="", help="manifest.vision.json (optional)")
     ap.add_argument("--tts-index", default="", help="tts_sections/tts_index.json (optional)")
+    ap.add_argument("--align", default="", help="manifest.align.json (per-group TTS mode; auto-detected if blank)")
     ap.add_argument("--out", required=True, help="render.plan.json")
 
     ap.add_argument("--mode", choices=["no_narration", "narrated"], default="narrated")
@@ -1320,6 +1382,21 @@ def main() -> int:
     if args.tts_index:
         tts_obj = load_json(args.tts_index)
         tts_by_gid = _index_tts(tts_obj, args.tts_index)
+
+    # GROUP MODE: load manifest.align.json when present (explicit --align or
+    # auto-detected next to the tts-index).  Non-empty → one item per group;
+    # empty → per-panel B2 path below (unchanged).
+    _align_path = args.align
+    if not _align_path and args.tts_index:
+        _auto = os.path.join(os.path.dirname(os.path.abspath(args.tts_index)),
+                             "manifest.align.json")
+        if os.path.exists(_auto):
+            _align_path = _auto
+    _align_base = os.path.dirname(os.path.abspath(_align_path)) if _align_path else (
+        os.path.dirname(os.path.abspath(args.tts_index)) if args.tts_index else ".")
+    align_by_group: Dict[str, List[Dict[str, Any]]] = _load_align_index(_align_path, _align_base)
+    if align_by_group:
+        print(f"[plan] GROUP MODE: manifest.align.json detected — {len(align_by_group)} group(s)")
 
     # B2: group the per-paragraph script rows (keyed by segment_id g####_p##) by
     # group_id, in paragraph order, so the timeline emits ONE item per paragraph.
@@ -1409,6 +1486,134 @@ def main() -> int:
         beat = beats_by_gid.get(group_id, {"group_id": group_id})
         mood_words = _norm_words(beat.get("mood_words") or [])
         rh = beat.get("rendering_hints") or {}
+
+        # ── GROUP MODE ────────────────────────────────────────────────────────
+        # When manifest.align.json is present, emit ONE item per GROUP whose
+        # tts_audio is the continuous group clip and whose cuts[] use the
+        # per-panel aligned offsets (start/dur relative to the group clip).
+        # This path is mutually exclusive with the per-segment B2 loop below.
+        gkey = f"g{group_id:04d}"
+        align_entries = align_by_group.get(gkey) if align_by_group else None
+        if align_entries:
+            # Build the scene_file lookup: segment_id -> basename from script
+            seg_to_file: Dict[str, str] = {}
+            for _sid, _srow in (script_by_gid.items() if script_by_gid else {}.items()):
+                if int((_srow or {}).get("group_id") or 0) != group_id:
+                    continue
+                shot_sf = _scene_file_basenames((_srow or {}).get("scene_files") or [])
+                if shot_sf:
+                    seg_to_file[_sid] = shot_sf[0]
+
+            # Group clip: first entry's group_clip (all entries share the same clip)
+            group_clip_path = align_entries[0]["group_clip"]
+
+            # Duration: read the WAV; fall back to max(end_sec)
+            group_clip_dur = 0.0
+            if group_clip_path and os.path.exists(group_clip_path):
+                try:
+                    group_clip_dur = _wav_duration_sec(group_clip_path)
+                except Exception:
+                    pass
+            if group_clip_dur <= 0.0:
+                group_clip_dur = max(e["end_sec"] for e in align_entries)
+
+            # Joined narration text (for tts_text and tags)
+            group_text_parts = []
+            for _sid, _srow in sorted(
+                [(sid, srow) for sid, srow in script_by_gid.items()
+                 if int((srow or {}).get("group_id") or 0) == group_id],
+                key=lambda t: t[0]
+            ):
+                p = _safe_str((_srow or {}).get("paragraph"))
+                if p:
+                    group_text_parts.append(p)
+            group_tts_text = " ".join(group_text_parts)
+
+            # Build cuts: one per aligned panel entry, offsets relative to group clip
+            group_cuts: List[Dict[str, Any]] = []
+            for entry in align_entries:
+                sid_e = entry["segment_id"]
+                # scene file: from script or groups manifest fallback
+                fbase = seg_to_file.get(sid_e)
+                if not fbase:
+                    # fallback: use the panel index to pick from group's scene_files
+                    m_pi = re.match(r"g\d+_p(\d+)$", sid_e)
+                    pi = int(m_pi.group(1)) if m_pi else 0
+                    fbase = scene_files[pi] if pi < len(scene_files) else (scene_files[0] if scene_files else "")
+                if not fbase:
+                    continue
+                cut_start = float(entry["start_sec"])
+                cut_dur = float(entry["end_sec"]) - cut_start
+
+                # Per-cut motion — same logic as per-panel path
+                motion_mode = _choose_motion_mode(beat)
+                base_motion = _motion_params_for_mode(motion_mode, cut_dur, mood_words)
+                tf = targets_by_file.get(fbase)
+                fm = face_aware_motion(base_motion, tf)
+                if fm is not base_motion:
+                    cm = fm
+                else:
+                    cm = _vary_motion(base_motion, cut_ordinal)
+                    if cm is base_motion:
+                        cm = dict(base_motion)
+                cm = motion_for_cut(cut_dur, cm)
+                cm["focus_y"] = round(_content_focus_y(tf), 3)
+                cut_ordinal += 1
+
+                group_cuts.append({
+                    "file": fbase,
+                    "start": round(cut_start, 3),
+                    "dur": round(cut_dur, 3),
+                    "motion": cm,
+                })
+
+            avoid_text_zoom = bool(rh.get("avoid_text_zoom", False))
+            motion_mode = _choose_motion_mode(beat)
+            group_motion = _motion_params_for_mode(motion_mode, group_clip_dur, mood_words)
+            group_camera = _camera_compat_from_motion(group_motion, avoid_text_zoom=avoid_text_zoom)
+
+            primary_scene_file = group_cuts[0]["file"] if group_cuts else (scene_files[0] if scene_files else "")
+
+            group_item: Dict[str, Any] = {
+                "segment_id": gkey,
+                "group_id": group_id,
+                "shot_id": shot_id,
+                "segment": str(gobj.get("segment") or "present"),
+                "display_strategy": "multi_cut",
+                "primary_scene_file": primary_scene_file,
+                "group_scene_files": scene_files,
+                "scene_files": [c["file"] for c in group_cuts],
+
+                "cuts": group_cuts,
+
+                "start_sec": round(time_cursor, 3),
+                "duration_sec": round(float(group_clip_dur), 3),
+                "end_sec": round(time_cursor + float(group_clip_dur), 3),
+
+                "camera": group_camera,
+                "motion": group_motion,
+                "overlays": [],
+                "tts_text": group_tts_text.strip(),
+                "tts_audio": group_clip_path,
+                "tts_audio_duration_sec": round(float(group_clip_dur), 3),
+                "rendering_hints": {
+                    "avoid_text_zoom": avoid_text_zoom,
+                    "preferred_focus": rh.get("preferred_focus") or "",
+                    "camera_motion": rh.get("camera_motion") or "",
+                    "target_phrases": rh.get("target_phrases") if isinstance(rh.get("target_phrases"), list) else [],
+                },
+                "tags": {
+                    "mood_words": beat.get("mood_words") or [],
+                    "emotional_turn": beat.get("emotional_turn") or "",
+                    "duration_source": "audio",
+                    "filtered_blank_panels": True if args.prefer_clean else False,
+                    "group_mode": True,
+                },
+            }
+            timeline.append(group_item)
+            time_cursor += float(group_clip_dur)
+            continue  # skip the per-segment B2 loop for this group
+        # ── END GROUP MODE ────────────────────────────────────────────────────
 
         # B2: a group may have several narration paragraphs (segment_id g####_p##).
         # Emit ONE timeline item per paragraph so each paragraph keeps its own
