@@ -109,6 +109,7 @@ def test_synthesize_manifest_builds_aligned_index(tmp_path):
         _script(), str(tmp_path),
         backend="chatterbox", synth_fn=fake_synth,
         duration_fn=lambda p: 3.0,   # stub duration
+        group_mode=False,            # per-panel path (what this test verifies)
     )
     clips = index["clips"]
     assert [c["segment_id"] for c in clips] == ["g0001_p00", "g0002_p01"]
@@ -135,7 +136,8 @@ def test_synthesize_manifest_caches_unchanged_text(tmp_path):
     calls1 = []
     idx = lt.synthesize_manifest(
         _script(), str(tmp_path), backend="kokoro",
-        synth_fn=_synth_write(calls1), duration_fn=lambda p: 1.0)
+        synth_fn=_synth_write(calls1), duration_fn=lambda p: 1.0,
+        group_mode=False)            # per-panel path: one clip per segment
     (tmp_path / "tts_index.json").write_text(json.dumps(idx))
     assert len(calls1) == 2
     assert all(c.get("text_sha") for c in idx["clips"])      # fingerprint stored
@@ -143,7 +145,8 @@ def test_synthesize_manifest_caches_unchanged_text(tmp_path):
     calls2 = []
     lt.synthesize_manifest(
         _script(), str(tmp_path), backend="kokoro",
-        synth_fn=_synth_write(calls2), duration_fn=lambda p: 1.0)
+        synth_fn=_synth_write(calls2), duration_fn=lambda p: 1.0,
+        group_mode=False)
     assert calls2 == []
 
 
@@ -151,7 +154,8 @@ def test_synthesize_manifest_revoices_only_changed_segments(tmp_path):
     # establish a baseline index
     idx = lt.synthesize_manifest(
         _script(), str(tmp_path), backend="kokoro",
-        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0)
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False)            # per-panel path: cache keyed by segment_id
     (tmp_path / "tts_index.json").write_text(json.dumps(idx))
     # edit ONLY the second paragraph's narration
     changed = _script()
@@ -159,7 +163,8 @@ def test_synthesize_manifest_revoices_only_changed_segments(tmp_path):
     calls = []
     lt.synthesize_manifest(
         changed, str(tmp_path), backend="kokoro",
-        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0)
+        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0,
+        group_mode=False)
     # only g0002_p01 re-voiced; g0001_p00 kept (deterministic gate, incremental)
     assert len(calls) == 1
     assert os.path.basename(calls[0]).startswith("g0002_p01.attempt")
@@ -171,7 +176,8 @@ def test_synthesize_manifest_prunes_orphan_clips(tmp_path):
     (tmp_path / "clips" / "g0099_p09.wav").write_bytes(b"orphan")   # not in script
     lt.synthesize_manifest(
         _script(), str(tmp_path), backend="kokoro",
-        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0)
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False)            # per-panel path: orphan g####_p## pruning
     assert not (tmp_path / "clips" / "g0099_p09.wav").exists()      # pruned
 
 
@@ -374,6 +380,7 @@ def test_synth_site_uses_normalized_text(tmp_path):
         synth_fn=stub_synth,
         backend="stub",
         text_source="tts_v3",
+        group_mode=False,            # per-panel path: verify text normalization
     )
 
     assert captured, "synth_fn was never called"

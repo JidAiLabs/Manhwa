@@ -41,6 +41,36 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from narration_consistency import narration_sha  # noqa: E402
 
+# tts_align is a sibling module in tools/; import it the same way this module
+# loads itself (spec from file) so it works regardless of sys.path.
+import importlib.util as _ilu
+_ALIGN_SPEC = _ilu.spec_from_file_location(
+    "tts_align",
+    os.path.join(_TOOLS_DIR, "tts_align.py"),
+)
+_tts_align = _ilu.module_from_spec(_ALIGN_SPEC)
+_ALIGN_SPEC.loader.exec_module(_tts_align)  # type: ignore[union-attr]
+
+# Default align function: the public API from tts_align (injectable for tests)
+_default_align_fn = _tts_align.align_panels
+
+# Env flag: STUDIO_TTS_GROUP_SYNTH=1 (default) → per-group synthesis mode.
+# Set to 0 to revert to the shipped per-panel path with no code change.
+_GROUP_RE = re.compile(r"^(g\d{4})_p\d{2}$")
+_GROUP_CLIP_RE = re.compile(r"^g\d{4}\.wav$")
+
+
+def _group_id_str(segment_id: str) -> str:
+    """Extract the group prefix from a segment_id ('g0007_p02' → 'g0007')."""
+    m = _GROUP_RE.match(segment_id)
+    return m.group(1) if m else segment_id
+
+
+def _group_mode_default() -> bool:
+    """Return True when STUDIO_TTS_GROUP_SYNTH is truthy (default '1')."""
+    raw = os.environ.get("STUDIO_TTS_GROUP_SYNTH", "1")
+    return raw.strip().lower() not in ("0", "false", "no")
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (mood tags, item extraction, duration) — all unit-tested
@@ -496,6 +526,183 @@ SynthFn = Callable[[str, str, float], None]
 DurationFn = Callable[[str], float]
 
 
+def _synthesize_group_mode(
+    script_obj: Dict[str, Any],
+    out_dir: str,
+    *,
+    backend: str,
+    synth_fn: SynthFn,
+    duration_fn: DurationFn,
+    text_source: str,
+    overwrite: bool,
+    voice_ref: str,
+    clip_timeout_sec: Optional[float],
+    clip_retries: int,
+    align_fn: Callable,
+) -> Dict[str, Any]:
+    """Per-group TTS synthesis with inline forced alignment.
+
+    Algorithm:
+    1. Extract all segment items (per-panel, same as per-panel path).
+    2. Bucket items by group_id, preserving panel order within each group.
+    3. For each group:
+       a. Join the group's panel-line spoken texts with a single space.
+       b. Synthesize ONE clip → ``clips/g####.wav`` (via run_guarded_synth).
+       c. Read the clip duration.
+       d. Call align_fn(panel_lines, clip_dur, clip_path=...) → per-panel slices.
+       e. Record each panel's alignment entry in align_segments[].
+    4. Write ``manifest.align.json`` alongside the tts_index.
+    5. Return a tts_index whose ``clips`` list references GROUP clips (one entry
+       per group for discoverability); the primary per-panel timing source is
+       ``manifest.align.json``.
+
+    Clip audio paths: ``clips/g####.wav`` (NOT ``clips/g####_p##.wav``).
+    manifest.align.json shape:
+        {"segments": [
+            {"segment_id": "g####_p##",
+             "group_clip": "clips/g####.wav",
+             "start_sec": float, "end_sec": float, "method": "asr"|"proportional"},
+            ...
+        ]}
+    """
+    items = extract_items_from_manifest(script_obj, text_source)
+    clips_dir = os.path.join(out_dir, "clips")
+    os.makedirs(clips_dir, exist_ok=True)
+
+    # --- bucket items by group_id, preserving panel order -------------------
+    # Use an ordered dict so groups are processed in segment_id sort order.
+    from collections import OrderedDict
+    groups: "OrderedDict[int, List[Dict[str, Any]]]" = OrderedDict()
+    for it in items:
+        gid = int(it["group_id"])
+        if gid not in groups:
+            groups[gid] = []
+        groups[gid].append(it)
+
+    index: Dict[str, Any] = {
+        "source_script": os.path.abspath(script_obj.get("_path", "")) if script_obj.get("_path") else "",
+        "backend": backend,
+        "voice_ref": voice_ref,
+        "text_source": text_source,
+        "group_mode": True,
+        "clips": [],
+        "total_duration_sec": 0.0,
+    }
+    total = 0.0
+    align_segments: List[Dict[str, Any]] = []
+
+    for gid, group_items in groups.items():
+        group_label = f"g{gid:04d}"
+        group_clip_name = f"{group_label}.wav"
+        group_clip_path = os.path.join(clips_dir, group_clip_name)
+        group_clip_rel = os.path.join("clips", group_clip_name)
+
+        # --- build spoken texts per panel (same normalization as per-panel) --
+        panel_spoken: List[str] = []     # tag-stripped + normalized (sent to synth)
+        panel_source: List[str] = []     # original source text (for index)
+        panel_tags: List[Optional[str]] = []
+        for it in group_items:
+            src = str(it["text"])
+            tag = leading_tag(src)
+            sent = normalize_tts_text(strip_bracket_tags(src))
+            panel_spoken.append(sent)
+            panel_source.append(src)
+            panel_tags.append(tag)
+
+        # Join with a single space (the natural sentence boundary is already in
+        # the normalized text — no extra separator needed).
+        joined_text = " ".join(t for t in panel_spoken if t)
+
+        if not joined_text:
+            # Entire group is empty text — skip silently (same as per-panel path).
+            continue
+
+        # Exaggeration for the group clip: average the per-panel exaggerations
+        # so the overall clip prosody reflects the group's emotional arc.
+        group_exag = sum(mood_to_exaggeration(t) for t in panel_tags) / max(1, len(panel_tags))
+
+        # --- synthesize group clip (with watchdog) ---------------------------
+        est_sec = expected_audio_sec(joined_text)
+        timeout = float(clip_timeout_sec) if clip_timeout_sec is not None \
+            else _clip_timeout_formula(est_sec)
+
+        guard = run_guarded_synth(
+            synth_fn, joined_text, group_clip_path, group_exag,
+            timeout_sec=timeout, retries=int(clip_retries),
+            expected_sec=est_sec, segment_id=group_label,
+        )
+        tts_failed = not guard["ok"]
+
+        if not tts_failed:
+            cond = condition_wav_file(group_clip_path)
+        else:
+            cond = {}
+
+        clip_dur = duration_fn(group_clip_path)
+        total += clip_dur
+
+        flag = " SOFT-ATTACK-LIFTED" if cond.get("soft_attack") else ""
+        if tts_failed:
+            flag = " UNVOICED-SILENCE-PLACEHOLDER"
+        print(f"[{'fail' if tts_failed else 'ok'}] {group_label} "
+              f"panels={len(group_items)} dur={clip_dur:.2f}s{flag}")
+
+        # --- forced-align: map panel lines → [start,end] slices -------------
+        alignment = align_fn(
+            panel_spoken,
+            clip_dur,
+            clip_path=group_clip_path if not tts_failed else None,
+        )
+
+        # Record one align entry per panel
+        for i, it in enumerate(group_items):
+            seg_id = it["segment_id"]
+            if i < len(alignment):
+                sl = alignment[i]
+                start_sec = float(sl.get("start_sec", 0.0))
+                end_sec = float(sl.get("end_sec", clip_dur))
+                method = str(sl.get("method", "proportional"))
+            else:
+                # Alignment returned fewer entries than panels (shouldn't happen
+                # with a well-behaved align_fn, but guard it).
+                start_sec = 0.0
+                end_sec = clip_dur
+                method = "proportional"
+            align_segments.append({
+                "segment_id": seg_id,
+                "group_clip": group_clip_rel,
+                "start_sec": round(start_sec, 4),
+                "end_sec": round(end_sec, 4),
+                "method": method,
+            })
+
+        # Add one tts_index clip entry for the GROUP (discoverability;
+        # timeline_planner will consume manifest.align.json as primary source).
+        clip_row: Dict[str, Any] = {
+            "segment_id": group_label,
+            "group_id": gid,
+            "audio_file": group_clip_rel,
+            "duration_sec": round(clip_dur, 4),
+            "panel_count": len(group_items),
+            "group_mode": True,
+            **cond,
+        }
+        if tts_failed:
+            clip_row["tts_failed"] = True
+        index["clips"].append(clip_row)
+
+    index["total_duration_sec"] = round(total, 4)
+
+    # --- write manifest.align.json ------------------------------------------
+    align_manifest = {"segments": align_segments}
+    align_path = os.path.join(out_dir, "manifest.align.json")
+    with open(align_path, "w", encoding="utf-8") as f:
+        json.dump(align_manifest, f, ensure_ascii=False, indent=2)
+    print(f"[ok] wrote manifest.align.json ({len(align_segments)} panel entries)")
+
+    return index
+
+
 def synthesize_manifest(
     script_obj: Dict[str, Any],
     out_dir: str,
@@ -508,6 +715,8 @@ def synthesize_manifest(
     voice_ref: str = "",
     clip_timeout_sec: Optional[float] = None,
     clip_retries: int = CLIP_RETRIES,
+    group_mode: Optional[bool] = None,
+    align_fn: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """Drive TTS over every paragraph and build the tts_index.json dict.
 
@@ -521,7 +730,22 @@ def synthesize_manifest(
     (default: ``clip_timeout_sec(expected_audio_sec(text))``); tests pass a tiny
     value. On final failure a silence placeholder keeps the timeline aligned and
     the clip is flagged ``tts_failed`` in the index.
+
+    **Per-group mode** (controlled by *group_mode* or ``STUDIO_TTS_GROUP_SYNTH``
+    env, default on): synthesizes ONE clip per group (``clips/g####.wav``), then
+    forced-aligns via *align_fn* to produce per-panel ``[start,end]`` slices
+    written to ``manifest.align.json``. When off → exact prior per-panel behavior.
     """
+    # Resolve group_mode: explicit parameter > env default
+    use_group = group_mode if group_mode is not None else _group_mode_default()
+    if use_group:
+        return _synthesize_group_mode(
+            script_obj, out_dir,
+            backend=backend, synth_fn=synth_fn, duration_fn=duration_fn,
+            text_source=text_source, overwrite=overwrite, voice_ref=voice_ref,
+            clip_timeout_sec=clip_timeout_sec, clip_retries=clip_retries,
+            align_fn=align_fn if align_fn is not None else _default_align_fn,
+        )
     items = extract_items_from_manifest(script_obj, text_source)
     clips_dir = os.path.join(out_dir, "clips")
     os.makedirs(clips_dir, exist_ok=True)

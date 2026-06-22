@@ -207,6 +207,7 @@ def test_synthesize_manifest_continues_past_a_hung_clip(tmp_path):
         backend="kokoro", synth_fn=synth,
         duration_fn=lt.wav_duration_sec,
         clip_timeout_sec=0.2, clip_retries=1,
+        group_mode=False,   # this test pins the PER-PANEL watchdog path explicitly
     )
     elapsed = time.time() - t0
 
