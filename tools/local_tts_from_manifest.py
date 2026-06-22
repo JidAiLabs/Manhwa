@@ -54,8 +54,11 @@ _ALIGN_SPEC.loader.exec_module(_tts_align)  # type: ignore[union-attr]
 # Default align function: the public API from tts_align (injectable for tests)
 _default_align_fn = _tts_align.align_panels
 
-# Env flag: STUDIO_TTS_GROUP_SYNTH=1 (default) → per-group synthesis mode.
-# Set to 0 to revert to the shipped per-panel path with no code change.
+# Env flag: STUDIO_TTS_GROUP_SYNTH=1 → per-group synthesis mode (opt-in).
+# DEFAULT is OFF: the per-panel path is canonical. Per-group joined long Qwen
+# calls reintroduced stutter/timbre drift the short per-panel lines avoid, and
+# its group-item plan restructured the dashboard display — user rejected it as
+# the default (2026-06-22). Kept behind this flag, not deleted.
 _GROUP_RE = re.compile(r"^(g\d{4})_p\d{2}$")
 _GROUP_CLIP_RE = re.compile(r"^g\d{4}\.wav$")
 
@@ -67,9 +70,10 @@ def _group_id_str(segment_id: str) -> str:
 
 
 def _group_mode_default() -> bool:
-    """Return True when STUDIO_TTS_GROUP_SYNTH is truthy (default '1')."""
-    raw = os.environ.get("STUDIO_TTS_GROUP_SYNTH", "1")
-    return raw.strip().lower() not in ("0", "false", "no")
+    """Return True only when STUDIO_TTS_GROUP_SYNTH is explicitly truthy.
+    Default is OFF (per-panel) — per-group is opt-in (see flag note above)."""
+    raw = os.environ.get("STUDIO_TTS_GROUP_SYNTH", "0")
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 # ---------------------------------------------------------------------------

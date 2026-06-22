@@ -395,7 +395,7 @@ def test_group_mode_every_segment_id_appears_once(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_env_default_group_synth_on(tmp_path, monkeypatch):
-    """STUDIO_TTS_GROUP_SYNTH='1' (default) → group mode active when not explicitly set."""
+    """STUDIO_TTS_GROUP_SYNTH='1' → group mode active (explicit opt-in)."""
     monkeypatch.setenv("STUDIO_TTS_GROUP_SYNTH", "1")
 
     script = _make_script([
@@ -509,3 +509,38 @@ def test_group_clip_text_sha_passes_audio_consistency_gate(tmp_path):
     drifted = {"timeline": [{"segment_id": "g0001",
                              "tts_text": "Wholly different narration words."}]}
     assert nc.audio_consistency(drifted, index)["stale"] == ["g0001"]
+
+
+# ---------------------------------------------------------------------------
+# Test 10: DEFAULT is per-panel — group mode must be explicit opt-in
+# ---------------------------------------------------------------------------
+
+def test_no_env_defaults_to_per_panel(tmp_path, monkeypatch):
+    """With NO STUDIO_TTS_GROUP_SYNTH set, the default is PER-PANEL.
+
+    Locks the 2026-06-22 revert: per-group joined-synth degraded voice and
+    restructured the dashboard display, so it must never be the silent default
+    again. No env + no explicit group_mode → per-panel clips, no align manifest.
+    """
+    monkeypatch.delenv("STUDIO_TTS_GROUP_SYNTH", raising=False)
+    assert lt._group_mode_default() is False, "per-group must be OFF by default"
+
+    script = _make_script([
+        {"group_id": 9, "panel_texts": ["[tense] Alpha.", "[calm] Beta."]},
+    ])
+
+    def stub_synth(text: str, out_path: str, exaggeration: float) -> None:
+        _write_silence_wav(out_path)
+
+    # no group_mode arg, no env → must take the per-panel path
+    lt.synthesize_manifest(
+        script, str(tmp_path),
+        backend="qwen", synth_fn=stub_synth,
+        duration_fn=lambda p: 2.0,
+    )
+
+    clips_dir = tmp_path / "clips"
+    assert (clips_dir / "g0009_p00.wav").exists(), "per-panel clip must exist by default"
+    assert (clips_dir / "g0009_p01.wav").exists()
+    assert not (clips_dir / "g0009.wav").exists(), "group clip must NOT exist by default"
+    assert not (tmp_path / "manifest.align.json").exists(), "no align manifest in per-panel default"
