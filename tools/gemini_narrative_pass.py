@@ -637,7 +637,11 @@ def _call_model(
             think=False,  # Gemma 4 thinks by default and burns the budget
             options={"temperature": temperature,
                      "num_predict": max_output_tokens,
-                     "num_ctx": 16384},
+                     # 16k thrashed gemma's SWA cache (full prompt re-processing
+                     # every call -> ~32min wedge). Beats prompts measure ~1-7.5k
+                     # tokens, so 8k fits with headroom and matches the understand
+                     # stage's working cap. Env-tunable.
+                     "num_ctx": int(os.environ.get("STUDIO_BEATS_NUM_CTX", "8192"))},
         )
         raw = (resp.get("message") or {}).get("content") or ""
         usage = {"input": int(resp.get("prompt_eval_count") or 0),
