@@ -719,6 +719,59 @@ QWEN_ROBOTIC_FLATNESS = 0.40   # narration sits ~0.33; >0.40 reads buzzy/robotic
 QWEN_ASR_ACCEPT_MISMATCH = float(os.environ.get("STUDIO_QWEN_ASR_ACCEPT", "0.35"))
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    """Parse a boolean env var robustly (true/1/yes → True; false/0/no → False)."""
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes")
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.environ.get(key)
+    return float(raw) if raw is not None else default
+
+
+def _env_int(key: str, default: int) -> int:
+    raw = os.environ.get(key)
+    return int(raw) if raw is not None else default
+
+
+def qwen_clone_genkwargs() -> dict:
+    """Return generation kwargs for generate_voice_clone, each ENV-overridable.
+
+    Defaults are the officially recommended Qwen3-TTS params from the model
+    card, with repetition_penalty bumped to 1.1 (vs the official 1.05) to push
+    harder on the reported stutter/filler artifacts.
+
+    Override any value live without a redeploy:
+        STUDIO_QWEN_DO_SAMPLE        (bool,  default True)
+        STUDIO_QWEN_TOP_K            (int,   default 50)
+        STUDIO_QWEN_TOP_P            (float, default 1.0)
+        STUDIO_QWEN_TEMPERATURE      (float, default 0.9)
+        STUDIO_QWEN_REP_PENALTY      (float, default 1.1)
+        STUDIO_QWEN_SUB_DO_SAMPLE    (bool,  default True)
+        STUDIO_QWEN_SUB_TOP_K        (int,   default 50)
+        STUDIO_QWEN_SUB_TOP_P        (float, default 1.0)
+        STUDIO_QWEN_SUB_TEMPERATURE  (float, default 0.9)
+        STUDIO_QWEN_MAX_NEW_TOKENS   (int,   default 2048)
+        STUDIO_QWEN_NONSTREAM        (bool,  default True)
+    """
+    return {
+        "do_sample":            _env_bool("STUDIO_QWEN_DO_SAMPLE", True),
+        "top_k":                _env_int("STUDIO_QWEN_TOP_K", 50),
+        "top_p":                _env_float("STUDIO_QWEN_TOP_P", 1.0),
+        "temperature":          _env_float("STUDIO_QWEN_TEMPERATURE", 0.9),
+        "repetition_penalty":   _env_float("STUDIO_QWEN_REP_PENALTY", 1.1),
+        "subtalker_dosample":   _env_bool("STUDIO_QWEN_SUB_DO_SAMPLE", True),
+        "subtalker_top_k":      _env_int("STUDIO_QWEN_SUB_TOP_K", 50),
+        "subtalker_top_p":      _env_float("STUDIO_QWEN_SUB_TOP_P", 1.0),
+        "subtalker_temperature": _env_float("STUDIO_QWEN_SUB_TEMPERATURE", 0.9),
+        "max_new_tokens":       _env_int("STUDIO_QWEN_MAX_NEW_TOKENS", 2048),
+        "non_streaming_mode":   _env_bool("STUDIO_QWEN_NONSTREAM", True),
+    }
+
+
 def spectral_flatness(wav: Any) -> float:
     """Geometric-mean / arithmetic-mean of the magnitude spectrum (0..1).
     High = noise-like/buzzy (a robotic TTS take); clean speech sits low."""
@@ -1019,7 +1072,8 @@ def _make_qwen_synth(voice_ref: str, language: str = "English",
                 elif device == "cuda":
                     torch.cuda.manual_seed_all(seed)
                 wavs, sr = model.generate_voice_clone(
-                    text=text, language=language, voice_clone_prompt=prompt)
+                    text=text, language=language, voice_clone_prompt=prompt,
+                    **qwen_clone_genkwargs())
                 takes.append((wavs[0], sr))
                 # Early-exit probe: stop generating after the FIRST take when it's
                 # clean enough — re-roll is the EXCEPTION, not the rule.
