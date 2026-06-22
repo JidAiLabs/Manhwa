@@ -517,10 +517,10 @@ def face_aware_motion(base_motion: Dict[str, Any],
 # zoom) — a mix of diagonals (both directions), straight pans, and push-in/pull-out.
 _MOTION_VARIANTS = [
     {"start": (0.30, 0.18),  "end": (-0.30, -0.18), "zoom": (1.05, 1.12)},  # diag NE->SW
-    {"start": (0.0, 0.0),    "end": (0.0, 0.0),     "zoom": (1.04, 1.18)},  # push in
+    {"start": (0.12, 0.08),  "end": (-0.12, -0.08), "zoom": (1.04, 1.18)},  # subtle diag + push in
     {"start": (-0.30, 0.18), "end": (0.30, -0.18),  "zoom": (1.05, 1.12)},  # diag NW->SE
     {"start": (0.36, 0.0),   "end": (-0.36, 0.0),   "zoom": (1.04, 1.10)},  # pan L->R
-    {"start": (0.0, 0.0),    "end": (0.0, 0.0),     "zoom": (1.16, 1.04)},  # pull out
+    {"start": (-0.12, 0.08), "end": (0.12, -0.08),  "zoom": (1.16, 1.04)},  # subtle diag + pull out
     {"start": (0.30, -0.18), "end": (-0.30, 0.18),  "zoom": (1.05, 1.12)},  # diag SE->NW
     {"start": (-0.36, 0.0),  "end": (0.36, 0.0),    "zoom": (1.04, 1.10)},  # pan R->L
     {"start": (-0.30, -0.18),"end": (0.30, 0.18),   "zoom": (1.05, 1.12)},  # diag SW->NE
@@ -544,6 +544,86 @@ def _vary_motion(base_motion: Dict[str, Any], ordinal: int) -> Dict[str, Any]:
     m["zoom"] = {"start": round(float(v["zoom"][0]), 3),
                  "end": round(float(v["zoom"][1]), 3)}
     m["varied"] = True  # QA breadcrumb; renderers ignore unknown keys
+    return m
+
+
+# Duration thresholds for motion scaling. Cuts shorter than SHORT_CUT_SEC are
+# almost imperceptible at normal strength — they need a bigger, faster move.
+_SHORT_CUT_SEC = 4.0   # below this: boost strength + widen bias
+_LONG_CUT_SEC  = 10.0  # above this: no boost needed (motion reads fine)
+
+# Minimum bias travel magnitude to guarantee visible panning.
+_MIN_BIAS_TRAVEL = 0.18   # |end - start| per axis at minimum
+
+
+def motion_for_cut(dur: float, base_motion: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a motion dict tuned for a cut of `dur` seconds.
+
+    Two invariants are enforced:
+    1. **Visible pan**: if start_bias == end_bias (pure zoom / no lateral move),
+       inject a small diagonal drift so the cut is never fully static-looking.
+    2. **Duration-aware strength**: short cuts (< SHORT_CUT_SEC) get a boosted
+       effective strength so the move is perceptible in the narrow window;
+       long cuts keep the base strength. Scale is linear, clamped to [0, 1].
+
+    A 'static' shot is returned as-is (intentionally motionless).
+    Face-aware pans (focus='face') have their direction preserved; only the
+    magnitude is boosted where needed.
+
+    The caller is responsible for ensuring base_motion already contains the
+    correct pan direction (face-aware or variant-rotated). This helper only
+    scales values — it never chooses a new direction.
+    """
+    # Build a working copy (never mutate the caller's dict)
+    if base_motion is None:
+        base_motion = _motion_params_for_mode("kenburns", dur, [])
+    m = dict(base_motion)
+    m["start_bias"] = dict(m.get("start_bias") or {"x": 0.0, "y": 0.0})
+    m["end_bias"]   = dict(m.get("end_bias")   or {"x": 0.0, "y": 0.0})
+
+    # Static shots: touch nothing
+    if (m.get("mode") or "").lower() == "static":
+        return m
+
+    # ── 1. Guarantee perceptible pan ─────────────────────────────────────────
+    dx = m["end_bias"]["x"] - m["start_bias"]["x"]
+    dy = m["end_bias"]["y"] - m["start_bias"]["y"]
+    travel = (dx ** 2 + dy ** 2) ** 0.5
+    if travel < 1e-6:
+        # Zero-pan (pure zoom): inject a gentle default diagonal drift.
+        # Direction chosen to look natural on most manhwa panels (top-left → bottom-right).
+        drift = _MIN_BIAS_TRAVEL
+        m["start_bias"] = {"x": round( drift, 3), "y": round( drift * 0.6, 3)}
+        m["end_bias"]   = {"x": round(-drift, 3), "y": round(-drift * 0.6, 3)}
+        dx, dy = m["end_bias"]["x"] - m["start_bias"]["x"], m["end_bias"]["y"] - m["start_bias"]["y"]
+        travel = (dx ** 2 + dy ** 2) ** 0.5
+
+    # ── 2. Duration-aware strength boost ─────────────────────────────────────
+    # Linear interpolation: at SHORT_CUT_SEC → factor 1.25×; at LONG_CUT_SEC → factor 1.0×.
+    # Clamped so cuts shorter than SHORT get no more than the 1.25 cap.
+    base_strength = float(m.get("strength") or 0.75)
+    if dur <= _SHORT_CUT_SEC:
+        factor = 1.25
+    elif dur >= _LONG_CUT_SEC:
+        factor = 1.0
+    else:
+        t = (dur - _SHORT_CUT_SEC) / (_LONG_CUT_SEC - _SHORT_CUT_SEC)
+        factor = 1.25 - 0.25 * t   # 1.25 → 1.0 over the range
+
+    new_strength = clamp(base_strength * factor, 0.0, 1.0)
+
+    # Widen bias proportionally on short cuts so the pan travel also reads larger.
+    if factor > 1.0:
+        scale = min(factor, 1.0 / max(abs(m["start_bias"]["x"]), abs(m["start_bias"]["y"]),
+                                       abs(m["end_bias"]["x"]), abs(m["end_bias"]["y"]), 1e-6))
+        scale = min(scale, factor)   # never more than the factor itself
+        # Scale the pan — but only up to the pan budget of ±1.0
+        for key in ("start_bias", "end_bias"):
+            bx = clamp(m[key]["x"] * scale, -1.0, 1.0)
+            by = clamp(m[key]["y"] * scale, -1.0, 1.0)
+            m[key] = {"x": round(float(bx), 3), "y": round(float(by), 3)}
+
+    m["strength"] = round(float(new_strength), 3)
     return m
 
 
@@ -1478,6 +1558,9 @@ def main() -> int:
                     cm = _vary_motion(motion, cut_ordinal)
                     if cm is motion:            # static shot: still need a per-cut copy
                         cm = dict(motion)
+                # Scale strength + guarantee perceptible pan for this cut's duration.
+                cut_dur = float(c.get("duration_sec") or dur)
+                cm = motion_for_cut(cut_dur, cm)
                 # focus_y frames the TALL cover-crop window on the art (off the blank
                 # bubble); the renderer only uses it on tall strips, a no-op elsewhere.
                 cm["focus_y"] = round(_content_focus_y(tf), 3)
