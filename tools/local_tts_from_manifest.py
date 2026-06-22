@@ -685,6 +685,13 @@ def _synthesize_group_mode(
             "duration_sec": round(clip_dur, 4),
             "panel_count": len(group_items),
             "group_mode": True,
+            # Audio<->narration gate: hash the RAW joined panel source (NOT the
+            # tts-normalized text). narration_sha applies normalize_narration
+            # (tag-strip + whitespace), same as the planner's group tts_text
+            # (raw script paragraphs joined) — so the shas match. Hashing the
+            # normalized joined_text would diverge from the planner whenever
+            # normalize_tts_text rewrote a char (ellipsis/em-dash) -> false stale.
+            "text_sha": narration_sha(" ".join(s for s in panel_source if s)),
             **cond,
         }
         if tts_failed:

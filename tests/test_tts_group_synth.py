@@ -30,6 +30,14 @@ _SPEC = importlib.util.spec_from_file_location(
 lt = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(lt)  # type: ignore[union-attr]
 
+# The audio<->narration freshness gate (prep-QA's audio_stale check) lives here.
+_NC_SPEC = importlib.util.spec_from_file_location(
+    "narration_consistency",
+    Path(__file__).resolve().parent.parent / "tools" / "narration_consistency.py",
+)
+nc = importlib.util.module_from_spec(_NC_SPEC)
+_NC_SPEC.loader.exec_module(nc)  # type: ignore[union-attr]
+
 
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures
@@ -437,3 +445,67 @@ def test_env_off_group_synth_disabled(tmp_path, monkeypatch):
     assert (clips_dir / "g0006_p01.wav").exists()
     assert not (clips_dir / "g0006.wav").exists()
     assert not (tmp_path / "manifest.align.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Test 9: group clips carry text_sha so the audio<->narration gate stays fresh
+# ---------------------------------------------------------------------------
+
+def test_group_clip_text_sha_passes_audio_consistency_gate(tmp_path):
+    """Regression for the first group-mode Ch1 render failure (BLOCKING
+    ``audio_stale``).
+
+    A group clip's ``segment_id`` is the group label (``g####``); prep-QA's
+    ``audio_consistency`` compares its stored ``text_sha`` against
+    ``narration_sha(plan_item["tts_text"])``. The planner derives that tts_text
+    by joining the group's RAW script paragraphs, so the clip MUST store
+    ``narration_sha`` of the same raw join. Earlier the group clip had no
+    ``text_sha`` → ``_clip_sha`` returned None → every group read as stale →
+    render blocked.
+
+    Asserts both halves of the contract:
+      1. stored text_sha == narration_sha(raw joined panel source), and
+      2. audio_consistency() reports the group segment FRESH for a plan whose
+         group tts_text is that same raw join (and correctly STALE on drift, so
+         the gate is a real fingerprint — not a constant that always matches).
+    """
+    raw_texts = [
+        "[tense] The gate groans open.",
+        "[calm] Nothing stirs in the dark.",
+        "[dramatic] Then the blade descends.",
+    ]
+    script = _make_script([{"group_id": 1, "panel_texts": raw_texts}])
+
+    def stub_synth(text: str, out_path: str, exaggeration: float) -> None:
+        _write_silence_wav(out_path, duration_sec=6.0)
+
+    index = lt.synthesize_manifest(
+        script, str(tmp_path),
+        backend="qwen", synth_fn=stub_synth,
+        duration_fn=lambda p: 6.0,
+        group_mode=True,
+        align_fn=_stub_align,
+    )
+
+    clips = {c["segment_id"]: c for c in index["clips"]}
+    assert "g0001" in clips, f"expected group clip g0001, got {list(clips)}"
+    group_clip = clips["g0001"]
+
+    # 1. text_sha hashes the RAW joined panel source (same as the planner)
+    expected_sha = nc.narration_sha(" ".join(raw_texts))
+    assert group_clip.get("text_sha") == expected_sha, (
+        "group clip text_sha must hash the RAW joined panel source "
+        f"(expected {expected_sha!r}, got {group_clip.get('text_sha')!r})"
+    )
+
+    # 2. the gate sees a matching group plan as FRESH (the render would proceed)
+    plan = {"timeline": [{"segment_id": "g0001", "tts_text": " ".join(raw_texts)}]}
+    result = nc.audio_consistency(plan, index)
+    assert result["fresh"] == ["g0001"], f"group seg must be fresh: {result}"
+    assert result["stale"] == []
+    assert result["missing"] == []
+
+    # ...and drifted narration is correctly STALE (proves it's a real sha)
+    drifted = {"timeline": [{"segment_id": "g0001",
+                             "tts_text": "Wholly different narration words."}]}
+    assert nc.audio_consistency(drifted, index)["stale"] == ["g0001"]
