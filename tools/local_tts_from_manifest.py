@@ -710,7 +710,7 @@ QWEN_MODEL_BASE = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 # So: seed per-text (reproducible), and if a take reads robotic, re-roll on the
 # next seed and KEEP the least-buzzy. Most clips pass on the first try, so cost
 # is unchanged except for the rare bad take.
-QWEN_CLONE_MAX_TRIES = 3
+QWEN_CLONE_MAX_TRIES = 5       # more tries → better chance of clean ASR + flatness
 QWEN_ROBOTIC_FLATNESS = 0.40   # narration sits ~0.33; >0.40 reads buzzy/robotic
 
 
@@ -725,6 +725,211 @@ def spectral_flatness(wav: Any) -> float:
         return 0.0
     sp = np.abs(np.fft.rfft(a * np.hanning(a.size))) + 1e-12
     return float(np.exp(np.mean(np.log(sp))) / np.mean(sp))
+
+
+# ---------------------------------------------------------------------------
+# ASR-verified take selection
+# ---------------------------------------------------------------------------
+
+# Short non-word vocalisations that Qwen sometimes hallucinates between words.
+# Membership check is the fastest path; keep the set small and certain.
+_FILLER_TOKENS = frozenset({
+    "ah", "uh", "um", "er", "eh", "oh", "mm", "hmm", "hm",
+    "aouh", "auh", "ouh",  # distorted vocalisations observed in Qwen output
+})
+
+# Module-level singleton so the ASR model is only loaded once per process.
+_asr_model: Any = None
+
+
+def _get_asr() -> Any:
+    """Lazily load a faster-whisper model (base, CPU) and return it.
+
+    Returns the model object on success, or ``None`` when faster-whisper is
+    not installed — callers must handle ``None`` gracefully.  The result is
+    cached in ``_asr_model`` so the model is only constructed once.
+    """
+    global _asr_model
+    if _asr_model is not None:
+        return _asr_model
+    try:
+        from faster_whisper import WhisperModel  # type: ignore[import]
+        _asr_model = WhisperModel("base", device="cpu", compute_type="int8")
+        return _asr_model
+    except ImportError:
+        import logging
+        logging.getLogger(__name__).warning(
+            "[tts-asr] faster-whisper not installed — "
+            "ASR take-selection disabled; using spectral-flatness only."
+        )
+        return None
+
+
+def _default_transcribe(wav_or_path: Any, sr: int) -> str:
+    """Transcribe ``wav_or_path`` using the lazy faster-whisper singleton.
+
+    ``wav_or_path`` may be a file path (str/Path) or a numpy array.
+    Returns the transcript string, or raises if the model is unavailable.
+    """
+    model = _get_asr()
+    if model is None:
+        raise RuntimeError("faster-whisper not available")
+    import numpy as np
+    if isinstance(wav_or_path, (str, os.PathLike)):
+        segments, _ = model.transcribe(str(wav_or_path), beam_size=1,
+                                       language="en", vad_filter=True)
+    else:
+        # numpy array — write to a temp file then transcribe
+        import tempfile, soundfile as _sf  # noqa: E401
+        arr = np.asarray(wav_or_path, dtype=np.float32)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+            tmp = tf.name
+        try:
+            _sf.write(tmp, arr, sr, subtype="PCM_16")
+            segments, _ = model.transcribe(tmp, beam_size=1,
+                                           language="en", vad_filter=True)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return " ".join(s.text.strip() for s in segments)
+
+
+def _tokenise(text: str) -> List[str]:
+    """Lowercase, strip punctuation, split to words."""
+    import re as _re
+    cleaned = _re.sub(r"[^\w\s]", "", text.lower())
+    return [w for w in cleaned.split() if w]
+
+
+def asr_mismatch_score(intended: str, heard: str) -> float:
+    """Badness score comparing *intended* text to ASR transcript *heard*.
+
+    Combines three signals:
+    - **WER-ish**: token-level edit distance / max(1, len(intended_words))
+    - **stutter penalty**: runs of immediate repetition in *heard* absent
+      from *intended* (e.g. heard "it it it was" vs intended "it was")
+    - **filler penalty**: extra short non-word tokens in *heard* not in
+      *intended* (e.g. "ah", "uh", "aouh")
+
+    Returns 0.0 for a perfect match; higher = worse.  Scores are not
+    capped — a heavily stuttered take will score well above 1.0.
+    """
+    iw = _tokenise(intended)
+    hw = _tokenise(heard)
+
+    if not iw and not hw:
+        return 0.0
+
+    # ---- stutter penalty: count extra repeated-run tokens in heard ----------
+    # Build a run-length encoding of heard; compare each run to the expected
+    # count in intended (capped at the intended token's own repeat count).
+    intended_counts: Dict[str, int] = {}
+    for w in iw:
+        intended_counts[w] = intended_counts.get(w, 0) + 1
+
+    stutter_extra = 0
+    i = 0
+    while i < len(hw):
+        w = hw[i]
+        run = 1
+        while i + run < len(hw) and hw[i + run] == w:
+            run += 1
+        expected_run = intended_counts.get(w, 0)
+        extra = max(0, run - expected_run)
+        stutter_extra += extra
+        i += run
+
+    stutter_penalty = stutter_extra / max(1, len(iw))
+
+    # ---- filler penalty: extra short non-word tokens in heard ---------------
+    iw_set = set(iw)
+    filler_count = sum(
+        1 for w in hw
+        if w in _FILLER_TOKENS and w not in iw_set
+    )
+    filler_penalty = filler_count / max(1, len(iw))
+
+    # ---- WER-ish: token edit distance ---------------------------------------
+    # Remove filler tokens from heard before WER so we don't double-count.
+    hw_clean = [w for w in hw if not (w in _FILLER_TOKENS and w not in iw_set)]
+    # Simple DP edit distance (insert/delete/substitute each cost 1)
+    n, m = len(iw), len(hw_clean)
+    # Use two-row DP to stay O(n*m) space-efficient
+    prev = list(range(m + 1))
+    for wi in iw:
+        curr = [prev[0] + 1] + [0] * m
+        for j, wh in enumerate(hw_clean):
+            curr[j + 1] = min(
+                prev[j] + (0 if wi == wh else 1),  # sub/match
+                prev[j + 1] + 1,                   # delete
+                curr[j] + 1,                       # insert
+            )
+        prev = curr
+    wer = prev[m] / max(1, len(iw))
+
+    return wer + stutter_penalty + filler_penalty
+
+
+# Weight controlling how much mismatch contributes vs flatness in combined score.
+# mismatch is PRIMARY: weight 10× so a clean transcript always beats a buzzy one.
+_ASR_MISMATCH_WEIGHT = 10.0
+# Accept-early thresholds: stop iterating once a take clears both gates.
+_ASR_MISMATCH_ACCEPT = 0.10   # ≤ this → transcript is clean enough
+_ASR_FLATNESS_ACCEPT = QWEN_ROBOTIC_FLATNESS   # reuse the existing constant
+
+
+def pick_best_take(
+    takes: List[Tuple[Any, int]],
+    intended: str,
+    transcribe_fn: Callable,
+    flatness_fn: Callable,
+    mismatch_threshold: float = _ASR_MISMATCH_ACCEPT,
+    flatness_threshold: float = _ASR_FLATNESS_ACCEPT,
+) -> Tuple[Any, int]:
+    """Select the best (wav, sr) take from *takes* using ASR + spectral flatness.
+
+    Primary key: ASR mismatch score (lower = better, stutter/filler detected).
+    Secondary key: spectral flatness (lower = less buzzy/robotic).
+
+    Accept-early: stop at the first take that clears *both* thresholds.
+    If all takes fail both thresholds, return the least-bad one (never None).
+
+    *transcribe_fn(wav, sr) -> str* is injectable for tests; if it raises or
+    returns ``None`` the take is scored on flatness alone (graceful fallback).
+    """
+    if not takes:
+        raise ValueError("pick_best_take: takes must be non-empty")
+
+    best_take: Optional[Tuple[Any, int]] = None
+    best_combined = float("inf")
+
+    for wav, sr in takes:
+        flat = flatness_fn(wav)
+
+        try:
+            transcript = transcribe_fn(wav, sr)
+        except Exception:
+            transcript = None
+
+        if transcript is not None:
+            mismatch = asr_mismatch_score(intended, transcript)
+        else:
+            # No ASR available: treat as perfect match so flatness decides
+            mismatch = 0.0
+
+        combined = _ASR_MISMATCH_WEIGHT * mismatch + flat
+
+        if combined < best_combined:
+            best_combined = combined
+            best_take = (wav, sr)
+
+        # Accept-early: clean transcript AND below flatness threshold
+        if mismatch <= mismatch_threshold and flat <= flatness_threshold:
+            return (wav, sr)
+
+    return best_take  # type: ignore[return-value]  # always set (takes non-empty)
 
 
 def ref_text_for(voice_ref: str) -> str:
@@ -784,15 +989,21 @@ def _make_qwen_synth(voice_ref: str, language: str = "English",
             x_vector_only_mode=not bool(rtext),
         )
 
-        def synth(text: str, out_path: str, exaggeration: float) -> None:
+        # Resolve the ASR transcribe function once at synth-creation time so
+        # the lazy model load happens outside the per-clip hot path.
+        _transcribe_fn = _default_transcribe
+
+        def synth(text: str, out_path: str, exaggeration: float,
+                  _transcribe_fn: Callable = _transcribe_fn) -> None:
             import hashlib
-            # per-text seed -> the clip is reproducible (re-runs identical, so the
-            # audio<->narration gate is exact); if a take reads robotic, re-roll on
-            # the next seed and keep the least-buzzy one.
+            # per-text seed → reproducible takes (re-runs are byte-identical when
+            # the same take wins, so the audio↔narration text_sha gate stays exact).
             base = int(hashlib.sha1(text.encode("utf-8")).hexdigest()[:8], 16)
-            best_wav = None
-            best_sr = None
-            best_flat = 1.0
+
+            # Generate all candidate takes upfront then pick the best one.
+            # ASR mismatch is the PRIMARY criterion (catches stutter/filler/
+            # distortion); spectral flatness is secondary (catches robotic buzz).
+            takes: List[Tuple[Any, int]] = []
             for attempt in range(QWEN_CLONE_MAX_TRIES):
                 seed = (base + attempt) & 0x7FFFFFFF
                 torch.manual_seed(seed)
@@ -802,11 +1013,28 @@ def _make_qwen_synth(voice_ref: str, language: str = "English",
                     torch.cuda.manual_seed_all(seed)
                 wavs, sr = model.generate_voice_clone(
                     text=text, language=language, voice_clone_prompt=prompt)
-                flat = spectral_flatness(wavs[0])
-                if flat < best_flat:
-                    best_flat, best_wav, best_sr = flat, wavs[0], sr
-                if flat <= QWEN_ROBOTIC_FLATNESS:
-                    break
+                takes.append((wavs[0], sr))
+                # Early-exit probe: if first take is clean we can avoid the rest.
+                # pick_best_take handles this internally, but we only generate
+                # lazily here — stop generating when a clean first take is found.
+                if attempt == 0:
+                    try:
+                        t = _transcribe_fn(wavs[0], sr)
+                    except Exception:
+                        t = None
+                    flat0 = spectral_flatness(wavs[0])
+                    if (t is not None
+                            and asr_mismatch_score(text, t) <= _ASR_MISMATCH_ACCEPT
+                            and flat0 <= QWEN_ROBOTIC_FLATNESS):
+                        # First take is already clean — stop early.
+                        break
+
+            best_wav, best_sr = pick_best_take(
+                takes=takes,
+                intended=text,
+                transcribe_fn=_transcribe_fn,
+                flatness_fn=spectral_flatness,
+            )
             sf.write(out_path, best_wav, best_sr, subtype="PCM_16")
 
         return synth
