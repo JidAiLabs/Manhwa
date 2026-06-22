@@ -41,15 +41,15 @@ narration_microbeats = true
 narration_microbeat_max_words = 28
 
 [tts]
-# voiced backend: "qwen" (local MPS, LOCKED narrator clone — production) |
-# "kokoro" (local, free, ~6x faster, flatter — pending listening verdict) |
-# "chatterbox" (local, MIT) | "elevenlabs" (cloud, paid).
-# Modal RETIRED (2026-06-11): local Qwen measured at the same ~20min/chapter
-# wall time as the A10G (both sdpa, no flash-attn); $0.37/ch bought nothing
-# but off-box execution. User directive: no external dependencies.
-backend = "qwen"
+# voiced backend: "qwen-mlx" (Apple MLX, 8-bit Base clone — PRODUCTION 2026-06-22:
+#   ~2x faster than torch-MPS, user-approved @ exag 1.4, runs in .mlx_venv) |
+# "qwen" (torch MPS clone — prior production, kept as fallback) |
+# "kokoro" (local, free, flatter) | "chatterbox" (local, MIT) | "elevenlabs" (cloud, paid).
+# qwen-mlx expressiveness dial: STUDIO_MLX_EXAG (default 1.4) + STUDIO_MLX_TEMP.
+# Modal RETIRED (2026-06-11): no external dependencies (user directive).
+backend = "qwen-mlx"
 voice_ref = "assets/voice/narrator_ref.wav"   # LOCKED narrator (user-picked clip g0021_p02).
-                 # qwen clones it (Base ckpt, .txt transcript sidecar); chatterbox clones it too;
+                 # qwen-mlx/qwen clone it (Base ckpt + .txt transcript sidecar); chatterbox clones it too;
                  # kokoro ignores it (uses kokoro_voice).
-python = ".qwen_venv/bin/python"   # repo-relative -> resolves per host (Air/Mini); isolated venv (deps conflict)
+python = ".mlx_venv/bin/python"   # repo-relative -> resolves per host (Air/Mini); MLX venv (mlx-audio). qwen fallback = .qwen_venv
 kokoro_voice = "am_puck"   # used only when backend = "kokoro"
