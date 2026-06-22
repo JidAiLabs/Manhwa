@@ -1363,11 +1363,66 @@ def _make_kokoro_synth(voice: str = "af_heart") -> SynthFn:
     return synth
 
 
+def _make_qwen_mlx_synth(voice_ref: str) -> SynthFn:
+    """Qwen3-TTS via Apple MLX (mlx-audio), 8-bit Base checkpoint cloned to the
+    locked narrator. ~2x faster than the torch-MPS qwen path; runs in .mlx_venv.
+
+    Loads the model ONCE, then clones per clip via ICL (ref_audio + ref_text).
+    8-bit quantization flattens prosody, so expressiveness is pushed up via
+    ``exaggeration`` (default 1.4, env ``STUDIO_MLX_EXAG``) + ``temperature``
+    (env ``STUDIO_MLX_TEMP``). NOTE: this evaluation backend applies a fixed
+    expressiveness; per-mood exaggeration mapping (like the torch path) is a
+    follow-up once the voice is approved. mlx-audio writes ``{prefix}_NNN.wav``,
+    so we synth to a temp prefix then move to the exact ``out_path`` the loop
+    expects (keeping the clips/{segment_id}.wav + text_sha contract intact).
+    """
+    import glob
+    import shutil
+    from mlx_audio.tts.utils import load_model
+    from mlx_audio.tts.generate import generate_audio
+
+    repo = os.environ.get("STUDIO_MLX_MODEL",
+                          "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
+    exag = float(os.environ.get("STUDIO_MLX_EXAG", "1.4"))
+    temp = float(os.environ.get("STUDIO_MLX_TEMP", "1.0"))
+    rtext = ref_text_for(voice_ref)
+    model = load_model(repo)
+    print(f"[qwen-mlx] {repo} — cloning {voice_ref} (exag={exag}, temp={temp})")
+
+    def synth(text: str, out_path: str, exaggeration: float) -> None:
+        outdir = os.path.dirname(out_path) or "."
+        os.makedirs(outdir, exist_ok=True)
+        prefix = os.path.splitext(os.path.basename(out_path))[0] + "__mlxtmp"
+        for f in glob.glob(os.path.join(outdir, prefix + "*")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        # exaggeration goes through **kwargs -> model.generate (as the CLI does)
+        generate_audio(
+            text=text, model=model,
+            ref_audio=voice_ref, ref_text=(rtext or None),
+            output_path=outdir, file_prefix=prefix, audio_format="wav",
+            temperature=temp, exaggeration=exag, verbose=False,
+        )
+        produced = sorted(glob.glob(os.path.join(outdir, prefix + "*.wav")))
+        if not produced:
+            raise RuntimeError(f"mlx-audio produced no wav for {out_path}")
+        shutil.move(produced[0], out_path)
+        for f in glob.glob(os.path.join(outdir, prefix + "*")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+    return synth
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True, help="manifest.script.json")
     ap.add_argument("--out-dir", required=True, help="creates clips/ + tts_index.json")
-    ap.add_argument("--backend", choices=["chatterbox", "chatterbox-turbo", "qwen", "kokoro"], default="chatterbox")
+    ap.add_argument("--backend", choices=["chatterbox", "chatterbox-turbo", "qwen", "qwen-mlx", "kokoro"], default="chatterbox")
     ap.add_argument("--voice-ref", default="",
                     help="reference wav to clone: chatterbox (5-10s sample) or qwen "
                          "(locked narrator, e.g. assets/voice/narrator_ref.wav + .txt transcript)")
@@ -1386,6 +1441,8 @@ def main() -> int:
         synth_fn = _make_chatterbox_turbo_synth(args.voice_ref)
     elif args.backend == "qwen":
         synth_fn = _make_qwen_synth(args.voice_ref)
+    elif args.backend == "qwen-mlx":
+        synth_fn = _make_qwen_mlx_synth(args.voice_ref)
     else:
         synth_fn = _make_kokoro_synth(args.kokoro_voice)
 
