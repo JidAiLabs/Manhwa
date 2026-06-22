@@ -710,8 +710,13 @@ QWEN_MODEL_BASE = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 # So: seed per-text (reproducible), and if a take reads robotic, re-roll on the
 # next seed and KEEP the least-buzzy. Most clips pass on the first try, so cost
 # is unchanged except for the rare bad take.
-QWEN_CLONE_MAX_TRIES = 5       # more tries → better chance of clean ASR + flatness
+QWEN_CLONE_MAX_TRIES = int(os.environ.get("STUDIO_QWEN_MAX_TRIES", "3"))   # cap re-rolls: clean first take → done
 QWEN_ROBOTIC_FLATNESS = 0.40   # narration sits ~0.33; >0.40 reads buzzy/robotic
+# Accept-early gate in the synth loop: stop generating when the FIRST take clears both.
+# Deliberately loose (0.35) to tolerate normal Whisper transcription noise on a fine take
+# (a word/punctuation off ≈ 0.1–0.25 → accept; real stutter/dropout ≈ 0.5+ → re-roll).
+# Env-overridable so the rig can tighten/loosen without a redeploy.
+QWEN_ASR_ACCEPT_MISMATCH = float(os.environ.get("STUDIO_QWEN_ASR_ACCEPT", "0.35"))
 
 
 def spectral_flatness(wav: Any) -> float:
@@ -875,8 +880,10 @@ def asr_mismatch_score(intended: str, heard: str) -> float:
 # Weight controlling how much mismatch contributes vs flatness in combined score.
 # mismatch is PRIMARY: weight 10× so a clean transcript always beats a buzzy one.
 _ASR_MISMATCH_WEIGHT = 10.0
-# Accept-early thresholds: stop iterating once a take clears both gates.
-_ASR_MISMATCH_ACCEPT = 0.10   # ≤ this → transcript is clean enough
+# pick_best_take accept-early thresholds: used when selecting among MULTIPLE generated
+# takes. Kept strict (0.10) because at that point we've already paid for the takes —
+# the synth-loop gate (QWEN_ASR_ACCEPT_MISMATCH = 0.35) is what prevents over-generation.
+_ASR_MISMATCH_ACCEPT = 0.10
 _ASR_FLATNESS_ACCEPT = QWEN_ROBOTIC_FLATNESS   # reuse the existing constant
 
 
@@ -1014,9 +1021,10 @@ def _make_qwen_synth(voice_ref: str, language: str = "English",
                 wavs, sr = model.generate_voice_clone(
                     text=text, language=language, voice_clone_prompt=prompt)
                 takes.append((wavs[0], sr))
-                # Early-exit probe: if first take is clean we can avoid the rest.
-                # pick_best_take handles this internally, but we only generate
-                # lazily here — stop generating when a clean first take is found.
+                # Early-exit probe: stop generating after the FIRST take when it's
+                # clean enough — re-roll is the EXCEPTION, not the rule.
+                # QWEN_ASR_ACCEPT_MISMATCH is deliberately loose (0.35) so normal
+                # Whisper noise on a fine take doesn't trigger a needless re-roll.
                 if attempt == 0:
                     try:
                         t = _transcribe_fn(wavs[0], sr)
@@ -1024,9 +1032,9 @@ def _make_qwen_synth(voice_ref: str, language: str = "English",
                         t = None
                     flat0 = spectral_flatness(wavs[0])
                     if (t is not None
-                            and asr_mismatch_score(text, t) <= _ASR_MISMATCH_ACCEPT
+                            and asr_mismatch_score(text, t) <= QWEN_ASR_ACCEPT_MISMATCH
                             and flat0 <= QWEN_ROBOTIC_FLATNESS):
-                        # First take is already clean — stop early.
+                        # First take is clean enough — stop early.
                         break
 
             best_wav, best_sr = pick_best_take(
