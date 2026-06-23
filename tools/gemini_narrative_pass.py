@@ -690,6 +690,19 @@ def _call_model(
 _MODEL_429_DEADLINE_SEC = int(os.environ.get("STUDIO_MODEL_429_DEADLINE_SEC", "900") or "900")
 
 
+# Transient local-LLM (ollama) disconnects: an ollama restart/crash/overload drops
+# the connection mid-request (httpx.RemoteProtocolError / ConnectError). These are
+# recoverable — retry with backoff so a blip (or a reboot's ollama reload) doesn't
+# fail the whole chapter. The hard-watchdog TimeoutError is deliberately NOT here:
+# a genuine stall should fail-soft and move the lane on, not retry-loop.
+_TRANSIENT_LLM_EXC: tuple = (ConnectionError,)
+try:
+    import httpx as _httpx
+    _TRANSIENT_LLM_EXC = _TRANSIENT_LLM_EXC + (_httpx.TransportError,)
+except Exception:
+    pass
+
+
 def _call_model_with_backoff(
     *,
     client: Optional[genai.Client],
@@ -730,6 +743,19 @@ def _call_model_with_backoff(
                 raise
             sleep_s = min(backoff_max, (2 ** min(attempt, 6)) + random.random() * 0.8)
             print(f"[warn] 429 RESOURCE_EXHAUSTED. sleeping {sleep_s:.1f}s then retrying...")
+            time.sleep(sleep_s)
+            attempt += 1
+        except _TRANSIENT_LLM_EXC as e:
+            # ollama dropped the connection mid-request (restart/crash/overload) —
+            # transient. Retry with backoff, bounded by the same deadline so a
+            # persistently-down server eventually fails the stage and the lane moves on.
+            if time.time() >= deadline:
+                print(f"[error] local-LLM transient error persisted > "
+                      f"{_MODEL_429_DEADLINE_SEC}s — giving up (stage fails): {type(e).__name__}")
+                raise
+            sleep_s = min(backoff_max, (2 ** min(attempt, 6)) + random.random() * 0.8)
+            print(f"[warn] local-LLM disconnect ({type(e).__name__}: {str(e)[:80]}). "
+                  f"sleeping {sleep_s:.1f}s then retrying...")
             time.sleep(sleep_s)
             attempt += 1
 
