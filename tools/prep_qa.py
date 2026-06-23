@@ -740,14 +740,17 @@ named or weak; empty if ok>"}}"""
 
 
 def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
-                    model: str = "gemma4:26b") -> List[Dict[str, Any]]:
+                    model: str = "gemma4:26b",
+                    cache_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """Stronger 'eyes' than semantic_alignment_flags: per beat, judge whether the
     narration INVENTS or MIS-NAMES anything absent from every panel the beat
     shows, or is weak filler. Judged against the WHOLE montage (all the beat's
     panels at once) — not the primary panel — so a line grounded in a non-primary
     panel isn't falsely flagged. Emits a HEALABLE `grounding_weak` WARN; the
     auto-heal loop re-narrates it and the strictly-better safeguard reverts any
-    non-improvement. Only runs under --semantic-heal (off by default)."""
+    non-improvement. Runs under --semantic (and --semantic-heal). `cache_path`
+    memoizes verdicts by (model, narration, shown panels) so the voiceover-time
+    re-scan reuses prepare's judgments instead of re-paying the 26B."""
     try:
         import ollama  # noqa: F401  (local + free; absent on bare boxes)
     except ImportError:
@@ -790,24 +793,69 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
             continue
         work.append((seg, text, files))
 
-    # 2. judge every beat CONCURRENTLY so the 26B calls fill ollama's
-    #    OLLAMA_NUM_PARALLEL slots. This loop was serial — one gemma call at a
-    #    time — and is the dominant prep-QA cost (~1 call/beat on the 26B). Each
-    #    ollama_compat.chat builds its OWN Client + watchdog (no shared state),
-    #    so threading is safe; STUDIO_QA_CONC mirrors understanding's proven width.
-    def _judge_one(w: Tuple[str, str, List[str]]):
-        seg, text, files = w
+    # 2. content-addressed verdict cache. A grounding verdict is a pure function
+    #    of (model, narration, panels shown) — so the voiceover-time QA, which
+    #    re-grounds narration ALREADY finalized at prepare time, hits the cache
+    #    for every unchanged beat instead of re-paying the 26B. Collapses the
+    #    redundant second pass (and heal re-runs) to ~0 gemma calls.
+    import hashlib
+
+    def _key(text: str, files: List[str]) -> str:
+        h = hashlib.sha1()
+        for part in (model, text[:400], "\x00".join(files[:6])):
+            h.update(part.encode("utf-8", "replace"))
+            h.update(b"\x00")
+        return h.hexdigest()
+
+    cache: Dict[str, Any] = {}
+    if cache_path and os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+        except Exception:                                   # noqa: BLE001
+            cache = {}
+    keys = [_key(text, files) for (_, text, files) in work]
+    miss = [i for i, k in enumerate(keys) if k not in cache]
+
+    # judge only the MISSES, CONCURRENTLY so the 26B calls fill ollama's
+    # OLLAMA_NUM_PARALLEL slots (the loop was serial — the dominant QA cost).
+    # Each ollama_compat.chat builds its OWN Client + watchdog (no shared state),
+    # so threading is safe; STUDIO_QA_CONC mirrors understanding's proven width.
+    def _judge_one(i: int):
+        _, text, files = work[i]
         try:
             return _judge([os.path.join(clean_dir, f) for f in files[:6]], text)
         except Exception as e:                              # noqa: BLE001
             return e
     conc = max(1, int(os.environ.get("STUDIO_QA_CONC", "3")))
-    if conc > 1 and len(work) > 1:
+    if conc > 1 and len(miss) > 1:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=conc) as ex:
-            verdicts = list(ex.map(_judge_one, work))
+            fresh = dict(zip(miss, ex.map(_judge_one, miss)))
     else:
-        verdicts = [_judge_one(w) for w in work]
+        fresh = {i: _judge_one(i) for i in miss}
+
+    # resolve every beat to a verdict (cache hit or fresh) IN ORDER; persist the
+    # fresh successes so the next pass reuses them. Failures aren't cached.
+    verdicts: List[Any] = []
+    dirty = False
+    for i, k in enumerate(keys):
+        if i in fresh:
+            v = fresh[i]
+            if not isinstance(v, Exception):
+                cache[k] = v
+                dirty = True
+            verdicts.append(v)
+        else:
+            verdicts.append(cache[k])
+    if cache_path and dirty:
+        try:
+            tmp = cache_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache, f)
+            os.replace(tmp, cache_path)
+        except Exception:                                   # noqa: BLE001
+            pass
 
     # 3. build flags in timeline order — identical to the serial output
     flags: List[Dict[str, Any]] = []
@@ -1360,7 +1408,8 @@ def main() -> int:
         # ONE call (~1 call/group, ~23/chapter), vs the retired per-panel judge
         # that cost ~1 call PER SHOWN CUT (~61/chapter) for the same check — and
         # this one is montage-aware, so it has fewer false positives by design.
-        flags.extend(grounding_flags(plan, clean_dir, model=args.semantic_model))
+        flags.extend(grounding_flags(plan, clean_dir, model=args.semantic_model,
+                                     cache_path=os.path.join(ep, ".grounding_cache.json")))
         # a number/name SPOKEN in a non-shown panel is grounded in the dialogue —
         # drop the visual judge's false positive in that case
         flags = _suppress_grounded_mismatches(

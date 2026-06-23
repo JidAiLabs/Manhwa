@@ -636,6 +636,49 @@ def test_grounding_flags_parallel_matches_serial(monkeypatch, tmp_path):
     assert all(f["code"] == "grounding_weak" for f in serial)
 
 
+def test_grounding_cache_reuses_verdicts(monkeypatch, tmp_path):
+    """The verdict cache memoizes by (model, narration, panels): a second pass
+    over unchanged beats makes ZERO new gemma calls and returns identical flags —
+    this is what collapses the redundant voiceover-time grounding. A CHANGED
+    narration re-judges only that beat."""
+    import sys
+    import types
+    import os
+    import json as _json
+
+    calls = {"n": 0}
+
+    def chat(**kw):
+        calls["n"] += 1
+        weak = "WEAK" in str(kw["messages"][0]["content"])
+        return {"message": {"content": _json.dumps(
+            {"ok": (not weak), "issue": ("x" if weak else "")})}}
+
+    fake = types.ModuleType("ollama")
+    fake.chat = chat
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    files = [f"p{i:03d}.jpg" for i in range(5)]
+    for f in files:
+        (tmp_path / f).write_bytes(b"jpg")
+    plan = {"timeline": [
+        _seg(f"g{i:04d}_p00", ("WEAK x" if i % 2 == 0 else "ok x"), [files[i]])
+        for i in range(5)]}
+    cache = str(tmp_path / ".gcache.json")
+
+    first = pq.grounding_flags(plan, str(tmp_path), cache_path=cache)
+    assert calls["n"] == 5                 # first pass judges every beat
+    assert os.path.exists(cache)
+
+    second = pq.grounding_flags(plan, str(tmp_path), cache_path=cache)
+    assert calls["n"] == 5                 # second pass: ZERO new gemma calls
+    assert first == second                 # identical flags
+
+    plan["timeline"][1]["tts_text"] = "NEW WEAK x"   # one beat's narration changes
+    third = pq.grounding_flags(plan, str(tmp_path), cache_path=cache)
+    assert calls["n"] == 6                 # exactly ONE re-judge (the changed beat)
+    assert "g0001_p00" in [f["segment_id"] for f in third]
+
+
 def test_semantic_judge_skips_held_cuts(monkeypatch, tmp_path):
     """A held cut intentionally shows the PREVIOUS segment's panel while new
     narration plays — it is editorial coverage, not a narration match, so the
