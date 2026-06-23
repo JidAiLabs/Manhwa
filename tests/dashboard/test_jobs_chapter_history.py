@@ -54,3 +54,28 @@ def test_chapter_history_flags_failed_stage(tmp_path):
     qa = next(s for s in jobs.chapter_history(con)[0]["breakdown"]
               if s["label"] == "QA")
     assert qa["ok"] == 0
+
+
+def test_failed_chapters_only_lists_dead_lettered(tmp_path):
+    """A chapter is listed ONLY when its MOST RECENT job failed — a chapter that
+    recovered (later success) or has a pending retry queued is excluded."""
+    con = connect(tmp_path / "s.db")
+    _seed(con)  # series 1 + chapters 8, 9 (status 'planned')
+    con.execute("INSERT INTO chapter (id,series_id,number,label,url,status,"
+                "updated_at,season) VALUES (10,1,10,'Chapter 10','u10',"
+                "'visioned','t',1)")
+
+    def J(cid, state, err=None):
+        con.execute("INSERT INTO job (type,series_id,chapter_id,payload_json,"
+                    "priority,state,error) VALUES ('prepare',1,?,'{}',100,?,?)",
+                    (cid, state, err))
+
+    J(8, "failed", "boom"); J(8, "queued")          # Ch8: pending retry
+    J(9, "failed", "exited 1")                        # Ch9: DEAD (latest=failed)
+    J(10, "failed", "x"); J(10, "done")              # Ch10: recovered
+    con.commit()
+
+    dead = jobs.failed_chapters(con, 1)
+    assert [d["chapter_id"] for d in dead] == [9]    # only the dead-lettered one
+    assert dead[0]["error"] == "exited 1"
+    assert jobs.failed_chapters(con, 999) == []      # other series: none

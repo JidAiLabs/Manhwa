@@ -244,3 +244,24 @@ def chapter_history(con: sqlite3.Connection,
             "total_sec": total,
         })
     return out
+
+
+def failed_chapters(con: sqlite3.Connection,
+                    series_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Chapters whose MOST RECENT job FAILED (auto-retry exhausted, nothing
+    queued/running) — they need a manual reload. Surfaced on the Series tab so a
+    dead chapter never silently vanishes from a long run. A chapter that later
+    succeeded, or has a pending retry queued, is NOT listed — its latest job
+    isn't 'failed'. (SQLite returns the bare columns from the MAX(id) row.)"""
+    q = ("SELECT c.id, c.label, c.number, c.status, j.error "
+         "FROM chapter c JOIN (SELECT chapter_id, state, error, MAX(id) AS last "
+         "  FROM job WHERE chapter_id IS NOT NULL GROUP BY chapter_id) j "
+         "  ON j.chapter_id = c.id "
+         "WHERE j.state = 'failed' ")
+    args: List[Any] = []
+    if series_id is not None:
+        q += "AND c.series_id = ? "
+        args.append(series_id)
+    q += "ORDER BY c.number"
+    return [dict(zip(("chapter_id", "label", "number", "status", "error"), r))
+            for r in con.execute(q, args).fetchall()]

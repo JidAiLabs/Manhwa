@@ -853,10 +853,13 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
         with open(log_path, "a", encoding="utf-8") as log:
             log.write("\n" + traceback.format_exc())
         # Self-healing: re-enqueue a transiently-failed job (bounded) so an
-        # unattended run recovers on its own instead of stalling on a blip. SAME
-        # priority -> the retry slots to the BACK of its tier (does NOT jump ahead
-        # of queued work). After max attempts it stays failed for human review.
+        # unattended run recovers on its own instead of stalling on a blip. The
+        # retry jumps to the FRONT (STUDIO_RETRY_PRIORITY, default 1) so a failed
+        # chapter is re-attempted BEFORE new queued work (user directive). After
+        # max attempts it stays failed and is surfaced on the Series tab for a
+        # manual reload (see jobs.failed_chapters).
         max_attempts = int(os.environ.get("STUDIO_JOB_MAX_ATTEMPTS", "3"))
+        retry_priority = int(os.environ.get("STUDIO_RETRY_PRIORITY", "1"))
         attempt = int((job.get("payload") or {}).get("_attempt", 0))
         if job["type"] != "heartbeat" and attempt + 1 < max_attempts:
             payload = dict(job.get("payload") or {})
@@ -866,7 +869,7 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
                                chapter_id=job.get("chapter_id"),
                                bundle_id=job.get("bundle_id"),
                                payload=payload,
-                               priority=int(job.get("priority") or 100))
+                               priority=retry_priority)
             jobs.finish(con, job["id"], ok=False,
                         error=f"{str(e)[:260]} — auto-retry {attempt + 2}/{max_attempts} (job {rid})")
         else:

@@ -336,6 +336,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             for ch in chs)
         return page("series_detail.html", request, sid=sid, title=title,
                     series_url=_http_url(series_url), chapters=chs,
+                    failed=jobs.failed_chapters(c, sid),
                     autopilot=bool(autopilot),
                     narration_style=style or "default",
                     thumb_exists=thumb_exists, thumb_ready=thumb_ready,
@@ -703,6 +704,20 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         jobs.enqueue(c, "voiceover", chapter_id=cid,
                      payload={"auto_to": "video"}, priority=50)
         return RedirectResponse(f"/chapter/{cid}", status_code=303)
+
+    @app.post("/chapter/{cid}/reload")
+    def post_reload(cid: int):
+        # Manual reload of a dead-lettered chapter (auto-retry exhausted). Re-queue
+        # its prepare at the FRONT with auto_to=video so it drives all the way to
+        # render; prepare resumes by status, so it picks up wherever it died.
+        c = con()
+        r = c.execute("SELECT series_id FROM chapter WHERE id=?", (cid,)).fetchone()
+        sid = r[0] if r else None
+        front = int(os.environ.get("STUDIO_RETRY_PRIORITY", "1"))
+        jobs.enqueue(c, "prepare", chapter_id=cid, series_id=sid,
+                     payload={"auto_to": "video"}, priority=front)
+        return RedirectResponse(f"/series/{sid}" if sid else "/",
+                                status_code=303)
 
     @app.post("/series/{sid}/style")
     def post_style(sid: int, style: str = Form(...)):
