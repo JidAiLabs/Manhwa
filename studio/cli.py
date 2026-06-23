@@ -174,7 +174,28 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
         print(f"  Fetching ch{ch.number} → {ep_dir} …")
         chapter_ref = ChapterRef(number=ch.number, label=ch.label, url=ch.url)
-        adapter.download(chapter_ref, ep_dir)
+        # Completeness guard: a rate-limited / lazy-loaded reader page can return a
+        # TRUNCATED image list that downloads cleanly but is a fraction of the real
+        # chapter (e.g. 3 of ~20 pages) -> it would silently ship a half-chapter
+        # that QA can't catch (QA only sees what's there). The truncation is
+        # usually intermittent, so retry; refuse to mark 'downloaded' if it stays
+        # anomalously short vs the series median. --force accepts (genuinely-short
+        # chapter). A refusal leaves it 'discovered' -> the worker auto-retries.
+        med = repo.series_median_pages(con, ch.series_id)
+        paths = adapter.download(chapter_ref, ep_dir)
+        for attempt in range(2):
+            if not med or len(paths) >= 0.5 * med:
+                break
+            print(f"  ch{ch.number}: {len(paths)} pages vs series median "
+                  f"~{med:.0f} — likely a truncated fetch, retrying "
+                  f"({attempt + 1}/2)")
+            paths = adapter.download(chapter_ref, ep_dir)
+        if med and len(paths) < 0.5 * med and not args.force:
+            raise RuntimeError(
+                f"ch{ch.number}: only {len(paths)} pages vs series median "
+                f"~{med:.0f} after retries — refusing to mark downloaded "
+                f"(truncated/rate-limited source). It stays 'discovered' for "
+                f"a later retry; use --force to accept a genuinely short chapter.")
 
         now = _now_iso()
         repo.set_chapter_status(
