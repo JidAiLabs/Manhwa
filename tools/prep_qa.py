@@ -766,7 +766,8 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
         m = re.search(r"\{.*\}", raw, re.S)
         return json.loads(m.group(0)) if m else {}
 
-    flags: List[Dict[str, Any]] = []
+    # 1. collect the beats to judge, in timeline order (output stays deterministic)
+    work: List[Tuple[str, str, List[str]]] = []   # (segment_id, narration, files)
     for item in (plan or {}).get("timeline") or []:
         if item.get("branding"):
             continue
@@ -787,13 +788,35 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                     files.append(f)
         if not files:
             continue
+        work.append((seg, text, files))
+
+    # 2. judge every beat CONCURRENTLY so the 26B calls fill ollama's
+    #    OLLAMA_NUM_PARALLEL slots. This loop was serial — one gemma call at a
+    #    time — and is the dominant prep-QA cost (~1 call/beat on the 26B). Each
+    #    ollama_compat.chat builds its OWN Client + watchdog (no shared state),
+    #    so threading is safe; STUDIO_QA_CONC mirrors understanding's proven width.
+    def _judge_one(w: Tuple[str, str, List[str]]):
+        seg, text, files = w
         try:
-            v = _judge([os.path.join(clean_dir, f) for f in files[:6]], text)
+            return _judge([os.path.join(clean_dir, f) for f in files[:6]], text)
         except Exception as e:                              # noqa: BLE001
+            return e
+    conc = max(1, int(os.environ.get("STUDIO_QA_CONC", "3")))
+    if conc > 1 and len(work) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=conc) as ex:
+            verdicts = list(ex.map(_judge_one, work))
+    else:
+        verdicts = [_judge_one(w) for w in work]
+
+    # 3. build flags in timeline order — identical to the serial output
+    flags: List[Dict[str, Any]] = []
+    for (seg, text, files), v in zip(work, verdicts):
+        if isinstance(v, Exception):
             flags.append(_flag("grounding_error", INFO,
-                               f"judge failed on {seg}: {e}", segment_id=seg))
+                               f"judge failed on {seg}: {v}", segment_id=seg))
             continue
-        if v.get("ok") is False:
+        if (v or {}).get("ok") is False:
             issue = str(v.get("issue") or "").strip()[:180]
             flags.append(_flag(
                 "grounding_weak", WARN,

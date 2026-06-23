@@ -597,6 +597,45 @@ def test_semantic_judge_flags_only_when_no_cut_matches(monkeypatch, tmp_path):
     assert fl[0]["scene"] == "b.jpg"   # highest-confidence rejection cited
 
 
+def test_grounding_flags_parallel_matches_serial(monkeypatch, tmp_path):
+    """The montage grounding judge is parallelized (STUDIO_QA_CONC>1) so the
+    26B calls fill ollama's NUM_PARALLEL slots. Parallel MUST be byte-identical
+    to serial: same beats flagged, same order, same issue text."""
+    import sys
+    import types
+    import time
+    import json as _json
+
+    def chat(**kw):
+        content = str(kw["messages"][0]["content"])
+        weak = "WEAK" in content          # narration carrying the marker is weak
+        time.sleep(0.02)                  # force threads to genuinely overlap
+        return {"message": {"content": _json.dumps(
+            {"ok": (not weak), "issue": ("invented thing" if weak else "")})}}
+
+    fake = types.ModuleType("ollama")
+    fake.chat = chat
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    files = [f"p{i:03d}.jpg" for i in range(8)]
+    for f in files:
+        (tmp_path / f).write_bytes(b"jpg")
+    plan = {"timeline": [
+        _seg(f"g{i:04d}_p00",
+             ("WEAK narration" if i % 3 == 0 else "grounded narration"),
+             [files[i]])
+        for i in range(8)]}
+
+    monkeypatch.setenv("STUDIO_QA_CONC", "1")
+    serial = pq.grounding_flags(plan, str(tmp_path))
+    monkeypatch.setenv("STUDIO_QA_CONC", "3")
+    parallel = pq.grounding_flags(plan, str(tmp_path))
+
+    assert serial == parallel                      # order + content preserved
+    assert [f["segment_id"] for f in serial] == [
+        "g0000_p00", "g0003_p00", "g0006_p00"]     # every 3rd beat, in order
+    assert all(f["code"] == "grounding_weak" for f in serial)
+
+
 def test_semantic_judge_skips_held_cuts(monkeypatch, tmp_path):
     """A held cut intentionally shows the PREVIOUS segment's panel while new
     narration plays — it is editorial coverage, not a narration match, so the
