@@ -197,3 +197,50 @@ def queue_view(con: sqlite3.Connection) -> List[Dict[str, Any]]:
         "ORDER BY finished_at DESC, id DESC LIMIT 12").fetchall()
     return ([_with_timing(con, _row(r)) for r in active]
             + [_with_timing(con, _row(r)) for r in recent])
+
+
+# stage_run.stage -> short label, in display order. A stage appears multiple
+# times per chapter (prepare + voiceover both run prep/QA, heal loops re-run
+# them) so we SUM per stage — one row shows the chapter's TOTAL time per activity.
+_CHAPTER_STAGE_LABELS = [
+    ("chain:scripted", "prep"),
+    ("voiced", "voice"),
+    ("prepped", "render-prep"),
+    ("qa_scan", "QA"),
+    ("render_segment", "render"),
+]
+
+
+def chapter_history(con: sqlite3.Connection,
+                    limit: int = 15) -> List[Dict[str, Any]]:
+    """One row per chapter for the dashboard: the per-stage time breakdown
+    (summed across prepare/voiceover/heal re-runs) + total, most-recently-active
+    first. Replaces the per-JOB spam — a chapter's whole cost on a single line."""
+    rows = con.execute(
+        "SELECT chapter_id, MAX(id) AS last_id FROM stage_run "
+        "WHERE chapter_id IS NOT NULL GROUP BY chapter_id "
+        "ORDER BY last_id DESC LIMIT ?", (limit,)).fetchall()
+    out: List[Dict[str, Any]] = []
+    for cid, _last in rows:
+        agg: Dict[str, Any] = {}
+        for stage, dur, ok in con.execute(
+                "SELECT stage, COALESCE(SUM(duration_sec), 0.0), MIN(ok) "
+                "FROM stage_run WHERE chapter_id=? GROUP BY stage", (cid,)):
+            agg[str(stage)] = (float(dur or 0.0), ok)
+        breakdown: List[Dict[str, Any]] = []
+        total = 0.0
+        for stage, label in _CHAPTER_STAGE_LABELS:
+            if stage in agg:
+                dur, ok = agg[stage]
+                breakdown.append({"label": label, "sec": dur, "ok": ok})
+                total += dur
+        nm = con.execute(
+            "SELECT s.title, c.label FROM chapter c JOIN series s "
+            "ON s.id = c.series_id WHERE c.id = ?", (cid,)).fetchone()
+        out.append({
+            "chapter_id": cid,
+            "scope_name": f"{nm[0]} · {nm[1]}" if nm else f"ch#{cid}",
+            "breakdown": breakdown,
+            "total_sec": total,
+        })
+    return out
