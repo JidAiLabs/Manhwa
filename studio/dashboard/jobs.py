@@ -216,10 +216,16 @@ def chapter_history(con: sqlite3.Connection,
     """One row per chapter for the dashboard: the per-stage time breakdown
     (summed across prepare/voiceover/heal re-runs) + total, most-recently-active
     first. Replaces the per-JOB spam — a chapter's whole cost on a single line."""
+    # exclude chapters with a RUNNING job — they're shown live in the 'running'
+    # section, and their stage_run total would be PARTIAL (an in-progress stage
+    # isn't recorded until it finishes) → confusingly different from the running
+    # elapsed. A chapter appears here only once its work is done/paused.
     rows = con.execute(
         "SELECT chapter_id, MAX(id) AS last_id FROM stage_run "
-        "WHERE chapter_id IS NOT NULL GROUP BY chapter_id "
-        "ORDER BY last_id DESC LIMIT ?", (limit,)).fetchall()
+        "WHERE chapter_id IS NOT NULL AND chapter_id NOT IN "
+        "  (SELECT chapter_id FROM job WHERE state='running' "
+        "   AND chapter_id IS NOT NULL) "
+        "GROUP BY chapter_id ORDER BY last_id DESC LIMIT ?", (limit,)).fetchall()
     out: List[Dict[str, Any]] = []
     for cid, _last in rows:
         agg: Dict[str, Any] = {}

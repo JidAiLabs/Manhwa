@@ -79,3 +79,18 @@ def test_failed_chapters_only_lists_dead_lettered(tmp_path):
     assert [d["chapter_id"] for d in dead] == [9]    # only the dead-lettered one
     assert dead[0]["error"] == "exited 1"
     assert jobs.failed_chapters(con, 999) == []      # other series: none
+
+
+def test_chapter_history_excludes_running_chapter(tmp_path):
+    """A chapter with a RUNNING job is shown live in 'running', NOT in recent
+    chapters (its stage total would be partial → confusing). It reappears once
+    the job is no longer running."""
+    con = connect(tmp_path / "s.db")
+    _seed(con)
+    _stage(con, 8, "chain:scripted", 600)
+    _stage(con, 9, "chain:scripted", 500)
+    con.commit()
+    assert {r["chapter_id"] for r in jobs.chapter_history(con)} == {8, 9}
+    jobs.enqueue(con, "prepare", chapter_id=8, series_id=1)
+    jobs.claim_next(con)                              # Ch8 -> running
+    assert [r["chapter_id"] for r in jobs.chapter_history(con)] == [9]
