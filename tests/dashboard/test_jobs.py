@@ -28,14 +28,17 @@ def test_priority_orders_before_id(tmp_path):
     assert jobs.claim_next(con)["id"] == b
 
 
-def test_cancel_only_queued(tmp_path):
+def test_cancel_queued_outright_running_requests_cancelling(tmp_path):
     con = _con(tmp_path)
     a = jobs.enqueue(con, "chain", chapter_id=1)
-    assert jobs.cancel(con, a) is True
+    assert jobs.cancel(con, a) is True          # queued -> cancelled outright
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (a,)).fetchone()[0] == "cancelled"
     b = jobs.enqueue(con, "chain", chapter_id=2)
-    jobs.claim_next(con)
-    assert jobs.cancel(con, b) is False     # running -> not cancellable
-    assert jobs.queue_view(con)[0]["state"] == "running"
+    jobs.claim_next(con)                         # b -> running
+    assert jobs.cancel(con, b) is True          # running -> cancelling (worker kills it)
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (b,)).fetchone()[0] == "cancelling"
 
 
 def test_finish_failure_records_error(tmp_path):

@@ -47,6 +47,25 @@ def test_handler_exception_fails_job(tmp_path):
     assert state == "failed" and "kaput" in err
 
 
+def test_run_once_operator_cancel_marks_cancelled_no_retry(tmp_path):
+    """A RUNNING job marked 'cancelling' (dashboard) whose subprocess the monitor
+    kills -> the handler raises -> run_once records it 'cancelled', NOT failed,
+    and does NOT auto-retry (an operator cancel is intentional)."""
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "boom", chapter_id=1)
+
+    def boom(c, job, log):
+        c.execute("UPDATE job SET state='cancelling' WHERE id=?", (job["id"],))
+        c.commit()
+        raise RuntimeError("killed by cancel monitor")   # = killed subprocess
+
+    worker.run_once(con, handlers={"boom": boom}, log_dir=str(tmp_path))
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "cancelled"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='boom' AND "
+                       "state='queued'").fetchone()[0] == 0   # no auto-retry
+
+
 def test_render_segment_gate_refusal(tmp_path):
     con = _con(tmp_path)
     jid = jobs.enqueue(con, "render_segment", chapter_id=9)

@@ -8,7 +8,8 @@
 <td class="kv">{% if j.chapter_id %}<a href="/chapter/{{ j.chapter_id }}" style="color:var(--acc)">{{ j.scope_name or ('ch#' ~ j.chapter_id|string) }}</a>{% elif j.bundle_id %}bundle#{{ j.bundle_id }}{% elif j.series_id %}{{ j.scope_name or ('series#' ~ j.series_id|string) }}{% else %}—{% endif %}</td>
 <td><span class="b run">RUNNING</span><div class="kv" style="margin-top:2px">⏱ {{ fmt_eta(j.elapsed_sec) }}{% if j.est_total_sec %} / ~{{ fmt_eta(j.est_total_sec) }}{% endif %}</div></td>
 <td class="kv">{{ j.error or '' }}</td>
-<td>{% if j.log_path %}<button class="ghost" hx-get="/partials/log/{{ j.id }}" hx-target="#log" hx-swap="innerHTML">log</button>{% endif %}</td></tr>
+<td><form class="inline" method="post" action="/jobs/{{ j.id }}/cancel" onsubmit="return confirm('Cancel this RUNNING job? It is killed and marked cancelled — no auto-retry.')"><button class="red">cancel</button></form>
+{% if j.log_path %}<button class="ghost" hx-get="/partials/log/{{ j.id }}" hx-target="#log" hx-swap="innerHTML">log</button>{% endif %}</td></tr>
 {% else %}<tr><td colspan="6" class="kv">nothing running</td></tr>{% endfor %}
 </table>
 

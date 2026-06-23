@@ -71,6 +71,42 @@ def _series_title(con: sqlite3.Connection, series_id: int) -> str:
 _STAGE_TIMEOUT_SEC = int(os.environ.get("STUDIO_STAGE_TIMEOUT_SEC", "5400") or "5400")
 
 
+import threading
+
+# --- operator cancel of a RUNNING job -----------------------------------------
+# run_once stamps the current job id on its lane thread (_CUR); _stream registers
+# the live subprocess under that id in _ACTIVE. The cancel-monitor thread kills
+# the process tree of any job the dashboard marked 'cancelling'; the killed
+# subprocess makes the handler raise, and run_once then records the job
+# 'cancelled' (NOT failed) so an operator cancel never auto-retries.
+_CUR = threading.local()
+_ACTIVE: "Dict[int, subprocess.Popen]" = {}
+_ACTIVE_LK = threading.Lock()
+
+
+def _cancel_monitor(db_path: str) -> None:
+    import signal
+    from studio.catalog.db import connect
+    mcon = connect(db_path)
+    while True:
+        try:
+            for (jid,) in mcon.execute(
+                    "SELECT id FROM job WHERE state='cancelling'").fetchall():
+                with _ACTIVE_LK:
+                    p = _ACTIVE.get(jid)
+                if p is not None and p.poll() is None:
+                    try:
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                    except Exception:
+                        try:
+                            p.kill()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        time.sleep(3)
+
+
 def _stream(cmd, log: TextIO, cwd: str = str(REPO),
             env: Optional[Dict[str, str]] = None,
             timeout: Optional[int] = None) -> int:
@@ -82,6 +118,10 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO),
     # python, ffmpeg children), not just the direct child.
     p = subprocess.Popen(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
                          text=True, env=env, start_new_session=True)
+    jid = getattr(_CUR, "job_id", None)        # operator-cancel registry
+    if jid is not None:
+        with _ACTIVE_LK:
+            _ACTIVE[jid] = p
     try:
         return p.wait(timeout=to)
     except subprocess.TimeoutExpired:
@@ -97,6 +137,10 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO),
         except Exception:
             pass
         return 124  # conventional timeout exit code -> stage fails, lane continues
+    finally:
+        if jid is not None:
+            with _ACTIVE_LK:
+                _ACTIVE.pop(jid, None)
 
 
 def _series_env(con: sqlite3.Connection,
@@ -848,6 +892,7 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, f"{job['id']}-{job['type']}.log")
     jobs.set_log(con, job["id"], log_path)
+    _CUR.job_id = job["id"]                     # for the operator-cancel monitor
     try:
         with open(log_path, "a", encoding="utf-8") as log:
             handler = handlers.get(job["type"])
@@ -858,6 +903,17 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as log:
             log.write("\n" + traceback.format_exc())
+        # OPERATOR CANCEL: the dashboard marked this running job 'cancelling' and
+        # the monitor killed its subprocess -> record it 'cancelled' (NOT failed)
+        # so an operator cancel never auto-retries.
+        row = con.execute("SELECT state FROM job WHERE id=?",
+                          (job["id"],)).fetchone()
+        if row and row[0] in ("cancelling", "cancelled"):
+            con.execute("UPDATE job SET state='cancelled', "
+                        "finished_at=datetime('now'), error='cancelled by "
+                        "operator' WHERE id=?", (job["id"],))
+            con.commit()
+            return True
         # Self-healing: re-enqueue a transiently-failed job (bounded) so an
         # unattended run recovers on its own instead of stalling on a blip. The
         # retry jumps to the FRONT (STUDIO_RETRY_PRIORITY, default 1) so a failed
@@ -880,6 +936,8 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
                         error=f"{str(e)[:260]} — auto-retry {attempt + 2}/{max_attempts} (job {rid})")
         else:
             jobs.finish(con, job["id"], ok=False, error=str(e)[:300])
+    finally:
+        _CUR.job_id = None
     return True
 
 
@@ -898,6 +956,9 @@ def requeue_orphans(con: sqlite3.Connection) -> int:
     forever — at boot (one worker per host) they all go back to queued."""
     cur = con.execute("UPDATE job SET state='queued', started_at=NULL "
                       "WHERE state='running' AND type!='heartbeat'")
+    # a cancel in flight when the worker died -> just record it cancelled
+    con.execute("UPDATE job SET state='cancelled', finished_at=datetime('now') "
+                "WHERE state='cancelling'")
     con.commit()
     return cur.rowcount
 
@@ -911,6 +972,8 @@ def main(db_path: str = "studio.db") -> int:
         print(f"[worker] requeued {orphans} orphaned running job(s)")
     widths = dict(jobs.LANE_WIDTH)
     print(f"[worker] lanes {widths} on {db_path} — ctrl-c to stop")
+    threading.Thread(target=_cancel_monitor, args=(db_path,),
+                     daemon=True).start()
 
     def lane_loop(lane: str) -> None:
         lcon = connect(db_path)

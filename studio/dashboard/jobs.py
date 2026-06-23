@@ -113,9 +113,18 @@ def finish(con: sqlite3.Connection, job_id: int, *, ok: bool,
 
 
 def cancel(con: sqlite3.Connection, job_id: int) -> bool:
+    """Cancel a job. A QUEUED job is cancelled immediately. A RUNNING job is
+    marked 'cancelling' — the worker's cancel-monitor kills its subprocess tree
+    and records it 'cancelled' (an operator cancel does NOT auto-retry)."""
     cur = con.execute(
         "UPDATE job SET state='cancelled', finished_at=datetime('now') "
         "WHERE id=? AND state='queued'", (job_id,))
+    if cur.rowcount:
+        con.commit()
+        return True
+    cur = con.execute(
+        "UPDATE job SET state='cancelling' WHERE id=? AND state='running'",
+        (job_id,))
     con.commit()
     return cur.rowcount > 0
 
