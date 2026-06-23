@@ -157,10 +157,17 @@ def _with_timing(con: sqlite3.Connection, job: Dict[str, Any]) -> Dict[str, Any]
                 (job["started_at"],)).fetchone()
             if row and row[0] is not None:
                 job["elapsed_sec"] = max(0, int(row[0]))
-        stages = _TYPE_STAGES.get(job.get("type"))
-        if stages:
-            job["est_total_sec"] = sum(
-                eta.stage_eta(con, s, job.get("series_id")) for s in stages)
+        jt, sid = job.get("type"), job.get("series_id")
+        # honest estimate = median of REAL finished-job wall-clock for this type
+        # (includes heal cycles + the prep/QA inside a voiceover job). Falls back
+        # to the per-stage seed sum until that type has run-history.
+        est = eta.job_eta(con, jt, sid)
+        if est is None:
+            stages = _TYPE_STAGES.get(jt)
+            est = (sum(eta.stage_eta(con, s, sid) for s in stages)
+                   if stages else None)
+        if est:
+            job["est_total_sec"] = est
     elif st in ("done", "failed", "cancelled") and job.get("started_at") \
             and job.get("finished_at"):
         row = con.execute(

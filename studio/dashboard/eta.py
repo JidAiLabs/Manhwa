@@ -59,6 +59,32 @@ def stage_eta(con: sqlite3.Connection, stage: str,
     return _median(con, stage, series_id) or float(SEED_SEC.get(stage, 300))
 
 
+def job_eta(con: sqlite3.Connection, job_type: str,
+            series_id: Optional[int] = None) -> Optional[float]:
+    """Median WALL-CLOCK of finished jobs of this type (series-scoped first) — the
+    honest running-job estimate. Summing per-stage medians under-counts: it misses
+    heal cycles and the prep+QA that ride INSIDE a voiceover job (why a voiceover
+    showed '~7:35' against a real ~20-30 min). The real job duration includes all
+    of it. Returns None (caller falls back to the stage-sum seed) until history."""
+    candidates: List[Optional[int]] = []
+    if series_id is not None:
+        candidates.append(series_id)
+    candidates.append(None)
+    for sid in candidates:
+        q = ("SELECT (julianday(finished_at)-julianday(started_at))*86400.0 "
+             "FROM job WHERE type=? AND state='done' AND started_at IS NOT NULL "
+             "AND finished_at IS NOT NULL")
+        params: List = [job_type]
+        if sid is not None:
+            q += " AND series_id=?"
+            params.append(sid)
+        durs = [r[0] for r in con.execute(q, params).fetchall()
+                if r[0] is not None and r[0] >= _MIN_REAL_SEC]
+        if durs:
+            return float(statistics.median(durs))
+    return None
+
+
 # the four stages of a chapter's "prepare" — all Gemma-bound (understanding +
 # narration + the semantic QA), so all on the ONE GPU.
 _PREP_STAGES = ("chain:scripted", "prepped", "qa_scan", "planned")

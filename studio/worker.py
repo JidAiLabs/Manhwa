@@ -480,7 +480,13 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
         if rc != 0:
             raise RuntimeError(f"studio run exited {rc}")
     ch = _chapter(con, job["chapter_id"])
-    _run_prep_and_qa(con, ch, log)
+    # reuse_clean=True: panels are UNCHANGED from prepare (voicing alters only
+    # audio/timing, not art), so reuse the prepare-time per-panel visual-judge
+    # verdicts (.cut_judge_cache.json) instead of re-paying ~1 gemma call/panel
+    # — the dominant voiceover-time render-prep cost. The plan is still rebuilt
+    # with REAL audio timing; junk-drops stay identical to the reviewed prepare
+    # state (verdicts are per-panel + stable). Same mechanism the heal cycles use.
+    _run_prep_and_qa(con, ch, log, reuse_clean=True)
     ep = Path(ch["ep_dir"] or "")
     clips = sorted((ep / "tts" / "clips").glob("*.wav"))
     if clips:
