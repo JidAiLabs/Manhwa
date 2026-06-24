@@ -227,6 +227,11 @@ _CHROME_FURNITURE_RE = re.compile(
     r"end\s*card|"
     r"watermark|"
     r"credits?\s+page|staff\s+credits?|"
+    # creator-credit roles on a title/cover/credits card. 'autor|artista' are the
+    # Spanish/PT scanlation labels (the Nano-Machine end-card); a STORY panel's
+    # OCR never carries these, and an in-world status/skill window never does.
+    r"autor\w*|artista|art\s+by|story\s+by|written\s+by|illustrat\w*|"
+    r"created\s+by|character\s+design|original\s+(?:work|story|webtoon|comic)|"
     r"read\s+(?:on|the\s+rest|more)\s+(?:at|on)|read\s+it\s+(?:on|at)|"
     r"early\s+(?:access|chapters?|release)"
     r")\b",
@@ -299,6 +304,23 @@ def apply_inworld_screen_overrides(
     recruitment card was read as in-world chat). Such panels stay chrome so the
     grouper drops them. `detect_fn(scene_path) -> (w, h, dets) | None` is an
     injectable seam (defaults to the real cv2 + bubble detector)."""
+    # Structural demotion (the inverse of the rescue): a panel Gemma tagged
+    # 'story'/'caption' whose OCR or description reads like a CREDITS / cover card
+    # (author/artist roles, scanlator credits) is publication furniture mislabeled
+    # as art — demote to chrome so the grouper drops it. 'system'/'empty' are NEVER
+    # in scope, and a status/skill window carries none of this vocabulary, so a
+    # plot-critical system panel cannot be swept up.
+    ocr_by_file = {it.get("scene_file"): (it.get("ocr_clean") or "") for it in items}
+    demoted = 0
+    for p in panels:
+        if p.get("panel_kind") in ("story", "caption") and _looks_like_chrome_furniture(
+                ocr_by_file.get(p.get("scene_file"), ""),
+                p.get("description"), p.get("action"), p.get("dialogue")):
+            p["panel_kind"] = "chrome"
+            demoted += 1
+    if demoted:
+        log(f"[credits] demoted {demoted} story/caption -> chrome (credits/cover card)")
+
     cand = [p for p in panels
             if p.get("panel_kind") == "chrome" and (p.get("dialogue") or "").strip()
             and not _looks_like_chrome_furniture(

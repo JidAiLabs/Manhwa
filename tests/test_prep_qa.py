@@ -166,6 +166,22 @@ def test_blank_crop_white_void_errors_even_for_doc():
                for f in flags)
 
 
+def test_chunk_as_panel_blocks_a_whole_chunk():
+    # ch28/ch38: a ~9000px crop is a whole stitch chunk the detector failed to
+    # segment -> BLOCKING ERROR (no legit panel is this tall; clean max ~5.2k).
+    flags = pq.image_flags("p000005.jpg", _art(9000, 800), [], doc=True,
+                           dims_entry={"w": 800, "h": 9000})
+    assert any(f["code"] == "chunk_as_panel" and f["severity"] == "ERROR"
+               for f in flags)
+
+
+def test_tall_legit_panel_is_not_chunk_as_panel():
+    # a 5000px full-height panel (under the 8k cap) must NOT trip the gate
+    flags = pq.image_flags("p000006.jpg", _art(5000, 800), [], doc=True,
+                           dims_entry={"w": 800, "h": 5000})
+    assert not any(f["code"] == "chunk_as_panel" for f in flags)
+
+
 def test_valid_image_is_not_blank_crop():
     flags = pq.image_flags("p000005.jpg", _art(400, 600), [], doc=False,
                            dims_entry={"w": 600, "h": 400})

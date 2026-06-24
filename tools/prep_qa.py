@@ -183,7 +183,18 @@ def image_flags(
             f"{w}x{h} — scenes_clean/ and plan are out of sync",
             scene=name, segment_id=segment_id))
 
-    if h >= 6 * max(1, w):
+    if h > 8000:
+        # a "panel" taller than ~8k px is really a whole stitch chunk that the
+        # detector failed to segment — a column of panels rendered as one thin
+        # strip (ch28/ch38). No legit single panel is this tall (clean-corpus max
+        # ~5.2k px), so this is a BLOCKING integrity failure, not a style note:
+        # re-stitch + re-detect (the height-capped stitcher + re-tile guard).
+        flags.append(_flag("chunk_as_panel", ERROR,
+                           f"crop is {h}px tall (h/w={h / max(1, w):.1f}) — a whole "
+                           "stitch chunk, not a panel; detection under-segmented "
+                           "this region",
+                           scene=name, segment_id=segment_id))
+    elif h >= 6 * max(1, w):
         flags.append(_flag("extreme_tall", INFO,
                            f"aspect h/w={h / max(1, w):.1f} — scroll shot; "
                            "verify travel speed is watchable",

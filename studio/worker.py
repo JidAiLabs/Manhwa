@@ -180,6 +180,9 @@ _CRITICAL_QA_CODES = {
     "empty_item", "montage_degenerate", "beats_incomplete",
     # manifest freshness — stale or missing manifests block render
     "stale_manifest", "missing_manifest",
+    # a whole stitch chunk rendered as one panel (detection under-segmented) —
+    # heal can't fix a crop, so block → re-stitch/re-detect rather than ship it
+    "chunk_as_panel",
 }
 
 

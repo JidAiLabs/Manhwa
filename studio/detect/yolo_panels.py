@@ -103,6 +103,66 @@ _ELEMENT_CLASS_IDS = {1: "system_box", 2: "speech_bubble", 4: "sfx"}
 _SNAP_CLASSES = ("speech_bubble", "system_box")
 
 
+def _iou(a, b) -> float:
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter <= 0:
+        return 0.0
+    aa = (a[2] - a[0]) * (a[3] - a[1])
+    bb = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (aa + bb - inter)
+
+
+def _dedup_iou(boxes, thr: float = 0.5):
+    """Drop near-duplicate boxes (the same panel seen in two overlapping
+    windows), keeping the first in reading order."""
+    kept: List[Tuple[float, float, float, float]] = []
+    for b in sorted(boxes, key=lambda z: (z[1], z[0])):
+        if not any(_iou(b, k) > thr for k in kept):
+            kept.append(b)
+    return kept
+
+
+def _under_segmented(px_boxes, img_h: int, *, min_h: int = 8000) -> bool:
+    """True when a TALL chunk was under-detected: no panels at all, ONE box
+    spanning most of it (a chunk-as-panel), or too few panels for its height —
+    the signature of YOLO downscaling a giant chunk until panels vanish."""
+    if img_h <= min_h:
+        return False
+    if not px_boxes:
+        return True
+    if any((y2 - y1) > 0.7 * img_h for (_x1, y1, _x2, y2) in px_boxes):
+        return True
+    return len(px_boxes) < img_h / 4000.0
+
+
+def _retile_panels(model, img_path, img_w, img_h, conf, device,
+                   *, win: int = 6000, overlap: int = 600):
+    """Re-detect panels in an under-segmented chunk by slicing it into vertical
+    windows YOLO resolves at proper scale, offsetting boxes back to chunk coords,
+    and de-duplicating the window overlaps. Returns panel boxes (x1,y1,x2,y2)."""
+    import numpy as _np
+    from PIL import Image as _Image
+    _Image.MAX_IMAGE_PIXELS = None
+    im = _Image.open(img_path).convert("RGB")
+    found: List[Tuple[float, float, float, float]] = []
+    y = 0
+    while True:
+        y1 = min(img_h, y + win)
+        arr = _np.asarray(im.crop((0, y, img_w, y1)))
+        res = model.predict(source=arr, conf=conf, device=device, verbose=False)[0]
+        b = res.boxes
+        if b is not None and len(b) > 0:
+            for (x1, ty1, x2, ty2), c in zip(b.xyxy.cpu().numpy(), b.cls.cpu().numpy()):
+                if int(c) == _PANEL_CLASS_ID:
+                    found.append((float(x1), float(ty1) + y, float(x2), float(ty2) + y))
+        if y1 >= img_h:
+            break
+        y += win - overlap
+    return _dedup_iou(found)
+
+
 def detect_panels(
     stitch_manifest_path: str,
     out_path: str,
@@ -183,6 +243,14 @@ def detect_panels(
                     px_boxes.append(box)
                 elif ci in _ELEMENT_CLASS_IDS:
                     el_px[_ELEMENT_CLASS_IDS[ci]].append(box)
+
+        # RE-TILE GUARD: a tall chunk the full-chunk pass under-segmented (one box
+        # spanning most of it, or too sparse) means YOLO's downscale ate the
+        # panels. Re-run on vertical sub-tiles so each panel is seen at full scale.
+        if _under_segmented(px_boxes, img_h):
+            retiled = _retile_panels(model, img_path, img_w, img_h, conf, device)
+            if len(retiled) > len(px_boxes):
+                px_boxes = retiled
 
         panels_norm = boxes_to_panels_norm(px_boxes, w=img_w, h=img_h)
         elements_norm = {

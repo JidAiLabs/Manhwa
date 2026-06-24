@@ -91,3 +91,60 @@ def test_rescue_still_promotes_genuine_inworld_screen_with_dialogue():
     assert panels[0]["panel_kind"] == "story"
     assert any("in-world screen" in str(s).lower()
                for s in panels[0]["subjects"])
+
+
+# --- structural demotion: a credits/cover card mislabeled 'story' -> chrome --
+
+def test_furniture_gate_matches_creator_credits():
+    f = pu._looks_like_chrome_furniture
+    assert f("Nano machine AUTOR HAN JOONG WUEOL YA  ARTISTA GUEM GANG BUL GAE")
+    assert f("Story by Kim · Art by Lee")
+    assert f("Illustrated by Studio Redice")
+    # in-world status / skill text must STILL be invisible to the gate
+    assert not f("STATUS WINDOW LEVEL 5 HP 200 QUEST NOTIFICATION")
+    assert not f("7TH GENERATION NANO MACHINE, STARTING ACTIVATION")
+
+
+def test_demotes_credits_card_story_to_chrome():
+    # The Nano-Machine end-card: Gemma read the stylized art as 'story', but the
+    # OCR carries the creator credits -> demote to chrome so the grouper drops it.
+    panels = [{
+        "scene_file": "p000021.jpg", "panel_kind": "story", "dialogue": "",
+        "description": "A title card with stylized lettering and a silhouette.",
+        "action": "the chapter title screen", "subjects": [],
+    }]
+    items = [{"scene_file": "p000021.jpg", "scene_path": "/s/p000021.jpg",
+              "ocr_clean": "Nano machine AUTOR HAN JOONG WUEOL YA ARTISTA GUEM GANG"}]
+    pu.apply_inworld_screen_overrides(
+        panels, items, detect_fn=lambda sp: None, log=lambda _m: None)
+    assert panels[0]["panel_kind"] == "chrome"
+
+
+def test_demotion_never_touches_a_system_panel():
+    # THE SAFETY GUARANTEE: a plot-critical in-world system window survives, even
+    # though it is UI-like — its OCR carries no creator-credit vocabulary.
+    panels = [{
+        "scene_file": "p000007.jpg", "panel_kind": "system",
+        "dialogue": "QUEST: DEFEAT THE STEEL-FANGED LYCAN",
+        "description": "A glowing in-world status window.",
+        "action": "a system notification appears", "subjects": [],
+    }]
+    items = [{"scene_file": "p000007.jpg", "scene_path": "/s/p000007.jpg",
+              "ocr_clean": "STATUS LEVEL 5 HP 200 NOTIFICATION QUEST DIRECTIONS"}]
+    pu.apply_inworld_screen_overrides(
+        panels, items, detect_fn=lambda sp: None, log=lambda _m: None)
+    assert panels[0]["panel_kind"] == "system"      # untouched
+
+
+def test_demotion_never_touches_a_normal_story_panel():
+    panels = [{
+        "scene_file": "p000010.jpg", "panel_kind": "story",
+        "dialogue": "I'll protect you, no matter what.",
+        "description": "The hero shields his ally from the blast.",
+        "action": "the hero raises his blade", "subjects": [],
+    }]
+    items = [{"scene_file": "p000010.jpg", "scene_path": "/s/p000010.jpg",
+              "ocr_clean": "I'LL PROTECT YOU NO MATTER WHAT"}]
+    pu.apply_inworld_screen_overrides(
+        panels, items, detect_fn=lambda sp: None, log=lambda _m: None)
+    assert panels[0]["panel_kind"] == "story"        # untouched
