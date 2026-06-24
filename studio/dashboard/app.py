@@ -664,6 +664,28 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # force the chapter back through scene materialization so shipped
         # stage fixes actually apply (resume-by-status never re-runs them)
         c = con()
+        # rebuild RE-NARRATES (status rewinds to 'detected' -> full re-narration),
+        # so the gen-1 audio + approvals are now STALE. Clear cached clips/index/
+        # preview so render can't ship gen-1 audio under gen-2 captions, and drop
+        # the voice+render approvals so the operator must re-read the NEW narration
+        # before it voices/renders (the estimate-plan QA skips the text_sha gate).
+        r = c.execute("SELECT ep_dir FROM chapter WHERE id=?", (cid,)).fetchone()
+        if r and r[0]:
+            ep = Path(r[0])
+            for p in (ep / "tts" / "tts_index.json", ep / "render" / "voice_preview.mp3"):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+            clips = ep / "tts" / "clips"
+            if clips.exists():
+                for w in clips.glob("*.wav"):
+                    try:
+                        w.unlink()
+                    except OSError:
+                        pass
+        c.execute("DELETE FROM approval WHERE gate IN ('voice','render') "
+                  "AND chapter_id=?", (cid,))
         c.execute("UPDATE chapter SET status='detected' WHERE id=?", (cid,))
         c.commit()
         jobs.enqueue(c, "prepare", chapter_id=cid, priority=50)

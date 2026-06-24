@@ -247,16 +247,29 @@ def test_refresh_runs_sync_and_clears_new_pending(client, monkeypatch):
                        ).fetchone()[0] == 0                            # alert cleared
 
 
-def test_rebuild_route_resets_and_enqueues(client):
-    """Shipped stage-code fixes only apply when the stage re-runs — the
-    rebuild button demotes to 'detected' and queues a fresh prepare."""
+def test_rebuild_route_resets_enqueues_and_clears_stale_audio(client, tmp_path):
+    """Rebuild RE-NARRATES, so gen-1 audio + approvals are stale. It must demote to
+    'detected', queue a fresh prepare, AND clear voice/render approvals + cached
+    clips/index/preview — else render ships gen-1 audio under gen-2 captions."""
     c, con = client
+    ep = tmp_path / "ongoing" / "nano" / "ch1"
+    (ep / "tts" / "clips").mkdir(parents=True)
+    (ep / "render").mkdir(parents=True)
+    (ep / "tts" / "clips" / "g0001_p00.wav").write_bytes(b"old")
+    (ep / "tts" / "tts_index.json").write_text("{}")
+    (ep / "render" / "voice_preview.mp3").write_bytes(b"gen1")
+    con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
+    con.execute("INSERT INTO approval (gate, chapter_id, note) VALUES ('voice',1,'x')")
+    con.execute("INSERT INTO approval (gate, chapter_id, note) VALUES ('render',1,'x')")
+    con.commit()
     r = c.post("/chapter/1/rebuild", follow_redirects=False)
     assert r.status_code == 303
-    assert con.execute("SELECT status FROM chapter WHERE id=1"
-                       ).fetchone()[0] == "detected"
-    assert con.execute("SELECT type, chapter_id FROM job").fetchone() == \
-        ("prepare", 1)
+    assert con.execute("SELECT status FROM chapter WHERE id=1").fetchone()[0] == "detected"
+    assert con.execute("SELECT type FROM job").fetchone()[0] == "prepare"
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE chapter_id=1").fetchone()[0] == 0
+    assert not (ep / "render" / "voice_preview.mp3").exists()
+    assert not (ep / "tts" / "tts_index.json").exists()
+    assert not list((ep / "tts" / "clips").glob("*.wav"))
 
 
 def test_qa_report_link_is_cache_busted(client, tmp_path):
