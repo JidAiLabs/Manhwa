@@ -173,6 +173,31 @@ def test_caption_solo_beat_folds_into_previous_same_segment_beat():
     assert [s["shot_id"] for s in merged] == [1, 2]      # renumbered contiguous
 
 
+def test_title_card_rescues_system_card_mislabeled_chrome():
+    # an in-world SYSTEM card the LLM mislabeled 'chrome' MUST be rescued, else it
+    # silently drops from the video (it carries system vocab + is a flat card).
+    sys_card = {"scene_file": "p001.jpg", "ocr_clean": "SYSTEM ACTIVATION",
+                "panel_kind": "chrome", "flat_frac": 0.85, "text_coverage": 0.05}
+    assert "p001.jpg" in sg.title_card_files([sys_card])
+
+
+def test_title_card_rescue_does_not_re_include_chapter_or_credits_chrome():
+    # the rescue must NOT bring back chapter-number / credits cards (no system
+    # vocab) — that would re-introduce title cards into the video.
+    chap = {"scene_file": "p002.jpg", "ocr_clean": "CHAPTER ELEVEN",
+            "panel_kind": "chrome", "flat_frac": 0.85, "text_coverage": 0.05}
+    credits = {"scene_file": "p003.jpg", "ocr_clean": "AUTOR HAN JOONG ARTISTA",
+               "panel_kind": "chrome", "flat_frac": 0.85, "text_coverage": 0.05}
+    out = sg.title_card_files([chap, credits])
+    assert "p002.jpg" not in out and "p003.jpg" not in out
+
+
+def test_title_card_keeps_correctly_stamped_system_card():
+    s = {"scene_file": "p004.jpg", "ocr_clean": "STATUS WINDOW",
+         "panel_kind": "system", "flat_frac": 0.85, "text_coverage": 0.05}
+    assert "p004.jpg" in sg.title_card_files([s])
+
+
 def test_title_card_files_protects_story_system_cards_not_chrome():
     # flat_frac pre-set so the detector skips image I/O; reuses prep_qa._is_title_card
     items = [

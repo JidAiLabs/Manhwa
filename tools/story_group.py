@@ -314,13 +314,22 @@ def chrome_files(vision_items: List[Dict[str, Any]], series_title: str) -> set:
     return out
 
 
+# in-world system-card vocabulary — the signal that a flat card the LLM mislabeled
+# 'chrome' is actually a kept story beat (a status/quest/skill/notification window),
+# NOT a chapter-number or scanlator credits card (which carry none of this and stay
+# dropped). Gated so the chrome-rescue can't re-introduce title cards into the video.
+_SYSTEM_CARD_RE = re.compile(
+    r"\b(system|status|quest|notification|skill|activation|level|dungeon|"
+    r"guild|alert|alarm|hp|mp|exp|stat)\b", re.I)
+
+
 def title_card_files(vision_items: List[Dict[str, Any]]) -> set:
     """Story title/system cards — 'SYSTEM ACTIVATION.', an age/time card, an RPG
     status window — that the QA layer treats as UNDROPPABLE story beats.
-    Detected with prep_qa's EXACT `_is_title_card` heuristic (same flat-frame test)
-    so story_group and prep_qa always agree: a card kept here can never be flagged
-    'system_card_dropped'. These are protected from chrome/empty exclusion even when
-    the LLM mislabels a flat info-card as chrome."""
+    Detected with prep_qa's `_is_title_card` flat-frame heuristic so story_group and
+    prep_qa agree. A flat card the LLM mislabels 'chrome' is rescued ONLY when its
+    OCR carries in-world system vocab (`_SYSTEM_CARD_RE`); chapter-number/credits
+    chrome has none and stays dropped."""
     try:
         from prep_qa import _is_title_card
         from PIL import Image
@@ -333,6 +342,13 @@ def title_card_files(vision_items: List[Dict[str, Any]]) -> set:
         ocr = str(it.get("ocr_clean") or "")
         if not sf or not (1 <= len(ocr.split()) <= 10) or it.get("text_only"):
             continue
+        # chrome-stamped: only rescue a genuine in-world SYSTEM card (vocab gate),
+        # then bypass _is_title_card's chrome short-circuit so it isn't lost.
+        ignore_chrome = False
+        if str(it.get("panel_kind") or "").lower() == "chrome":
+            if not _SYSTEM_CARD_RE.search(ocr):
+                continue
+            ignore_chrome = True
         vit = it
         if "flat_frac" not in it and it.get("scene_path"):
             try:
@@ -340,7 +356,7 @@ def title_card_files(vision_items: List[Dict[str, Any]]) -> set:
                 vit = {**it, "flat_frac": float(((g > 235) | (g < 25)).mean())}
             except Exception:
                 continue
-        if _is_title_card(ocr, vit):
+        if _is_title_card(ocr, vit, ignore_chrome=ignore_chrome):
             out.add(sf)
     return out
 

@@ -896,14 +896,19 @@ _FILLER_RE = re.compile(
     re.I)
 
 
-def _is_title_card(ocr: str, vit: Dict[str, Any]) -> bool:
+def _is_title_card(ocr: str, vit: Dict[str, Any], *, ignore_chrome: bool = False) -> bool:
     """A styled title/system card (SYSTEM ACTIVATION., STARTING ACTIVATION.) —
     a short, mostly-uppercase phrase CENTERED ON A FLAT FRAME. The flat-frame
     test (*flat_frac*: fraction of near-white/near-black pixels, set by main()
     from the image) is what separates a real card from all-caps dialogue or a
-    screamed SFX sitting on textured artwork — caps text alone cannot."""
+    screamed SFX sitting on textured artwork — caps text alone cannot.
+
+    ``ignore_chrome``: skip the chrome-stamp short-circuit. The story_group rescue
+    uses this to recover an in-world SYSTEM card the LLM mislabeled 'chrome' — but
+    ONLY after it has confirmed in-world system vocabulary, so genuine
+    chapter-number / credits chrome (no such vocab) never reaches this path."""
     ocr = (ocr or "").strip()
-    if is_chrome_scene(vit):
+    if not ignore_chrome and is_chrome_scene(vit):
         return False
     if rp.empty_bubble_panel(vit):
         return False

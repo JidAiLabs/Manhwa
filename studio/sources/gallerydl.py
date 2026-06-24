@@ -204,6 +204,13 @@ def normalize_into(src_dir: Path, dest_dir: Path) -> list[Path]:
 
     # --- Write normalised JPEGs ---
     dest_dir.mkdir(parents=True, exist_ok=True)
+    # Clear stale page files from a PRIOR fetch first. A re-download (--force, or
+    # asura "restoring" a chapter to fewer pages) writes only 001..N.jpg; without
+    # this, orphaned (N+1)..M.jpg survive and get stitched as wrong/duplicated
+    # trailing panels. Only numeric page files are removed — manifests and derived
+    # dirs are left for the pipeline to refresh.
+    for stale in dest_dir.glob("[0-9]*.jpg"):
+        stale.unlink()
     written: list[Path] = []
     for i, src_path in enumerate(ordered, start=1):
         dest_path = dest_dir / f"{i:03d}.jpg"
