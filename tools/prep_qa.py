@@ -210,13 +210,22 @@ def image_flags(
     std_full = float(gray_full.std())
     white_frac = float((gray_full > 244).mean())
     black_frac = float((gray_full < 12).mean())
-    if std_full < 6.0 or (max(white_frac, black_frac) >= 0.97 and std_full < 25.0):
+    # empty_field: a crop is also a void when almost every pixel is paper or pure
+    # ink (>=235 or <=20) with <=7% real content — catches the "white field + a
+    # small dark blob/silhouette" husk that drives std HIGH and so slips the
+    # uniform-void test below. (Does NOT catch a speed-line/SFX burst whose
+    # anti-aliased edges read as content — that emphasis-husk needs a text-
+    # coverage signal; see render_prep husk handling.)
+    bg_frac = float(((gray_full >= 235) | (gray_full <= 20)).mean())
+    empty_field = bg_frac >= 0.93
+    if (std_full < 6.0 or (max(white_frac, black_frac) >= 0.97 and std_full < 25.0)
+            or empty_field):
         kind = "white" if white_frac >= black_frac else "black"
         flags.append(_flag(
             "blank_crop", ERROR,
-            f"shown crop is a near-uniform {kind} void (std={std_full:.1f}, "
-            f"white={white_frac:.2f}, black={black_frac:.2f}) — not a real "
-            "image; recrop or drop this panel",
+            f"shown crop is a near-empty {kind} void (std={std_full:.1f}, "
+            f"bg={bg_frac:.2f}, white={white_frac:.2f}, black={black_frac:.2f}) — "
+            "not a real image; recrop or drop this panel",
             scene=name, segment_id=segment_id))
 
     if not doc and not sys:

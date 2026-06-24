@@ -408,7 +408,10 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
 # QA ERROR codes that re-narration CAN'T fix — the panel itself is the problem
 # (blank/void crop, a leaked dead caption box, bubble text the blanker missed).
 # The last-resort heal DROPS those panels instead of failing the whole chapter.
-_VISUAL_DROPPABLE = {"blank_crop", "dead_box_leak", "visible_text", "ghost_text"}
+_VISUAL_DROPPABLE = {"blank_crop", "dead_box_leak", "visible_text", "ghost_text",
+                     # a husk (art inpainted away to near-nothing) can't be fixed
+                     # by re-narration — drop the panel + hold a real neighbour.
+                     "husk"}
 
 
 def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
