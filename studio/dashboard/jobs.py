@@ -245,9 +245,14 @@ def chapter_history(con: sqlite3.Connection,
     out: List[Dict[str, Any]] = []
     for cid, _last in rows:
         agg: Dict[str, Any] = {}
+        # duration = sum across all attempts (total cost incl. retries); ok =
+        # the LATEST attempt's outcome, not MIN-over-history — a stage that FAILED
+        # then recovered must not keep flashing "!" once it has succeeded.
         for stage, dur, ok in con.execute(
-                "SELECT stage, COALESCE(SUM(duration_sec), 0.0), MIN(ok) "
-                "FROM stage_run WHERE chapter_id=? GROUP BY stage", (cid,)):
+                "SELECT sr.stage, COALESCE(SUM(sr.duration_sec), 0.0), "
+                "(SELECT s2.ok FROM stage_run s2 WHERE s2.chapter_id=sr.chapter_id "
+                " AND s2.stage=sr.stage ORDER BY s2.id DESC LIMIT 1) "
+                "FROM stage_run sr WHERE sr.chapter_id=? GROUP BY sr.stage", (cid,)):
             agg[str(stage)] = (float(dur or 0.0), ok)
         breakdown: List[Dict[str, Any]] = []
         total = 0.0

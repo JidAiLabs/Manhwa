@@ -56,6 +56,21 @@ def test_chapter_history_flags_failed_stage(tmp_path):
     assert qa["ok"] == 0
 
 
+def test_chapter_history_recovered_stage_not_flagged(tmp_path):
+    """A stage that FAILED then succeeded on a later attempt shows ok (no '!') —
+    the row reflects the LATEST outcome, not the worst-ever. (The fetch-bug
+    chapters that recovered must stop flashing '!' once rendered.)"""
+    con = connect(tmp_path / "s.db")
+    _seed(con)
+    _stage(con, 8, "chain:scripted", 100, ok=0)   # original failed attempt
+    _stage(con, 8, "chain:scripted", 600, ok=1)   # recovery succeeded
+    con.commit()
+    prep = next(s for s in jobs.chapter_history(con)[0]["breakdown"]
+                if s["label"] == "prep")
+    assert prep["ok"] == 1                          # latest attempt won → no "!"
+    assert prep["sec"] == 700                        # total time still summed
+
+
 def test_failed_chapters_only_lists_dead_lettered(tmp_path):
     """A chapter is listed ONLY when its MOST RECENT job failed — a chapter that
     recovered (later success) or has a pending retry queued is excluded."""

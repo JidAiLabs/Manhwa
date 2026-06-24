@@ -504,25 +504,29 @@ def main() -> int:
         cur_images.append(im)
         cur_h += im.height
 
-    # JPEG cannot encode an image taller than 65500px. A single giant strip
-    # (asura often ships a whole chapter as ONE tall image) or a tall remainder
-    # would crash canvas.save below, so sub-cut it into JPEG-safe pieces first —
-    # prefer a real gutter near the cap, else force a clean horizontal cut.
-    JPEG_SAFE_H = 65000
-    while cur_images and sum(im.height for im in cur_images) > JPEG_SAFE_H:
+    # Cap the remainder at a YOLO-processable height. JPEG's own limit is 65500px,
+    # but a chunk anywhere near that is downscaled by the detector to its input
+    # size and loses nearly every panel (ch28: a 61.6k-px gutterless chunk -> ONE
+    # panel for the whole second half). The in-loop only evaluates a cut when
+    # ADDING a page, so the FINAL remainder — or a chapter shipped as one giant
+    # strip — was never capped (only JPEG-safe). Sub-cut it at hard_cap: prefer a
+    # real gutter near max_h, else a least-damage forced cut, so each piece
+    # detects normally. hard_cap (<= ~22k) is well under JPEG's ceiling.
+    while cur_images and sum(im.height for im in cur_images) > hard_cap:
         canvas = render_canvas(cur_images)
+        target = min(max_h, canvas.size[1] - 1)
         cut_y, dbg = _pick_cut_y_run_based(
-            canvas=canvas, target_y=JPEG_SAFE_H,
+            canvas=canvas, target_y=target,
             base_window=int(args.search_window),
             min_run_px=int(args.min_gutter_run_px),
             max_window=int(args.max_search_window))
-        if not cut_y or cut_y <= 0 or cut_y > JPEG_SAFE_H:
+        if not cut_y or cut_y <= 0 or cut_y > hard_cap:
             force_y, dbg = _force_cut_least_damage(
-                canvas=canvas, target_y=JPEG_SAFE_H,
+                canvas=canvas, target_y=target,
                 window=int(args.max_search_window))
-            cut_y = force_y if (force_y and force_y > 0) else JPEG_SAFE_H
-        cut_y = min(int(cut_y), JPEG_SAFE_H)
-        print(f"[jpeg-cap] remainder {canvas.size[1]}px > {JPEG_SAFE_H} -> cut at {cut_y}")
+            cut_y = force_y if (force_y and 0 < force_y <= hard_cap) else hard_cap
+        cut_y = min(int(cut_y), hard_cap)
+        print(f"[chunk-cap] remainder {canvas.size[1]}px > {hard_cap} -> cut at {cut_y}")
         flush_by_cut(cut_y=cut_y, keep_overlap=int(args.overlap_px), cut_debug=dbg)
 
     # Flush remainder as last chunk
