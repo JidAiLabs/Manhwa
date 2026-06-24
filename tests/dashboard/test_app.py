@@ -226,6 +226,27 @@ def test_autopilot_toggle_and_badge(client):
                        ).fetchone()[0] == 0
 
 
+def test_refresh_runs_sync_and_clears_new_pending(client, monkeypatch):
+    """The manual refresh button must re-discover synchronously and clear the
+    NEW alert (the old async /jobs refresh updated nothing in the view)."""
+    import subprocess
+    c, con = client
+    con.execute("UPDATE series SET new_pending=3 WHERE id=1")
+    con.commit()
+    calls = {}
+
+    def fake_run(cmd, **kw):
+        calls["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    r = c.post("/series/1/refresh", follow_redirects=False)
+    assert r.status_code == 303
+    assert "refresh" in calls["cmd"] and "--series" in calls["cmd"]   # ran sync
+    assert con.execute("SELECT new_pending FROM series WHERE id=1"
+                       ).fetchone()[0] == 0                            # alert cleared
+
+
 def test_rebuild_route_resets_and_enqueues(client):
     """Shipped stage-code fixes only apply when the stage re-runs — the
     rebuild button demotes to 'detected' and queues a fresh prepare."""

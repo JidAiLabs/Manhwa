@@ -737,6 +737,25 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         c.commit()
         return RedirectResponse("/series", status_code=303)
 
+    @app.post("/series/{sid}/refresh")
+    def post_refresh(sid: int):
+        # SYNC re-discovery. The old button enqueued an async /jobs refresh that
+        # updated nothing in the view, so the total never moved and the NEW badge
+        # never cleared. Run discovery inline (reuses cmd_refresh — idempotent
+        # upsert, only new chapters add rows), then clear the alert: a manual
+        # refresh means "I'm looking now".
+        import subprocess
+        import sys
+        c = con()
+        try:
+            subprocess.run([sys.executable, "-m", "studio", "refresh",
+                            "--series", str(sid)], cwd=str(REPO), timeout=90)
+        except Exception:
+            pass
+        c.execute("UPDATE series SET new_pending=0 WHERE id=?", (sid,))
+        c.commit()
+        return RedirectResponse("/series", status_code=303)
+
     def _series_running_jobs(c: sqlite3.Connection, sid: int) -> int:
         return c.execute(
             "SELECT COUNT(*) FROM job WHERE state='running' AND type!='heartbeat'"

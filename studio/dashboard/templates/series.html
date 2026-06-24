@@ -7,16 +7,15 @@
 <button class="green">add manhwa</button></form>
 <span class="kv">discovers + tracks all chapters in the background</span>
 </div>
-<table><tr><th>series</th><th>source</th><th>progress <small style="font-weight:400"><span style="color:#caa24a">prep</span>→<span style="color:#4aa3df">voice</span>→<span style="color:var(--ok)">video</span></small></th><th>seasons</th><th>new</th><th>est. finish</th><th>wall spent</th><th></th></tr>
+<table><tr><th>series</th><th>source</th><th>progress <small style="font-weight:400;opacity:.7">prepared → voiced → rendered, of total</small></th><th>seasons</th><th>new</th><th>est. finish</th><th>wall spent</th><th></th></tr>
 {% for s in series %}
 <tr><td><b>{{ s.title }}</b>{% if s.url %} <a href="{{ s.url }}" target="_blank" rel="noopener" title="read on {{ s.source }}" style="color:var(--acc);text-decoration:none">↗</a>{% endif %}{% if s.autopilot %} <span class="b ok" title="spotless QA auto-advances">⚡ AUTO</span>{% endif %}{% if s.new_pending %} <span class="b" style="background:#e74c3c;color:#fff" title="a refresh found new chapters since you last ran this series — run them">🔴 {{ s.new_pending }} NEW</span>{% endif %}</td><td>{{ s.source }}</td>
-<td><span class="bar" style="position:relative" title="prepared {{ s.prepared }} → voiced {{ s.voiced }} → rendered {{ s.rendered }}, of {{ s.total }}"><i style="position:absolute;left:0;width:{{ s.prepared_pct }}%;background:#caa24a"></i><i style="position:absolute;left:0;width:{{ s.voiced_pct }}%;background:#4aa3df"></i><i style="position:absolute;left:0;width:{{ s.rendered_pct }}%;background:var(--ok)"></i></span> <span class="kv"><span style="color:#caa24a" title="prepared / QA-ready">{{ s.prepared }}</span>→<span style="color:#4aa3df" title="voiced">{{ s.voiced }}</span>→<b style="color:var(--ok)" title="rendered video">{{ s.rendered }}</b>/{{ s.total }}</span></td>
+<td><span class="bar" style="position:relative" title="prepared {{ s.prepared }} → voiced {{ s.voiced }} → rendered {{ s.rendered }}, of {{ s.total }}"><i style="position:absolute;left:0;width:{{ s.prepared_pct }}%;background:#caa24a"></i><i style="position:absolute;left:0;width:{{ s.voiced_pct }}%;background:#4aa3df"></i><i style="position:absolute;left:0;width:{{ s.rendered_pct }}%;background:var(--ok)"></i></span> <span class="kv"><span style="color:#caa24a">prep {{ s.prepared }}</span> · <span style="color:#4aa3df">voice {{ s.voiced }}</span> · <b style="color:var(--ok)">done {{ s.rendered }}</b> / {{ s.total }}</span></td>
 <td class="kv">{% if s.seasons %}{{ s.seasons|join(', ') }}{% else %}—{% endif %}</td>
 <td>{% if s.new %}<span class="b new">+{{ s.new }}</span>{% else %}—{% endif %}</td>
 <td class="kv" title="per chapter (measured medians): prep {{ s.avg_prep }} + voice {{ s.avg_voice }} + render {{ s.avg_render }} — the one GPU runs prep & voice serially; render overlaps"><b>{{ s.eta }}</b><br><span style="opacity:.55;font-size:.82em">{{ s.avg_prep }}+{{ s.avg_voice }}+{{ s.avg_render }}/ch</span></td><td class="kv">{{ s.wall_spent }}</td>
 <td><a href="/series/{{ s.id }}"><button class="ghost">open</button></a>
-<form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="refresh">
-<input type="hidden" name="series_id" value="{{ s.id }}"><button class="ghost">refresh</button></form>
+<form class="inline" method="post" action="/series/{{ s.id }}/refresh"><button class="ghost" title="check the source for new chapters now (updates the count)">refresh</button></form>
 {% if s.new_pending %}<form class="inline" method="post" action="/series/{{ s.id }}/seen"><button class="ghost" title="dismiss the new-chapter alert without running">✓ seen</button></form>{% endif %}
 <a href="/series/{{ s.id }}/delete" title="permanently delete this series + all its files"><button class="ghost" style="color:#e74c3c">🗑 delete</button></a></td></tr>
 {% endfor %}</table>

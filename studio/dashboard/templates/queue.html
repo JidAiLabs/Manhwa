@@ -2,6 +2,7 @@
 <div class="cards">
 {% for s in series %}<div class="card"><div class="k">{{ s.title }}</div>
 <div class="v">{{ s.done }}/{{ s.total }}</div>
+<div class="s"><span style="color:#caa24a">prep {{ s.prepared }}</span> · <span style="color:#4aa3df">voice {{ s.voiced }}</span> · <b style="color:var(--ok)">done {{ s.rendered }}</b></div>
 <div class="s">{{ s.new }} new · est {{ s.eta }}</div></div>{% endfor %}
 </div>
 <div class="cols"><div>
