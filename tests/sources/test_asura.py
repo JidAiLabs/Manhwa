@@ -275,3 +275,55 @@ def test_download_refuses_page_gap(tmp_path):
             AsuraAdapter().download(
                 ChapterRef(number=25, label="Chapter 25", url=_CDN + "/x"),
                 tmp_path)
+
+
+# Later chapters drop the "restored" NNN scheme for hash / _pN / mixed names.
+_CDN2 = "https://cdn.asurascans.com/asura-images/chapters/nano-machine/108"
+
+
+def test_extract_hash_names_keeps_all_in_reading_order():
+    """Hash filenames (28578a.webp) carry no page number — keep ALL of them in
+    first-appearance (reading) order, not 1 of N."""
+    from studio.sources.asura import _extract_image_urls
+
+    names = ["8a5ecd", "28578a", "806124", "c29509"]   # reading order, not sorted
+    html_ = " ".join(f'"{_CDN2}/{n}.webp"' for n in names)
+    urls = _extract_image_urls(html_)
+    assert [u.rsplit("/", 1)[1] for u in urls] == [f"{n}.webp" for n in names]
+
+
+def test_extract_pn_split_pages_kept():
+    """_pN split-page suffixes (002_p1, 002_p2) must all survive, in order."""
+    from studio.sources.asura import _extract_image_urls
+
+    names = ["001", "002_p1", "002_p2", "003"]
+    html_ = " ".join(f'"{_CDN2}/{n}.webp"' for n in names)
+    urls = _extract_image_urls(html_)
+    assert [u.rsplit("/", 1)[1] for u in urls] == [f"{n}.webp" for n in names]
+
+
+def test_download_hash_scheme_no_false_gap(tmp_path):
+    """Non-numeric names must NOT trip the numeric-contiguity gate — otherwise
+    every later chapter dead-letters."""
+    from studio.sources.asura import AsuraAdapter
+    from studio.sources.base import ChapterRef
+    from PIL import Image
+    import io
+
+    html_ = " ".join(f'"{_CDN2}/{n}.webp"' for n in ("aa11", "bb22", "cc33"))
+    page = MagicMock(status_code=200, text=html_)
+    page.raise_for_status = MagicMock()
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, "JPEG")
+    img = MagicMock(status_code=200, content=buf.getvalue())
+    img.raise_for_status = MagicMock()
+    calls = [0]
+
+    def fake_get(url, **k):
+        calls[0] += 1
+        return page if calls[0] == 1 else img
+
+    with patch("httpx.get", side_effect=fake_get):
+        result = AsuraAdapter().download(
+            ChapterRef(number=108, label="Chapter 108", url=_CDN2), tmp_path)
+    assert len(result) == 3      # all three kept, no gap-raise

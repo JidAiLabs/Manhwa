@@ -98,8 +98,8 @@ def _get_retry(url: str, *, timeout: float = 30.0) -> httpx.Response:
 #   https://cdn.asurascans.com/asura-images/chapters[-restored]/<slug>/<ch>/NNN.webp
 # (covers live under /covers/, so matching /chapters excludes them).
 _CHAPTER_IMG_RE = re.compile(
-    r"https://cdn\.asurascans\.com/asura-images/chapters[^\s\"'\\<>]+?/(\d+)"
-    r"\.(?:webp|jpg|jpeg|png|gif|avif)"   # asura MIXES extensions per page
+    r"https://cdn\.asurascans\.com/asura-images/chapters[^\s\"'\\<>]+/"
+    r"([^/\s\"'\\<>]+?)\.(?:webp|jpg|jpeg|png|gif|avif)"  # group1 = filename stem
 )
 
 
@@ -162,19 +162,23 @@ def _parse_series(tree: HTMLParser, series_url: str) -> tuple[str, list[ChapterR
 
 
 def _extract_image_urls(page_html: str) -> list[str]:
+    """Ordered chapter image URLs. Matches EVERY image on the chapter's CDN path
+    (any filename) so no page is silently dropped, then orders them:
+      - pure-numeric "restored" names (001.webp, 002.jpg …) → by number
+      - hash / NNN_pN / mixed names (later uploads, e.g. 28578a.webp, 002_p1.webp)
+        → reading order = first appearance in the page (the reader lists them
+        top-to-bottom; the hashes carry no sequence to sort by).
     """
-    Extract ordered chapter image URLs from the Asura chapter page by matching
-    the CDN per-page pattern and ordering by numeric filename.
-    """
-    # Decode entities + un-escape slashes (the URLs may appear inside an
-    # entity-encoded JSON blob), then pull every per-page chapter image and
-    # order by its numeric filename. Dedupe (same image can appear twice).
+    # Decode entities + un-escape slashes (URLs may sit in an entity-encoded JSON
+    # blob). Dedupe by URL; a dict preserves first-appearance (reading) order.
     text = html.unescape(page_html).replace("\\/", "/")
-    by_num: dict[int, str] = {}
+    stems: dict[str, str] = {}          # url -> filename stem, first-seen order
     for m in _CHAPTER_IMG_RE.finditer(text):
-        n = int(m.group(1))
-        by_num.setdefault(n, m.group(0))
-    return [by_num[k] for k in sorted(by_num)]
+        stems.setdefault(m.group(0), m.group(1))
+    urls = list(stems)
+    if urls and all(s.isdigit() for s in stems.values()):
+        urls.sort(key=lambda u: int(stems[u]))
+    return urls
 
 
 def _download_images(image_urls: list[str], dest_dir: Path) -> list[Path]:
@@ -253,19 +257,22 @@ class AsuraAdapter(SourceAdapter):
             raise RuntimeError(
                 f"No images found on Asura chapter page: {chapter.url}"
             )
-        # COMPLETENESS: page numbers must be 1..N with NO gaps. A gap means the
-        # static parse silently missed a strip (e.g. an extension the regex
-        # doesn't match) — fail loud instead of shipping a half-chapter QA can't
-        # see. This is exactly what catches the .webp-only bug: [1,3,4] gaps at 2.
-        # ponytail: a gap can't be auto-recovered (a browser render returns the
-        # same images), so raise → worker retries → dead-letters for manual look.
-        nums = sorted(int(_CHAPTER_IMG_RE.search(u).group(1)) for u in image_urls)
-        if nums != list(range(1, nums[-1] + 1)):
-            missing = sorted(set(range(1, nums[-1] + 1)) - set(nums))
-            raise RuntimeError(
-                f"Asura chapter pages {nums} have GAPS (missing {missing}) — "
-                f"refusing to ship a partial chapter: {chapter.url}"
-            )
+        # COMPLETENESS: the regex matches EVERY image on the chapter path, so a
+        # page can't be silently dropped by extension/format. For the pure-numeric
+        # "restored" scheme we additionally require contiguous 1..N — catches a
+        # strip asura itself failed to serve (the .webp-only bug was [1,3,4]).
+        # Hash/_pN/mixed schemes carry no sequence, so reading order from the page
+        # is the only completeness signal; a gap there can't be auto-recovered.
+        stems = [m.group(1) for u in image_urls
+                 if (m := _CHAPTER_IMG_RE.search(u))]
+        if stems and all(s.isdigit() for s in stems):
+            nums = sorted(int(s) for s in stems)
+            if nums != list(range(1, nums[-1] + 1)):
+                missing = sorted(set(range(1, nums[-1] + 1)) - set(nums))
+                raise RuntimeError(
+                    f"Asura chapter pages {nums} have GAPS (missing {missing}) — "
+                    f"refusing to ship a partial chapter: {chapter.url}"
+                )
         # PERSISTENT staging dir so a failed attempt RESUMES (skip-existing in
         # _download_images) instead of re-fetching every image; removed only
         # after a full success normalizes into dest_dir.
