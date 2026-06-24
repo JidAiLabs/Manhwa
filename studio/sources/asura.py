@@ -195,8 +195,10 @@ def _download_images(image_urls: list[str], dest_dir: Path) -> list[Path]:
             continue
         resp = _get_retry(url, timeout=60)
         img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-        img.save(out_path, format="JPEG")
-        written.append(out_path)
+        tmp = out_path.with_name(out_path.name + ".tmp")
+        img.save(tmp, format="JPEG")
+        os.replace(tmp, out_path)     # atomic: a SIGKILL/disk-full mid-encode can't
+        written.append(out_path)      # leave a partial file the size-only resume keeps
     return written
 
 

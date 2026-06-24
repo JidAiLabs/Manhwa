@@ -183,6 +183,10 @@ _CRITICAL_QA_CODES = {
     # a whole stitch chunk rendered as one panel (detection under-segmented) —
     # heal can't fix a crop, so block → re-stitch/re-detect rather than ship it
     "chunk_as_panel",
+    # an in-world system/status panel (a story beat) dropped before render. Now
+    # that the story_group rescue keeps mislabeled-chrome system cards, a genuine
+    # drop is rare — but it MUST block (a missing plot beat), not ship green.
+    "system_card_unshown",
 }
 
 
