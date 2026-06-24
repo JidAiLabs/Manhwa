@@ -199,6 +199,16 @@ _CONCRETE_NOUNS = frozenset((
     "classroom", "office", "castle", "village", "town", "landscape", "horizon",
     "ground", "floor", "ceiling", "tree", "trees", "cliff", "cave", "desk", "desks",
     "tower", "gate", "garden", "alley", "rooftop", "platform", "hallway", "stairs",
+    # establishing / atmosphere / aftermath nouns: a wide or scenery panel naming
+    # any of these is a REAL scene (battlefield, ruins, a smoke-covered field under
+    # a dim glow), not a pure-effect sliver — so it must KEEP. Additive only: a pure
+    # flash/spark/energy-beam panel names NONE of these, so it still drops.
+    "silhouette", "silhouettes", "battlefield", "wreckage", "ruins", "ruin",
+    "rubble", "debris", "corpse", "corpses", "skull", "skeleton", "bones",
+    "statue", "smoke", "fire", "flame", "flames", "explosion", "blood", "fog",
+    "mist", "cloud", "clouds", "dust", "ash", "crater", "snow", "rain", "water",
+    "grass", "rock", "rocks", "stone", "barrier", "tent", "skyline", "cityscape",
+    "sun", "moon", "star", "stars", "grave",
 ))
 
 

@@ -328,3 +328,52 @@ def test_autopilot_voiceover_advances_to_render(tmp_path, monkeypatch):
     n_jobs = con.execute("SELECT COUNT(*) FROM job WHERE "
                          "type='render_segment'").fetchone()[0]
     assert (n_appr, n_jobs) == (1, 1)
+
+
+# --- last-resort visual heal must BLOCK when it can't actually drop the panel ---
+
+def test_heal_visual_drops_blocks_when_over_cap(tmp_path, monkeypatch):
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    # 4 blank_crop ERRORs, n_cuts=4 -> cap=max(3,int(0.25*4))=3 -> 4 > cap
+    (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 4, "flags": [
+        {"code": "blank_crop", "severity": "ERROR", "scene": f"p{i}.jpg"}
+        for i in range(4)]}))
+    called = []
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda *a, **k: called.append(1) or set())
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
+    assert stuck == {"blank_crop"}        # over cap -> panels remain -> block
+    assert called == []                   # never even attempted the drop
+
+
+def test_heal_visual_drops_blocks_on_noop_drop(tmp_path, monkeypatch):
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 10, "flags": [
+        {"code": "blank_crop", "severity": "ERROR", "scene": "a.jpg"}]}))
+    (ep / "manual_drops.json").write_text(json.dumps(["a.jpg"]))  # already dropped
+    monkeypatch.setattr(worker, "_run_prep_and_qa", lambda *a, **k: set())
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
+    assert stuck == {"blank_crop"}        # drop was a no-op (sole cut) -> block
+
+
+def test_heal_visual_drops_stays_green_when_drop_succeeds(tmp_path, monkeypatch):
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 10, "flags": [
+        {"code": "blank_crop", "severity": "ERROR", "scene": "b.jpg"}]}))
+
+    def fake_reprep(c, ch, log, **kw):    # the re-prep removes the dropped panel
+        (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 9, "flags": []}))
+        return set()
+    monkeypatch.setattr(worker, "_run_prep_and_qa", fake_reprep)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
+    assert stuck == set()                 # drop succeeded -> nothing to block
+    assert json.loads((ep / "manual_drops.json").read_text()) == ["b.jpg"]

@@ -192,7 +192,11 @@ def _download_images(image_urls: list[str], dest_dir: Path) -> None:
             continue                        # RESUME: already fetched, skip
         resp = _get_retry(url, timeout=60)
         img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-        img.save(out_path, format="JPEG")
+        tmp = out_path.with_name(out_path.name + ".tmp")
+        img.save(tmp, format="JPEG")
+        os.replace(tmp, out_path)           # atomic: a SIGKILL/disk-full mid-encode
+                                            # can't leave a partial file the size-only
+                                            # resume above would then trust and skip
 
 
 # ---------------------------------------------------------------------------

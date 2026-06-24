@@ -188,6 +188,16 @@ _CRITICAL_QA_CODES = {
     # drop is rare — but it MUST block (a missing plot beat), not ship green.
     "system_card_unshown",
 }
+# DELIBERATELY NOT critical: "visual_loop". It looks like montage_degenerate's
+# sibling, but render_prep.cap_repeats_with_holds caps every NON-exempt panel at
+# 2 fresh cuts (the 3rd becomes a held cut, which prep_qa.montage_flags filters
+# out of by_file). So visual_loop (>=3 distinct segments on one fresh panel) can
+# ONLY fire on an EXEMPT card recurring far apart — a deliberately-allowed
+# recurrence, not a lost-panel collapse. The genuine starvation case is already
+# caught by montage_degenerate (critical) and chunk_as_panel (critical).
+# Promoting visual_loop would false-block legit recurring cards while catching
+# nothing new. It stays ERROR (so autopilot parks it for a human) but does not
+# hard-block manual approval. (Verified via cap_repeats_with_holds, 2026-06-24.)
 
 
 def _qa_error_codes(ep: Path) -> set:
@@ -402,41 +412,64 @@ _VISUAL_DROPPABLE = {"blank_crop", "dead_box_leak", "visible_text", "ghost_text"
 
 
 def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
-                       log: TextIO) -> None:
+                       log: TextIO) -> set:
     """Last-resort heal for QA ERRORs re-narration can't touch: DROP the
     offending panel (manual_drops.json, the same mechanism as the dashboard drop
     button) + re-prep. Bounded to <=25% of cuts so a chapter is never gutted —
     a slightly shorter recap beats a dead chapter. Runs only after narration
-    heal; spotless chapters never reach here."""
+    heal; spotless chapters never reach here.
+
+    Returns the set of _VISUAL_DROPPABLE codes whose offending panel is STILL
+    shown after the heal — i.e. the drop set was over the cap, or the drop was a
+    no-op (the panel is the sole cut of a unique blank that render_prep can't
+    remove). The caller MUST block on these: otherwise the chapter ships a
+    blank/leaked/visible-text panel under a green QA. When the heal SUCCEEDS the
+    panel is no longer shown, so the flag is gone and this returns an empty set."""
     mdp = ep / "manual_drops.json"
+
+    def _stuck_codes() -> set:
+        try:
+            rep = json.loads((ep / "prep_qa.json").read_text())
+        except Exception:
+            return set()
+        return {f.get("code") for f in (rep.get("flags") or [])
+                if f.get("severity") == "ERROR"
+                and f.get("code") in _VISUAL_DROPPABLE and f.get("scene")}
+
     for _pass in range(2):
         try:
             report = json.loads((ep / "prep_qa.json").read_text())
         except Exception:
-            return
+            return set()
         flags = report.get("flags") or []
         drop = {Path(str(f.get("scene"))).name for f in flags
                 if f.get("severity") == "ERROR"
                 and f.get("code") in _VISUAL_DROPPABLE and f.get("scene")}
         if not drop:
-            return                            # no drop-able visual error left
+            return set()                      # no drop-able visual error left
         n_cuts = int(report.get("n_cuts") or 0)
         cap = max(3, int(0.25 * n_cuts))
         if len(drop) > cap:
             log.write(f"[visual-heal] {len(drop)} drop-able ERROR panels exceed "
-                      f"the {cap}/{n_cuts}-cut cap — leaving for manual review\n")
-            return
+                      f"the {cap}/{n_cuts}-cut cap — BLOCKING for manual review\n")
+            return _stuck_codes()             # over cap: panels remain -> block
         try:
             existing = set(map(str, json.loads(mdp.read_text()))) if mdp.exists() \
                 else set()
         except Exception:
             existing = set()
-        if drop <= existing:                  # already dropped, still flagged
-            return
+        if drop <= existing:                  # already in manual_drops but STILL
+            # flagged -> the drop was a no-op (e.g. sole cut of a unique blank
+            # render_prep can't remove). It would ship blank -> block.
+            log.write(f"[visual-heal] {sorted(drop)} already dropped but STILL "
+                      f"flagged (no-op drop, e.g. sole cut) — BLOCKING\n")
+            return _stuck_codes()
         mdp.write_text(json.dumps(sorted(existing | drop), indent=1))
         log.write(f"[visual-heal] auto-dropping {len(drop)} QA-flagged panel(s) "
                   f"+ re-prepping: {sorted(drop)}\n")
         _run_prep_and_qa(con, ch, log, heal_aware=True, reuse_clean=True)
+    # two passes done and a visual-droppable ERROR still stands -> block
+    return _stuck_codes()
 
 
 def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
@@ -484,9 +517,14 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     # then the LAST-RESORT visual heal: errors re-narration can't fix (blank
     # crops, dead-box leaks, missed bubble text) get the offending panel dropped
     # + a re-prep, bounded so a chapter is never gutted.
-    _heal_visual_drops(con, ch, ep, log)
+    stuck_visual = _heal_visual_drops(con, ch, ep, log)
     codes = _qa_error_codes(ep)
-    blocking = codes & _CRITICAL_QA_CODES
+    # visual-droppable codes (blank_crop/dead_box_leak/visible_text) are normally
+    # cosmetic because the heal REMOVES the panel — but when the heal couldn't
+    # (over the 25% cap, or a no-op drop on a sole-cut unique blank) the panel
+    # would ship blank/leaked. Promote exactly those un-healed codes to blocking.
+    # Codes the heal DID remove are no longer in `codes`, so they don't block.
+    blocking = (codes & _CRITICAL_QA_CODES) | (codes & stuck_visual)
     if blocking:
         raise RuntimeError(
             f"prep-QA has BLOCKING errors after auto-heal ({sorted(blocking)}) — "

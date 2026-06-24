@@ -594,6 +594,55 @@ def system_coverage_flags(beats_obj: Dict[str, Any],
     return flags
 
 
+def _stitch_page_count(stitch_path: str) -> int:
+    """Distinct source pages a chapter stitched == the pages it fetched."""
+    try:
+        with open(stitch_path) as f:
+            m = json.load(f)
+    except Exception:
+        return 0
+    srcs = set()
+    for ch in m.get("chunks") or []:
+        for s in ch.get("sources") or []:
+            srcs.add(str(s))
+    return len(srcs)
+
+
+def page_floor_flags(ep: str) -> List[Dict[str, Any]]:
+    """Cross-chapter integrity net for OPAQUE-name sources (asura hash/_pN),
+    where the numeric-contiguity gate is blind because the filenames carry no
+    sequence. A chapter that stitched FAR fewer pages than its series siblings is
+    a likely truncated/partial fetch. WARN only, and the floor sits well below
+    the median (0.45×) so a legitimately short chapter never trips it."""
+    try:
+        this_n = _stitch_page_count(os.path.join(ep, "manifest.stitch.json"))
+        if this_n <= 0:
+            return []
+        series_dir = os.path.dirname(ep.rstrip("/"))
+        counts: List[int] = []
+        for name in os.listdir(series_dir):
+            d = os.path.join(series_dir, name)
+            if not os.path.isdir(d) or os.path.abspath(d) == os.path.abspath(ep):
+                continue
+            n = _stitch_page_count(os.path.join(d, "manifest.stitch.json"))
+            if n > 0:
+                counts.append(n)
+        if len(counts) < 5:
+            return []                      # too few siblings for a stable median
+        counts.sort()
+        median = counts[len(counts) // 2]
+        floor = 0.45 * median
+        if median >= 4 and this_n < floor:
+            return [_flag(
+                "low_page_count", WARN,
+                f"stitched {this_n} pages vs series median {median} "
+                f"(floor {floor:.0f}) — possible truncated/partial fetch; "
+                f"re-fetch this chapter and compare")]
+    except Exception:
+        pass
+    return []
+
+
 def montage_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Cross-segment visual degeneracy — the class the per-segment checks
     (and the per-segment LLM judge) cannot see: one panel carrying many
@@ -1396,6 +1445,7 @@ def main() -> int:
                                  _load_manifest("manifest.script.json")))
     flags.extend(audio_flags(plan, _load_manifest("tts/tts_index.json")))
     flags.extend(montage_flags(plan))
+    flags.extend(page_floor_flags(ep))
     flags.extend(story_flags(plan, _load_manifest("manifest.beats.json"), vitems))
     flags.extend(system_coverage_flags(
         _load_manifest("manifest.beats.json"), plan, vitems))

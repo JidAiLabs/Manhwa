@@ -41,7 +41,23 @@ def test_snap_assigns_bubble_to_larger_overlap_panel_only():
     bubble = [0.45, 0.2, 0.6, 0.4]          # 1/3 in A, 2/3 in B
     out = snap_panels_to_elements([a, b], [bubble])
     assert out[0] == [0.0, 0.0, 0.5, 1.0]   # A untouched
-    assert out[1] == [0.45, 0.0, 1.0, 1.0]  # B grew upward to swallow it
+    assert out[1] == [0.5, 0.0, 1.0, 1.0]   # B grows only to the shared edge,
+    #                                         not up into A (no overlapping crop)
+
+
+def test_snap_does_not_cross_into_neighbor_panel():
+    # Two stacked panels with a real gutter (top ends 0.45, bottom starts 0.50).
+    top = [0.10, 0.0, 0.45, 1.0]
+    bot = [0.50, 0.0, 0.90, 1.0]
+    # A bubble mostly inside TOP but slicing DOWN across the gutter into BOTTOM.
+    bubble = [0.20, 0.30, 0.58, 0.60]
+    out = snap_panels_to_elements([top, bot], [bubble])
+    grown_top, kept_bot = out[0], out[1]
+    # Top grows down only to the gutter midpoint (0.475), NOT into BOTTOM's band.
+    assert grown_top[2] <= kept_bot[0], (
+        f"snapped top ymax {grown_top[2]} crosses into bottom ymin {kept_bot[0]}")
+    assert grown_top == [0.1, 0.0, 0.475, 1.0]
+    assert kept_bot == [0.5, 0.0, 0.9, 1.0]
 
 
 def test_snap_leaves_inside_and_outside_bubbles_alone():

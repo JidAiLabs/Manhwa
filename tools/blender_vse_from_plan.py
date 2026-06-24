@@ -20,7 +20,10 @@ What this version fixes / upgrades vs your current script:
 - Places strips at absolute frames from start_sec (no drift).
 """
 
-import bpy
+try:
+    import bpy
+except ImportError:        # bpy only exists inside Blender; allow importing the
+    bpy = None             # pure frame-math helpers for unit tests outside it
 import json
 import sys
 import os
@@ -88,6 +91,12 @@ def clamp(x: float, lo: float, hi: float) -> float:
 
 def seconds_to_frames(sec: float, fps: int) -> int:
     return max(1, int(math.ceil(float(sec) * float(fps))))
+
+def rel_seconds_to_frames(sec: float, fps: int) -> int:
+    # A relative cut OFFSET, floored at 0 — so cut.start=0.0 maps to +0 (the shot's
+    # own absolute frame), not +1. (seconds_to_frames floors at >=1, which is right
+    # for strip LENGTHS but would push every first cut one frame past the audio.)
+    return max(0, int(round(float(sec) * float(fps))))
 
 def sec_to_frame_start(sec: float, fps: int) -> int:
     # Blender frames typically start at 1
@@ -433,6 +442,11 @@ def main():
         bg_dim = float(motion_bg.get("dim", args.bg_dim)) if motion_bg else float(args.bg_dim)
 
         # Render each cut at absolute frame = shot_fs + cut.start
+        # Re-anchor the FG running end to THIS shot's absolute frame so cross-shot
+        # placement stays locked to the audio timeline (start_sec); cuts WITHIN the
+        # shot still chain off the running end below. Without this, channel_safe_start
+        # bumps each shot +1 frame and the bump accumulates → video lags audio.
+        last_used_frame_end_by_channel[FG_CH] = shot_fs - 1
         for ci, c in enumerate(cuts):
             if not isinstance(c, dict):
                 continue
@@ -447,7 +461,7 @@ def main():
             if not img_path or not os.path.exists(img_path):
                 continue
 
-            cut_fs = shot_fs + seconds_to_frames(rel_start, fps)
+            cut_fs = shot_fs + rel_seconds_to_frames(rel_start, fps)
             cut_len = seconds_to_frames(rel_dur, fps)
 
             # Channel collision safety

@@ -159,6 +159,30 @@ def test_effect_only_drops_story_panel_with_empty_description():
           "dialogue": "", "description": "A quiet panorama at dawn."}]) == set()
 
 
+def test_effect_only_keeps_establishing_atmosphere_panels():
+    # Aftermath/atmosphere establishing shots carry effect cues (glow, smoke,
+    # haze) but ARE real scenes — they must survive on the broadened noun set,
+    # while a pure flash/spark panel that names nothing concrete still drops.
+    panels = [
+        {"scene_file": "field.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "",
+         "description": "Distant silhouettes stand on a smoke-covered battlefield "
+                        "under a dim, glowing light."},
+        {"scene_file": "ruin.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "",
+         "description": "The view pans over wreckage and ruins, smoke rising, "
+                        "faint light glowing through the haze."},
+        # pure SFX flash — names NO concrete noun, has effect cues -> still DROP
+        {"scene_file": "flash.jpg", "panel_kind": "story", "subjects": [],
+         "dialogue": "",
+         "description": "A bright flash and scattered sparks with motion lines "
+                        "and streaking energy beams."},
+    ]
+    dropped = sg.effect_only_files(panels)
+    assert dropped == {"flash.jpg"}
+    assert "field.jpg" not in dropped and "ruin.jpg" not in dropped
+
+
 def test_caption_solo_beat_folds_into_previous_same_segment_beat():
     panels = [{"scene_file": "p0", "panel_kind": "story"},
               {"scene_file": "c1", "panel_kind": "caption"},

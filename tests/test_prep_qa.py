@@ -1170,3 +1170,41 @@ def test_stale_video_emits_warn_not_error(monkeypatch):
     assert warn_flags[0]["code"] == "stale_video"
     assert warn_flags[0]["severity"] == pq.WARN
     assert error_flags == [], f"stale_video must not be ERROR, got: {error_flags}"
+
+
+# ---- page_floor_flags (cross-chapter truncated-fetch net) -------------------
+
+def _write_stitch(d: Path, n_pages: int):
+    import json
+    d.mkdir(parents=True, exist_ok=True)
+    chunks = [{"sources": [f"{i:03d}.webp"]} for i in range(n_pages)]
+    (d / "manifest.stitch.json").write_text(json.dumps({"chunks": chunks}))
+
+
+def test_page_floor_flags_warns_on_truncated_chapter(tmp_path):
+    series = tmp_path / "series"
+    for k in range(6):                       # 6 healthy siblings, ~20 pages each
+        _write_stitch(series / f"ch{k:03d}", 20 + (k % 3))
+    ep = series / "ch_short"
+    _write_stitch(ep, 4)                      # 4 pages << median 20 (floor 9)
+    flags = pq.page_floor_flags(str(ep))
+    assert [f["code"] for f in flags] == ["low_page_count"]
+    assert flags[0]["severity"] == "WARN"     # advisory, never blocks
+
+
+def test_page_floor_flags_silent_for_normal_chapter(tmp_path):
+    series = tmp_path / "series"
+    for k in range(6):
+        _write_stitch(series / f"ch{k:03d}", 20)
+    ep = series / "ch_ok"
+    _write_stitch(ep, 16)                      # below median but above floor (9)
+    assert pq.page_floor_flags(str(ep)) == []
+
+
+def test_page_floor_flags_silent_without_stable_median(tmp_path):
+    series = tmp_path / "series"
+    for k in range(3):                         # only 3 siblings -> no stable median
+        _write_stitch(series / f"ch{k:03d}", 20)
+    ep = series / "ch_short"
+    _write_stitch(ep, 2)
+    assert pq.page_floor_flags(str(ep)) == []

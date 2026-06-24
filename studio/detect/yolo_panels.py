@@ -68,6 +68,9 @@ def snap_panels_to_elements(
     Boxes are normalized [ymin, xmin, ymax, xmax].
     """
     panels = [[float(v) for v in p] for p in panels_norm]
+    # Snapshot the ORIGINAL boxes — clamp targets must stay fixed as panels grow,
+    # so the result is independent of element-box iteration order.
+    orig = [list(p) for p in panels]
     for b in element_boxes_norm:
         by0, bx0, by1, bx1 = (float(v) for v in b)
         barea = max(0.0, by1 - by0) * max(0.0, bx1 - bx0)
@@ -82,8 +85,25 @@ def snap_panels_to_elements(
                 best_frac, best_i = frac, i
         if best_i >= 0 and min_inside_frac <= best_frac < 1.0 - 1e-9:
             p = panels[best_i]
-            panels[best_i] = [min(p[0], by0), min(p[1], bx0),
-                              max(p[2], by1), max(p[3], bx1)]
+            ny0, nx0 = min(p[0], by0), min(p[1], bx0)
+            ny1, nx1 = max(p[2], by1), max(p[3], bx1)
+            # Clamp each grown edge to the gutter MIDPOINT with the nearest
+            # neighbour so a snap can never cross into a neighbour's band (which
+            # used to produce overlapping crops). Midpoint splits the gutter
+            # evenly; for touching panels it degenerates to the shared edge.
+            oy0, ox0, oy1, ox1 = orig[best_i]
+            for j, (qy0, qx0, qy1, qx1) in enumerate(orig):
+                if j == best_i:
+                    continue
+                if qy1 <= oy0:               # neighbour above
+                    ny0 = max(ny0, (qy1 + oy0) / 2.0)
+                if qy0 >= oy1:               # neighbour below
+                    ny1 = min(ny1, (qy0 + oy1) / 2.0)
+                if qx1 <= ox0:               # neighbour left
+                    nx0 = max(nx0, (qx1 + ox0) / 2.0)
+                if qx0 >= ox1:               # neighbour right
+                    nx1 = min(nx1, (qx0 + ox1) / 2.0)
+            panels[best_i] = [ny0, nx0, ny1, nx1]
     panels.sort(key=lambda p: p[0])
     return [[round(v, 6) for v in p] for p in panels]
 
