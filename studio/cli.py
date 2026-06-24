@@ -174,41 +174,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
         print(f"  Fetching ch{ch.number} → {ep_dir} …")
         chapter_ref = ChapterRef(number=ch.number, label=ch.label, url=ch.url)
-        # Completeness guard with BACKOFF: under Cloudflare load asura returns a
-        # truncated/empty 200 (a fraction of the ~20 pages) that _get_retry can't
-        # see — it's a 200 — so a half-chapter would ship that QA can't catch.
-        # The throttle window lasts minutes, so retrying instantly is useless
-        # (it burns attempts and dead-letters the chapter). Back off escalating
-        # minutes and re-fetch (download() resumes, filling gaps) until the page
-        # count is sane vs the series median. Refuse (stay 'discovered' → the
-        # worker re-queues) if still short. --force accepts a genuinely-short one.
-        import time as _t
-        import random as _r
-        med = repo.series_median_pages(con, ch.series_id)
-        paths: list = []
-        for attempt in range(5):
-            try:
-                paths = adapter.download(chapter_ref, ep_dir)
-            except Exception as exc:               # empty/garbled page raises
-                paths = []
-                print(f"  ch{ch.number}: fetch error: {str(exc)[:90]}")
-            if paths and (not med or len(paths) >= 0.5 * med):
-                break
-            if attempt < 4:
-                delay = min(240.0, 30.0 * (2 ** attempt)) + _r.uniform(0, 5)
-                print(f"  ch{ch.number}: got {len(paths)} pages vs median "
-                      f"~{med or '?'} — rate-limited, backing off {delay:.0f}s "
-                      f"(retry {attempt + 1}/4)")
-                _t.sleep(delay)
-        if not paths or (med and len(paths) < 0.5 * med):
-            if args.force and paths:
-                print(f"  ch{ch.number}: accepting {len(paths)} pages (--force)")
-            else:
-                raise RuntimeError(
-                    f"ch{ch.number}: only {len(paths)} pages vs series median "
-                    f"~{med} after backoff retries — refusing (truncated/"
-                    f"rate-limited source); stays 'discovered' to re-try later. "
-                    f"--force to accept a genuinely short chapter.")
+        # The adapter validates completeness (page-number contiguity) and raises
+        # on a partial/empty fetch — let that propagate so the worker retries and
+        # the chapter stays 'discovered' rather than shipping a half-chapter.
+        paths = adapter.download(chapter_ref, ep_dir)
 
         now = _now_iso()
         repo.set_chapter_status(

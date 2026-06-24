@@ -98,7 +98,8 @@ def _get_retry(url: str, *, timeout: float = 30.0) -> httpx.Response:
 #   https://cdn.asurascans.com/asura-images/chapters[-restored]/<slug>/<ch>/NNN.webp
 # (covers live under /covers/, so matching /chapters excludes them).
 _CHAPTER_IMG_RE = re.compile(
-    r"https://cdn\.asurascans\.com/asura-images/chapters[^\s\"'\\<>]+?/(\d+)\.webp"
+    r"https://cdn\.asurascans\.com/asura-images/chapters[^\s\"'\\<>]+?/(\d+)"
+    r"\.(?:webp|jpg|jpeg|png|gif|avif)"   # asura MIXES extensions per page
 )
 
 
@@ -251,6 +252,19 @@ class AsuraAdapter(SourceAdapter):
         if not image_urls:
             raise RuntimeError(
                 f"No images found on Asura chapter page: {chapter.url}"
+            )
+        # COMPLETENESS: page numbers must be 1..N with NO gaps. A gap means the
+        # static parse silently missed a strip (e.g. an extension the regex
+        # doesn't match) — fail loud instead of shipping a half-chapter QA can't
+        # see. This is exactly what catches the .webp-only bug: [1,3,4] gaps at 2.
+        # ponytail: a gap can't be auto-recovered (a browser render returns the
+        # same images), so raise → worker retries → dead-letters for manual look.
+        nums = sorted(int(_CHAPTER_IMG_RE.search(u).group(1)) for u in image_urls)
+        if nums != list(range(1, nums[-1] + 1)):
+            missing = sorted(set(range(1, nums[-1] + 1)) - set(nums))
+            raise RuntimeError(
+                f"Asura chapter pages {nums} have GAPS (missing {missing}) — "
+                f"refusing to ship a partial chapter: {chapter.url}"
             )
         # PERSISTENT staging dir so a failed attempt RESUMES (skip-existing in
         # _download_images) instead of re-fetching every image; removed only

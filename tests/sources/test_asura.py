@@ -242,3 +242,36 @@ def test_adapter_registered():
     adapter = get("asura")
     assert adapter is not None
     assert adapter.id == "asura"
+
+
+# ---------------------------------------------------------------------------
+# Completeness: mixed extensions + page-contiguity (the half-chapter bug)
+# ---------------------------------------------------------------------------
+
+_CDN = "https://cdn.asurascans.com/asura-images/chapters-restored/nano-machine/25"
+
+
+def test_extract_keeps_mixed_extensions():
+    """asura serves pages as MIXED .webp/.jpg; the old .webp-only regex dropped
+    the .jpg strips → 3 of 5. Extraction must keep all five."""
+    from studio.sources.asura import _extract_image_urls
+
+    html_ = " ".join(f'"{_CDN}/{i:03d}.{ext}"' for i, ext in
+                     [(1, "webp"), (2, "jpg"), (3, "webp"), (4, "webp"), (5, "jpg")])
+    assert len(_extract_image_urls(html_)) == 5
+
+
+def test_download_refuses_page_gap(tmp_path):
+    """A gap in page numbers means extraction silently missed a strip — fail
+    loud rather than ship a half-chapter QA can't see ([1,3,4] gaps at 2)."""
+    from studio.sources.asura import AsuraAdapter
+    from studio.sources.base import ChapterRef
+
+    html_ = " ".join(f'"{_CDN}/{i:03d}.webp"' for i in (1, 3, 4))
+    resp = MagicMock(status_code=200, text=html_)
+    resp.raise_for_status = MagicMock()
+    with patch("httpx.get", return_value=resp):
+        with pytest.raises(RuntimeError, match="GAPS"):
+            AsuraAdapter().download(
+                ChapterRef(number=25, label="Chapter 25", url=_CDN + "/x"),
+                tmp_path)

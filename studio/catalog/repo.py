@@ -124,24 +124,6 @@ def list_series(con: sqlite3.Connection) -> list[Series]:
     ]
 
 
-def series_median_pages(con: sqlite3.Connection, series_id: int) -> float | None:
-    """Median downloaded-page count across this series' already-PROCESSED chapters
-    — the yardstick for spotting a truncated/rate-limited fetch (a chapter that
-    comes back with a fraction of the pages, e.g. 3 of ~20). Counts on disk;
-    returns None until >=3 samples exist (no yardstick yet)."""
-    import glob
-    import statistics
-    counts: list[int] = []
-    for (ep,) in con.execute(
-            "SELECT ep_dir FROM chapter WHERE series_id=? AND ep_dir IS NOT NULL "
-            "AND status NOT IN ('discovered','downloaded')", (series_id,)):
-        if ep:
-            n = len(glob.glob(ep + "/[0-9]*.jpg"))
-            if n:
-                counts.append(n)
-    return statistics.median(counts) if len(counts) >= 3 else None
-
-
 def list_chapters(con: sqlite3.Connection, series_id: int) -> list[Chapter]:
     rows = con.execute(
         "SELECT id, series_id, number, label, url, status, ep_dir, error, updated_at "
