@@ -1414,6 +1414,30 @@ def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
 # plan rewrite (pure)
 # ---------------------------------------------------------------------------
 
+_STATIC_MOTION = {"mode": "static", "zoom": {"start": 1.0, "end": 1.0},
+                  "strength": 0.0}
+
+
+def static_on_consecutive_repeats(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """AGNOSTIC: a panel may appear in consecutive cuts, but the Ken Burns must NOT
+    re-play on the repeat. Any cut whose file equals the immediately-preceding
+    SHOWN cut's file is forced to static motion, so a held/repeated panel reads as
+    one continuous hold instead of the same pan restarting. Covers every repeat
+    cause (starvation hold, planner dup, split-half), not just held cuts."""
+    prev = None
+    for it in (plan or {}).get("timeline") or []:
+        if it.get("branding"):
+            prev = None
+            continue
+        for c in it.get("cuts") or []:
+            f = str(c.get("file") or "")
+            if f and f == prev:
+                c["motion"] = dict(_STATIC_MOTION)
+            if f:
+                prev = f
+    return plan
+
+
 def rewrite_plan(
     plan: Dict[str, Any],
     *,
@@ -2109,6 +2133,7 @@ def main() -> int:
     out_plan = rewrite_plan(plan, scenes_subdir="scenes_clean",
                             scene_dims=scene_dims,
                             cuts_by_segment=cuts_by_segment)
+    out_plan = static_on_consecutive_repeats(out_plan)
 
     outro_dur = 0.0
     which = "none" if args.no_branding else args.branding

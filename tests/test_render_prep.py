@@ -1113,3 +1113,20 @@ def test_judge_cut_visuals_drops_junk_keeps_good(tmp_path, monkeypatch):
                                 str(tmp_path), exempt={"sysy.jpg"})
     assert set(junk) == {"bad.jpg"} and "bubbles" in junk["bad.jpg"]
     assert "sysy.jpg" not in calls          # exempt never even judged
+
+
+def test_static_on_consecutive_repeats():
+    # a panel repeated in consecutive cuts must NOT re-play its pan -> static.
+    plan = {"timeline": [
+        {"segment_id": "g1", "cuts": [{"file": "a.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g2", "cuts": [{"file": "a.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g3", "cuts": [{"file": "b.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g4", "cuts": [{"file": "b.jpg", "motion": {"mode": "kenburns"}},
+                                      {"file": "b.jpg", "motion": {"mode": "pan"}}]},
+    ]}
+    tl = rp.static_on_consecutive_repeats(plan)["timeline"]
+    assert tl[0]["cuts"][0]["motion"]["mode"] == "pan"       # first stays
+    assert tl[1]["cuts"][0]["motion"]["mode"] == "static"    # cross-segment repeat
+    assert tl[2]["cuts"][0]["motion"]["mode"] == "pan"       # new file (first b) stays
+    assert tl[3]["cuts"][0]["motion"]["mode"] == "static"    # b again after g3 -> static
+    assert tl[3]["cuts"][1]["motion"]["mode"] == "static"    # within-segment repeat too
