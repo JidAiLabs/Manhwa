@@ -295,6 +295,16 @@ def test_normalize_double_hyphen_becomes_comma_space():
     assert ", " in result
 
 
+def test_normalize_intraword_hyphen_becomes_space():
+    # "Ancestor-nim" was split by qwen into "ances-tor-nim"; an intra-word hyphen
+    # must become a space so each part is read as a word.
+    result = lt.normalize_tts_text("Hey, Ancestor-nim?")
+    assert "-" not in result
+    assert "Ancestor nim" in result
+    # multi-part honorific / compound still resolves
+    assert lt.normalize_tts_text("a self-aware system") == "a self aware system"
+
+
 def test_normalize_leading_ellipsis_stripped():
     """A line that starts with ellipsis/dot must not begin with punctuation."""
     result = lt.normalize_tts_text("…serves you all right")

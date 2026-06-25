@@ -766,6 +766,7 @@ _TD = _os.path.dirname(_os.path.abspath(__file__))
 if _TD not in _sys.path:
     _sys.path.insert(0, _TD)
 from narration_consistency import strip_chrome_opener  # noqa: E402,F401
+from sfx_scrub import scrub_sfx_quotes  # noqa: E402
 
 _CHAPTER_HEADING_RE = re.compile(r"\b(?:chapter|episode)\s+\d+\b", re.I)
 _TITLE_CARD_RE = re.compile(r"\b(?:chapter|episode|title)\s+card\b", re.I)
@@ -778,6 +779,7 @@ def _dechrome_verbatim_base(text: str, beat: Dict[str, Any]) -> str:
     should bridge them as story momentum instead of voicing "Chapter 7".
     """
     base = strip_chrome_opener(str(text or "").strip())
+    base = scrub_sfx_quotes(base)   # drop voiced screams/onomatopoeia (EUAACK!! etc.)
     title = str((beat or {}).get("beat_title") or "")
     if _CHAPTER_HEADING_RE.search(base) or _TITLE_CARD_RE.search(title):
         hook = strip_chrome_opener(str((beat or {}).get("hook") or "").strip())

@@ -1310,7 +1310,13 @@ def cap_repeats_with_holds(
                 dur = round(float(durations.get(seg) or sum(
                     float(c.get("dur") or 0.0) for c in cuts)), 4)
                 kept = [{"file": prev_file, "start": 0.0, "dur": dur,
-                         "held": True}]
+                         "held": True,
+                         # held frame: ONE static shot (no Ken Burns) so a panel
+                         # repeated over consecutive segments doesn't restart a
+                         # fresh pan each time (the eye-panel-3x bug).
+                         "motion": {"mode": "static",
+                                    "zoom": {"start": 1.0, "end": 1.0},
+                                    "strength": 0.0}}]
                 holds.append((seg, prev_file))
         out[seg] = kept
         if kept and not kept[-1].get("held"):

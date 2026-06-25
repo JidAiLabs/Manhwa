@@ -133,6 +133,9 @@ def normalize_tts_text(text: str) -> str:
     t = t.replace("—", ", ")        # em-dash —
     t = t.replace("–", ", ")        # en-dash –
     t = re.sub(r"\s*--\s*", ", ", t)    # spaced double-hyphen
+    # intra-word hyphen (Ancestor-nim, self-aware) -> space, so the synth reads
+    # both parts as words instead of splitting on the hyphen ("ances-tor-nim").
+    t = re.sub(r"(?<=[A-Za-z])-(?=[A-Za-z])", " ", t)
 
     # 3. Repeated terminal punctuation
     t = re.sub(r"!{2,}", "!", t)

@@ -166,6 +166,27 @@ def test_blank_crop_white_void_errors_even_for_doc():
                for f in flags)
 
 
+def test_blank_crop_keeps_text_on_white_card():
+    # the dropped "7TH GEN NANO MACHINE, STARTING ACTIVATION" card: a HUD/system
+    # reveal is mostly white BUT carries real OCR text -> REAL content, must NOT
+    # be flagged blank_crop/husk. has_text(vitem) protects it.
+    img = np.full((400, 600, 3), 255, dtype=np.uint8)
+    for y in range(60, 120, 12):                 # dark "glyph" rows on white
+        img[y:y + 6, 80:520] = 20
+    vit = {"ocr_clean": "7TH GENERATION NANO MACHINE STARTING ACTIVATION",
+           "n_words": 6, "text_coverage": 0.18}
+    codes = {f["code"] for f in pq.image_flags(
+        "p000114.jpg", img, [], doc=False, sys=False, vitem=vit,
+        dims_entry={"w": 600, "h": 400})}
+    assert "blank_crop" not in codes and "husk" not in codes
+    # negative control: an identical white field with NO text still blocks
+    blank = np.full((400, 600, 3), 255, dtype=np.uint8)
+    bcodes = {f["code"] for f in pq.image_flags(
+        "p000b.jpg", blank, [], doc=False, sys=False,
+        vitem={"ocr_clean": "", "n_words": 0}, dims_entry={"w": 600, "h": 400})}
+    assert "blank_crop" in bcodes
+
+
 def test_chunk_as_panel_blocks_a_whole_chunk():
     # ch28/ch38: a ~9000px crop is a whole stitch chunk the detector failed to
     # segment -> BLOCKING ERROR (no legit panel is this tall; clean max ~5.2k).
@@ -1208,3 +1229,35 @@ def test_page_floor_flags_silent_without_stable_median(tmp_path):
     ep = series / "ch_short"
     _write_stitch(ep, 2)
     assert pq.page_floor_flags(str(ep)) == []
+
+
+# ---- SFX-voiced + held-repeat verifier checks --------------------------------
+
+def test_sfx_voiced_flags_catches_scream_in_voiced_text():
+    script = {"sections": [
+        {"section_index": 0, "tts_paragraphs_v3": ['He fell, crying "EUAACK...!! ACK!!!" loudly.']},
+        {"section_index": 1, "tts_paragraphs_v3": ['The order rang out: "Kill him!"']},
+    ]}
+    flags = pq.sfx_voiced_flags(script)
+    assert [f["code"] for f in flags] == ["sfx_voiced"]      # only the scream
+    assert flags[0]["severity"] == "ERROR"
+
+
+def test_sfx_voiced_flags_clean_when_no_sfx():
+    script = {"sections": [{"section_index": 0,
+              "tts_paragraphs_v3": ["A cold moon hung over the mountains."]}]}
+    assert pq.sfx_voiced_flags(script) == []
+
+
+def test_held_repeat_flags_runs():
+    def _plan(files):
+        return {"timeline": [{"segment_id": f"g{i}", "cuts": [{"file": f}]}
+                             for i, f in enumerate(files)]}
+    # 3 in a row -> WARN
+    f3 = pq.held_repeat_flags(_plan(["a.jpg", "x.jpg", "x.jpg", "x.jpg", "b.jpg"]))
+    assert [f["code"] for f in f3] == ["held_repeat"] and f3[0]["severity"] == "WARN"
+    # 5 in a row -> ERROR (panels lost upstream)
+    f5 = pq.held_repeat_flags(_plan(["x.jpg"] * 5))
+    assert f5[0]["severity"] == "ERROR"
+    # all distinct -> none
+    assert pq.held_repeat_flags(_plan(["a.jpg", "b.jpg", "c.jpg"])) == []

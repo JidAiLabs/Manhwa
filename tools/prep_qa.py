@@ -218,8 +218,19 @@ def image_flags(
     # coverage signal; see render_prep husk handling.)
     bg_frac = float(((gray_full >= 235) | (gray_full <= 20)).mean())
     empty_field = bg_frac >= 0.93
-    if (std_full < 6.0 or (max(white_frac, black_frac) >= 0.97 and std_full < 25.0)
-            or empty_field):
+    # text-aware: a white/empty FIELD that carries real OCR glyphs (a HUD /
+    # system / activation card like "7TH GEN NANO MACHINE, STARTING ACTIVATION")
+    # is REAL content, not a void. Only the pure-flat test (std<6) still fires on
+    # it (a truly flat frame has no glyphs anyway). This protects HUD/text-on-white
+    # reveals the labeller didn't tag sys, the same way doc/sys cards are kept.
+    _vt = vitem or {}
+    _otxt = str(_vt.get("ocr_clean") or _vt.get("text") or "")
+    has_text = (int(_vt.get("n_words") or 0) >= 3
+                or float(_vt.get("text_coverage") or 0.0) >= 0.05
+                or len(_otxt.split()) >= 3)
+    if (std_full < 6.0
+            or (((max(white_frac, black_frac) >= 0.97 and std_full < 25.0)
+                 or empty_field) and not has_text)):
         kind = "white" if white_frac >= black_frac else "black"
         flags.append(_flag(
             "blank_crop", ERROR,
@@ -231,7 +242,7 @@ def image_flags(
     if not doc and not sys:
         gray = img.mean(axis=2) if img.ndim == 3 else img
         art = rp.art_content_score(img, [])
-        if art < min_art_score:
+        if art < min_art_score and not has_text:
             sev = ERROR if art < 0.7 * min_art_score else WARN
             flags.append(_flag("husk", sev,
                                f"art_score={art:.4f} < {min_art_score} — "
@@ -650,6 +661,65 @@ def page_floor_flags(ep: str) -> List[Dict[str, Any]]:
     except Exception:
         pass
     return []
+
+
+def sfx_voiced_flags(script_obj: Any) -> List[Dict[str, Any]]:
+    """The VOICED script text (post-scrub) still containing a sound-effect/scream
+    quote ("EUAACK!! ACK!!!", "HUH... HUH?!", "Keuk...!") — i.e. the verbatim SFX
+    scrub MISSED one. 0 = confirmed no SFX is read aloud."""
+    from sfx_scrub import sfx_quotes
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(script_obj, dict):
+        return flags
+    for si, sec in enumerate(script_obj.get("sections") or []):
+        texts: List[str] = []
+        for key in ("tts_paragraphs_v3", "script_paragraphs"):
+            v = sec.get(key)
+            if isinstance(v, list):
+                texts += [x if isinstance(x, str)
+                          else str((x or {}).get("text") or (x or {}).get("line") or "")
+                          for x in v]
+            elif isinstance(v, str):
+                texts.append(v)
+        for t in texts:
+            for q in sfx_quotes(t):
+                flags.append(_flag(
+                    "sfx_voiced", ERROR,
+                    f"voiced text contains a sound-effect/scream quote '{q[:30]}' — "
+                    "the SFX scrub missed it; re-narrate as described action",
+                    segment_id=str(sec.get("section_index", si))))
+    return flags
+
+
+def held_repeat_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A single panel shown in >=3 consecutive cuts (a frozen/looping repeat with
+    a restarting pan — the eye-panel-3x bug). >=4 = panels lost upstream (block);
+    3 = editor coverage (warn)."""
+    flags: List[Dict[str, Any]] = []
+    seq: List[Tuple[str, str]] = []
+    for it in (plan or {}).get("timeline") or []:
+        if it.get("branding"):
+            continue
+        for c in it.get("cuts") or []:
+            f = str(c.get("file") or "")
+            if f:
+                seq.append((f, str(it.get("segment_id") or "")))
+    i = 0
+    while i < len(seq):
+        j = i
+        while j + 1 < len(seq) and seq[j + 1][0] == seq[i][0]:
+            j += 1
+        run = j - i + 1
+        if run >= 3:
+            # WARN for a normal hold (editor covering narration over one image);
+            # ERROR only when excessive (>=5) which means panels were lost upstream.
+            flags.append(_flag(
+                "held_repeat", ERROR if run >= 5 else WARN,
+                f"panel {seq[i][0]} shown in {run} consecutive cuts — must be ONE "
+                "static hold (no restarting pan); >=5 means panels lost upstream",
+                scene=seq[i][0], segment_id=seq[i][1]))
+        i = j + 1
+    return flags
 
 
 def montage_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1455,6 +1525,8 @@ def main() -> int:
     flags.extend(audio_flags(plan, _load_manifest("tts/tts_index.json")))
     flags.extend(montage_flags(plan))
     flags.extend(page_floor_flags(ep))
+    flags.extend(held_repeat_flags(plan))
+    flags.extend(sfx_voiced_flags(_load_manifest("manifest.script.json")))
     flags.extend(story_flags(plan, _load_manifest("manifest.beats.json"), vitems))
     flags.extend(system_coverage_flags(
         _load_manifest("manifest.beats.json"), plan, vitems))
