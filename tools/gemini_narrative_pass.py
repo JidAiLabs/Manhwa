@@ -185,18 +185,19 @@ _REGISTER_CONTINUITY_RULE = (
     "characters or re-describe a setting already established."
 )
 
-# Use the manhwa's OWN words. The narration too often paraphrases a punchy spoken
-# line away ("the antagonist screams") instead of landing the beat on the real
-# line ("...you brought all of this on yourself."). Quote the actual dialogue/
-# caption for impact — but NEVER quote publication chrome (ads/credits/handles).
+# Convey dialogue in the NARRATOR'S clean words. The on-screen bubble text is raw
+# OCR — ALL-CAPS, frequently mis-read, truncated mid-word, or a pure sound effect —
+# so copying it verbatim reads as garbled shouting ("KILL HIM!", "SERVES YOU RIGHT!
+# Mon", "...SINCE OUR COMRA"). Paraphrase what is said into the recap voice instead.
 _DIALOGUE_RULE = (
-    "SPOKEN LINES: when a panel carries a punchy or emotionally-charged spoken line "
-    "or caption, QUOTE THE REAL WORDS verbatim in the narration for impact — land "
-    "the beat on the actual line (e.g. ...you brought all of this on yourself.) "
-    "rather than a bland paraphrase. Weave the quote in naturally, as the narrator "
-    "voicing it. Use the panel's OWN words (visible in the art / its dialogue). "
-    "NEVER quote publication chrome — ads, credits, 'subscribe/follow/join our "
-    "Discord', watermarks, scanlator or site names."
+    "DIALOGUE: convey what a character SAYS or THINKS in the NARRATOR'S OWN clean "
+    "words — PARAPHRASE it into the narration. Do NOT copy the on-screen / OCR text "
+    "verbatim: bubble text is ALL-CAPS, often mis-read, truncated mid-word, or a raw "
+    "sound effect, so quoting it reads as garbled shouting. You may voice a short "
+    "line directly ONLY when it is clean, COMPLETE, and in natural sentence case "
+    "(never ALL-CAPS, never a fragment, never onomatopoeia). When in doubt, "
+    "paraphrase. NEVER voice publication chrome — ads, credits, 'subscribe/follow/"
+    "join our Discord', watermarks, scanlator or site names."
 )
 
 # Token caps + temperatures are part of the verified spec (FAST must be ENFORCED

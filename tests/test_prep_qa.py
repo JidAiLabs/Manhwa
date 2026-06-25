@@ -1261,3 +1261,16 @@ def test_held_repeat_flags_runs():
     assert f5[0]["severity"] == "ERROR"
     # all distinct -> none
     assert pq.held_repeat_flags(_plan(["a.jpg", "b.jpg", "c.jpg"])) == []
+
+
+def test_raw_caps_voiced_flags_agnostic():
+    # reading raw all-caps OCR aloud (any manhwa) -> ERROR; paraphrase -> clean
+    dump = {"sections": [{"section_index": 0, "tts_paragraphs_v3":
+            ['He demanded, "WHAT MORE DO YOU WANT FROM ME?" but they refused.']}]}
+    assert any(f["code"] == "raw_caps_voiced" for f in pq.raw_caps_voiced_flags(dump))
+    clean = {"sections": [{"section_index": 0, "tts_paragraphs_v3":
+             ["He demanded to know why they wanted his life, but they refused."]}]}
+    assert pq.raw_caps_voiced_flags(clean) == []
+    ok = {"sections": [{"section_index": 0, "tts_paragraphs_v3":
+          ["His HP hit zero and he collapsed."]}]}
+    assert pq.raw_caps_voiced_flags(ok) == []

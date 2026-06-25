@@ -691,6 +691,44 @@ def sfx_voiced_flags(script_obj: Any) -> List[Dict[str, Any]]:
     return flags
 
 
+def raw_caps_voiced_flags(script_obj: Any) -> List[Dict[str, Any]]:
+    """AGNOSTIC OCR-dump check (no word list): voiced text reading a run of >=3
+    consecutive ALL-CAPS words ('WHAT MORE DO YOU WANT FROM ME') is raw bubble OCR
+    being read aloud, not story narration. Fires on any manhwa whose bubbles are
+    capitalised (the universal webtoon case); paraphrased narration is sentence
+    case and never trips it."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(script_obj, dict):
+        return flags
+    for si, sec in enumerate(script_obj.get("sections") or []):
+        texts: List[str] = []
+        for key in ("tts_paragraphs_v3", "script_paragraphs"):
+            v = sec.get(key)
+            if isinstance(v, list):
+                texts += [x if isinstance(x, str)
+                          else str((x or {}).get("text") or (x or {}).get("line") or "")
+                          for x in v]
+            elif isinstance(v, str):
+                texts.append(v)
+        for t in texts:
+            body = re.sub(r"^\s*\[[^\]]*\]\s*", "", t)      # drop a leading [mood] tag
+            run = worst = 0
+            for w in body.split():
+                if (re.fullmatch(r"[A-Z][A-Z'’.!?,]*", w)
+                        and sum(c.isalpha() for c in w) >= 2):
+                    run += 1
+                    worst = max(worst, run)
+                else:
+                    run = 0
+            if worst >= 3:
+                flags.append(_flag(
+                    "raw_caps_voiced", ERROR,
+                    f"voiced text reads {worst} consecutive ALL-CAPS words — raw "
+                    "bubble OCR read aloud; paraphrase dialogue, don't read the page",
+                    segment_id=str(sec.get("section_index", si))))
+    return flags
+
+
 def held_repeat_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     """A single panel shown in >=3 consecutive cuts (a frozen/looping repeat with
     a restarting pan — the eye-panel-3x bug). >=4 = panels lost upstream (block);
@@ -1527,6 +1565,7 @@ def main() -> int:
     flags.extend(page_floor_flags(ep))
     flags.extend(held_repeat_flags(plan))
     flags.extend(sfx_voiced_flags(_load_manifest("manifest.script.json")))
+    flags.extend(raw_caps_voiced_flags(_load_manifest("manifest.script.json")))
     flags.extend(story_flags(plan, _load_manifest("manifest.beats.json"), vitems))
     flags.extend(system_coverage_flags(
         _load_manifest("manifest.beats.json"), plan, vitems))
