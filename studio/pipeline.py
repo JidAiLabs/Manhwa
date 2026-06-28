@@ -20,6 +20,7 @@ from typing import Callable
 from studio.catalog import repo
 from studio.catalog.models import STATUS_ORDER, fail_status, next_status, Chapter
 from studio.config import Config
+from tools.recap_style import is_opening_chapter_path
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +271,8 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             # line adapts. scene_selection + grounding are untouched. OFF by
             # default -> the uniform-cinematic narration is byte-for-byte unchanged.
             beats_args += ["--register-mode"]
+        if is_opening_chapter_path(str(ep_dir)):
+            beats_args += ["--opening-hook"]
         _run_tool("gemini_narrative_pass.py",
                   beats_args + [
                    # Send enough panels per group that the scene_selection
@@ -283,8 +286,11 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         # carrying captions reject rewrites that drop the caption words.
         punch_args = ["--beats", str(p["beats"]), "--out", str(p["beats"]),
                       "--cast", str(p["cast"]),
+                      "--story", str(ep_dir / "manifest.story.json"),
                       "--episode-dir", str(ep_dir),
                       "--humor", cfg.punchup]
+        if is_opening_chapter_path(str(ep_dir)):
+            punch_args += ["--opening-hook"]
         if cfg.beats_backend == "ollama":
             punch_args += ["--backend", "ollama",
                            "--ollama-model", cfg.beats_model]

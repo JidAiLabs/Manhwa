@@ -6,7 +6,7 @@
 
 ## Evidence that drove this (reproduced 2026-06-13, all 3 test chapters)
 
-- Most reported defects were **stale screenshots** — current code already keeps SKY CORPORATION (Nano p000113, unblanked) and no longer blanks the ORV "masterpiece" doc panel. The review surface (deployed dashboard) lagged the code.
+- Most reported defects were **stale screenshots** — current code already keeps flat in-world system cards unblanked and no longer blanks the ORV "masterpiece" doc panel. The review surface (deployed dashboard) lagged the code.
 - The **over-broad `doc`/`sys` tagging** is the disease: 52/93 (Nano) and 36/67 (IE) panels are tagged sys/doc. The exemption those tags grant was conflated as both "don't flag recurrence" AND "allow visible repeat", which is why protecting cards and suppressing dups kept fighting.
 - The only genuinely-current duplications (IE: 4 ABA-dups) were **all** sys/doc-tagged panels reappearing 2 segments apart — several actually caption-over-art (p000084 "HER TIME FLEW BY", p000090 "AT SCHOOL WHENEVER…"), not true system cards.
 
@@ -25,7 +25,7 @@ The target: replace the scattered passes with ONE classification authority + ONE
 
 Ordered decision (reusing existing signal functions, computed once and cached):
 1. **CHROME** if `is_chrome_scene(vision_item, series_title, midtone_frac)` — publisher/cover/counter/credits. Dropped.
-2. **SYSTEM_CARD** if `bubble_coverage(_sys_boxes) >= 0.02` **AND** `file NOT in speech_files` (Gemini bubble_mode ∈ {spoken,shout,inner_thought}). The **speech-veto** is the fix: a dialogue bubble that YOLO mis-fires as a system_box is rejected; a narration-only styled UI (SKY CORPORATION) is accepted. Kept, text preserved, never cleaned.
+2. **SYSTEM_CARD** if `bubble_coverage(_sys_boxes) >= 0.02` **AND** `file NOT in speech_files` (Gemini bubble_mode ∈ {spoken,shout,inner_thought}). The **speech-veto** is the fix: a dialogue bubble that YOLO mis-fires as a system_box is rejected; a narration-only styled UI/status card is accepted. Kept, text preserved, never cleaned.
 3. **DOCUMENT** if `doc_like_v2` — the existing coverage/word gate **AND** `outside_bubble_words >= 8` (true app/stats/relationship pages carry substantial standalone text; a caption-over-art panel has 0–3 outside words → falls through to ART). Kept, text preserved, only floating speech bubbles blanked.
 4. **JUNK** if `not panel_recoverable(cleaned)` or the AI `judge_cut_visuals` rejects the artwork. Dropped.
 5. **ART** otherwise. Kept, speech bubbles blanked.

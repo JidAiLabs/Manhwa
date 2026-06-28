@@ -41,6 +41,24 @@ def test_classify_visual_gag_overrides_intense_as_comic():
     assert npu.classify_beats(beats) == {1: "COMIC"}
 
 
+def test_classify_panel_lines_does_not_make_whole_group_dramatic():
+    beats = {"beats": [{
+        "group_id": 1,
+        "panel_narration": [
+            {"scene_file": "a.jpg", "line": "He lands the decisive strike."},
+            {"scene_file": "b.jpg", "line": "The others process what happened."},
+        ],
+        "scene_selection": [
+            {"scene_file": "a.jpg", "intensity": "explosive"},
+            {"scene_file": "b.jpg", "intensity": "calm"},
+        ],
+    }]}
+    assert npu.classify_panel_lines(beats) == {
+        (1, 0): "DRAMATIC",
+        (1, 1): "CONNECTIVE",
+    }
+
+
 def test_cinematic_prompt_tags_lines_with_class_and_both_rules():
     lines = [{"group_id": 1, "narration": "a"},
              {"group_id": 2, "narration": "b"},
@@ -61,24 +79,24 @@ def test_validate_allows_longer_dramatic_line():
             "every breath ragged, every step a desperate gamble against the "
             "closing dark.")                                # ~24 words
     assert npu.validate_line(orig, cine, [], max_ratio=2.6) is True
-    assert npu.validate_line(orig, cine, []) is False       # default 1.5 rejects
+    assert npu.validate_line(orig, cine, []) is True        # pace is panel-led
 
 
-def test_merge_uses_dramatic_budget_for_dramatic_beats():
+def test_merge_does_not_treat_length_as_a_style_gate():
     long_cine = ("Under a pale blood moon Prince Cheon tears through the fog "
                  "drowned forest, robes shredded, every breath a ragged prayer, "
                  "every step a desperate gamble against the closing dark.")
     beats = {"beats": [{"group_id": 1, "narration":
                         "Prince Cheon runs through the dark mountain forest."}]}
     punched = [{"group_id": 1, "narration": long_cine}]
-    # as CONNECTIVE the long line is rejected; as DRAMATIC it's kept
+    # Length is decided by the panel's job, not by class-specific word budgets.
     assert npu.merge(beats, punched, ["Prince Cheon"],
-                     classes={1: "CONNECTIVE"})["stats"]["punchup_applied"] == 0
+                     classes={1: "CONNECTIVE"})["stats"]["punchup_applied"] == 1
     assert npu.merge(beats, punched, ["Prince Cheon"],
                      classes={1: "DRAMATIC"})["stats"]["punchup_applied"] == 1
 
 
-def test_merge_uses_comic_budget_for_punchline_lines():
+def test_merge_keeps_punchline_length_when_grounded():
     original = ("Heo Bong stands there bald and humiliated while the man laughs "
                 "at his missing hair.")
     punched = ("Heo Bong stands there bald and humiliated while the man loses "
@@ -88,7 +106,7 @@ def test_merge_uses_comic_budget_for_punchline_lines():
     beats = {"beats": [{"group_id": 1, "narration": original}]}
     cand = [{"group_id": 1, "narration": punched}]
     assert npu.merge(beats, cand, [],
-                     classes={1: "CONNECTIVE"})["stats"]["punchup_applied"] == 0
+                     classes={1: "CONNECTIVE"})["stats"]["punchup_applied"] == 1
     assert npu.merge(beats, cand, [],
                      classes={1: "COMIC"})["stats"]["punchup_applied"] == 1
 
@@ -98,6 +116,13 @@ def test_validate_accepts_styled_same_facts():
                "robes shredded, lungs on fire, and the Assassins are "
                "closing the gap like it's a ranked match.")
     assert npu.validate_line(ORIG, punched, ["Prince Cheon"]) is True
+
+
+def test_validate_allows_aggressive_per_panel_compression():
+    original = ("Prince Cheon stares at the attackers in complete shock as "
+                "they close in around him from every side.")
+    compressed = "The assassins close in. Prince Cheon is trapped."
+    assert npu.validate_line(original, compressed, ["Prince Cheon"]) is True
 
 
 def test_validate_rejects_dropped_cast_name():
@@ -156,6 +181,98 @@ def test_prompt_contains_persona_and_rules():
     for needle in ("zip code", "NEVER invent", "Prince Cheon",
                    "JSON array", "HUMOR=full"):
         assert needle in p
+
+
+def test_prompt_includes_recap_rules_and_optional_opening_hook():
+    base = npu.build_prompt(
+        [{"group_id": 1, "panel_index": 0, "narration": ORIG}],
+        ["Prince Cheon"], "cinematic", genre="murim")
+    assert "NO SCREEN READING" in base
+    assert "REVEAL PACING" in base
+    assert "OPENING-CHAPTER HOOK" not in base
+    opening = npu.build_prompt(
+        [{"group_id": 1, "panel_index": 0, "narration": ORIG}],
+        ["Prince Cheon"], "cinematic", genre="murim",
+        opening_hook=True)
+    assert "OPENING-CHAPTER HOOK" in opening
+    with_story = npu.build_prompt(
+        [{"group_id": 1, "narration": ORIG}], ["Prince Cheon"], "full",
+        opening_hook=True, story_context="A prince receives a nano machine.")
+    assert "WHOLE-CHAPTER STORY SPINE" in with_story
+    assert "A prince receives a nano machine." in with_story
+
+
+def test_quoted_source_line_is_marked_for_indirect_paraphrase():
+    prompt = npu.build_prompt(
+        [{"group_id": 1, "panel_index": 0,
+          "narration": "'Who are you!' the assassin shouts."}],
+        [], "cinematic")
+    assert '"must_paraphrase_dialogue": true' in prompt
+    assert "use NO quotation marks" in prompt
+    assert not npu.validate_line(
+        "'Who are you!' the assassin shouts.",
+        "'Who are you?' the assassin demands.",
+        [], forbid_quotes=True)
+    assert npu.validate_line(
+        "'Who are you!' the assassin shouts.",
+        "The assassin demands to know who the stranger is.",
+        [], forbid_quotes=True)
+    assert not npu.validate_line(
+        "The strike lands.",
+        "A heavy impact tears through the clearing,",
+        [], forbid_fragments=True)
+
+
+def test_punchup_rejects_newly_invented_quoted_thought():
+    beats = {"beats": [{"group_id": 1, "narration":
+                        "The assassin realizes the stranger is behind him."}]}
+    punched = [{"group_id": 1, "narration":
+                "The assassin's face says, 'Oh, he is behind me now.'"}]
+    out = npu.merge(beats, punched, [])
+    assert out["beats"][0]["narration"] == (
+        "The assassin realizes the stranger is behind him.")
+    assert out["stats"]["punchup_applied"] == 0
+
+
+def test_per_panel_prompt_is_pace_contract_not_word_budget():
+    lines = [{"group_id": 1, "panel_index": i,
+              "narration": "A long descriptive panel line."}
+             for i in range(10)]
+    prompt = npu.build_prompt(lines, [], "cinematic")
+    assert "PACING CONTRACT" in prompt
+    assert "chapter average" in prompt
+    assert "TOTAL WORD BUDGET" not in prompt
+    assert "words/panel" not in prompt
+
+
+def test_panel_lines_are_batched_without_reordering():
+    lines = [{"panel_index": i} for i in range(7)]
+    batches = npu._batch_lines(lines, 3)
+    assert [[x["panel_index"] for x in b] for b in batches] == [
+        [0, 1, 2], [3, 4, 5], [6]]
+
+
+def test_panel_lines_auto_batch_by_payload_not_magic_panel_count():
+    lines = [{"panel_index": i, "narration": "x" * 5000}
+             for i in range(5)]
+    batches = npu._batch_lines(lines, 0, max_payload_chars=260)
+    assert [x["panel_index"] for b in batches for x in b] == list(range(5))
+    assert len(batches) > 1
+    assert all(len(b) != 24 for b in batches)
+
+
+def test_story_context_reads_logline_and_premise(tmp_path):
+    path = tmp_path / "manifest.story.json"
+    path.write_text('{"logline":"A hunted prince survives.",'
+                    '"premise":"Future technology changes his fate."}')
+    context = npu._story_context(str(path))
+    assert "A hunted prince survives." in context
+    assert "Future technology changes his fate." in context
+
+
+def test_production_config_keeps_legacy_microbeats_off():
+    from studio.config import load, REPO_ROOT
+    assert load(REPO_ROOT / "studio.toml").narration_microbeats is False
 
 
 def test_genre_addons_change_the_comedy_axis():

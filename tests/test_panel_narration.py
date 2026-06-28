@@ -26,6 +26,33 @@ def test_build_arg_parser_understood_flag():
     assert args.understood == "x.json"
 
 
+def test_build_arg_parser_opening_hook_flag():
+    parser = gnp.build_arg_parser()
+    args = parser.parse_args([
+        "--groups-manifest", "g.json",
+        "--vision-manifest", "v.json",
+        "--out", "out.json",
+        "--opening-hook",
+    ])
+    assert args.opening_hook is True
+
+
+def test_recap_rules_cover_density_name_ration_and_reveal_pacing():
+    rules = gnp.RECAP_STYLE_RULES
+    for phrase in ("NO SCREEN READING", "POINT, DON'T PAINT", "RATION NAMES",
+                   "ADD TEXTURE", "COMPRESS DRAG", "REVEAL PACING"):
+        assert phrase in rules
+    assert "FIRST panel_narration line" in gnp.OPENING_HOOK_RULE
+
+
+def test_opening_hook_postprocessor_is_available_to_generator():
+    beats = {"beats": [{"panel_narration": [
+        {"scene_file": "a.jpg", "line": "Atmospheric opening."}]}]}
+    story = {"hook": "A hunted prince inherits forbidden technology from the future."}
+    assert gnp.apply_opening_hook(beats, story)
+    assert beats["beats"][0]["panel_narration"][0]["line"] == story["hook"]
+
+
 # ---------------------------------------------------------------------------
 # Task 3a: align_panel_narration repair-fill helper
 # ---------------------------------------------------------------------------
@@ -72,3 +99,27 @@ def test_beat_schema_requires_panel_narration():
     assert set(item) >= {"scene_file", "line"}
     assert "panel_narration" in schema["required"]
     assert "narration" in props          # joined string kept for back-compat
+
+
+def test_group_payload_threads_full_panel_understanding():
+    group = {"shot_id": 1, "scene_files": ["a.jpg"]}
+    vision = {"a.jpg": {
+        "ocr_clean": "WHO ARE YOU",
+        "subjects": ["fallback subject"],
+        "vision": {"labels": [], "objects": []},
+    }}
+    understood = {"a.jpg": {
+        "description": "A masked assassin questions an unfamiliar stranger.",
+        "action": "The assassin raises his sword.",
+        "setting": "forest clearing",
+        "dialogue": "Who are you?",
+        "panel_kind": "story",
+        "intensity": "tense",
+        "subjects": ["masked assassin", "unfamiliar stranger"],
+    }}
+    payload = gnp._pack_group_payload(group, vision, understood)
+    scene = payload["scenes_signals"][0]
+    assert scene["description"].startswith("A masked assassin")
+    assert scene["action"] == "The assassin raises his sword."
+    assert scene["dialogue"] == "Who are you?"
+    assert scene["subjects"] == ["masked assassin", "unfamiliar stranger"]

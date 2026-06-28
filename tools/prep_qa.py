@@ -53,6 +53,7 @@ from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 from narration_consistency import audio_consistency, strip_chrome_opener
 from manifest_freshness import verify_chapter as _verify_chapter_freshness
+from recap_style import analyze_recap_style, is_opening_chapter_path
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
@@ -1557,18 +1558,32 @@ def main() -> int:
                 g = im.mean(axis=2)
                 vit["flat_frac"] = float(((g > 235) | (g < 25)).mean())
 
-    flags.extend(alignment_flags(plan, _load_manifest("manifest.beats.json"),
-                                 _load_manifest("manifest.groups.json"),
-                                 _load_manifest("manifest.script.json")))
+    beats_obj = _load_manifest("manifest.beats.json")
+    groups_obj = _load_manifest("manifest.groups.json")
+    script_obj = _load_manifest("manifest.script.json")
+    story_obj = _load_manifest("manifest.story.json")
+    cast_obj = _load_manifest("manifest.cast.json")
+
+    flags.extend(alignment_flags(plan, beats_obj, groups_obj, script_obj))
     flags.extend(audio_flags(plan, _load_manifest("tts/tts_index.json")))
     flags.extend(montage_flags(plan))
     flags.extend(page_floor_flags(ep))
     flags.extend(held_repeat_flags(plan))
-    flags.extend(sfx_voiced_flags(_load_manifest("manifest.script.json")))
-    flags.extend(raw_caps_voiced_flags(_load_manifest("manifest.script.json")))
-    flags.extend(story_flags(plan, _load_manifest("manifest.beats.json"), vitems))
-    flags.extend(system_coverage_flags(
-        _load_manifest("manifest.beats.json"), plan, vitems))
+    flags.extend(sfx_voiced_flags(script_obj))
+    flags.extend(raw_caps_voiced_flags(script_obj))
+    flags.extend(story_flags(plan, beats_obj, vitems))
+    flags.extend(system_coverage_flags(beats_obj, plan, vitems))
+
+    recap_style = analyze_recap_style(
+        script_obj, beats_obj, story_obj, cast_obj, vitems,
+        opening_chapter=is_opening_chapter_path(ep))
+    for issue in recap_style["issues"]:
+        flags.append(_flag(
+            str(issue.get("code") or "recap_style"),
+            WARN,
+            str(issue.get("detail") or "recap style rule missed"),
+            scene=str(issue.get("scene") or ""),
+            segment_id=str(issue.get("segment_id") or "")))
 
     def _judge_caption_carried(caption: str, narration: str) -> bool:
         try:
@@ -1587,7 +1602,7 @@ def main() -> int:
             return False
 
     flags.extend(caption_unvoiced_flags(
-        _load_manifest("manifest.beats.json"), vitems,
+        beats_obj, vitems,
         arbitrate=_judge_caption_carried if args.semantic else None))
     if args.semantic or args.semantic_heal:
         # PER-BEAT montage grounding judge: ALL of a beat's panels go to Gemma in
@@ -1599,7 +1614,7 @@ def main() -> int:
         # a number/name SPOKEN in a non-shown panel is grounded in the dialogue —
         # drop the visual judge's false positive in that case
         flags = _suppress_grounded_mismatches(
-            flags, _load_manifest("manifest.beats.json"), vitems)
+            flags, beats_obj, vitems)
 
     detector = None
     if not args.no_detector:
@@ -1695,6 +1710,7 @@ def main() -> int:
     title = args.series_title or os.path.basename(os.path.dirname(ep))
     title = f"{title} — {os.path.basename(ep).replace('_', ' ')}"
     report = build_report(title, flags, n_cuts=len(cuts))
+    report["recap_style"] = recap_style["metrics"]
 
     # gallery: one block per timeline item — narration + its cut thumbs
     gallery: List[Dict[str, Any]] = []

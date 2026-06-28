@@ -1852,8 +1852,10 @@ humbled, a 'face-slap'). Do NOT force terms that don't fit the scene.
 - shots[*].scene_files and fallback_scene_files MUST be chosen ONLY from each beat's allowed list
 - Never invent filenames
 
-=== LENGTH CONTROL ===
-- Target about {WORD_TARGET} words total for script_paragraphs (±{TOL_PCT}%)
+=== PACING GUIDANCE ===
+- The approximate section runtime estimate is {WORD_TARGET} words, but it is
+  guidance only. Do not pad or amputate story to hit a number: quick impacts can
+  be tiny, major thoughts/reveals can breathe, and panel/story function wins.
 
 {GENRE_FLAVOR}
 
@@ -1875,7 +1877,7 @@ POLISH_CORE_MISSION = """=== CORE MISSION (GROUNDED POLISH — READ CAREFULLY) =
 Each beat carries a 'grounded_draft': a cinematic narration line ALREADY written from the
 actual panel artwork. You are blind to the image, so the draft is your ground truth.
 Your ONLY job is to POLISH each draft into the final spoken line:
-  - tighten to the word budget, smooth rhythm and cross-beat transitions, fix clunky phrasing
+  - smooth rhythm and cross-beat transitions, fix clunky phrasing
     (e.g. "is present", "reacts with", "a figure"), apply the TTS/mood formatting below.
 HARD GROUNDING RULE (overrides any instinct to dramatize):
   - Introduce NO new action, event, motion, sequence, reversal, or entity that is not in the
@@ -1912,7 +1914,8 @@ def main() -> int:
     ap.add_argument("--beats-per-section", type=int, default=6)
 
     ap.add_argument("--duration-mode", choices=["soft", "none"], default="soft")
-    ap.add_argument("--words-per-beat", type=int, default=110)
+    ap.add_argument("--words-per-beat", type=int, default=110,
+                    help="Legacy rough runtime estimator only; not a narration target.")
 
     ap.add_argument("--force-genre", default="", help="Force section_genre_mode (e.g. hunter)")
     ap.add_argument(
@@ -2292,9 +2295,11 @@ def main() -> int:
                     o1["shots"] = _build_default_shots_from_payload(payload, o1.get("script_paragraphs") or [], wpm=int(args.wpm))
                     o1["shots"] = _normalize_shots(o1["shots"])
 
-                # word target check (soft) + quality issues (soft)
+                # Word count is diagnostic only. Older versions retried when a
+                # section missed the rough runtime estimate, which flattened
+                # pacing and added cost. Style/grounding quality decides retry.
                 wc = _count_words(o1.get("script_paragraphs") or [])
-                ok_words = _within_tolerance(wc, word_target, args.word_tolerance)
+                ok_words = True
                 quality_issues = validate_paragraph_quality(o1.get("script_paragraphs") or [])
 
                 if ok_words and not quality_issues and _validate_section_json(o1):

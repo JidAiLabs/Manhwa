@@ -2,11 +2,12 @@
 """story_group.py — Pass 2 of the understanding-first pipeline.
 
 Group panels by UNDERSTANDING, not by gutters. Reads the per-panel descriptions
-(Pass 1, panel_understand) in reading order and segments them into STORY BEATS:
-a beat = a run of CONSECUTIVE panels that form one moment/shot. New beat at a
-scene/location change, a time jump, a flashback start/end, or a topic shift;
-near-identical consecutive panels merge into one montage beat. Each beat is
-tagged segment (present|flashback|dream) + arc_label — so flashbacks are native.
+(Pass 1, panel_understand) in reading order and segments them into STORY CONTEXT
+SPANS: a span = a run of CONSECUTIVE panels that form one moment or idea. New
+span at a scene/location change, a time jump, a flashback start/end, or a topic
+shift; near-identical consecutive panels merge into one context span. Each span
+is tagged segment (present|flashback|dream) + arc_label — so flashbacks are
+native.
 
 This REPLACES the position/threshold grouping in scene_group_builder.py. Output
 is a byte-compatible manifest.groups.json: top-level `shots` with per-shot
@@ -36,9 +37,10 @@ GROUP_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
         "chapter": {"type": "OBJECT", "properties": {
-            "logline": {"type": "STRING"},
-            "premise": {"type": "STRING"},
-        }},
+            "hook": {"type": "STRING", "minLength": 12},
+            "logline": {"type": "STRING", "minLength": 12},
+            "premise": {"type": "STRING", "minLength": 12},
+        }, "required": ["hook", "logline", "premise"]},
         "beats": {"type": "ARRAY", "items": {
             "type": "OBJECT",
             "properties": {
@@ -50,17 +52,18 @@ GROUP_SCHEMA: Dict[str, Any] = {
             "required": ["scene_files"],
         }},
     },
-    "required": ["beats"],
+    "required": ["chapter", "beats"],
 }
 
 SYSTEM = (
     "You are a manhwa recap editor. You get a numbered sequence of panel "
     "descriptions from ONE chapter, in reading order. Segment them into STORY "
-    "BEATS for the recap.\n"
-    "A beat = a run of CONSECUTIVE panels that form one moment/shot. Start a NEW "
-    "beat at: a scene or location change, a time jump, a FLASHBACK start OR end, "
-    "or a clear topic shift. Group near-identical consecutive panels (e.g. a "
-    "multi-panel action or a slow reveal) into ONE beat.\n"
+    "CONTEXT SPANS for the recap.\n"
+    "A context span = a run of CONSECUTIVE panels that form one moment, idea, "
+    "exchange, action burst, or slow reveal. Start a NEW span at: a scene or "
+    "location change, a time jump, a FLASHBACK start OR end, or a clear topic "
+    "shift. Group near-identical consecutive panels (e.g. a multi-panel action "
+    "or a slow reveal) into ONE span.\n"
     "ORDER + FLOW — the beats must read as ONE story in reading order:\n"
     "  - A caption / monologue panel that INTRODUCES the moment right after it "
     "(e.g. 'ON THE DAY I FINISHED THE WEB NOVEL…' immediately before that event) "
@@ -69,21 +72,116 @@ SYSTEM = (
     "  - Keep a flashback or dream as a CONTIGUOUS block. Do NOT bounce "
     "present→flashback→present→flashback: only change 'segment' at a real "
     "time-shift, and change it back only when the story truly returns to now.\n"
-    "For each beat return: scene_files (its consecutive panels, in order), "
+    "For each span return: scene_files (its consecutive panels, in order), "
     "segment (present | flashback | dream — MARK flashbacks and dreams), "
     "arc_label (a 2-4 word label for the scene). Cover EVERY panel exactly once, "
-    "in order. Prefer MORE, tighter beats over a few large ones — each beat "
-    "becomes one narration line, so it should be one clear moment.\n"
-    "ALSO return 'chapter': a LOGLINE (one vivid sentence — what this chapter is "
-    "about, its arc) and a PREMISE (1-2 sentences: the situation + the stakes), "
+    "in order. Do not target a fixed number of spans or a fixed panel count. The "
+    "downstream script/timeline renders panel-level cues; these spans are only "
+    "story context and must follow the source's natural rhythm.\n"
+    "ALSO return 'chapter': a HOOK (8-18 spoken words that immediately state the "
+    "protagonist/situation and genre-defining turn; no scenery or slow setup), a "
+    "LOGLINE (one vivid sentence — what this chapter is about, its arc), and a "
+    "PREMISE (1-2 sentences: the situation + the stakes), "
     "synthesized from the WHOLE sequence. This is the through-line the narrator "
-    "uses to connect the beats — base it ONLY on what the panels actually show."
+    "uses to connect the beats — base it ONLY on what the panels actually show. "
+    "Do not fuse separate facts into a new cause, origin, inheritance, identity, "
+    "or timeline. If the chapter separately mentions a bloodline and later shows "
+    "a power/technology, do not claim the power comes from that bloodline unless "
+    "the panels explicitly say so. Prefer a simple accurate sequence over a clever "
+    "but unsupported causal connection. "
+    "chapter.hook, chapter.logline and chapter.premise are REQUIRED and MUST "
+    "NEVER be blank."
 )
 
 
 def _norm_segment(s: Any) -> str:
     s = str(s or "").strip().lower()
     return s if s in _SEGMENTS else "present"
+
+
+def _chapter_spine_complete(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    hook_words = len(re.findall(r"[A-Za-z0-9']+",
+                                str(value.get("hook") or "")))
+    return bool(8 <= hook_words <= 22
+                and str(value.get("logline") or "").strip()
+                and str(value.get("premise") or "").strip())
+
+
+_LINEAGE_RE = re.compile(
+    r"\b(?:bloodline|lineage|descendan\w*|family blood|royal blood)\b", re.I)
+_POWER_OR_TECH_RE = re.compile(
+    r"\b(?:power|ability|system|technology|tech|nano|machine|skill|magic|"
+    r"awakening|awakened|gift)\w*\b", re.I)
+
+
+def _chapter_spine_issue(value: Any, payload: Dict[str, Any]) -> str:
+    """Return why the spine is unsafe, or empty string when it is usable."""
+    if not _chapter_spine_complete(value):
+        return "chapter hook/logline/premise is blank or hook is not 8-22 words"
+    hook = str(value.get("hook") or "")
+    spine_rest = (str(value.get("logline") or "") + " "
+                  + str(value.get("premise") or ""))
+    if _POWER_OR_TECH_RE.search(spine_rest) and not _POWER_OR_TECH_RE.search(hook):
+        return (
+            "hook omits the genre-defining power/system/magic/technology turn "
+            "that appears in the chapter logline or premise")
+    if _LINEAGE_RE.search(hook) and _POWER_OR_TECH_RE.search(hook):
+        source_lines = []
+        for panel in payload.get("panels") or []:
+            source_lines.append(" ".join(str(panel.get(k) or "")
+                                         for k in ("description", "action", "dialogue")))
+        if not any(_LINEAGE_RE.search(line) and _POWER_OR_TECH_RE.search(line)
+                   for line in source_lines):
+            return (
+                "hook fuses lineage/bloodline with a power or technology, but no "
+                "source panel explicitly links those concepts")
+    return ""
+
+
+def _repair_hook_from_spine(value: Any, payload: Dict[str, Any]) -> bool:
+    """Promote a valid logline/premise sentence when the model's hook is weak."""
+    if not isinstance(value, dict):
+        return False
+    current = str(value.get("hook") or "")
+    spine_rest = (str(value.get("logline") or "") + " "
+                  + str(value.get("premise") or ""))
+    needs_turn = bool(_POWER_OR_TECH_RE.search(spine_rest))
+
+    candidates = [str(value.get("logline") or "").strip()]
+    candidates.extend(
+        s.strip() for s in re.split(r"(?<=[.!?])\s+",
+                                    str(value.get("premise") or "").strip())
+        if s.strip())
+    for candidate in candidates:
+        words = len(re.findall(r"[A-Za-z0-9']+", candidate))
+        if not 8 <= words <= 22:
+            continue
+        if needs_turn and not _POWER_OR_TECH_RE.search(candidate):
+            continue
+        if _LINEAGE_RE.search(candidate) and _POWER_OR_TECH_RE.search(candidate):
+            source_lines = [
+                " ".join(str(panel.get(k) or "")
+                         for k in ("description", "action", "dialogue"))
+                for panel in payload.get("panels") or []]
+            if not any(_LINEAGE_RE.search(line)
+                       and _POWER_OR_TECH_RE.search(line)
+                       for line in source_lines):
+                continue
+        if candidate != current:
+            value["hook"] = candidate
+            return True
+    return False
+
+
+def _normalized_group_num_ctx(value: Any) -> int:
+    """The whole-chapter grouping prompt needs room for input plus JSON output."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = 16384
+    return max(12288, n)
 
 
 def build_grouping_payload(panels: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -100,12 +198,17 @@ def build_grouping_payload(panels: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
-                    *, max_beat_len: int = 4) -> List[Dict[str, Any]]:
+                    *, max_beat_len: int = 0) -> List[Dict[str, Any]]:
     """Pure + robust: reconstruct a CONSECUTIVE partition of scene_order from the
     model's grouping intent — guarantees coverage (every panel in exactly one
     shot, in order) no matter how the model mis-orders/omits. A new shot starts
-    when the model's beat changes OR the run hits max_beat_len. Unassigned panels
-    continue the current beat (never dropped)."""
+    when the model's beat changes. ``max_beat_len`` is an explicit safety
+    override only; <=0 means no forced split. Unassigned panels continue the
+    current beat (never dropped)."""
+    try:
+        limit = int(max_beat_len or 0)
+    except (TypeError, ValueError):
+        limit = 0
     assign: Dict[str, tuple] = {}
     for bi, b in enumerate(model_beats or []):
         seg, arc = _norm_segment(b.get("segment")), str(b.get("arc_label") or "").strip()
@@ -123,7 +226,7 @@ def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
         else:
             bi, seg, arc = -1, "present", ""
         if (cur is None or bi != cur["_bi"]
-                or len(cur["scene_files"]) >= max_beat_len):
+                or (limit > 0 and len(cur["scene_files"]) >= limit)):
             cur = {"_bi": bi, "scene_files": [], "segment": seg, "arc_label": arc}
             shots.append(cur)
         cur["scene_files"].append(sf)
@@ -134,9 +237,9 @@ def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
 
 
 def group_panels(panels: List[Dict[str, Any]], call_fn: Callable[..., Any],
-                 *, max_beat_len: int = 4
+                 *, max_beat_len: int = 0
                  ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Group the (story-only, ordered) panels into story shots AND capture the
+    """Group the (story-only, ordered) panels into story context spans and capture the
     chapter spine (logline/premise). `call_fn(payload) -> parsed dict|None` is
     injected (real model, or stub in tests). Returns (shots, chapter)."""
     if not panels:
@@ -387,11 +490,15 @@ def main() -> int:
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="")
     ap.add_argument("--max-beat-len", type=int, default=0,
-                    help="cap panels per beat; 0 = AUTO-scale to chapter size "
-                         "(~16-beat target) so small chapters get tight beats and "
-                         "big ones don't explode (ORV 34p->cap 2, a 116p chapter->7)")
+                    help="explicit cap panels per context span; 0 = trust "
+                         "semantic boundaries with NO global target count")
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="0 = deterministic beat boundaries + segment tags")
+    ap.add_argument(
+        "--num-ctx", type=int,
+        default=int(os.environ.get("STUDIO_GROUP_NUM_CTX", "16384")),
+        help="Ollama context for the one whole-chapter grouping call; kept "
+             "separate from the 8K per-beat narration context")
     ap.add_argument("--keep-chrome", action="store_true")
     args = ap.parse_args()
 
@@ -442,6 +549,12 @@ def main() -> int:
 
     client = None
     model = args.ollama_model
+    if args.backend == "ollama":
+        # _call_model reads STUDIO_BEATS_NUM_CTX. Override it only inside this
+        # one-call grouping subprocess: the whole chapter payload can exceed 8K,
+        # while per-beat narration intentionally stays at 8K to avoid SWA thrash.
+        os.environ["STUDIO_BEATS_NUM_CTX"] = str(
+            _normalized_group_num_ctx(args.num_ctx))
     if args.backend == "vertex":
         from google import genai
         if not args.project or not args.location:
@@ -451,18 +564,44 @@ def main() -> int:
         model = args.model
 
     def call_fn(payload: Dict[str, Any]):
-        parsed, _raw, _usage = _call_model_with_backoff(
-            client=client, model=model, system_instruction=SYSTEM,
-            user_payload=payload, image_paths=[], response_schema=GROUP_SCHEMA,
-            max_output_tokens=2400, temperature=args.temperature,
-            backoff_max=60.0, backend=args.backend)
+        parsed = None
+        issue = ""
+        for attempt in range(2):
+            instruction = SYSTEM
+            if attempt:
+                instruction += (
+                    "\n\nREPAIR: the previous chapter story spine was invalid: "
+                    + issue + ". Return the complete grouping again with a "
+                    "specific, source-grounded hook, logline, and premise. Do not "
+                    "use placeholders or fuse separate facts into a new cause.")
+            parsed, _raw, _usage = _call_model_with_backoff(
+                client=client, model=model, system_instruction=instruction,
+                user_payload=payload, image_paths=[], response_schema=GROUP_SCHEMA,
+                max_output_tokens=3000, temperature=args.temperature,
+                backoff_max=60.0, backend=args.backend)
+            if isinstance(parsed, dict):
+                _repair_hook_from_spine(parsed.get("chapter"), payload)
+            issue = _chapter_spine_issue(
+                (parsed or {}).get("chapter") if isinstance(parsed, dict) else None,
+                payload)
+            if isinstance(parsed, dict) and not issue:
+                return parsed
         return parsed
 
-    # AUTO-scale the per-beat cap to chapter size (target ~16 beats): a fixed cap
-    # of 2 made ORV's 34 panels a good 13 beats but a 116-panel chapter 64
-    # (over-fragmented — captions split off -> fragment_dangle, narration overload).
-    mbl = args.max_beat_len or max(2, round(len(story) / 16))
+    # The reference-channel contract has no magic group count. These spans are
+    # context for narration continuity only; panel/cue rows drive the script and
+    # render timeline downstream. A positive --max-beat-len is an operator safety
+    # override, never a default creative target.
+    mbl = int(args.max_beat_len or 0)
     shots, chapter = group_panels(story, call_fn, max_beat_len=mbl)
+    logline = str((chapter or {}).get("logline") or "").strip()
+    premise = str((chapter or {}).get("premise") or "").strip()
+    hook = str((chapter or {}).get("hook") or "").strip()
+    spine_issue = _chapter_spine_issue(chapter, build_grouping_payload(story))
+    if spine_issue:
+        raise SystemExit(
+            "Grouping model returned an unsafe chapter story spine: "
+            + spine_issue + "; refusing to continue")
     # caption-only beats fold into their neighbour so the text rides real art
     shots = merge_caption_solos(shots, caption_files(story))
     shots = annotate_intensity(shots, panels)   # per-shot PACE = peak intensity
@@ -470,8 +609,9 @@ def main() -> int:
         "source_understood": os.path.abspath(args.understood),
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
         "chrome_excluded": sorted(excluded),
-        "grouping": {"method": "understanding_first_v1",
-                     "max_beat_len": args.max_beat_len},
+        "grouping": {"method": "understanding_first_context_spans_v2",
+                     "max_beat_len": mbl,
+                     "forced_split": bool(mbl > 0)},
         "summary": {"num_scenes": len(story), "num_shots": len(shots),
                     "flashback_shots": sum(1 for s in shots
                                            if s["segment"] != "present")},
@@ -485,8 +625,9 @@ def main() -> int:
         os.path.dirname(os.path.abspath(args.out)), "manifest.story.json")
     spine = {
         "source_groups": os.path.abspath(args.out),
-        "logline": str((chapter or {}).get("logline") or "").strip(),
-        "premise": str((chapter or {}).get("premise") or "").strip(),
+        "hook": hook,
+        "logline": logline,
+        "premise": premise,
         "arc": [{"group_id": s["shot_id"], "arc_label": s["arc_label"],
                  "segment": s["segment"]} for s in shots],
     }

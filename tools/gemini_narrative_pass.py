@@ -39,6 +39,13 @@ from narration_safe_rules import (  # noqa: E402
     SAFE_NARRATION_RULES,
     SAFE_OPENING_NOTE,
 )
+from recap_style import (  # noqa: E402
+    OPENING_HOOK_RULE,
+    RECAP_STYLE_RULES,
+    apply_opening_hook,
+    neutralize_identity_reveal_leaks,
+    repair_spoken_fragments,
+)
 
 # --- meta-garbage narration guard --------------------------------------------
 # Ch20 g0014: a panel's OCR was a long run of underscores (a garbage SFX scan).
@@ -209,16 +216,10 @@ _REGISTER_PARAMS = {
 }
 
 
-# The narration token budget SCALES with the beat's panel count: the planner paces
-# every distinct panel UNDER the voiceover, so a panel-dense beat needs
-# proportionally more narration or the panels flash by. A FLAT cap is exactly what
-# crammed Ch20's 6-panel beat into 24 words / 1.7s-per-panel. FAST stays terse PER
-# panel (~one tight line each); DEEP keeps its richer floor. The per-panel caps
-# (FAST 28, DEEP 40 tokens) only RAISE the floor — a 1-panel beat is unchanged.
-# Per-panel token budget. Calibrated so a TYPICAL full chapter (~90 shown panels)
-# lands near the ~10-min YouTube-friendly length WITHOUT a hard clock — short
-# chapters stay short, dense ones run longer. (~16-20 words/panel ≈ these caps; the
-# model fills ~half, so the cap only needs headroom.) 1-panel beats are unchanged.
+# Output-token headroom scales with panel count so the model is not forced to
+# amputate a multi-panel beat. This is a ceiling for transport, not a narration
+# target: a sword clash can be one sharp phrase; an important thought/reveal can
+# use the room it needs. One-panel beats keep the base caps.
 _FAST_TOK_PER_PANEL = 36
 _DEEP_TOK_PER_PANEL = 48
 
@@ -522,12 +523,18 @@ def _build_story_block(story_path: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _pack_group_payload(group: Dict[str, Any], vision_items_by_file: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def _pack_group_payload(
+    group: Dict[str, Any],
+    vision_items_by_file: Dict[str, Dict[str, Any]],
+    understand_by_file: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     scene_files = group.get("scene_files") or []
     scenes: List[Dict[str, Any]] = []
+    understand_by_file = understand_by_file or {}
 
     for sf in scene_files:
         it = vision_items_by_file.get(sf) or {}
+        understood = understand_by_file.get(sf) or {}
         v = it.get("vision") or {}
         labels = [x.get("desc") for x in (v.get("labels") or []) if x.get("desc")]
         objects = [x.get("name") for x in (v.get("objects") or []) if x.get("name")]
@@ -541,9 +548,21 @@ def _pack_group_payload(group: Dict[str, Any], vision_items_by_file: Dict[str, D
                 "keywords": it.get("keywords") if isinstance(it.get("keywords"), list) else [],
                 "labels": labels[:15],
                 "objects": objects[:15],
-                # what the multimodal understanding actually identified in this
-                # panel — NAME these, do not rename or invent creatures/counts.
-                "subjects": it.get("subjects") if isinstance(it.get("subjects"), list) else [],
+                # Full paid understanding, including panels omitted from the
+                # image attachment cap. This is the narration's factual source;
+                # vision OCR/labels are supporting signals, not a substitute.
+                "description": str(understood.get("description") or "")[:500],
+                "action": str(understood.get("action") or "")[:240],
+                "setting": str(understood.get("setting") or "")[:160],
+                "dialogue": str(understood.get("dialogue") or "")[:320],
+                "panel_kind": str(understood.get("panel_kind")
+                                  or it.get("panel_kind") or ""),
+                "intensity": str(understood.get("intensity") or ""),
+                "subjects": (
+                    understood.get("subjects")
+                    if isinstance(understood.get("subjects"), list)
+                    else (it.get("subjects")
+                          if isinstance(it.get("subjects"), list) else [])),
             }
         )
 
@@ -1035,6 +1054,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
     ap.add_argument("--understood", default="",
                     help="manifest.panels.understood.json for per-panel pad grounding")
+    ap.add_argument("--opening-hook", action="store_true",
+                    help="first chapter: make the first panel line a concise "
+                         "whole-premise hook")
     ap.add_argument("--register-mode", action="store_true",
                     help="Register-aware narration: per group, a calibrated "
                          "classifier picks FAST (terse, plot-forward, enforced "
@@ -1097,13 +1119,19 @@ def main() -> int:
         "    - GROUND it strictly in THESE panels — describe only what is actually drawn here.\n"
         "      Invent NOTHING: no event/motion/outcome not shown, and NO setting that isn't\n"
         "      visible (never 'chandeliers', 'a grand hall', 'marble', 'parchment' unless on the page).\n"
-        "      USE THE UNDERSTANDING: each panel's INPUT_JSON.scenes_signals[].subjects lists\n"
-        "      exactly what the analyst identified — name THOSE, in those words. Do not rename\n"
+        "      USE THE UNDERSTANDING: each panel's INPUT_JSON.scenes_signals carries its\n"
+        "      description, action, setting, dialogue, subjects, panel_kind, and intensity.\n"
+        "      These fields cover even a panel omitted by the image cap. Treat them as the\n"
+        "      factual source: name the listed subjects in those words. Do not rename\n"
         "      them (if it says 'beast' it is a beast, not a 'hound'), do not change their number\n"
         "      (two stay two, never 'a pack/swarm'), and do not add a creature/person not listed.\n"
         "      Do NOT invent a SYSTEM the world lacks (no 'server'/'game'/'respawn' on a real scene).\n"
-        "    - NAME characters from the CHAPTER CAST by matching appearance; never 'a figure'/\n"
-        "      'a young man' when it matches the cast. Same person = same name every scene.\n"
+        "    - IDENTITY + NAMES: use the CHAPTER CAST only after the story has established\n"
+        "      who the person is. A visual match alone must NOT spoil a transformed, masked,\n"
+        "      hooded, glowing, silhouetted, disguised, or newly-arrived identity; if the\n"
+        "      characters treat them as unknown, use a grounded neutral handle until the\n"
+        "      reveal. Once introduced, ration the protagonist's real name and usually use\n"
+        "      pronouns or a relaxed stand-in. Same established person keeps the same identity.\n"
         "    - DIALOGUE — quote SPARINGLY, recap-style: PARAPHRASE the bulk into narration and\n"
         "      QUOTE only a SHORT punchy fragment (a threat, a name, a key line — a few words),\n"
         "      attributed. Do NOT quote a whole long bubble; NEVER stack two long quotes in a row.\n"
@@ -1197,7 +1225,8 @@ def main() -> int:
     # Generator-side advertiser-safety rules ride the DEFAULT prompt too (not just
     # the register override), so register-off narration is also brand-safe at the
     # source; the sanitize-pass NET still runs downstream regardless.
-    system = system + "\n\n" + SAFE_NARRATION_RULES
+    system = (system + "\n\n" + SAFE_NARRATION_RULES + "\n\n"
+              + _DIALOGUE_RULE + "\n\n" + RECAP_STYLE_RULES)
     corrections: Dict[int, str] = {}
     if args.corrections and os.path.exists(args.corrections):
         try:
@@ -1255,8 +1284,10 @@ def main() -> int:
             continue
 
         sys_g = system
+        if args.opening_hook and is_first_group:
+            sys_g = system + "\n\n" + OPENING_HOOK_RULE
         if gid in corrections:
-            sys_g = system + (
+            sys_g = sys_g + (
                 "\n\nCORRECTION FOR THIS GROUP — the previous narration had this problem:\n  "
                 + corrections[gid] + "\n"
                 "Rewrite the 'narration' to FIX it: stay strictly to what is visible here plus the "
@@ -1265,7 +1296,7 @@ def main() -> int:
             )
             regenerated += 1
 
-        payload = _pack_group_payload(g, vision_by_file)
+        payload = _pack_group_payload(g, vision_by_file, u_by_file)
         # rolling context: the last spoken lines ride along so each beat
         # CONTINUES the story instead of re-opening it (and completes any
         # fragment the previous caption left hanging)
@@ -1384,6 +1415,13 @@ def main() -> int:
             write_checkpoint()
 
     beats_out.sort(key=lambda x: int(x.get("group_id") or 0))
+    identity_reveals_neutralized = neutralize_identity_reveal_leaks(
+        {"beats": beats_out}, {"cast": cast_list}, vision_by_file)
+    spoken_fragments_repaired = repair_spoken_fragments({"beats": beats_out})
+    story_obj = (load_json(args.story)
+                 if args.story and os.path.exists(args.story) else {})
+    opening_hook_applied = bool(
+        args.opening_hook and apply_opening_hook({"beats": beats_out}, story_obj))
     out_obj = {
         "source_groups_manifest": os.path.abspath(args.groups_manifest),
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
@@ -1392,6 +1430,9 @@ def main() -> int:
         "stats": {
             "parse_errors": parse_errors,
             "regenerated": regenerated,
+            "identity_reveals_neutralized": identity_reveals_neutralized,
+            "spoken_fragments_repaired": spoken_fragments_repaired,
+            "opening_hook_applied": opening_hook_applied,
             "usage": {
                 "calls": usage.calls,
                 "input_tokens": usage.input_tokens,

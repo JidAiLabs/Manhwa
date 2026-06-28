@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,12 +34,19 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
 from narration_consistency import strip_chrome_opener  # noqa: E402
+from recap_style import (  # noqa: E402
+    OPENING_HOOK_RULE,
+    RECAP_STYLE_RULES,
+    apply_opening_hook,
+    is_spoken_fragment,
+    repair_spoken_fragments,
+)
 
 BASE_PERSONA = """You are the narrator persona of a top manhwa recap channel.
 Voice: internet-native, dry, confident, a little sarcastic — a sharp friend
 recapping the story, not a movie trailer.
 
-GENRE-NEUTRAL TECHNIQUES (use 1-2 per line, vary them, never force all):
+GENRE-NEUTRAL TECHNIQUES (choose at most one when it helps; never force one):
 - audience intimacy: "our guy", "our boy", "look at his face"
 - comedic hyperbole on impacts ("coughing up half his internal organs")
 - punchy standalone fragments for beats: "Total silence." "Deal." "He's in."
@@ -58,9 +66,12 @@ HARD RULES:
   GENRE block decides what framing fits; outside a literal game/system world
   there is no "server", "respawn", or "XP" to reach for.
 - Keep every character name EXACTLY as written (the cast list is law).
+- Paraphrase dialogue in clean narrator language. Never preserve or create a
+  quoted run of ALL-CAPS bubble OCR, a truncated fragment, or onomatopoeia.
 - Keep the original meaning and emotional turn of the line — an injured
   character stays injured, a defeat stays a defeat.
-- Similar length: between 60% and 150% of the original word count.
+- Compress visible-only drag aggressively. A rewrite may be 35% of the original
+  when it preserves the panel's action/stakes; never pad to match source length.
 - No publication chrome: never mention chapters, episodes, sites, scans,
   views, or the series' real title.
 - Mood tags like [panicked] at the start of a line must be preserved as-is.
@@ -110,6 +121,12 @@ _COMIC_CUE_RE = re.compile(
     r")\b",
     re.I,
 )
+_QUOTED_SPEECH_RE = re.compile(
+    r"(?:[\"“][^\"”]{2,}[\"”]|(?<!\w)'[^']{2,}'(?!\w))")
+
+
+def _has_quoted_speech(text: str) -> bool:
+    return bool(_QUOTED_SPEECH_RE.search(str(text or "")))
 
 
 def _comic_cue_score(beat: Dict[str, Any]) -> int:
@@ -158,17 +175,43 @@ def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
     return out
 
 
-CINEMATIC_RULES = """CINEMATIC IS THE BASELINE — write EVERY line cinematic by
-default: vivid setting, sensory imagery, emotional weight, trailer-grade
-atmosphere (this OVERRIDES the "not a movie trailer" line above). The whole
-recap lives in that cinematic voice.
+def classify_panel_lines(beats_obj: Dict[str, Any]) -> Dict[tuple, str]:
+    """Per-panel style guard so one explosive frame does not mute a whole group."""
+    out: Dict[tuple, str] = {}
+    for beat in (beats_obj or {}).get("beats") or []:
+        try:
+            gid = int(beat.get("group_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        selection = {
+            str(item.get("scene_file") or ""): item
+            for item in beat.get("scene_selection") or []
+            if isinstance(item, dict)
+        }
+        for i, panel in enumerate(beat.get("panel_narration") or []):
+            line = str(panel.get("line_plain") or panel.get("line") or "")
+            if _COMIC_CUE_RE.search(line):
+                out[(gid, i)] = "COMIC"
+                continue
+            item = selection.get(str(panel.get("scene_file") or "")) or {}
+            rank = _INTENSITY_RANK.get(
+                str(item.get("intensity") or "").lower(), 0)
+            out[(gid, i)] = "DRAMATIC" if rank >= 2 else "CONNECTIVE"
+    return out
+
+
+CINEMATIC_RULES = """CINEMATIC IS THE BASELINE — write EVERY line with strong
+verbs, rhythm, emotional weight, stakes, and consequence. Cinematic does NOT
+mean adding weather, lighting, hair, mist, or trailer-grade atmosphere the
+viewer can already see. The whole recap lives in a story-forward cinematic voice.
 PERSONA / HUMOR IS AN OCCASIONAL SEASONING, never the default. Now and then —
 when a beat genuinely invites levity (a light aside, an absurd or triumphant
 mundane moment, a knowing wink at the audience) — add a BRIEF touch of the
 channel PERSONA VOICE: internet-native, dry, confident, intimate ("our guy"/
 "our boy"), a little hyperbole, and only the genre-appropriate framing the GENRE
-block allows (no game framing off-genre). That is a few touches per chapter to
-make it funnier — NOT every line, never a quota, never pasted onto a serious beat.
+block allows (no game framing off-genre). Across eligible CONNECTIVE lines, aim
+for roughly one touch in four — enough to sound human, never pasted onto a
+serious beat.
 Use the DRAMATIC/CONNECTIVE/COMIC tag as the guard:
 - DRAMATIC, somber, eerie, tense, awe or tragic beats stay PURELY cinematic —
   any wink there deflates the moment;
@@ -200,7 +243,9 @@ def genre_key(genre_text: str) -> str:
 
 def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
                  humor: str, genre: str = "",
-                 classes: Optional[Dict[int, str]] = None) -> str:
+                 classes: Optional[Dict[Any, str]] = None,
+                 opening_hook: bool = False,
+                 story_context: str = "") -> str:
     """Build the LLM prompt for either per-beat or per-panel lines.
 
     When *lines* contain ``panel_index``, the contract is per-panel:
@@ -211,6 +256,12 @@ def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
     cast = ", ".join(cast_names) if cast_names else "(none listed)"
     addon = GENRE_ADDONS.get(genre_key(genre), "")
     guide = BASE_PERSONA + ("\n\n" + addon if addon else "")
+    guide += "\n\n" + RECAP_STYLE_RULES
+    if opening_hook:
+        guide += "\n\n" + OPENING_HOOK_RULE
+    if story_context:
+        guide += ("\n\nWHOLE-CHAPTER STORY SPINE (context only; invent nothing):\n"
+                  + story_context)
     per_panel = lines and "panel_index" in lines[0]
     if humor == "cinematic":
         guide += "\n\n" + CINEMATIC_RULES
@@ -218,7 +269,11 @@ def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
         if per_panel:
             payload = [{"group_id": l["group_id"],
                         "panel_index": l["panel_index"],
-                        "style": cls.get(int(l["group_id"]), "CONNECTIVE"),
+                        "style": cls.get(
+                            (int(l["group_id"]), int(l["panel_index"])),
+                            cls.get(int(l["group_id"]), "CONNECTIVE")),
+                        "must_paraphrase_dialogue":
+                            _has_quoted_speech(l["narration"]),
                         "narration": l["narration"]} for l in lines]
         else:
             payload = [{"group_id": l["group_id"],
@@ -228,6 +283,8 @@ def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
         if per_panel:
             payload = [{"group_id": l["group_id"],
                         "panel_index": l["panel_index"],
+                        "must_paraphrase_dialogue":
+                            _has_quoted_speech(l["narration"]),
                         "narration": l["narration"]} for l in lines]
         else:
             payload = [{"group_id": l["group_id"], "narration": l["narration"]}
@@ -236,16 +293,31 @@ def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
         return_schema = (
             "{\"group_id\": int, \"panel_index\": int, \"narration\": str} — "
             "SAME length, SAME group_id+panel_index pairs, same order, "
-            "rewrite each narration line in the persona, keep length "
-            "proportional to the original, NEVER merge or drop lines"
+            "rewrite each narration line in the persona, NEVER merge or drop "
+            "lines"
         )
     else:
         return_schema = (
             "{\"group_id\": int, \"narration\": str} — same "
             "group_ids, same order, no commentary"
         )
-    return (f"{guide}\n\nHUMOR={humor}\nCAST NAMES (verbatim): {cast}\n\n"
-            "Rewrite EVERY line below in the persona. Return ONLY a JSON "
+    pace_rule = (
+        "\nPACING CONTRACT: choose length from the panel's narrative job, not "
+        "from a chapter average. A sword clash, blink reaction, or clean impact "
+        "can be one sharp beat. A reveal, inner decision, rule explanation, or "
+        "main-story turn can breathe longer. Do not pad ordinary panels, and do "
+        "not compress important thought just to be short.\n"
+        if per_panel else "")
+    return (f"{guide}\n\nHUMOR={humor}\nCAST NAMES (verbatim): {cast}\n"
+            f"{pace_rule}\n"
+            "Rewrite EVERY line below in the persona. When "
+            "must_paraphrase_dialogue=true, convey the speech or thought "
+            "INDIRECTLY in clean narrator language and use NO quotation marks; "
+            "never read bubble OCR aloud. Do not invent quoted dialogue or "
+            "quoted thoughts. Ensure every output is natural, "
+            "grammatical spoken English AND an independently speakable complete "
+            "clause: never begin with ellipsis/lowercase continuation and never "
+            "end with a comma, colon, or semicolon. Return ONLY a JSON "
             f"array of objects {return_schema}.\n\nLINES:\n"
             + json.dumps(payload, ensure_ascii=False, indent=1))
 
@@ -255,6 +327,23 @@ _MOOD_RE = re.compile(r"^\s*(\[[a-z _-]+\])", re.I)
 
 def _word_count(s: str) -> int:
     return len(re.findall(r"[\w']+", s))
+
+
+def _has_repeated_sentence_loop(text: str) -> bool:
+    parts = [p.strip().lower() for p in re.split(r"[.!?]+", text or "")
+             if p.strip()]
+    if len(parts) < 4:
+        return False
+    seen: Dict[str, int] = {}
+    for p in parts:
+        words = re.findall(r"[\w']+", p)
+        if len(words) < 2:
+            continue
+        key = " ".join(words[:12])
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] >= 4:
+            return True
+    return False
 
 
 _UI_TOKENS = {"read", "ep", "episode", "episodes", "comments", "comment",
@@ -299,11 +388,23 @@ def _caption_words_by_group(ep_dir: str,
 
 def validate_line(original: str, punched: str,
                   cast_names: List[str], *,
-                  required: Any = None, max_ratio: float = 1.5) -> bool:
-    """Reject rewrites that break the grounding contract. *max_ratio* is the
-    upper word-count multiple allowed — raised for DRAMATIC cinematic lines,
-    which intentionally keep more atmospheric description than the grounded line."""
+                  required: Any = None, max_ratio: float = 1.5,
+                  forbid_quotes: bool = False,
+                  forbid_fragments: bool = False) -> bool:
+    """Reject rewrites that break the grounding contract.
+
+    ``max_ratio`` is accepted for old callers but no longer controls narrative
+    length. Pace belongs to the panel: a fast action may be tiny, while a
+    thought/reveal panel may need room. This gate only catches broken output,
+    chrome, name/caption loss, quote leaks, and obvious model loops.
+    """
     if not punched or not punched.strip():
+        return False
+    if _has_repeated_sentence_loop(punched):
+        return False
+    if forbid_quotes and _has_quoted_speech(punched):
+        return False
+    if forbid_fragments and is_spoken_fragment(punched):
         return False
     if required:
         req_sets = ([required] if isinstance(required, (set, frozenset))
@@ -312,9 +413,6 @@ def validate_line(original: str, punched: str,
         for rs in req_sets:
             if rs and len(set(rs) & pwords) / max(1, len(set(rs))) < 0.5:
                 return False    # a caption paraphrased away
-    ow, pw = _word_count(original), _word_count(punched)
-    if ow >= 5 and not (0.6 * ow <= pw <= max_ratio * ow + 8):
-        return False
     om = _MOOD_RE.match(original)
     if om and not punched.strip().startswith(om.group(1)):
         return False
@@ -337,8 +435,8 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
     """Apply validated rewrites; keep the grounded original otherwise.
     The original always survives as beat['narration_plain']; groups whose
     panels carry captions reject any rewrite that drops the caption words.
-    DRAMATIC beats (per *classes*) get a larger length budget so a cinematic
-    rewrite that keeps the atmosphere is not rejected as 'overlong'."""
+    Panel length is not gated here; ``classes`` is accepted for compatibility
+    with older callers."""
     by_gid = {int(p.get("group_id") or 0): str(p.get("narration") or "")
               for p in punched if isinstance(p, dict)}
     caption_words = caption_words or {}
@@ -350,16 +448,9 @@ def merge(beats_obj: Dict[str, Any], punched: List[Dict[str, Any]],
         original = str(b.get("narration_plain") or b.get("narration") or "")
         b["narration_plain"] = original
         cand = by_gid.get(gid, "").replace("*", "")  # md emphasis -> TTS-safe
-        cls = classes.get(gid)
-        if cls == "DRAMATIC":
-            max_ratio = 3.0
-        elif cls == "COMIC":
-            max_ratio = 2.2
-        else:
-            max_ratio = 1.5
         if cand and validate_line(original, cand, cast_names,
                                   required=caption_words.get(gid),
-                                  max_ratio=max_ratio):
+                                  forbid_quotes=True):
             b["narration"] = cand
             applied += 1
         else:
@@ -399,6 +490,36 @@ def _extract_json_array(text: str) -> List[Dict[str, Any]]:
     return out
 
 
+def _batch_lines(lines: List[Dict[str, Any]], batch_size: int,
+                 *, max_payload_chars: int = 42000) -> List[List[Dict[str, Any]]]:
+    """Split only for model transport/context safety.
+
+    A positive ``batch_size`` is an explicit operator override. The default
+    adaptive path has no opinion about story pacing or panel importance; it just
+    keeps the JSON payload comfortably inside the model context.
+    """
+    if not lines:
+        return []
+    if batch_size and batch_size > 0:
+        size = max(1, int(batch_size))
+        return [lines[i:i + size] for i in range(0, len(lines), size)]
+    batches: List[List[Dict[str, Any]]] = []
+    current: List[Dict[str, Any]] = []
+    current_chars = 0
+    limit = max(8000, int(max_payload_chars or 42000))
+    for line in lines:
+        line_chars = len(json.dumps(line, ensure_ascii=False)) + 2
+        if current and current_chars + line_chars > limit:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(line)
+        current_chars += line_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _cast_names(cast_path: str) -> List[str]:
     if not cast_path or not os.path.exists(cast_path):
         return []
@@ -412,6 +533,18 @@ def _cast_names(cast_path: str) -> List[str]:
         return names
     except Exception:
         return []
+
+
+def _story_context(story_path: str) -> str:
+    if not story_path or not os.path.exists(story_path):
+        return ""
+    try:
+        obj = json.load(open(story_path))
+    except Exception:
+        return ""
+    parts = [str(obj.get("logline") or "").strip(),
+             str(obj.get("premise") or "").strip()]
+    return "\n".join(p for p in parts if p)
 
 
 def infer_genre_from_content(beats_obj: Dict[str, Any], ep_dir: str = "") -> str:
@@ -467,7 +600,7 @@ def apply_panel_punchup(
     rewrites: Dict[tuple, str],
     cast_names: Optional[List[str]] = None,
     caption_words: Optional[Dict[int, Any]] = None,
-    classes: Optional[Dict[int, str]] = None,
+    classes: Optional[Dict[Any, str]] = None,
 ) -> int:
     """Apply validated per-panel rewrites in-place; set line_plain; rejoin narration.
 
@@ -482,14 +615,6 @@ def apply_panel_punchup(
     caption_words = caption_words or {}
     classes = classes or {}
 
-    cls = classes.get(gid)
-    if cls == "DRAMATIC":
-        max_ratio = 3.0
-    elif cls == "COMIC":
-        max_ratio = 2.2
-    else:
-        max_ratio = 1.5
-
     required = caption_words.get(gid)
 
     panel_narration = beat.get("panel_narration") or []
@@ -498,13 +623,10 @@ def apply_panel_punchup(
         original = str(panel.get("line_plain") or panel.get("line") or "")
         panel["line_plain"] = original
         cand = str(rewrites.get((gid, i), "") or "").replace("*", "")
-        # Absolute length cap: validate_line skips length for ow<5, but we
-        # must reject absurdly bloated rewrites regardless of original length.
-        ow, pw = _word_count(original), _word_count(cand)
-        cand_too_long = pw > max_ratio * ow + 8
-        if cand and not cand_too_long and validate_line(original, cand, cast_names,
-                                                        required=required,
-                                                        max_ratio=max_ratio):
+        if cand and validate_line(original, cand, cast_names,
+                                  required=required,
+                                  forbid_quotes=True,
+                                  forbid_fragments=True):
             line = cand
             accepted += 1
         else:
@@ -537,6 +659,19 @@ def main() -> int:
                          "auto-read from --script section_genre_mode if given")
     ap.add_argument("--script", default="",
                     help="manifest.script.json for genre auto-detection")
+    ap.add_argument("--story", default="",
+                    help="manifest.story.json for whole-chapter hook context")
+    ap.add_argument("--opening-hook", action="store_true",
+                    help="preserve/strengthen the first-chapter premise hook")
+    ap.add_argument("--batch-size", type=int,
+                    default=int(os.environ.get("STUDIO_PUNCHUP_BATCH_SIZE", "0")),
+                    help="per-panel lines per rewrite call; 0=auto by context")
+    ap.add_argument("--batch-workers", type=int,
+                    default=int(os.environ.get("STUDIO_PUNCHUP_WORKERS", "2")),
+                    help="parallel Ollama rewrite calls (Vertex stays serial)")
+    ap.add_argument("--num-ctx", type=int,
+                    default=int(os.environ.get("STUDIO_PUNCHUP_NUM_CTX", "16384")),
+                    help="Ollama context window for rewrite calls")
     args = ap.parse_args()
     if not args.genre and args.script and os.path.exists(args.script):
         try:
@@ -556,7 +691,6 @@ def main() -> int:
         args.genre = infer_genre_from_content(beats_obj, args.episode_dir)
 
     cast_names = _cast_names(args.cast)
-    classes = classify_beats(beats_obj) if args.humor == "cinematic" else {}
     cap_words = (_caption_words_by_group(args.episode_dir, beats_obj)
                  if args.episode_dir else {})
 
@@ -564,6 +698,11 @@ def main() -> int:
     # Fall back to the legacy per-beat path for old manifests without panel_narration.
     use_per_panel = any(b.get("panel_narration")
                         for b in beats_obj.get("beats") or [])
+    if args.humor == "cinematic":
+        classes = (classify_panel_lines(beats_obj)
+                   if use_per_panel else classify_beats(beats_obj))
+    else:
+        classes = {}
 
     if use_per_panel:
         lines = build_panel_payload(beats_obj)
@@ -576,18 +715,44 @@ def main() -> int:
                  for b in beats_obj.get("beats") or []
                  if (b.get("narration_plain") or b.get("narration"))]
 
-    prompt = build_prompt(lines, cast_names, args.humor, genre=args.genre,
-                          classes=classes)
+    payload_chars = max(8000, int(args.num_ctx * 2.6))
+    batches = (_batch_lines(lines, args.batch_size,
+                            max_payload_chars=payload_chars)
+               if use_per_panel else [lines])
+    story_context = _story_context(args.story)
+
+    def _prompt(batch: List[Dict[str, Any]], index: int) -> str:
+        return build_prompt(
+            batch, cast_names, args.humor, genre=args.genre,
+            classes=classes,
+            opening_hook=bool(args.opening_hook and index == 0),
+            story_context=story_context)
 
     if args.backend == "ollama":
         import ollama  # noqa: F401 — availability probe
         from ollama_compat import chat as _ollama_chat
-        resp = _ollama_chat(model=args.ollama_model,
-                            messages=[{"role": "user", "content": prompt}],
-                            think=False,
-                            options={"temperature": 0.7, "num_ctx": 32768,
-                                     "num_predict": 8192})
-        raw = (resp.get("message") or {}).get("content") or ""
+
+        def _run_ollama(item: tuple[int, List[Dict[str, Any]]]):
+            index, batch = item
+            resp = _ollama_chat(
+                model=args.ollama_model,
+                messages=[{"role": "user", "content": _prompt(batch, index)}],
+                think=False,
+                options={
+                    "temperature": 0.7,
+                    "num_ctx": args.num_ctx,
+                    # Transport guard only: enough room for flexible pacing
+                    # without turning max tokens into a style rule.
+                    "num_predict": max(900, len(batch) * 90),
+                })
+            raw = (resp.get("message") or {}).get("content") or ""
+            return index, _extract_json_array(raw)
+
+        work = list(enumerate(batches))
+        workers = max(1, min(int(args.batch_workers or 1), len(work)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_run_ollama, work))
+        punched = [row for _i, rows in sorted(results) for row in rows]
     else:
         from thumbnail_gen import _make_client  # self-heals stale cred paths
         attempts = _make_client(args.location)
@@ -595,11 +760,11 @@ def main() -> int:
             print("[err] no auth available")
             return 1
         _, client = attempts[0]
-        resp = client.models.generate_content(model=args.model,
-                                              contents=[prompt])
-        raw = resp.text or ""
-
-    punched = _extract_json_array(raw)
+        punched = []
+        for index, batch in enumerate(batches):
+            resp = client.models.generate_content(
+                model=args.model, contents=[_prompt(batch, index)])
+            punched.extend(_extract_json_array(resp.text or ""))
 
     if use_per_panel:
         # Build (group_id, panel_index) -> narration lookup from the LLM response
@@ -617,6 +782,16 @@ def main() -> int:
         out = merge(beats_obj, punched, cast_names, caption_words=cap_words,
                     classes=classes)
         applied = out["stats"]["punchup_applied"]
+
+    if args.opening_hook and args.story and os.path.exists(args.story):
+        try:
+            story_obj = json.load(open(args.story))
+        except Exception:
+            story_obj = {}
+        out.setdefault("stats", {})["opening_hook_applied"] = apply_opening_hook(
+            out, story_obj)
+    out.setdefault("stats", {})["spoken_fragments_repaired"] = (
+        repair_spoken_fragments(out))
 
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
