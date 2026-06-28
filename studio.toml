@@ -48,3 +48,15 @@ voice_ref = "assets/voice/narrator_ref.wav"   # LOCKED narrator (user-picked cli
                  # kokoro ignores it (uses kokoro_voice).
 python = ".mlx_venv/bin/python"   # repo-relative -> resolves per host (Air/Mini); MLX venv (mlx-audio). qwen fallback = .qwen_venv
 kokoro_voice = "am_puck"   # used only when backend = "kokoro"
+
+[teaser]
+# bundle-level arc teaser: pick a high-stakes window from a bundle's chapters,
+# render a short teaser.mp4, and prepend it to the bundle concat.
+enabled = true
+shortlist_n = 4
+min_panels = 4
+max_hook_panels = 10
+max_hook_scan_chapters = 12   # cost guard only
+max_seconds = 90              # cost guard only
+payoff_tail_frac = 0.20       # spoiler guard: never pull from the last 20%
+model = "gemini-2.5-flash"    # beats backend model (Vertex/ollama), not OpenAI

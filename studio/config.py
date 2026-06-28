@@ -44,6 +44,27 @@ class Config:
                                              # OFF = current pipeline byte-for-byte
                                              # unchanged. Env STUDIO_SEMANTIC_HEAL
                                              # wins (per-run toggle).
+    teaser_enabled: bool = False            # bundle-level arc teaser: select a
+                                             # high-stakes window from a bundle's
+                                             # chapters and prepend a short
+                                             # teaser.mp4 to the concat. Env
+                                             # STUDIO_TEASER_ENABLED wins.
+    teaser_shortlist_n: int = 4             # # of non-overlapping candidate
+                                             # windows handed to the model pick.
+    teaser_min_panels: int = 4              # smallest eligible teaser window.
+    teaser_max_hook_panels: int = 10        # largest eligible teaser window.
+    teaser_max_hook_scan_chapters: int = 12  # cost guard: only scan the first N
+                                             # chapters of the bundle (0 = all).
+    teaser_max_seconds: int = 90            # reserved soft cap (narration stays
+                                             # uncapped; a future duration trim
+                                             # may use it).
+    teaser_payoff_tail_frac: float = 0.20   # spoiler guard: never pull a window
+                                             # from the last fraction of the
+                                             # bundle's reading order.
+    teaser_model: str = "gemini-2.5-flash"  # mirrors the beats backend (Vertex
+                                             # Gemini / ollama Gemma) — NOT an
+                                             # OpenAI id; the model call reuses
+                                             # _call_model_with_backoff.
     narration_sanitize: bool = True         # advertiser-safety pass over the
                                              # FINAL narration before TTS: the
                                              # scripted stage runs
@@ -112,6 +133,7 @@ def load(path: Path | None = None) -> Config:
     g = data.get("gallerydl", {})
     m = data.get("models", {})
     t = data.get("tts", {})
+    tr = data.get("teaser", {})
     return Config(
         sites=sites,
         yolo_weights=(lambda _w: _w if _w.is_absolute()
@@ -135,4 +157,15 @@ def load(path: Path | None = None) -> Config:
                        or bool(m.get("semantic_heal", False))),
         narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
                                      bool(m.get("narration_sanitize", True))),
+        teaser_enabled=_env_bool("STUDIO_TEASER_ENABLED",
+                                 bool(tr.get("enabled", False))),
+        teaser_shortlist_n=int(os.environ.get("STUDIO_TEASER_SHORTLIST_N")
+                               or tr.get("shortlist_n", 4)),
+        teaser_min_panels=int(tr.get("min_panels", 4)),
+        teaser_max_hook_panels=int(tr.get("max_hook_panels", 10)),
+        teaser_max_hook_scan_chapters=int(tr.get("max_hook_scan_chapters", 12)),
+        teaser_max_seconds=int(tr.get("max_seconds", 90)),
+        teaser_payoff_tail_frac=float(tr.get("payoff_tail_frac", 0.20)),
+        teaser_model=(os.environ.get("STUDIO_TEASER_MODEL")
+                      or tr.get("model", "gemini-2.5-flash")),
     )
