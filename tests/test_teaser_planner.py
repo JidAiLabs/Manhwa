@@ -123,20 +123,22 @@ def test_select_montage_payoff_tail_trims_the_end():
 
 # ---------------------------------------------------------------- Task 6
 def test_select_and_write_builds_teaser_manifest(tmp_path):
-    win = {"start": 0, "end": 4, "score": 9.0, "signals": {},
-           "panels": [{"chapter_number": 5, "scene_file": "/abs/ch5/scenes/scene_0007.jpg",
-                       "panel_kind": "story", "intensity": "tense",
-                       "description": "exam begins", "action": "heir mocks him",
-                       "dialogue": "you have no badge", "subjects": ["heir", "prince"]}]}
+    montage = [{"chapter_number": 5, "scene_file": "/abs/ch5/scenes/scene_0007.jpg",
+                "panel_kind": "story", "intensity": "explosive", "is_climax": True,
+                "description": "the nano core activates", "action": "energy surges",
+                "dialogue": "you have no badge", "subjects": ["heir", "prince"]}]
 
     def stub(payload):
-        assert "windows" in payload and "loglines" in payload
-        return {"chosen_index": 0,
-                "panel_narration": [{"scene_file": "scene_0007.jpg", "line": "The exam begins."}],
+        # the montage is already selected — payload carries panels + climax_index,
+        # NOT a windows shortlist, and there is no chosen_index to return.
+        assert "panels" in payload and "loglines" in payload
+        assert payload["climax_index"] == 0
+        assert payload["panels"][-1]["is_climax"] is True
+        return {"panel_narration": [{"scene_file": "scene_0007.jpg", "line": "The power awakens."}],
                 "rewind_line": "But to see how he got here, we go back to the start.",
-                "reason": "public test + humiliation", "spoiler_boundary": "no identity reveal"}
+                "reason": "the power reveal", "spoiler_boundary": "shows the awakening only"}
 
-    out = tp.select_and_write([win], loglines=["a hunted prince"], model_call=stub)
+    out = tp.select_and_write(montage, loglines=["a hunted prince"], model_call=stub)
     assert out["rewind_line"].startswith("But to see")
     assert out["source_chapters"] == [5]
     # scene_file is the namespaced id; source path resolves per-panel
@@ -144,6 +146,32 @@ def test_select_and_write_builds_teaser_manifest(tmp_path):
     assert out["scene_files"] == ["ch5__scene_0007.jpg"]
     assert out["panel_sources"]["ch5__scene_0007.jpg"].endswith(
         "ch5/scenes/scene_0007.jpg")
+
+
+def test_select_and_write_preserves_climax_last_order():
+    montage = [
+        {"chapter_number": 5, "scene_file": "/abs/ch5/scenes/a.jpg",
+         "panel_kind": "story", "intensity": "tense", "description": "the exam begins",
+         "action": "", "dialogue": "", "subjects": []},
+        {"chapter_number": 8, "scene_file": "/abs/ch8/scenes/z.jpg", "is_climax": True,
+         "panel_kind": "story", "intensity": "explosive",
+         "description": "the nano core activates", "action": "", "dialogue": "", "subjects": []},
+    ]
+
+    def stub(payload):
+        return {"panel_narration": [{"scene_file": "a.jpg", "line": "L1"},
+                                    {"scene_file": "z.jpg", "line": "L2"}],
+                "rewind_line": "back to the start", "reason": "r", "spoiler_boundary": "s"}
+
+    out = tp.select_and_write(montage, loglines=[], model_call=stub)
+    # the climax panel (chapter 8) stays LAST; order is montage order, not chronology
+    assert out["scene_files"] == ["ch5__a.jpg", "ch8__z.jpg"]
+    assert out["source_chapters"] == [5, 8]
+    assert out["panel_narration"][-1]["scene_file"] == "ch8__z.jpg"
+
+
+def test_select_and_write_none_on_empty_montage():
+    assert tp.select_and_write([], loglines=[], model_call=lambda p: {}) is None
 
 
 # ---------------------------------------------------------------- Task 7
@@ -192,24 +220,22 @@ def test_teaser_namespaces_scenes_by_chapter_no_basename_collision(tmp_path):
             {"scenes": [{"out_file": base, "box_px_xyxy": [0, 0, 100, 200],
                          "chunk_global_y0": 0, "w": 100, "h": 200, "tag": mtag}]}))
 
-    # a window built from chapter A's panel, exactly as load_bundle_panels emits:
-    # abs scene_file + chapter_number.
-    win = {"start": 0, "end": 1, "score": 9.0, "signals": {},
-           "panels": [{"chapter_number": 5,
-                       "scene_file": str(chA / "scenes" / base),
-                       "panel_kind": "story", "intensity": "tense",
-                       "description": "exam begins", "action": "heir mocks him",
-                       "dialogue": "", "subjects": []}]}
+    # a montage built from chapter A's panel, exactly as load_bundle_panels emits:
+    # abs scene_file + chapter_number, climax flagged.
+    montage = [{"chapter_number": 5,
+                "scene_file": str(chA / "scenes" / base), "is_climax": True,
+                "panel_kind": "story", "intensity": "explosive",
+                "description": "the nano core activates", "action": "energy surges",
+                "dialogue": "", "subjects": []}]
 
     def stub(payload):
         # model echoes ONE line keyed by the (now colliding) basename; the planner
         # must align by ORDER, not by this basename.
-        return {"chosen_index": 0,
-                "panel_narration": [{"scene_file": base, "line": "The exam begins."}],
+        return {"panel_narration": [{"scene_file": base, "line": "The exam begins."}],
                 "rewind_line": "But to see how he got here, we go back.",
                 "reason": "r", "spoiler_boundary": "s"}
 
-    teaser = tp.select_and_write([win], loglines=["x"], model_call=stub)
+    teaser = tp.select_and_write(montage, loglines=["x"], model_call=stub)
     assert teaser is not None
     out_dir = tmp_path / "teaser"
     tp.materialize_teaser_dir(teaser, out_dir, cast={"cast": []})
@@ -241,6 +267,10 @@ def test_build_arg_parser_required_flags():
     assert args.bundle_id == 12 and args.chapter_dirs == ["/a", "/b"]
     # ollama path uses --ollama-model (NOT --model); default gemma4:26b
     assert args.ollama_model == "gemma4:26b"
+    # payoff tail is OFF by default — the power reveal is the hook, not a spoiler
+    assert args.payoff_tail_frac == 0.0
+    # --shortlist-n is still accepted (worker passes it) though the montage ignores it
+    assert args.shortlist_n == 4
 
 
 def test_load_bundle_panels_tags_chapter_and_abspath(tmp_path):

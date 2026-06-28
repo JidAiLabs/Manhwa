@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """teaser_planner.py — bundle-level "arc teaser" planner.
 
-Selects a single high-stakes window from the chapters in a bundle and (Stage 2,
-later chunks) writes spoiler-safe narration + a synthetic episode dir so the
-existing render/TTS tools can turn it into a short cold-open `teaser.mp4`
-prepended to the bundle concat.
+Selects an ARC MONTAGE across the chapters in a bundle — a sequence that BUILDS
+tension and CLIMAXES on the protagonist's power/transformation reveal ("what they
+become", the genre-defining hook) — then writes spoiler-safe per-panel narration +
+a synthetic episode dir so the existing render/TTS tools can turn it into a short
+cold-open `teaser.mp4` prepended to the bundle concat.
 
 This module is split in two stages:
 
-  Stage 1 (this chunk) — DETERMINISTIC, $0, pure functions. No LLM, no I/O.
+  Stage 1 — DETERMINISTIC, $0, pure functions. No LLM, no I/O.
     eligible_panels  — drop chrome/empty/error panels, keep story|caption|system.
-    score_window     — score one contiguous window by keyword/intensity signals.
-    score_windows    — spoiler guard (exclude the payoff tail + the single global
-                       peak panel), enumerate min..max windows, greedily shortlist
-                       the top non-overlapping windows.
+    score_panel      — score one panel (keyword families + intensity + the
+                       POWER/TRANSFORMATION power_reveal signal).
+    score_window     — score one contiguous window (legacy aggregate scorer).
+    select_montage   — pick the climax (highest power_reveal/intensity/score) as
+                       the LAST panel, then the strongest setup panels SPREAD
+                       across chapters, ordered chronologically before the climax.
 
-  Stage 2 (later chunks) — one injectable model call to pick a window + write
-    narration, then materialize the synthetic teaser dir.
+  Stage 2 — one injectable model call that WRITES per-panel narration building to
+    the (already selected) climax, then materializes the synthetic teaser dir.
 
 The keyword sets and weights below are the ONLY calibration knobs and are
 intentionally agnostic (no per-series config).
@@ -217,76 +220,6 @@ def score_window(panels: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Task 5: spoiler guard + window enumeration + non-overlapping shortlist
-# --------------------------------------------------------------------------- #
-def score_windows(
-    panels: List[Dict[str, Any]],
-    *,
-    min_panels: int,
-    max_panels: int,
-    payoff_tail_frac: float,
-    shortlist_n: int,
-) -> List[Dict[str, Any]]:
-    """Enumerate, score, and shortlist teaser windows over the eligible pool.
-
-    Steps:
-      1. ``pool = eligible_panels(panels)``; bail (``[]``) if shorter than
-         ``min_panels``.
-      2. SPOILER GUARD — exclude indices in the last ``payoff_tail_frac`` of the
-         pool plus the single global max-intensity panel (the likely payoff).
-      3. Enumerate every contiguous window of size ``min_panels..max_panels``
-         that contains no excluded index and score each with ``score_window``.
-      4. Greedily pick the top-scoring NON-OVERLAPPING windows (score desc) until
-         ``shortlist_n`` are chosen or candidates are exhausted.
-
-    Window dicts use half-open spans: ``{"start": i, "end": j, "panels": [...],
-    "score": float, "signals": dict}`` where the slice is ``pool[i:j]``.
-    """
-    pool = eligible_panels(panels)
-    n = len(pool)
-    if n < min_panels:
-        return []
-
-    # --- spoiler guard: exclude the payoff tail + the single global peak panel
-    tail_count = int(math.ceil(n * payoff_tail_frac))
-    excluded = set(range(n - tail_count, n))
-    peak_idx = max(
-        range(n), key=lambda i: INTENSITY_RANK.get(pool[i].get("intensity"), 0)
-    )
-    excluded.add(peak_idx)
-
-    # --- enumerate candidate windows that dodge every excluded index
-    candidates: List[Dict[str, Any]] = []
-    for start in range(n):
-        for size in range(min_panels, max_panels + 1):
-            end = start + size
-            if end > n:
-                break
-            if any(i in excluded for i in range(start, end)):
-                continue
-            slc = pool[start:end]
-            scored = score_window(slc)
-            candidates.append({
-                "start": start,
-                "end": end,
-                "panels": slc,
-                "score": scored["score"],
-                "signals": scored["signals"],
-            })
-
-    # --- greedy non-overlapping shortlist (score desc, stable on ties)
-    candidates.sort(key=lambda w: w["score"], reverse=True)
-    picked: List[Dict[str, Any]] = []
-    for w in candidates:
-        if len(picked) >= shortlist_n:
-            break
-        if any(w["start"] < p["end"] and p["start"] < w["end"] for p in picked):
-            continue
-        picked.append(w)
-    return picked
-
-
-# --------------------------------------------------------------------------- #
 # Arc-montage selector — builds to the power/transformation reveal
 # --------------------------------------------------------------------------- #
 def _chapter_key(panel: Dict[str, Any]) -> Any:
@@ -427,10 +360,13 @@ def _namespaced_scene_id(chapter_number: Any, scene_file: Any) -> str:
     return f"ch{_sanitize_chapter_number(chapter_number)}__{base}"
 
 
-def _window_payload(window: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Understood text per panel (scene_file as a BASENAME) for the model call."""
+def _montage_payload(montage: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Understood text per panel (scene_file as a BASENAME) for the model call.
+
+    Carries the ``is_climax`` flag so the model knows which panel the montage
+    builds to (the LAST one, the power/transformation reveal)."""
     rows: List[Dict[str, Any]] = []
-    for p in window.get("panels") or []:
+    for p in montage:
         rows.append({
             "scene_file": os.path.basename(str(p.get("scene_file") or "")),
             "chapter_number": p.get("chapter_number"),
@@ -440,70 +376,70 @@ def _window_payload(window: Dict[str, Any]) -> List[Dict[str, Any]]:
             "panel_kind": p.get("panel_kind"),
             "intensity": p.get("intensity"),
             "subjects": list(p.get("subjects") or []),
+            "is_climax": bool(p.get("is_climax")),
         })
     return rows
 
 
 def select_and_write(
-    windows: List[Dict[str, Any]],
+    montage: List[Dict[str, Any]],
     *,
     loglines: List[str],
     model_call: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
     cast_obj: Optional[Dict[str, Any]] = None,
     vision_by_file: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Ask the (injected) model to pick the strongest window + write narration.
+    """Write per-panel narration over an ALREADY-SELECTED arc montage.
+
+    Selection happened upstream (``select_montage``): ``montage`` is the ordered
+    panel list with the LAST panel flagged ``is_climax`` (the power/transformation
+    reveal). There is no "pick a window" step anymore — this does ONE model call
+    that WRITES spoiler-safe per-panel narration BUILDING to that climax.
 
     ``model_call(payload) -> dict|None`` follows the ``story_group`` call_fn
-    pattern so tests never hit a real LLM. The payload carries the shortlisted
-    ``windows`` (understood text per panel, basenames) plus the bundle
-    ``loglines`` for context. The model returns ``chosen_index`` +
-    spoiler-safe per-panel narration; we assemble the ``manifest.teaser.json``
-    dict and run the shared spoiler/fragment post-pass on it.
+    pattern so tests never hit a real LLM. The payload carries the montage
+    ``panels`` (understood text per panel, basenames, ``is_climax``), the
+    ``climax_index``, and the bundle ``loglines`` for context. The model returns
+    spoiler-safe per-panel narration + a rewind line; we assemble the
+    ``manifest.teaser.json`` dict and run the shared spoiler/fragment post-pass.
 
     Identity is carried end-to-end: every panel becomes a NAMESPACED scene id
     ``ch{chapter}__{basename}`` (the chunk index restarts each chapter, so a bare
     basename collides across the bundle). The model's narration lines are aligned
-    to the window panels BY ORDER (panel i <-> line i), padded/truncated to the
+    to the montage panels BY ORDER (panel i <-> line i), padded/truncated to the
     panel count — never matched by the now-colliding basename. The returned dict
     carries ``panel_sources`` ({namespaced_id: source_abs_path}) so materialize
-    can symlink the correct chapter's art.
+    can symlink the correct chapter's art. Climax-last ORDER is preserved.
 
-    Returns the teaser dict, or ``None`` when the model abstains.
+    Returns the teaser dict, or ``None`` when there is no montage / the model
+    abstains.
     """
-    if not windows:
+    if not montage:
         return None
 
     payload = {
-        "windows": [_window_payload(w) for w in windows],
+        "panels": _montage_payload(montage),
+        "climax_index": len(montage) - 1,
         "loglines": list(loglines or []),
     }
     resp = model_call(payload)
-    if not isinstance(resp, dict) or "chosen_index" not in resp:
+    if not isinstance(resp, dict):
         return None
 
-    try:
-        idx = int(resp["chosen_index"])
-        chosen = windows[idx]
-    except (ValueError, TypeError, IndexError):
-        return None
-
-    panels = chosen.get("panels") or []
+    panels = list(montage)
     scene_files: List[str] = []
     panel_sources: Dict[str, str] = {}
-    window_basenames: List[str] = []
     for p in panels:
         sf = str(p.get("scene_file") or "")
         ns_id = _namespaced_scene_id(p.get("chapter_number"), sf)
         scene_files.append(ns_id)
-        window_basenames.append(os.path.basename(sf))
         if sf:
             panel_sources[ns_id] = os.path.abspath(sf)
     source_chapters = sorted({
         p.get("chapter_number") for p in panels
         if p.get("chapter_number") is not None
     })
-    # Align model narration to the window panels BY ORDER (basename now collides),
+    # Align model narration to the montage panels BY ORDER (basename now collides),
     # padding/truncating to the panel count; scene_file is the namespaced id.
     lines = resp.get("panel_narration") or []
     panel_narration: List[Dict[str, Any]] = []
@@ -517,14 +453,13 @@ def select_and_write(
         "source_chapters": source_chapters,
         "scene_files": scene_files,
         "panel_sources": panel_sources,
-        "window": window_basenames,
         "panel_narration": panel_narration,
         "reason": str(resp.get("reason") or ""),
         "rewind_line": str(resp.get("rewind_line") or ""),
         "spoiler_boundary": str(resp.get("spoiler_boundary") or ""),
         "scores": {
-            "chosen": float(chosen.get("score", 0.0)),
-            "shortlist": [float(w.get("score", 0.0)) for w in windows],
+            "climax": float(score_panel(panels[-1])["score"]) if panels else 0.0,
+            "montage": [float(score_panel(p)["score"]) for p in panels],
         },
     }
 
@@ -727,35 +662,45 @@ def merge_cast(chapter_dirs: List[str]) -> Dict[str, Any]:
     return {"cast": members}
 
 
-# The teaser model contract: pick the strongest window by index, write rolling
-# spoiler-safe per-panel narration under the recap rules, plus a rewind line.
+# The teaser model contract: the montage is ALREADY selected + ordered; the model
+# WRITES rolling spoiler-safe per-panel narration that BUILDS to the climax (the
+# last panel — the power/transformation reveal), plus a rewind line.
 TEASER_PROMPT = (
     "You are the story editor for a YouTube manhwa recap channel building a short "
-    "ARC TEASER — a cold open that prepends a multi-chapter bundle to hook the "
-    "viewer, then rewinds to the start.\n"
+    "ARC TEASER — an INTENSE cold-open MONTAGE that prepends a multi-chapter "
+    "bundle, then rewinds to the start. The montage builds tension across a few "
+    "panels and CLIMAXES on the final panel: the protagonist's power / "
+    "transformation reveal — the genre-defining hook of WHAT THEY BECOME.\n"
     "\n"
-    "INPUT_JSON has `windows` (a shortlist of candidate panel windows; each panel "
-    "carries description/action/dialogue/subjects/panel_kind/intensity, scene_file "
-    "as a basename) and `loglines` (the bundle's chapters, for context only).\n"
+    "INPUT_JSON has `panels` (the montage, ALREADY selected and ORDERED — each "
+    "panel carries description/action/dialogue/subjects/panel_kind/intensity, "
+    "scene_file as a basename, and an `is_climax` flag set true on the LAST panel) "
+    "and `loglines` (the bundle's chapters, for context only). `climax_index` is "
+    "the 0-based position of the climax panel (always the last one).\n"
     "\n"
     "DO:\n"
-    "1. Pick the SINGLE strongest window — the most gripping, self-contained hook — "
-    "and return its position as `chosen_index` (0-based into `windows`).\n"
-    "2. For EVERY panel in the chosen window, in order, write ONE narration line in "
-    "`panel_narration` as {scene_file, line}, echoing each panel's scene_file "
-    "basename exactly. Make the lines FLOW as one continuous mini-story (rolling "
-    "narration, not isolated captions). Match length to the panel: a punchy phrase "
-    "for a quick beat, a fuller cinematic sentence for a pivotal one. The FIRST "
-    "line is the cold-open hook — strong and uncapped.\n"
+    "1. For EVERY panel, in order, write ONE narration line in `panel_narration` "
+    "as {scene_file, line}, echoing each panel's scene_file basename exactly. Make "
+    "the lines FLOW as one continuous, ESCALATING mini-story (rolling narration, "
+    "not isolated captions) that BUILDS tension toward the climax. Match length to "
+    "the panel: a punchy phrase for a quick beat, a fuller cinematic sentence for a "
+    "pivotal one. The FIRST line is the cold-open hook — strong and uncapped.\n"
+    "2. The FINAL line LANDS the climax: hint at WHAT THE PROTAGONIST BECOMES (the "
+    "power awakening / transformation) WITHOUT stating any later outcome.\n"
     "3. Write a `rewind_line`: one sentence that pivots from the hook back to the "
     "beginning (e.g. 'But to understand how it came to this, we have to go back.').\n"
-    "4. Write a short `reason` (why this window) and a `spoiler_boundary` note.\n"
+    "4. Write a short `reason` (why this montage hooks) and a `spoiler_boundary` "
+    "note.\n"
+    "\n"
+    "SPOILER BOUNDARY: you MAY show the power awakening / transformation — it is the "
+    "HOOK, not an outcome spoiler — but you must NOT reveal who ultimately wins or "
+    "dies, or any later twist, and you must NEVER name a concealed identity.\n"
     "\n"
     "RECAP RULES (all six):\n"
     "  - GROUND every line strictly in what the panels show; invent NOTHING.\n"
     "  - Name the listed subjects in their own words; never rename or recount them.\n"
     "  - NEVER name an identity the art has not yet revealed — use a neutral handle.\n"
-    "  - NEVER reference any event past the chosen window (no spoilers from later).\n"
+    "  - Reveal only the power/transformation; no events beyond this montage.\n"
     "  - Paraphrase dialogue; do not quote raw OCR.\n"
     "  - Keep it cinematic and propulsive; no meta, no 'panel'/'scene' talk.\n"
 )
@@ -764,7 +709,6 @@ TEASER_PROMPT = (
 _TEASER_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
-        "chosen_index": {"type": "INTEGER"},
         "panel_narration": {
             "type": "ARRAY",
             "items": {
@@ -780,13 +724,13 @@ _TEASER_SCHEMA: Dict[str, Any] = {
         "reason": {"type": "STRING"},
         "spoiler_boundary": {"type": "STRING"},
     },
-    "required": ["chosen_index", "panel_narration", "rewind_line"],
+    "required": ["panel_narration", "rewind_line"],
 }
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        description="bundle-level arc teaser planner (window scorer + LLM pick + synthetic dir)")
+        description="bundle-level arc teaser planner (montage selector + LLM narration + synthetic dir)")
     ap.add_argument("--bundle-id", type=int, required=True)
     ap.add_argument("--chapter-dirs", nargs="+", required=True,
                     help="ep_dirs of the bundle's chapters, in reading order")
@@ -801,10 +745,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="")
     # cost guards (defaults mirror studio.toml [teaser])
-    ap.add_argument("--shortlist-n", type=int, default=4)
+    ap.add_argument("--shortlist-n", type=int, default=4,
+                    help="DEPRECATED: the montage selector ignores this (kept for "
+                         "backward-compatible invocation)")
     ap.add_argument("--min-panels", type=int, default=4)
-    ap.add_argument("--max-hook-panels", type=int, default=10)
-    ap.add_argument("--payoff-tail-frac", type=float, default=0.20)
+    ap.add_argument("--max-hook-panels", type=int, default=10,
+                    help="max panels in the montage (climax + setup)")
+    ap.add_argument("--payoff-tail-frac", type=float, default=0.0,
+                    help="0.0 = OFF (default): the power reveal is the hook, not a "
+                         "spoiler. Set >0 to trim a literal final-cliffhanger sliver.")
     ap.add_argument("--max-scan-chapters", type=int, default=0,
                     help="0 = scan all chapters in the bundle")
     ap.add_argument("--max-seconds", type=int, default=90,
@@ -856,21 +805,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[teaser] no teaser")
         return 0
 
-    windows = score_windows(
+    montage = select_montage(
         panels,
-        min_panels=args.min_panels,
         max_panels=args.max_hook_panels,
+        min_panels=args.min_panels,
         payoff_tail_frac=args.payoff_tail_frac,
-        shortlist_n=args.shortlist_n,
     )
-    if not windows:
+    if not montage:
         print("[teaser] no teaser")
         return 0
 
     cast = merge_cast(chapter_dirs)
     model_call = _build_model_call(args)
     teaser = select_and_write(
-        windows,
+        montage,
         loglines=load_loglines(chapter_dirs),
         model_call=model_call,
         cast_obj=cast,
