@@ -122,6 +122,65 @@ def test_materialize_teaser_dir(tmp_path):
     assert (out_dir / "manifest.cast.json").exists()
 
 
+# ------------------------------------------------ regression: basename collision
+def test_teaser_namespaces_scenes_by_chapter_no_basename_collision(tmp_path):
+    """Two chapters share an identical scene basename (the chunk index restarts
+    every chapter) but live in different ep_dirs with different bytes + different
+    scenes manifests. The teaser must materialize the CHOSEN chapter's art — not
+    whichever chapter happens to be last — by carrying chapter identity end-to-end
+    via a namespaced scene id. Regression for the basename-collision bug.
+    """
+    base = "c0000_p0003_00.jpg"
+    chA = tmp_path / "Ch_005"
+    chB = tmp_path / "Ch_012"
+    for ch, payload_bytes, mtag in ((chA, b"AAAA", "A"), (chB, b"BBBB", "B")):
+        (ch / "scenes").mkdir(parents=True)
+        (ch / "scenes" / base).write_bytes(payload_bytes)
+        (ch / "manifest.scenes.json").write_text(json.dumps(
+            {"scenes": [{"out_file": base, "box_px_xyxy": [0, 0, 100, 200],
+                         "chunk_global_y0": 0, "w": 100, "h": 200, "tag": mtag}]}))
+
+    # a window built from chapter A's panel, exactly as load_bundle_panels emits:
+    # abs scene_file + chapter_number.
+    win = {"start": 0, "end": 1, "score": 9.0, "signals": {},
+           "panels": [{"chapter_number": 5,
+                       "scene_file": str(chA / "scenes" / base),
+                       "panel_kind": "story", "intensity": "tense",
+                       "description": "exam begins", "action": "heir mocks him",
+                       "dialogue": "", "subjects": []}]}
+
+    def stub(payload):
+        # model echoes ONE line keyed by the (now colliding) basename; the planner
+        # must align by ORDER, not by this basename.
+        return {"chosen_index": 0,
+                "panel_narration": [{"scene_file": base, "line": "The exam begins."}],
+                "rewind_line": "But to see how he got here, we go back.",
+                "reason": "r", "spoiler_boundary": "s"}
+
+    teaser = tp.select_and_write([win], loglines=["x"], model_call=stub)
+    assert teaser is not None
+    out_dir = tmp_path / "teaser"
+    tp.materialize_teaser_dir(teaser, out_dir, cast={"cast": []})
+
+    ns = f"ch5__{base}"
+    materialized = out_dir / "scenes" / ns
+    # the materialized scene must resolve to chapter A's bytes, NOT chapter B's
+    assert materialized.exists()
+    assert materialized.read_bytes() == b"AAAA"
+    # the namespaced id appears consistently across EVERY manifest
+    beats = json.loads((out_dir / "manifest.beats.json").read_text())
+    assert beats["beats"][0]["scene_files"] == [ns]
+    assert beats["beats"][0]["panel_narration"][0]["scene_file"] == ns
+    groups = json.loads((out_dir / "manifest.groups.json").read_text())
+    assert groups["shots"][0]["scene_files"] == [ns]
+    scenes = json.loads((out_dir / "manifest.scenes.json").read_text())
+    assert scenes["scenes"][0]["out_file"] == ns
+    assert scenes["scenes"][0]["tag"] == "A"        # copied from chapter A's manifest
+    teaser_man = json.loads((out_dir / "manifest.teaser.json").read_text())
+    assert teaser_man["scene_files"] == [ns]
+    assert teaser_man["source_chapters"] == [5]
+
+
 # ---------------------------------------------------------------- Task 8
 def test_build_arg_parser_required_flags():
     p = tp.build_arg_parser()
