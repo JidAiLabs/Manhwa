@@ -123,3 +123,62 @@ def test_h_teaser_no_teaser_leaves_state_none(tmp_path, monkeypatch):
 def test_plan_teaser_registered_in_handlers():
     import studio.worker as w
     assert w.HANDLERS.get("plan_teaser") is w._h_teaser
+
+
+# ---------------------------------------------------------------------------
+# Task 11: _h_concat prepends the APPROVED teaser
+# ---------------------------------------------------------------------------
+
+def test_h_concat_prepends_teaser_when_approved(tmp_path, monkeypatch):
+    import studio.worker as w
+    from studio.dashboard import gates
+
+    con = connect(tmp_path / "s.db")
+    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    con.execute("UPDATE bundle SET teaser_state='approved' WHERE id=?", (bid,))
+    con.commit()
+    gates.approve(con, "concat", bundle_id=bid)     # else the gate raises first
+    teaser_mp4 = tmp_path / "dist" / f"bundle_{bid}" / "teaser.mp4"
+    teaser_mp4.parent.mkdir(parents=True, exist_ok=True)
+    teaser_mp4.write_bytes(b"\x00")
+
+    captured: dict = {}
+    monkeypatch.setattr(w, "_stream", lambda argv, log, **k: 0)
+    monkeypatch.setattr(
+        w.bundles, "concat_cmd",
+        lambda segs, out: (captured.update(segs=list(segs)),
+                           (["ffmpeg", "LISTFILE"], ""))[1])
+
+    w._h_concat(con, {"bundle_id": bid}, io.StringIO())
+
+    assert captured["segs"][0].endswith("teaser.mp4")       # prepended first
+    assert len(captured["segs"]) == 3                       # teaser + 2 chapters
+
+
+def test_h_concat_no_teaser_when_declined(tmp_path, monkeypatch):
+    """A declined teaser is NOT prepended even if teaser.mp4 is on disk."""
+    import studio.worker as w
+    from studio.dashboard import gates
+
+    con = connect(tmp_path / "s.db")
+    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    con.execute("UPDATE bundle SET teaser_state='declined' WHERE id=?", (bid,))
+    con.commit()
+    gates.approve(con, "concat", bundle_id=bid)
+    teaser_mp4 = tmp_path / "dist" / f"bundle_{bid}" / "teaser.mp4"
+    teaser_mp4.parent.mkdir(parents=True, exist_ok=True)
+    teaser_mp4.write_bytes(b"\x00")
+
+    captured: dict = {}
+    monkeypatch.setattr(w, "_stream", lambda argv, log, **k: 0)
+    monkeypatch.setattr(
+        w.bundles, "concat_cmd",
+        lambda segs, out: (captured.update(segs=list(segs)),
+                           (["ffmpeg", "LISTFILE"], ""))[1])
+
+    w._h_concat(con, {"bundle_id": bid}, io.StringIO())
+
+    assert not captured["segs"][0].endswith("teaser.mp4")
+    assert len(captured["segs"]) == 2                       # chapters only

@@ -907,6 +907,14 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
         if not found:
             raise RuntimeError(f"chapter {cid} has no rendered segment")
         segs.append(str(found[0]))
+    # An APPROVED arc teaser is the bundle's cold open — prepend it BEFORE the
+    # branding wrap so the published order is [teaser, ch1…chN, outro]. 'planned'
+    # already blocked the gate above; 'declined'/'none' simply don't prepend.
+    teaser_mp4 = REPO / "dist" / f"bundle_{bid}" / "teaser.mp4"
+    trow = con.execute("SELECT teaser_state FROM bundle WHERE id=?",
+                       (bid,)).fetchone()
+    if trow and trow[0] == "approved" and teaser_mp4.exists():
+        segs = [str(teaser_mp4)] + segs
     srow = con.execute("SELECT series_id FROM bundle WHERE id=?",
                        (bid,)).fetchone()
     bdir = _series_branding_dir(srow[0]) if srow else None
