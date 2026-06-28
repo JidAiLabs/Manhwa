@@ -37,8 +37,12 @@ information density at the existing pace.
 6. REVEAL PACING: cast matching is not permission to spoil an identity. When a
 new, transformed, masked, hooded, glowing, silhouetted, disguised, or otherwise
 unfamiliar arrival is treated as unknown by the story, call them "the stranger",
-"the intruder", or another grounded neutral handle. Use a cast name only after
-the current or earlier story text has actually established that identity."""
+"the intruder", or another grounded neutral handle, and CARRY that handle across
+the following panels. Do NOT switch to a cast name or a familiar stand-in like
+"our guy" on a later clear-view panel just because the figure now resembles a
+known character — a power/transformation reveal is a mystery to PRESERVE, not an
+identity to assume. Use a cast name only after the current or earlier story text
+has actually named that identity."""
 
 
 _TAG_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
@@ -66,8 +70,9 @@ _VISUAL_ECHO_RE = re.compile(
     re.I,
 )
 _CONCEALED_RE = re.compile(
-    r"\b(?:silhouette|stranger|intruder|unknown|mysterious|masked|hooded|"
-    r"disguised|transformed|unfamiliar|shadowy figure|glowing figure)\b",
+    r"\b(?:silhouette|glowing|masked|hooded|disguised|transformed|unfamiliar|"
+    r"mysterious|stranger|intruder|unknown|shadowy|newcomer|gear unlike|"
+    r"cloaked|veiled)\b",
     re.I,
 )
 _IDENTITY_QUESTION_RE = re.compile(
@@ -79,6 +84,15 @@ _GENERIC_PROTAGONIST_NAMES = {
     "our protagonist", "the protagonist", "protagonist", "our guy", "our boy",
     "the hero", "our hero", "main character", "mc",
 }
+# Generic, series-agnostic "familiar handle" the narrator slips to for the
+# protagonist. These must NOT be attached to a figure whose identity the story
+# has not resolved, so the unresolved-identity guard neutralizes them too.
+_PROTAGONIST_HANDLE_RE = re.compile(
+    r"\b(?:our guy|our boy|our hero|our protagonist|my guy)\b", re.I)
+# Consecutive cue-free panels (with a different subject focus) after which an
+# unresolved-identity window is treated as closed. Conservative on purpose:
+# staying unresolved a few extra panels is safer than mislabeling the figure.
+_UNRESOLVED_CLEAR_AFTER = 5
 
 
 def _words(text: str) -> List[str]:
@@ -217,21 +231,95 @@ def _count_names(lines: Sequence[str], names: Sequence[str]) -> int:
                for name in names)
 
 
+def _cap_at(text: str, start: int) -> bool:
+    """True if a replacement at `start` begins a sentence (so it's capitalized)."""
+    prefix = text[:start].rstrip()
+    return start == 0 or (bool(prefix) and prefix[-1] in ".!?")
+
+
+def _neutralize_protagonist_refs(text: str, names: Sequence[str]) -> str:
+    """Swap protagonist NAMES/aliases AND generic handles ("our guy") for a
+    neutral handle, capitalized at a sentence start. Agnostic: names come from
+    the cast, the handle list is generic."""
+    def _replacer(current: str):
+        def _do(m: "re.Match[str]") -> str:
+            return "The stranger" if _cap_at(current, m.start()) else "the stranger"
+        return _do
+
+    for name in names:
+        pat = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.I)
+        text = pat.sub(_replacer(text), text)
+    text = _PROTAGONIST_HANDLE_RE.sub(_replacer(text), text)
+    return text
+
+
+def _has_protagonist_ref(text: str, names: Sequence[str]) -> bool:
+    if _PROTAGONIST_HANDLE_RE.search(text):
+        return True
+    return any(re.search(rf"(?<!\w){re.escape(n)}(?!\w)", text, re.I)
+               for n in names)
+
+
+def _subject_tokens(*srcs: Mapping[str, Any]) -> set:
+    """Significant (len>3) subject words from understood/vision sources, for the
+    conservative scene-break heuristic that closes an unresolved window."""
+    toks: set = set()
+    for src in srcs:
+        if not isinstance(src, Mapping):
+            continue
+        subs = src.get("subjects")
+        if isinstance(subs, (list, tuple)):
+            for s in subs:
+                toks.update(w for w in _WORD_RE.findall(str(s).lower())
+                            if len(w) > 3)
+    return toks
+
+
+def _concealment_blob(line: str, *srcs: Mapping[str, Any]) -> str:
+    """Text scanned for a concealment/transformation cue: the panel line plus
+    its understood/vision description, action, and subjects."""
+    parts: List[str] = [str(line or "")]
+    for src in srcs:
+        if not isinstance(src, Mapping):
+            continue
+        parts.append(str(src.get("description") or ""))
+        parts.append(str(src.get("action") or ""))
+        subs = src.get("subjects")
+        if isinstance(subs, (list, tuple)):
+            parts.extend(str(s) for s in subs)
+    return " ".join(p for p in parts if p)
+
+
 def neutralize_identity_reveal_leaks(
     beats_obj: Dict[str, Any],
     cast_obj: Mapping[str, Any],
     vision_by_file: Mapping[str, Mapping[str, Any]],
+    understood_by_file: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> int:
-    """Replace a premature protagonist name with a neutral handle in-place.
+    """Carry an "unresolved figure" state across panels and neutralize any
+    protagonist NAME *or* generic HANDLE ("our guy") that gets attached to a
+    figure the story hasn't resolved yet — replacing it with "the stranger".
 
-    The trigger is deliberately narrow: the nearby narration must frame the
-    arrival as concealed/new, and either the same line does so or upcoming OCR
-    explicitly questions the identity. This fixes reveal pacing without any
-    series-specific names or chapter corrections.
+    Agnostic by construction: the concealment/transformation cues and the
+    familiar handles are generic; the actual identity comes only from the cast
+    (``cast_obj``) and the per-panel understanding (``understood_by_file`` /
+    ``vision_by_file`` subjects), never from hardcoded series words.
+
+    State machine, scanning panels in story order:
+      * A panel opens/extends the window when its line OR its understood/vision
+        subjects/description match a concealment cue (``_CONCEALED_RE``); an OCR
+        "who are you" question is an OPTIONAL extra trigger, no longer required.
+      * While the window is active *from an earlier panel* (a carried state), a
+        protagonist name/handle on the current panel is neutralized. A cue first
+        seen on the SAME panel governs only later panels — so a protagonist
+        named alongside a separate concealed figure on one line survives.
+      * The window closes when the story's OWN text (OCR) names the protagonist
+        (identity established), or after a conservative scene/topic break
+        (``_UNRESOLVED_CLEAR_AFTER`` cue-free panels with a different subject
+        focus). Erring toward staying-unresolved is the safe default.
     """
     names = _protagonist_names(cast_obj)
-    if not names:
-        return 0
+    understood_by_file = understood_by_file or {}
 
     refs: List[Dict[str, Any]] = []
     for beat in beats_obj.get("beats") or []:
@@ -243,34 +331,53 @@ def neutralize_identity_reveal_leaks(
             })
 
     changed = 0
-    changed_beats: set[int] = set()
-    for i, ref in enumerate(refs):
+    changed_beats: set = set()
+    unresolved = False
+    cue_subjects: set = set()
+    panels_since_cue = 0
+
+    for ref in refs:
         panel = ref["panel"]
+        sf = ref["scene_file"]
         line = str(panel.get("line") or "")
-        hit_names = [name for name in names if re.search(
-            rf"(?<!\w){re.escape(name)}(?!\w)", line, re.I)]
-        if not hit_names:
-            continue
-        nearby = " ".join(str(r["panel"].get("line") or "")
-                          for r in refs[max(0, i - 2):i + 1])
-        if not _CONCEALED_RE.search(nearby):
-            continue
-        future_ocr = " ".join(
-            str((vision_by_file.get(r["scene_file"]) or {}).get("ocr_clean")
-                or (vision_by_file.get(r["scene_file"]) or {}).get("text") or "")
-            for r in refs[i:min(len(refs), i + 7)])
-        if not _IDENTITY_QUESTION_RE.search(future_ocr):
-            continue
-        rewritten = line
-        for name in hit_names:
-            rewritten = re.sub(
-                rf"(?<!\w){re.escape(name)}(?!\w)",
-                lambda m: "The stranger" if m.start() == 0 else "the stranger",
-                rewritten, flags=re.I)
-        if rewritten != line:
-            panel["line"] = rewritten
-            changed += 1
-            changed_beats.add(id(ref["beat"]))
+        understood = understood_by_file.get(sf) or {}
+        vis = vision_by_file.get(sf) or {}
+        ocr = str(vis.get("ocr_clean") or vis.get("text") or "")
+
+        # RESOLUTION: the story's own text names the protagonist -> identity is
+        # established; stop neutralizing (this panel included).
+        if unresolved and names and any(
+                re.search(rf"(?<!\w){re.escape(n)}(?!\w)", ocr, re.I)
+                for n in names):
+            unresolved = False
+            panels_since_cue = 0
+            cue_subjects = set()
+
+        # NEUTRALIZE only a carried window (cue from an earlier panel).
+        if unresolved and _has_protagonist_ref(line, names):
+            rewritten = _neutralize_protagonist_refs(line, names)
+            if rewritten != line:
+                panel["line"] = rewritten
+                changed += 1
+                changed_beats.add(id(ref["beat"]))
+
+        # UPDATE STATE from THIS panel's cues (governs the panels that follow).
+        has_cue = bool(_CONCEALED_RE.search(_concealment_blob(line, understood, vis)))
+        if not has_cue and _IDENTITY_QUESTION_RE.search(ocr):
+            has_cue = True  # optional extra trigger
+        cur_subjects = _subject_tokens(understood, vis)
+        if has_cue:
+            unresolved = True
+            panels_since_cue = 0
+            cue_subjects |= cur_subjects
+        elif unresolved:
+            panels_since_cue += 1
+            focus_changed = bool(cur_subjects) and bool(cue_subjects) \
+                and not (cur_subjects & cue_subjects)
+            if panels_since_cue >= _UNRESOLVED_CLEAR_AFTER and focus_changed:
+                unresolved = False
+                panels_since_cue = 0
+                cue_subjects = set()
 
     if changed:
         for beat in beats_obj.get("beats") or []:

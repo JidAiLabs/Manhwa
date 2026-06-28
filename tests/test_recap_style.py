@@ -178,3 +178,79 @@ def test_identity_reveal_safeguard_rewrites_without_chapter_specific_rules():
     panels = beats["beats"][0]["panel_narration"]
     assert panels[1]["line"] == "The stranger stands there in unfamiliar clothes."
     assert "Prince Cheon" not in beats["beats"][0]["narration"]
+
+
+def test_unresolved_identity_carries_to_later_clear_view_panel():
+    # P1 is a concealed arrival (cue lives in the UNDERSTOOD subjects, not the
+    # line). P3 shows the same figure in clear view with NO concealment word of
+    # its own, yet slips to the protagonist handle "Our guy". The unresolved
+    # state must carry from P1 across P2 and neutralize the handle on P3.
+    beats = _beats([
+        "A figure appears between the assassins.",
+        "The killers hesitate.",
+        "Our guy stood there, enveloped in lightning.",
+    ])
+    understood = {
+        "p001.jpg": {"subjects": ["glowing blue silhouette"]},
+        "p003.jpg": {"subjects": ["a young man with blue goggles",
+                                  "blue electrical sparks"]},
+    }
+    changed = rs.neutralize_identity_reveal_leaks(beats, _cast(), {}, understood)
+    assert changed == 1
+    panels = beats["beats"][0]["panel_narration"]
+    assert "Our guy" not in panels[2]["line"]
+    assert panels[2]["line"] == "The stranger stood there, enveloped in lightning."
+    assert "Our guy" not in beats["beats"][0]["narration"]
+
+
+def test_protagonist_handle_without_concealment_is_not_neutralized():
+    beats = _beats([
+        "Our guy charges into the courtyard.",
+        "He cuts down the first guard.",
+        "Our guy keeps moving.",
+    ])
+    changed = rs.neutralize_identity_reveal_leaks(beats, _cast(), {})
+    assert changed == 0
+    assert beats["beats"][0]["panel_narration"][0]["line"] == (
+        "Our guy charges into the courtyard.")
+
+
+def test_protagonist_name_without_concealment_survives():
+    beats = _beats([
+        "Prince Cheon trains at dawn.",
+        "He sharpens his blade.",
+        "Prince Cheon bows to his master.",
+    ])
+    changed = rs.neutralize_identity_reveal_leaks(beats, _cast(), {})
+    assert changed == 0
+
+
+def test_name_on_concealed_arrival_neutralized_without_ocr():
+    # The old hard requirement was an OCR "who are you" question; it is now an
+    # OPTIONAL extra trigger. A concealed-arrival cue alone carries the window.
+    beats = _beats([
+        "A glowing silhouette appears between the assassins.",
+        "Prince Cheon stands there in unfamiliar clothes.",
+        "The killers hesitate.",
+    ])
+    changed = rs.neutralize_identity_reveal_leaks(beats, _cast(), {})
+    assert changed == 1
+    assert beats["beats"][0]["panel_narration"][1]["line"] == (
+        "The stranger stands there in unfamiliar clothes.")
+
+
+def test_story_naming_the_figure_resolves_and_allows_name():
+    # Once the story's OWN text (OCR) names the figure, the identity is
+    # established and the protagonist name is allowed again.
+    beats = _beats([
+        "A glowing silhouette appears.",
+        "The crowd gasps.",
+        "Prince Cheon steps into the light.",
+        "Prince Cheon raises his blade.",
+    ])
+    vision = {"p003.jpg": {"ocr_clean": "It's Prince Cheon!"}}
+    changed = rs.neutralize_identity_reveal_leaks(beats, _cast(), vision)
+    assert changed == 0
+    panels = beats["beats"][0]["panel_narration"]
+    assert panels[2]["line"] == "Prince Cheon steps into the light."
+    assert panels[3]["line"] == "Prince Cheon raises his blade."

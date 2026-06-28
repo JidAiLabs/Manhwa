@@ -932,9 +932,14 @@ def main() -> int:
         "      Do NOT invent a SYSTEM the world lacks (no 'server'/'game'/'respawn' on a real scene).\n"
         "    - IDENTITY + NAMES: use the CHAPTER CAST only after the story has established\n"
         "      who the person is. A visual match alone must NOT spoil a transformed, masked,\n"
-        "      hooded, glowing, silhouetted, disguised, or newly-arrived identity; if the\n"
-        "      characters treat them as unknown, use a grounded neutral handle until the\n"
-        "      reveal. Once introduced, ration the protagonist's real name and usually use\n"
+        "      hooded, glowing, silhouetted, disguised, or newly-arrived identity (e.g. 'gear\n"
+        "      unlike anything'); if the characters treat them as unknown, use a grounded\n"
+        "      neutral handle until the reveal, and CARRY that handle across the FOLLOWING\n"
+        "      panels — do NOT switch to the protagonist's name or a familiar handle like\n"
+        "      'our guy' on a later clear-view panel just because the figure now looks like a\n"
+        "      known character. A power/transformation reveal is a mystery to PRESERVE, not an\n"
+        "      identity to assume; use a cast identity only after the story's own text names them.\n"
+        "      Once introduced, ration the protagonist's real name and usually use\n"
         "      pronouns or a relaxed stand-in. Same established person keeps the same identity.\n"
         "    - DIALOGUE — quote SPARINGLY, recap-style: PARAPHRASE the bulk into narration and\n"
         "      QUOTE only a SHORT punchy fragment (a threat, a name, a key line — a few words),\n"
@@ -1173,7 +1178,7 @@ def main() -> int:
 
     beats_out.sort(key=lambda x: int(x.get("group_id") or 0))
     identity_reveals_neutralized = neutralize_identity_reveal_leaks(
-        {"beats": beats_out}, {"cast": cast_list}, vision_by_file)
+        {"beats": beats_out}, {"cast": cast_list}, vision_by_file, u_by_file)
     spoken_fragments_repaired = repair_spoken_fragments({"beats": beats_out})
     out_obj = {
         "source_groups_manifest": os.path.abspath(args.groups_manifest),
