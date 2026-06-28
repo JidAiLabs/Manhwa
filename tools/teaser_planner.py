@@ -238,6 +238,36 @@ def score_windows(
 # --------------------------------------------------------------------------- #
 # Task 6: Stage-2 select + write narration (one injected model call)
 # --------------------------------------------------------------------------- #
+def _sanitize_chapter_number(ch_num: Any) -> str:
+    """Render a chapter number as a filesystem-safe token for a namespaced id.
+
+    Int-valued floats collapse to the bare int (``5.0`` -> ``"5"``); a fractional
+    chapter keeps the fraction with the dot swapped for an underscore (``5.5`` ->
+    ``"5_5"``); a stray trailing ``.0`` on a string is stripped. ``None`` becomes
+    ``"x"`` so the id stays well-formed.
+    """
+    if ch_num is None:
+        return "x"
+    if isinstance(ch_num, bool):  # bool is an int subclass — treat as a label
+        return str(ch_num)
+    if isinstance(ch_num, float):
+        return str(int(ch_num)) if ch_num.is_integer() else str(ch_num).replace(".", "_")
+    if isinstance(ch_num, int):
+        return str(ch_num)
+    s = str(ch_num).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s.replace(".", "_")
+
+
+def _namespaced_scene_id(chapter_number: Any, scene_file: Any) -> str:
+    """``ch{chapter}__{basename}`` — namespaces a scene by its chapter so the
+    same per-chapter basename (the chunk index restarts every chapter) never
+    collides across the bundle."""
+    base = os.path.basename(str(scene_file or ""))
+    return f"ch{_sanitize_chapter_number(chapter_number)}__{base}"
+
+
 def _window_payload(window: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Understood text per panel (scene_file as a BASENAME) for the model call."""
     rows: List[Dict[str, Any]] = []
@@ -272,6 +302,14 @@ def select_and_write(
     spoiler-safe per-panel narration; we assemble the ``manifest.teaser.json``
     dict and run the shared spoiler/fragment post-pass on it.
 
+    Identity is carried end-to-end: every panel becomes a NAMESPACED scene id
+    ``ch{chapter}__{basename}`` (the chunk index restarts each chapter, so a bare
+    basename collides across the bundle). The model's narration lines are aligned
+    to the window panels BY ORDER (panel i <-> line i), padded/truncated to the
+    panel count — never matched by the now-colliding basename. The returned dict
+    carries ``panel_sources`` ({namespaced_id: source_abs_path}) so materialize
+    can symlink the correct chapter's art.
+
     Returns the teaser dict, or ``None`` when the model abstains.
     """
     if not windows:
@@ -291,23 +329,36 @@ def select_and_write(
     except (ValueError, TypeError, IndexError):
         return None
 
-    scene_files = [os.path.basename(str(p.get("scene_file") or ""))
-                   for p in chosen.get("panels") or []]
+    panels = chosen.get("panels") or []
+    scene_files: List[str] = []
+    panel_sources: Dict[str, str] = {}
+    window_basenames: List[str] = []
+    for p in panels:
+        sf = str(p.get("scene_file") or "")
+        ns_id = _namespaced_scene_id(p.get("chapter_number"), sf)
+        scene_files.append(ns_id)
+        window_basenames.append(os.path.basename(sf))
+        if sf:
+            panel_sources[ns_id] = os.path.abspath(sf)
     source_chapters = sorted({
-        p.get("chapter_number") for p in chosen.get("panels") or []
+        p.get("chapter_number") for p in panels
         if p.get("chapter_number") is not None
     })
-    # per-panel narration from the model, scene_file normalized to a basename
+    # Align model narration to the window panels BY ORDER (basename now collides),
+    # padding/truncating to the panel count; scene_file is the namespaced id.
+    lines = resp.get("panel_narration") or []
     panel_narration: List[Dict[str, Any]] = []
-    for row in resp.get("panel_narration") or []:
-        panel_narration.append({
-            "scene_file": os.path.basename(str(row.get("scene_file") or "")),
-            "line": str(row.get("line") or "").strip(),
-        })
+    for i, ns_id in enumerate(scene_files):
+        line = ""
+        if i < len(lines) and isinstance(lines[i], dict):
+            line = str(lines[i].get("line") or "").strip()
+        panel_narration.append({"scene_file": ns_id, "line": line})
 
     teaser = {
         "source_chapters": source_chapters,
         "scene_files": scene_files,
+        "panel_sources": panel_sources,
+        "window": window_basenames,
         "panel_narration": panel_narration,
         "reason": str(resp.get("reason") or ""),
         "rewind_line": str(resp.get("rewind_line") or ""),
@@ -355,49 +406,58 @@ def _scenes_entry(src_ep: str, scene_file: str,
 
 def materialize_teaser_dir(
     teaser: Dict[str, Any],
-    src_of: Dict[str, str],
     out_dir: Any,
     cast: Dict[str, Any],
 ) -> Path:
     """Build the synthetic episode dir the render/TTS tools consume.
 
-    Symlinks (fallback copy) each window scene into ``out_dir/scenes/`` and
-    writes the four manifests the downstream tools expect plus the teaser dict.
-    A scene missing from its source ``manifest.scenes.json`` (or whose source
-    dir is unknown) is dropped from the teaser — logged, not fatal — rather than
-    emit a broken scenes manifest.
+    Each scene is keyed by its NAMESPACED id (``ch{chapter}__{basename}``) and
+    its source art is resolved PER-PANEL from ``teaser['panel_sources']``
+    ({namespaced_id: source_abs_path}) — never by a bundle-wide basename map,
+    which collides because the chunk index restarts every chapter. Each source is
+    symlinked (fallback copy) to ``out_dir/scenes/{namespaced_id}`` and every
+    manifest is written with the namespaced id as the scene key.
+
+    A scene whose source ``manifest.scenes.json`` has no entry for its ORIGINAL
+    basename (or that has no source path) is dropped — logged, not fatal — rather
+    than emit a broken scenes manifest.
     """
     out_dir = Path(out_dir)
     scenes_dir = out_dir / "scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
 
+    panel_sources: Dict[str, str] = teaser.get("panel_sources") or {}
     cache: Dict[str, Dict[str, Any]] = {}
     kept: List[str] = []
     scene_entries: List[Dict[str, Any]] = []
-    for scene_file in teaser.get("scene_files") or []:
-        src_ep = src_of.get(scene_file)
-        if not src_ep:
-            print(f"[teaser] WARN no source dir for {scene_file}; dropping")
+    for ns_id in teaser.get("scene_files") or []:
+        src_abs = panel_sources.get(ns_id)
+        if not src_abs:
+            print(f"[teaser] WARN no source path for {ns_id}; dropping")
             continue
-        entry = _scenes_entry(src_ep, scene_file, cache)
+        # src_abs is <ep_dir>/scenes/<basename>; recover both halves.
+        orig_base = os.path.basename(src_abs)
+        src_ep = os.path.dirname(os.path.dirname(src_abs))
+        entry = _scenes_entry(src_ep, orig_base, cache)
         if entry is None:
-            print(f"[teaser] WARN {scene_file} not in "
+            print(f"[teaser] WARN {orig_base} not in "
                   f"{src_ep}/manifest.scenes.json; dropping")
             continue
-        src_img = Path(src_ep) / "scenes" / scene_file
-        dst_img = scenes_dir / scene_file
+        dst_img = scenes_dir / ns_id
         if not dst_img.exists():
             try:
-                os.symlink(src_img, dst_img)
+                os.symlink(src_abs, dst_img)
             except OSError:
-                shutil.copy2(src_img, dst_img)
-        kept.append(scene_file)
+                shutil.copy2(src_abs, dst_img)
+        entry = dict(entry)
+        entry["out_file"] = ns_id          # render_prep/remotion resolve the symlink
+        kept.append(ns_id)
         scene_entries.append(entry)
 
     kept_set = set(kept)
     panel_narration = [
         p for p in (teaser.get("panel_narration") or [])
-        if os.path.basename(str(p.get("scene_file") or "")) in kept_set
+        if str(p.get("scene_file") or "") in kept_set
     ]
     narration = " ".join(
         str(p.get("line") or "").strip() for p in panel_narration
@@ -661,14 +721,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[teaser] no teaser")
         return 0
 
-    # scene basename -> its source ep_dir (scene_file is <ep_dir>/scenes/<base>)
-    src_of: Dict[str, str] = {}
-    for p in panels:
-        sf = str(p.get("scene_file") or "")
-        if sf:
-            src_of[os.path.basename(sf)] = os.path.dirname(os.path.dirname(sf))
-
-    materialize_teaser_dir(teaser, src_of, args.out_dir, cast=cast)
+    # Source art is resolved per-panel from teaser['panel_sources'] (namespaced
+    # id -> abs path), so no bundle-wide basename map (it collided across chapters).
+    materialize_teaser_dir(teaser, args.out_dir, cast=cast)
     print(f"[teaser] wrote {args.out_dir} "
           f"(chapters={teaser.get('source_chapters')}, "
           f"panels={len(teaser.get('scene_files') or [])})")

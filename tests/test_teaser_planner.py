@@ -93,7 +93,11 @@ def test_select_and_write_builds_teaser_manifest(tmp_path):
     out = tp.select_and_write([win], loglines=["a hunted prince"], model_call=stub)
     assert out["rewind_line"].startswith("But to see")
     assert out["source_chapters"] == [5]
-    assert out["panel_narration"][0]["scene_file"] == "scene_0007.jpg"
+    # scene_file is the namespaced id; source path resolves per-panel
+    assert out["panel_narration"][0]["scene_file"] == "ch5__scene_0007.jpg"
+    assert out["scene_files"] == ["ch5__scene_0007.jpg"]
+    assert out["panel_sources"]["ch5__scene_0007.jpg"].endswith(
+        "ch5/scenes/scene_0007.jpg")
 
 
 # ---------------------------------------------------------------- Task 7
@@ -105,20 +109,22 @@ def test_materialize_teaser_dir(tmp_path):
     (src / "manifest.scenes.json").write_text(json.dumps(
         {"scenes": [{"out_file": "scene_0007.jpg", "box_px_xyxy": [0, 0, 100, 200],
                      "chunk_global_y0": 0, "w": 100, "h": 200}]}))
-    teaser = {"source_chapters": [5], "scene_files": ["scene_0007.jpg"],
-              "panel_narration": [{"scene_file": "scene_0007.jpg", "line": "The exam begins."}],
+    ns = "ch5__scene_0007.jpg"
+    src_abs = str(src / "scenes" / "scene_0007.jpg")
+    teaser = {"source_chapters": [5], "scene_files": [ns],
+              "panel_sources": {ns: src_abs},
+              "panel_narration": [{"scene_file": ns, "line": "The exam begins."}],
               "rewind_line": "...", "reason": "...", "spoiler_boundary": "..."}
-    # map each scene_file -> its source ep_dir
-    src_of = {"scene_0007.jpg": str(src)}
     out_dir = tmp_path / "teaser"
-    tp.materialize_teaser_dir(teaser, src_of, out_dir, cast={"cast": []})
-    assert (out_dir / "scenes" / "scene_0007.jpg").exists()           # symlink/copy
+    tp.materialize_teaser_dir(teaser, out_dir, cast={"cast": []})
+    assert (out_dir / "scenes" / ns).exists()                         # symlink/copy
     beats = json.loads((out_dir / "manifest.beats.json").read_text())
     assert beats["beats"][0]["panel_narration"][0]["line"] == "The exam begins."
+    assert beats["beats"][0]["scene_files"] == [ns]
     groups = json.loads((out_dir / "manifest.groups.json").read_text())
-    assert groups["shots"][0]["scene_files"] == ["scene_0007.jpg"]
+    assert groups["shots"][0]["scene_files"] == [ns]
     scenes = json.loads((out_dir / "manifest.scenes.json").read_text())
-    assert scenes["scenes"][0]["out_file"] == "scene_0007.jpg"
+    assert scenes["scenes"][0]["out_file"] == ns
     assert (out_dir / "manifest.cast.json").exists()
 
 
