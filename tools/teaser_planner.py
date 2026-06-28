@@ -328,3 +328,94 @@ def select_and_write(
     recap_style.repair_spoken_fragments(beats_obj)
     teaser["panel_narration"] = beats_obj["beats"][0].get("panel_narration") or []
     return teaser
+
+
+# --------------------------------------------------------------------------- #
+# Task 7: synthetic-dir builder (manifests + scene symlinks)
+# --------------------------------------------------------------------------- #
+def _write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+def _scenes_entry(src_ep: str, scene_file: str,
+                  _cache: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Find the source ``manifest.scenes.json`` entry whose out_file == basename."""
+    man_path = os.path.join(src_ep, "manifest.scenes.json")
+    if man_path not in _cache:
+        try:
+            _cache[man_path] = json.loads(Path(man_path).read_text())
+        except Exception:
+            _cache[man_path] = {}
+    for entry in (_cache[man_path].get("scenes") or []):
+        if entry.get("out_file") == scene_file:
+            return entry
+    return None
+
+
+def materialize_teaser_dir(
+    teaser: Dict[str, Any],
+    src_of: Dict[str, str],
+    out_dir: Any,
+    cast: Dict[str, Any],
+) -> Path:
+    """Build the synthetic episode dir the render/TTS tools consume.
+
+    Symlinks (fallback copy) each window scene into ``out_dir/scenes/`` and
+    writes the four manifests the downstream tools expect plus the teaser dict.
+    A scene missing from its source ``manifest.scenes.json`` (or whose source
+    dir is unknown) is dropped from the teaser — logged, not fatal — rather than
+    emit a broken scenes manifest.
+    """
+    out_dir = Path(out_dir)
+    scenes_dir = out_dir / "scenes"
+    scenes_dir.mkdir(parents=True, exist_ok=True)
+
+    cache: Dict[str, Dict[str, Any]] = {}
+    kept: List[str] = []
+    scene_entries: List[Dict[str, Any]] = []
+    for scene_file in teaser.get("scene_files") or []:
+        src_ep = src_of.get(scene_file)
+        if not src_ep:
+            print(f"[teaser] WARN no source dir for {scene_file}; dropping")
+            continue
+        entry = _scenes_entry(src_ep, scene_file, cache)
+        if entry is None:
+            print(f"[teaser] WARN {scene_file} not in "
+                  f"{src_ep}/manifest.scenes.json; dropping")
+            continue
+        src_img = Path(src_ep) / "scenes" / scene_file
+        dst_img = scenes_dir / scene_file
+        if not dst_img.exists():
+            try:
+                os.symlink(src_img, dst_img)
+            except OSError:
+                shutil.copy2(src_img, dst_img)
+        kept.append(scene_file)
+        scene_entries.append(entry)
+
+    kept_set = set(kept)
+    panel_narration = [
+        p for p in (teaser.get("panel_narration") or [])
+        if os.path.basename(str(p.get("scene_file") or "")) in kept_set
+    ]
+    narration = " ".join(
+        str(p.get("line") or "").strip() for p in panel_narration
+        if str(p.get("line") or "").strip())
+
+    _write_json(out_dir / "manifest.beats.json", {"beats": [{
+        "group_id": 1,
+        "scene_files": kept,
+        "panel_narration": panel_narration,
+        "narration": narration,
+    }]})
+    _write_json(out_dir / "manifest.groups.json", {"shots": [{
+        "shot_id": 1,
+        "scene_files": kept,
+        "segment": "present",
+        "arc_label": "teaser",
+    }]})
+    _write_json(out_dir / "manifest.scenes.json", {"scenes": scene_entries})
+    _write_json(out_dir / "manifest.cast.json", cast)
+    _write_json(out_dir / "manifest.teaser.json", teaser)
+    return out_dir

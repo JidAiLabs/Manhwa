@@ -94,3 +94,29 @@ def test_select_and_write_builds_teaser_manifest(tmp_path):
     assert out["rewind_line"].startswith("But to see")
     assert out["source_chapters"] == [5]
     assert out["panel_narration"][0]["scene_file"] == "scene_0007.jpg"
+
+
+# ---------------------------------------------------------------- Task 7
+def test_materialize_teaser_dir(tmp_path):
+    # a fake source chapter with one scene + a scenes manifest entry
+    src = tmp_path / "ch5"
+    (src / "scenes").mkdir(parents=True)
+    (src / "scenes" / "scene_0007.jpg").write_bytes(b"\xff\xd8\xff")  # tiny jpg stub
+    (src / "manifest.scenes.json").write_text(json.dumps(
+        {"scenes": [{"out_file": "scene_0007.jpg", "box_px_xyxy": [0, 0, 100, 200],
+                     "chunk_global_y0": 0, "w": 100, "h": 200}]}))
+    teaser = {"source_chapters": [5], "scene_files": ["scene_0007.jpg"],
+              "panel_narration": [{"scene_file": "scene_0007.jpg", "line": "The exam begins."}],
+              "rewind_line": "...", "reason": "...", "spoiler_boundary": "..."}
+    # map each scene_file -> its source ep_dir
+    src_of = {"scene_0007.jpg": str(src)}
+    out_dir = tmp_path / "teaser"
+    tp.materialize_teaser_dir(teaser, src_of, out_dir, cast={"cast": []})
+    assert (out_dir / "scenes" / "scene_0007.jpg").exists()           # symlink/copy
+    beats = json.loads((out_dir / "manifest.beats.json").read_text())
+    assert beats["beats"][0]["panel_narration"][0]["line"] == "The exam begins."
+    groups = json.loads((out_dir / "manifest.groups.json").read_text())
+    assert groups["shots"][0]["scene_files"] == ["scene_0007.jpg"]
+    scenes = json.loads((out_dir / "manifest.scenes.json").read_text())
+    assert scenes["scenes"][0]["out_file"] == "scene_0007.jpg"
+    assert (out_dir / "manifest.cast.json").exists()
