@@ -419,3 +419,261 @@ def materialize_teaser_dir(
     _write_json(out_dir / "manifest.cast.json", cast)
     _write_json(out_dir / "manifest.teaser.json", teaser)
     return out_dir
+
+
+# --------------------------------------------------------------------------- #
+# Task 8: bundle loaders + arg parser + model-call builder + main()
+# --------------------------------------------------------------------------- #
+# Pull the chapter number out of a dir name (e.g. ".../Nano_Machine/Ch_012" or
+# ".../012"). First integer run wins; fall back to reading order in main().
+_CH_NUM_RE = re.compile(r"(\d+)")
+
+
+def load_bundle_panels(
+    chapter_dirs: List[str],
+    *,
+    max_scan_chapters: int = 0,
+) -> List[Dict[str, Any]]:
+    """Flatten each chapter's ``manifest.panels.understood.json`` in reading order.
+
+    Tags every panel with its ``chapter_number`` (parsed from the dir name, else
+    the 1-based reading position) and rewrites ``scene_file`` to the absolute
+    ``<dir>/scenes/<basename>``. ``max_scan_chapters > 0`` caps how many chapters
+    are scanned (wires the teaser cost guard). Dirs missing the understood
+    manifest are skipped with a warning.
+    """
+    dirs = list(chapter_dirs)
+    if max_scan_chapters and max_scan_chapters > 0:
+        dirs = dirs[:max_scan_chapters]
+
+    out: List[Dict[str, Any]] = []
+    for idx, d in enumerate(dirs):
+        d = str(d)
+        man = os.path.join(d, "manifest.panels.understood.json")
+        if not os.path.exists(man):
+            print(f"[teaser] WARN missing understood manifest: {man}; skipping")
+            continue
+        try:
+            data = json.loads(Path(man).read_text())
+        except Exception as exc:  # noqa: BLE001 - tolerate a corrupt manifest
+            print(f"[teaser] WARN unreadable {man}: {exc}; skipping")
+            continue
+        base = os.path.basename(os.path.normpath(d))
+        m = _CH_NUM_RE.search(base)
+        chapter_number = int(m.group(1)) if m else (idx + 1)
+        for p in (data.get("panels") or []):
+            q = dict(p)
+            sf = os.path.basename(str(p.get("scene_file") or ""))
+            q["chapter_number"] = chapter_number
+            q["scene_file"] = os.path.abspath(os.path.join(d, "scenes", sf))
+            out.append(q)
+    return out
+
+
+def load_loglines(chapter_dirs: List[str]) -> List[str]:
+    """Collect each chapter's ``manifest.story.json`` logline (context for the model)."""
+    out: List[str] = []
+    for d in chapter_dirs:
+        man = os.path.join(str(d), "manifest.story.json")
+        if not os.path.exists(man):
+            continue
+        try:
+            data = json.loads(Path(man).read_text())
+        except Exception:  # noqa: BLE001
+            continue
+        logline = str(data.get("logline") or "").strip()
+        if logline:
+            out.append(logline)
+    return out
+
+
+def merge_cast(chapter_dirs: List[str]) -> Dict[str, Any]:
+    """Union the bundle's ``manifest.cast.json`` members, deduped by canonical_name."""
+    seen: set = set()
+    members: List[Dict[str, Any]] = []
+    for d in chapter_dirs:
+        man = os.path.join(str(d), "manifest.cast.json")
+        if not os.path.exists(man):
+            continue
+        try:
+            data = json.loads(Path(man).read_text())
+        except Exception:  # noqa: BLE001
+            continue
+        for member in (data.get("cast") or []):
+            key = str(member.get("canonical_name") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            members.append(member)
+    return {"cast": members}
+
+
+# The teaser model contract: pick the strongest window by index, write rolling
+# spoiler-safe per-panel narration under the recap rules, plus a rewind line.
+TEASER_PROMPT = (
+    "You are the story editor for a YouTube manhwa recap channel building a short "
+    "ARC TEASER — a cold open that prepends a multi-chapter bundle to hook the "
+    "viewer, then rewinds to the start.\n"
+    "\n"
+    "INPUT_JSON has `windows` (a shortlist of candidate panel windows; each panel "
+    "carries description/action/dialogue/subjects/panel_kind/intensity, scene_file "
+    "as a basename) and `loglines` (the bundle's chapters, for context only).\n"
+    "\n"
+    "DO:\n"
+    "1. Pick the SINGLE strongest window — the most gripping, self-contained hook — "
+    "and return its position as `chosen_index` (0-based into `windows`).\n"
+    "2. For EVERY panel in the chosen window, in order, write ONE narration line in "
+    "`panel_narration` as {scene_file, line}, echoing each panel's scene_file "
+    "basename exactly. Make the lines FLOW as one continuous mini-story (rolling "
+    "narration, not isolated captions). Match length to the panel: a punchy phrase "
+    "for a quick beat, a fuller cinematic sentence for a pivotal one. The FIRST "
+    "line is the cold-open hook — strong and uncapped.\n"
+    "3. Write a `rewind_line`: one sentence that pivots from the hook back to the "
+    "beginning (e.g. 'But to understand how it came to this, we have to go back.').\n"
+    "4. Write a short `reason` (why this window) and a `spoiler_boundary` note.\n"
+    "\n"
+    "RECAP RULES (all six):\n"
+    "  - GROUND every line strictly in what the panels show; invent NOTHING.\n"
+    "  - Name the listed subjects in their own words; never rename or recount them.\n"
+    "  - NEVER name an identity the art has not yet revealed — use a neutral handle.\n"
+    "  - NEVER reference any event past the chosen window (no spoilers from later).\n"
+    "  - Paraphrase dialogue; do not quote raw OCR.\n"
+    "  - Keep it cinematic and propulsive; no meta, no 'panel'/'scene' talk.\n"
+)
+
+# genai response schema (UPPERCASE type enums; lowered for ollama's `format`).
+_TEASER_SCHEMA: Dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "chosen_index": {"type": "INTEGER"},
+        "panel_narration": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "scene_file": {"type": "STRING"},
+                    "line": {"type": "STRING"},
+                },
+                "required": ["scene_file", "line"],
+            },
+        },
+        "rewind_line": {"type": "STRING"},
+        "reason": {"type": "STRING"},
+        "spoiler_boundary": {"type": "STRING"},
+    },
+    "required": ["chosen_index", "panel_narration", "rewind_line"],
+}
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        description="bundle-level arc teaser planner (window scorer + LLM pick + synthetic dir)")
+    ap.add_argument("--bundle-id", type=int, required=True)
+    ap.add_argument("--chapter-dirs", nargs="+", required=True,
+                    help="ep_dirs of the bundle's chapters, in reading order")
+    ap.add_argument("--out-dir", required=True,
+                    help="synthetic teaser dir to materialize (dist/bundle_<id>/teaser)")
+    # model backend (mirrors gemini_narrative_pass / story_group)
+    ap.add_argument("--backend", choices=["vertex", "ollama"], default="vertex")
+    ap.add_argument("--model", default="gemini-2.5-flash",
+                    help="Vertex Gemini model id (ignored when --backend ollama)")
+    ap.add_argument("--ollama-model", default="gemma4:26b",
+                    help="ollama model id; the ollama path uses THIS, not --model")
+    ap.add_argument("--project", default="")
+    ap.add_argument("--location", default="")
+    # cost guards (defaults mirror studio.toml [teaser])
+    ap.add_argument("--shortlist-n", type=int, default=4)
+    ap.add_argument("--min-panels", type=int, default=4)
+    ap.add_argument("--max-hook-panels", type=int, default=10)
+    ap.add_argument("--payoff-tail-frac", type=float, default=0.20)
+    ap.add_argument("--max-scan-chapters", type=int, default=0,
+                    help="0 = scan all chapters in the bundle")
+    ap.add_argument("--max-seconds", type=int, default=90,
+                    help="reserved soft cap; narration stays uncapped (future duration trim)")
+    return ap
+
+
+def _build_model_call(args: argparse.Namespace):
+    """Construct the real Vertex/ollama model_call (lazy heavy imports)."""
+    from gemini_narrative_pass import _call_model_with_backoff  # noqa: E402
+
+    if args.backend == "ollama":
+        client = None
+        model = args.ollama_model
+    else:
+        from google import genai  # noqa: E402
+        if not args.project or not args.location:
+            raise SystemExit("--project/--location are required for --backend vertex")
+        client = genai.Client(vertexai=True, project=args.project,
+                              location=args.location)
+        model = args.model
+
+    def model_call(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        resp, _raw, _usage = _call_model_with_backoff(
+            client=client,
+            model=model,
+            system_instruction=TEASER_PROMPT,
+            user_payload=payload,
+            image_paths=[],
+            response_schema=_TEASER_SCHEMA,
+            max_output_tokens=2400,
+            temperature=0.3,
+            backoff_max=60.0,
+            backend=args.backend,
+        )
+        return resp
+
+    return model_call
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    chapter_dirs = list(args.chapter_dirs)
+
+    panels = load_bundle_panels(chapter_dirs, max_scan_chapters=args.max_scan_chapters)
+
+    # No-teaser gates: fewer than 2 chapters, or too few eligible panels.
+    if len(chapter_dirs) < 2 or len(eligible_panels(panels)) < args.min_panels:
+        print("[teaser] no teaser")
+        return 0
+
+    windows = score_windows(
+        panels,
+        min_panels=args.min_panels,
+        max_panels=args.max_hook_panels,
+        payoff_tail_frac=args.payoff_tail_frac,
+        shortlist_n=args.shortlist_n,
+    )
+    if not windows:
+        print("[teaser] no teaser")
+        return 0
+
+    cast = merge_cast(chapter_dirs)
+    model_call = _build_model_call(args)
+    teaser = select_and_write(
+        windows,
+        loglines=load_loglines(chapter_dirs),
+        model_call=model_call,
+        cast_obj=cast,
+        vision_by_file={},
+    )
+    if not teaser:
+        print("[teaser] no teaser")
+        return 0
+
+    # scene basename -> its source ep_dir (scene_file is <ep_dir>/scenes/<base>)
+    src_of: Dict[str, str] = {}
+    for p in panels:
+        sf = str(p.get("scene_file") or "")
+        if sf:
+            src_of[os.path.basename(sf)] = os.path.dirname(os.path.dirname(sf))
+
+    materialize_teaser_dir(teaser, src_of, args.out_dir, cast=cast)
+    print(f"[teaser] wrote {args.out_dir} "
+          f"(chapters={teaser.get('source_chapters')}, "
+          f"panels={len(teaser.get('scene_files') or [])})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -120,3 +120,25 @@ def test_materialize_teaser_dir(tmp_path):
     scenes = json.loads((out_dir / "manifest.scenes.json").read_text())
     assert scenes["scenes"][0]["out_file"] == "scene_0007.jpg"
     assert (out_dir / "manifest.cast.json").exists()
+
+
+# ---------------------------------------------------------------- Task 8
+def test_build_arg_parser_required_flags():
+    p = tp.build_arg_parser()
+    args = p.parse_args(["--bundle-id", "12", "--chapter-dirs", "/a", "/b",
+                         "--out-dir", "/o"])
+    assert args.bundle_id == 12 and args.chapter_dirs == ["/a", "/b"]
+    # ollama path uses --ollama-model (NOT --model); default gemma4:26b
+    assert args.ollama_model == "gemma4:26b"
+
+
+def test_load_bundle_panels_tags_chapter_and_abspath(tmp_path):
+    ch = tmp_path / "ch5"
+    ch.mkdir()
+    (ch / "manifest.panels.understood.json").write_text(json.dumps(
+        {"panels": [{"scene_file": "scene_0001.jpg", "panel_kind": "story",
+                     "intensity": "tense", "description": "d", "action": "a",
+                     "dialogue": "", "subjects": []}]}))
+    panels = tp.load_bundle_panels([str(ch)])
+    assert panels[0]["chapter_number"]  # derived from dir name or order
+    assert panels[0]["scene_file"].endswith("ch5/scenes/scene_0001.jpg")
