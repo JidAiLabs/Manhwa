@@ -15,6 +15,7 @@ tool-test idiom).
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -72,3 +73,24 @@ def test_no_windows_when_too_few_panels():
     seq = [{"scene_file": "p0", "panel_kind": "story", "intensity": "calm",
             "description": "x", "action": "", "dialogue": "", "subjects": []}]
     assert tp.score_windows(seq, min_panels=4, max_panels=10, payoff_tail_frac=0.2, shortlist_n=3) == []
+
+
+# ---------------------------------------------------------------- Task 6
+def test_select_and_write_builds_teaser_manifest(tmp_path):
+    win = {"start": 0, "end": 4, "score": 9.0, "signals": {},
+           "panels": [{"chapter_number": 5, "scene_file": "/abs/ch5/scenes/scene_0007.jpg",
+                       "panel_kind": "story", "intensity": "tense",
+                       "description": "exam begins", "action": "heir mocks him",
+                       "dialogue": "you have no badge", "subjects": ["heir", "prince"]}]}
+
+    def stub(payload):
+        assert "windows" in payload and "loglines" in payload
+        return {"chosen_index": 0,
+                "panel_narration": [{"scene_file": "scene_0007.jpg", "line": "The exam begins."}],
+                "rewind_line": "But to see how he got here, we go back to the start.",
+                "reason": "public test + humiliation", "spoiler_boundary": "no identity reveal"}
+
+    out = tp.select_and_write([win], loglines=["a hunted prince"], model_call=stub)
+    assert out["rewind_line"].startswith("But to see")
+    assert out["source_chapters"] == [5]
+    assert out["panel_narration"][0]["scene_file"] == "scene_0007.jpg"

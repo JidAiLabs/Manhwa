@@ -23,9 +23,25 @@ intentionally agnostic (no per-series config).
 """
 from __future__ import annotations
 
+import argparse
+import json
 import math
+import os
 import re
-from typing import Any, Dict, List
+import shutil
+import sys
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+# tools/ is not a package; make sibling modules importable by name (the same
+# idiom gemini_narrative_pass.py uses to reach recap_style). recap_style is
+# lightweight (stdlib only) so a module-level import is safe; the heavier
+# gemini_narrative_pass / google-genai imports stay lazy inside main()'s
+# model-call builder so unit tests never pull them in.
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+import recap_style  # noqa: E402
 
 # Panel kinds that can carry the story forward (chrome/empty/etc. are dropped).
 _ELIGIBLE_KINDS = {"story", "caption", "system"}
@@ -217,3 +233,98 @@ def score_windows(
             continue
         picked.append(w)
     return picked
+
+
+# --------------------------------------------------------------------------- #
+# Task 6: Stage-2 select + write narration (one injected model call)
+# --------------------------------------------------------------------------- #
+def _window_payload(window: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Understood text per panel (scene_file as a BASENAME) for the model call."""
+    rows: List[Dict[str, Any]] = []
+    for p in window.get("panels") or []:
+        rows.append({
+            "scene_file": os.path.basename(str(p.get("scene_file") or "")),
+            "chapter_number": p.get("chapter_number"),
+            "description": str(p.get("description", "") or ""),
+            "action": str(p.get("action", "") or ""),
+            "dialogue": str(p.get("dialogue", "") or ""),
+            "panel_kind": p.get("panel_kind"),
+            "intensity": p.get("intensity"),
+            "subjects": list(p.get("subjects") or []),
+        })
+    return rows
+
+
+def select_and_write(
+    windows: List[Dict[str, Any]],
+    *,
+    loglines: List[str],
+    model_call: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
+    cast_obj: Optional[Dict[str, Any]] = None,
+    vision_by_file: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Ask the (injected) model to pick the strongest window + write narration.
+
+    ``model_call(payload) -> dict|None`` follows the ``story_group`` call_fn
+    pattern so tests never hit a real LLM. The payload carries the shortlisted
+    ``windows`` (understood text per panel, basenames) plus the bundle
+    ``loglines`` for context. The model returns ``chosen_index`` +
+    spoiler-safe per-panel narration; we assemble the ``manifest.teaser.json``
+    dict and run the shared spoiler/fragment post-pass on it.
+
+    Returns the teaser dict, or ``None`` when the model abstains.
+    """
+    if not windows:
+        return None
+
+    payload = {
+        "windows": [_window_payload(w) for w in windows],
+        "loglines": list(loglines or []),
+    }
+    resp = model_call(payload)
+    if not isinstance(resp, dict) or "chosen_index" not in resp:
+        return None
+
+    try:
+        idx = int(resp["chosen_index"])
+        chosen = windows[idx]
+    except (ValueError, TypeError, IndexError):
+        return None
+
+    scene_files = [os.path.basename(str(p.get("scene_file") or ""))
+                   for p in chosen.get("panels") or []]
+    source_chapters = sorted({
+        p.get("chapter_number") for p in chosen.get("panels") or []
+        if p.get("chapter_number") is not None
+    })
+    # per-panel narration from the model, scene_file normalized to a basename
+    panel_narration: List[Dict[str, Any]] = []
+    for row in resp.get("panel_narration") or []:
+        panel_narration.append({
+            "scene_file": os.path.basename(str(row.get("scene_file") or "")),
+            "line": str(row.get("line") or "").strip(),
+        })
+
+    teaser = {
+        "source_chapters": source_chapters,
+        "scene_files": scene_files,
+        "panel_narration": panel_narration,
+        "reason": str(resp.get("reason") or ""),
+        "rewind_line": str(resp.get("rewind_line") or ""),
+        "spoiler_boundary": str(resp.get("spoiler_boundary") or ""),
+        "scores": {
+            "chosen": float(chosen.get("score", 0.0)),
+            "shortlist": [float(w.get("score", 0.0)) for w in windows],
+        },
+    }
+
+    # Spoiler/fragment post-pass — reuse the channel's shared writers. Wrap the
+    # teaser as a single beat so the recap_style mutators (which operate on
+    # {"beats":[{"panel_narration":[...]}]}) apply in-place; default cast/vision
+    # to empty keeps it a safe no-op when no cast/OCR context is supplied.
+    beats_obj = {"beats": [{"panel_narration": panel_narration}]}
+    recap_style.neutralize_identity_reveal_leaks(
+        beats_obj, cast_obj or {}, vision_by_file or {})
+    recap_style.repair_spoken_fragments(beats_obj)
+    teaser["panel_narration"] = beats_obj["beats"][0].get("panel_narration") or []
+    return teaser
