@@ -26,6 +26,9 @@ LANES = {
     # prepare instead of waiting behind it (64GB fits gemma + qwen together)
     "voiceover": "tts",
     "render_segment": "cpu", "branding_segments": "cpu", "concat": "cpu",
+    # arc teaser: a model select + a full render -> the render-like cpu lane
+    # (like concat/render_segment). MUST be listed or the job queues forever.
+    "plan_teaser": "cpu",
     "refresh": "api", "discovery_scan": "api", "add_series": "api",
     # metadata + thumbnail: short local-Gemma / Nano-Banana calls — keep them
     # off the gpu lane so they never block a chapter's prepare/voiceover.

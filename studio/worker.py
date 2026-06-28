@@ -779,6 +779,121 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
         con.commit()
 
 
+def _seed_cut_judge_cache(chapter_dirs: List[Path], out_dir: Path,
+                          log: TextIO) -> None:
+    """Fail-soft: the teaser reuses the source panels' exact basenames, so seed
+    render_prep's per-cut visual-judge cache from the source chapters (a plain
+    basename-keyed merge) to skip re-paying the Gemma judging pass. Skipping only
+    re-pays judging — no correctness impact — so any error here is swallowed."""
+    try:
+        merged: Dict[str, Any] = {}
+        for cd in chapter_dirs:
+            src = Path(cd) / "scenes_clean" / ".cut_judge_cache.json"
+            if not src.exists():
+                continue
+            data = json.loads(src.read_text())
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    merged.setdefault(os.path.basename(str(k)), v)
+        if merged:
+            dst = out_dir / "scenes_clean" / ".cut_judge_cache.json"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(json.dumps(merged))
+            log.write(f"[teaser] seeded {len(merged)} cut-judge verdict(s)\n")
+    except Exception as exc:                       # cache is an optimization only
+        log.write(f"[teaser] cut-judge cache seed skipped: {exc}\n")
+
+
+def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
+              log: TextIO) -> None:
+    """Plan + render a bundle's ARC TEASER (the cold open). teaser_planner.py
+    selects a high-stakes window across the bundle's chapters and materializes a
+    SYNTHETIC episode dir (dist/bundle_<id>/teaser/); we then run the SAME render
+    TOOLS the chapter segments use on that dir (script_expander -> local TTS ->
+    timeline_planner -> render_prep -> remotion), copy the result to
+    dist/bundle_<id>/teaser.mp4, and mark the teaser 'planned' for review. When
+    the planner selects no window it writes nothing -> teaser_state stays 'none'
+    so the concat is never blocked waiting on a teaser that doesn't exist."""
+    import shutil
+    from studio import pipeline as _pl
+    bid = job["bundle_id"]
+    cfg, project, location = _beats_cfg()
+    srow = con.execute("SELECT series_id FROM bundle WHERE id=?",
+                       (bid,)).fetchone()
+    title = _series_title(con, srow[0]) if srow else ""
+    chapter_dirs = [Path(_chapter(con, cid)["ep_dir"] or "")
+                    for cid in bundles.bundle_chapters(con, bid)]
+    out_dir = REPO / "dist" / f"bundle_{bid}" / "teaser"
+    with record_stage(con, chapter_id=None, stage="plan_teaser"):
+        # 1) select the window + materialize the synthetic teaser episode dir
+        argv = [PY, str(REPO / "tools" / "teaser_planner.py"),
+                "--bundle-id", str(bid),
+                "--chapter-dirs", *[str(d) for d in chapter_dirs],
+                "--out-dir", str(out_dir),
+                "--backend", cfg.beats_backend,
+                "--max-scan-chapters", str(cfg.teaser_max_hook_scan_chapters),
+                "--shortlist-n", str(cfg.teaser_shortlist_n)]
+        if cfg.beats_backend == "ollama":
+            argv += ["--ollama-model", cfg.beats_model]
+        else:
+            argv += ["--model", cfg.teaser_model,
+                     "--project", project, "--location", location]
+        if _stream(argv, log) != 0:
+            raise RuntimeError("teaser_planner failed")
+        if not (out_dir / "manifest.teaser.json").exists():
+            log.write("[teaser] planner selected no window -> leaving "
+                      "teaser_state='none' (concat stays unblocked)\n")
+            return
+        # 2) render the teaser dir with the chapter render tool chain. The first
+        # three go through pipeline._run_tool (it sets PYTHONPATH for the tools);
+        # render_prep + remotion mirror _h_render_segment exactly.
+        _pl._run_tool("script_expander.py",
+                      ["--beats", str(out_dir / "manifest.beats.json"),
+                       "--out", str(out_dir / "manifest.script.json"),
+                       "--model", cfg.script_model,
+                       "--narration-source", "gemini_verbatim",
+                       "--cast", str(out_dir / "manifest.cast.json")])
+        tts_args = ["--script", str(out_dir / "manifest.script.json"),
+                    "--out-dir", str(out_dir / "tts"),
+                    "--backend", (cfg.tts_backend or "elevenlabs").lower()]
+        if cfg.tts_voice_ref:
+            tts_args += ["--voice-ref", cfg.tts_voice_ref]
+        if (cfg.tts_backend or "").lower() == "kokoro" and cfg.tts_kokoro_voice:
+            tts_args += ["--kokoro-voice", cfg.tts_kokoro_voice]
+        _pl._run_tool("local_tts_from_manifest.py", tts_args,
+                      python_exe=cfg.tts_python)
+        _pl._run_tool("timeline_planner.py",
+                      ["--groups", str(out_dir / "manifest.groups.json"),
+                       "--beats", str(out_dir / "manifest.beats.json"),
+                       "--script", str(out_dir / "manifest.script.json"),
+                       "--tts-index", str(out_dir / "tts" / "tts_index.json"),
+                       "--out", str(out_dir / "render.plan.json"),
+                       "--mode", "narrated", "--min-cut-sec", "3.5"])
+        _seed_cut_judge_cache(chapter_dirs, out_dir, log)
+        if _stream([PY, str(REPO / "tools" / "render_prep.py"),
+                    "--plan", str(out_dir / "render.plan.json"),
+                    "--scenes-manifest", str(out_dir / "manifest.scenes.json"),
+                    "--episode-dir", str(out_dir),
+                    "--series-title", title,
+                    "--branding", "none"], log) != 0:   # teaser is the opener
+            raise RuntimeError("render_prep (teaser) failed")
+        seg = out_dir / "render" / "segment_none.mp4"
+        seg.parent.mkdir(parents=True, exist_ok=True)
+        if _stream(["npx", "remotion", "render", "src/index.ts", "RecapVideo",
+                    str(seg), f"--props={out_dir / 'render.plan.clean.json'}",
+                    f"--public-dir={out_dir}", "--concurrency=8", "--crf=22"],
+                   log, cwd=str(REPO / "remotion")) != 0:
+            raise RuntimeError("remotion (teaser) failed")
+        if not seg.exists():
+            raise RuntimeError(f"teaser render missing {seg}")
+        # 3) copy to the bundle's teaser.mp4 + mark planned for review
+        teaser_mp4 = REPO / "dist" / f"bundle_{bid}" / "teaser.mp4"
+        teaser_mp4.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(str(seg), str(teaser_mp4))
+        con.execute("UPDATE bundle SET teaser_state='planned' WHERE id=?", (bid,))
+        con.commit()
+
+
 def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
     allowed, why = gates.concat_allowed(con, job["bundle_id"])
     if not allowed:
@@ -923,6 +1038,7 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
     "qa_scan": _h_qa_scan,
     "render_segment": _h_render_segment,
     "concat": _h_concat,
+    "plan_teaser": _h_teaser,
     "refresh": _h_refresh,
 }
 
