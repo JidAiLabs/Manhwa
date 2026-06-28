@@ -23,6 +23,7 @@ intentionally agnostic (no per-series config).
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, List
 
@@ -146,3 +147,73 @@ def score_window(panels: List[Dict[str, Any]]) -> Dict[str, Any]:
         "clarity_overflow": clarity_overflow,
     }
     return {"score": float(score), "signals": signals}
+
+
+# --------------------------------------------------------------------------- #
+# Task 5: spoiler guard + window enumeration + non-overlapping shortlist
+# --------------------------------------------------------------------------- #
+def score_windows(
+    panels: List[Dict[str, Any]],
+    *,
+    min_panels: int,
+    max_panels: int,
+    payoff_tail_frac: float,
+    shortlist_n: int,
+) -> List[Dict[str, Any]]:
+    """Enumerate, score, and shortlist teaser windows over the eligible pool.
+
+    Steps:
+      1. ``pool = eligible_panels(panels)``; bail (``[]``) if shorter than
+         ``min_panels``.
+      2. SPOILER GUARD — exclude indices in the last ``payoff_tail_frac`` of the
+         pool plus the single global max-intensity panel (the likely payoff).
+      3. Enumerate every contiguous window of size ``min_panels..max_panels``
+         that contains no excluded index and score each with ``score_window``.
+      4. Greedily pick the top-scoring NON-OVERLAPPING windows (score desc) until
+         ``shortlist_n`` are chosen or candidates are exhausted.
+
+    Window dicts use half-open spans: ``{"start": i, "end": j, "panels": [...],
+    "score": float, "signals": dict}`` where the slice is ``pool[i:j]``.
+    """
+    pool = eligible_panels(panels)
+    n = len(pool)
+    if n < min_panels:
+        return []
+
+    # --- spoiler guard: exclude the payoff tail + the single global peak panel
+    tail_count = int(math.ceil(n * payoff_tail_frac))
+    excluded = set(range(n - tail_count, n))
+    peak_idx = max(
+        range(n), key=lambda i: INTENSITY_RANK.get(pool[i].get("intensity"), 0)
+    )
+    excluded.add(peak_idx)
+
+    # --- enumerate candidate windows that dodge every excluded index
+    candidates: List[Dict[str, Any]] = []
+    for start in range(n):
+        for size in range(min_panels, max_panels + 1):
+            end = start + size
+            if end > n:
+                break
+            if any(i in excluded for i in range(start, end)):
+                continue
+            slc = pool[start:end]
+            scored = score_window(slc)
+            candidates.append({
+                "start": start,
+                "end": end,
+                "panels": slc,
+                "score": scored["score"],
+                "signals": scored["signals"],
+            })
+
+    # --- greedy non-overlapping shortlist (score desc, stable on ties)
+    candidates.sort(key=lambda w: w["score"], reverse=True)
+    picked: List[Dict[str, Any]] = []
+    for w in candidates:
+        if len(picked) >= shortlist_n:
+            break
+        if any(w["start"] < p["end"] and p["start"] < w["end"] for p in picked):
+            continue
+        picked.append(w)
+    return picked
