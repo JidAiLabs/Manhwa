@@ -64,6 +64,17 @@ Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), 
   only QA-flagged groups from panels until 0 ERRORs), prep_qa blank-crop validity gate (no
   sys/doc exemption), bundle-level title/desc (`publish_meta` job), series-level thumbnail +
   Series-page approve UI.
+- **Arc teaser (2026-06-28):** a bundle-level cold open. `tools/teaser_planner.py` scores a
+  high-stakes window across the bundle's chapters (deterministic signal scoring over cached
+  `understood.json` + one model call to pick + write spoiler-safe narration), materializes a
+  SYNTHETIC episode dir (`dist/bundle_<id>/teaser/`, scenes symlinked) and the worker
+  `_h_teaser` runs the normal render/TTS tools on it → `dist/bundle_<id>/teaser.mp4`. New
+  `bundle.teaser_state` (none|planned|approved|declined) gates concat: a `planned` teaser
+  blocks the bundle until reviewed; `_h_concat` prepends it only when `approved`. Dashboard:
+  Videos page "Plan teaser" button + review card (approve/decline/re-plan) on the bundle row.
+  Config in `studio.toml [teaser]`. Plan: `docs/plans/2026-06-28-teaser-planner.md`. NOTE: this
+  touched `studio/worker.py` + `studio/dashboard/**`, so deploying it needs a daemon restart
+  (`launchctl kickstart -k`); `tools/teaser_planner.py` is a subprocess → fresh on pull.
 - **NEXT (see `.continue-here.md`):** clean slate (clear logs + DB job/stage history), reset
   the 4 first chapters to `visioned`, run "prepare → QA" per chapter on the dashboard to
   exercise the new pipeline end-to-end, review, then voice (Qwen) + render only once it looks
