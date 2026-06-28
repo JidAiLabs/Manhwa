@@ -36,3 +36,14 @@ def test_eligible_panels_skips_chrome_empty_error():
     ]
     out = tp.eligible_panels(panels)
     assert [p["scene_file"] for p in out] == ["a", "d"]
+
+
+# ---------------------------------------------------------------- Task 4
+def test_score_window_high_stakes_beats_calm():
+    hot = [{"scene_file": f"h{i}", "panel_kind": "story", "intensity": "explosive",
+            "description": "the entrance exam begins", "action": "a clan heir humiliates him",
+            "dialogue": "you have no badge", "subjects": ["heir", "prince"]} for i in range(5)]
+    calm = [{"scene_file": f"c{i}", "panel_kind": "story", "intensity": "calm",
+             "description": "they eat lunch quietly", "action": "", "dialogue": "",
+             "subjects": ["prince"]} for i in range(5)]
+    assert tp.score_window(hot)["score"] > tp.score_window(calm)["score"]
