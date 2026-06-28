@@ -1,6 +1,6 @@
 {% extends "base.html" %}{% set active='videos' %}{% block body %}
-<h2>Videos <small>— bundle = chapter segments + outro (no intro; concat, no re-render)</small></h2>
-<table><tr><th>bundle</th><th>kind</th><th>projected runtime</th><th>segments</th><th>state</th><th></th></tr>
+<h2>Videos <small>— bundle = teaser cold-open + chapter segments + outro (no intro; concat, no re-render)</small></h2>
+<table><tr><th>bundle</th><th>kind</th><th>projected runtime</th><th>segments</th><th>state</th><th>teaser</th><th></th></tr>
 {% for b in bundles %}
 <tr><td><b>{{ b.title or ('bundle #' ~ b.id) }}</b></td>
 <td class="kv">{{ b.kind }}{% if b.season_no %} S{{ b.season_no }}{% endif %}</td>
@@ -9,15 +9,38 @@
 <span class="kv">{{ b.ready }}/{{ b.total }}</span></td>
 <td>{% if b.state=='concatenated' %}<span class="b ok">DONE → {{ b.output_path }}</span>
 {% elif b.approved %}<span class="b ok">APPROVED</span>{% else %}<span class="b warn">AWAITS APPROVAL 🔒</span>{% endif %}</td>
+<td>{% if b.teaser_state=='approved' %}<span class="b ok">TEASER ✓</span>
+{% elif b.teaser_state=='planned' %}<span class="b warn">REVIEW 🔒</span>
+{% elif b.teaser_state=='declined' %}<span class="kv">declined</span>
+{% else %}<span class="kv">none</span>{% endif %}</td>
 <td>
 <form class="inline" method="post" action="/approve"><input type="hidden" name="gate" value="concat">
 <input type="hidden" name="bundle_id" value="{{ b.id }}"><button class="green">approve</button></form>
+<form class="inline" method="post" action="/bundles/{{ b.id }}/teaser/plan">
+<button class="ghost" title="select a high-stakes hook window from this bundle's chapters and render it as the cold-open teaser">Plan teaser</button></form>
 <form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="publish_meta">
 <input type="hidden" name="bundle_id" value="{{ b.id }}"><button class="ghost" title="generate this video's title + description + Parts (YouTube chapters) from the bundle's chapters — copyright-safe, real name only in pinned comment">title + description</button></form>
 <form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="concat">
 <input type="hidden" name="bundle_id" value="{{ b.id }}"><button>concat</button></form>
 </td></tr>
-{% else %}<tr><td colspan="6" class="kv">no bundles yet</td></tr>{% endfor %}
+{% if b.teaser_state=='planned' and b.teaser_card %}
+<tr><td colspan="7">
+<div class="seg"><span class="kv"><b>Teaser hook</b>{% if b.teaser_card.source_chapters %} — chapters {{ b.teaser_card.source_chapters | join(', ') }}{% endif %}</span>
+{% if b.teaser_card.reason %}<div class="nar"><b>why:</b> {{ b.teaser_card.reason }}</div>{% endif %}
+{% if b.teaser_card.spoiler_boundary %}<div class="kv">spoiler boundary: {{ b.teaser_card.spoiler_boundary }}</div>{% endif %}
+{% for p in b.teaser_card.panels %}<div class="seg">
+{% if p.line %}<div class="nar">{{ p.line }}</div>{% endif %}
+{% if p.img %}<img src="{{ p.img }}" loading="lazy">{% endif %}
+</div>{% endfor %}
+{% if b.teaser_card.rewind_line %}<div class="nar"><b>↩ rewind:</b> {{ b.teaser_card.rewind_line }}</div>{% endif %}
+<div class="row">
+<form class="inline" method="post" action="/bundles/{{ b.id }}/teaser/approve"><button class="green">approve teaser</button></form>
+<form class="inline" method="post" action="/bundles/{{ b.id }}/teaser/decline"><button class="ghost">decline</button></form>
+<form class="inline" method="post" action="/bundles/{{ b.id }}/teaser/plan"><button class="ghost">re-plan</button></form>
+</div></div>
+</td></tr>
+{% endif %}
+{% else %}<tr><td colspan="7" class="kv">no bundles yet</td></tr>{% endfor %}
 </table>
 <h2>New bundle</h2>
 <form method="post" action="/bundles" class="row">
