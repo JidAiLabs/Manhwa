@@ -429,7 +429,21 @@ def test_h_teaser_plans_and_sets_state(tmp_path, monkeypatch):
   - `worker.py` `_h_teaser(con, job, log)`:
     1. `bid = job["bundle_id"]`; resolve `chapter_dirs = [Path(_chapter(con,cid)["ep_dir"]) for cid in bundles.bundle_chapters(con, bid)]`.
     2. `out_dir = REPO/"dist"/f"bundle_{bid}"/"teaser"`.
-    3. Run the planner: `_stream([PY, str(REPO/"tools"/"teaser_planner.py"), "--bundle-id", str(bid), "--chapter-dirs", *map(str,chapter_dirs), "--out-dir", str(out_dir), "--backend", cfg.beats_backend, "--model", cfg.teaser_model, ...], log)`. If it wrote no `manifest.teaser.json` (no-teaser), set `teaser_state='declined'`? No — leave `none` and return (concat not blocked). 
+    3. Run the planner. Build argv config-synced to the backend (mirror `_stage_beated`): always `--bundle-id`, `--chapter-dirs`, `--out-dir`, `--backend cfg.beats_backend`, `--max-scan-chapters cfg.teaser_max_hook_scan_chapters`, `--shortlist-n cfg.teaser_shortlist_n`, etc.; then for ollama add `--ollama-model cfg.beats_model`, for vertex add `--model cfg.teaser_model --project … --location …`:
+```python
+argv = [PY, str(REPO/"tools"/"teaser_planner.py"), "--bundle-id", str(bid),
+        "--chapter-dirs", *map(str, chapter_dirs), "--out-dir", str(out_dir),
+        "--backend", cfg.beats_backend,
+        "--max-scan-chapters", str(cfg.teaser_max_hook_scan_chapters),
+        "--shortlist-n", str(cfg.teaser_shortlist_n)]
+if cfg.beats_backend == "ollama":
+    argv += ["--ollama-model", cfg.beats_model]
+else:
+    argv += ["--model", cfg.teaser_model, "--project", project, "--location", location]
+if _stream(argv, log) != 0:
+    raise RuntimeError("teaser_planner failed")
+```
+If the planner wrote no `manifest.teaser.json` (no-teaser case), leave `teaser_state='none'` and return (concat stays unblocked) — do NOT set `declined`. 
     4. If a teaser was planned, run the render TOOLS on `out_dir` (mirror `_h_render_segment` body + the scripted/voiced/planned argv from the spec): script_expander → local_tts_from_manifest (`python_exe=cfg.tts_python`) → timeline_planner → render_prep → remotion. Reuse `studio.pipeline._run_tool` for the first three (it sets PYTHONPATH) and `_stream` for render_prep (cwd=`REPO`) + remotion (cwd=`REPO/"remotion"`). When `cfg.beats_backend=="ollama"`, pass the model via `--ollama-model cfg.beats_model` (the script's ollama path ignores `--model`). **Cut-judge cache (optional, fail-soft):** render_prep reads/writes `out_dir/scenes_clean/.cut_judge_cache.json` keyed by scene **basename** (render_prep.py:1370/2059). Because the teaser keeps identical scene basenames, seed it by copying each source chapter's `scenes_clean/.cut_judge_cache.json` entries (by basename) into `out_dir/scenes_clean/.cut_judge_cache.json` before render_prep — a plain basename-keyed merge (no symlink path-remap needed). Skipping this only re-pays Gemma judging; no correctness impact.
     5. Copy `out_dir/render/segment_none.mp4` → `REPO/"dist"/f"bundle_{bid}"/"teaser.mp4"`.
     6. `con.execute("UPDATE bundle SET teaser_state='planned' WHERE id=?", (bid,)); con.commit()`.
