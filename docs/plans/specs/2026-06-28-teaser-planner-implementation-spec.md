@@ -23,8 +23,8 @@ so there is no compose/gate tension: a teaser is the bundle's cold open, period.
 
 - No per-series chapter-number rules. No fixed word/second budget on the teaser narration
   (cost guards only). No re-rendering of chapter bodies. No new render or TTS code — the teaser
-  reuses the existing per-chapter render path. No flashback inserts, auto-batcher, or
-  tail-handling in this slice.
+  reuses the existing render/TTS **tools** (not the chapter-keyed `_h_*` handlers). No flashback
+  inserts, auto-batcher, or tail-handling in this slice.
 
 ## Architecture
 
@@ -42,17 +42,27 @@ selected bundle (chapters already prepared: understood/story/beats/scenes on dis
                dist/bundle_<id>/teaser/manifest.cast.json    (merged from source chapters)
                dist/bundle_<id>/teaser/scenes/*.jpg          (symlinks to source scene files)
                dist/bundle_<id>/teaser/manifest.teaser.json  (the plan record, per design note)
-  → existing stages on the teaser dir: scripted → voiced → planned → render_segment
+  → the existing TOOL scripts run directly on the teaser dir (script_expander →
+    local_tts_from_manifest → timeline_planner/render_prep → remotion render)
       → dist/bundle_<id>/teaser/render/segment_none.mp4  → copied to dist/bundle_<id>/teaser.mp4
   → _h_concat prepends teaser.mp4 to the chapter segments
 ```
 
-### Why synthetic-episode reuse
-`_h_render_segment` already renders any dir's `render.plan.clean.json` to `segment_*.mp4` via
-remotion; `script_expander`/`local_tts_from_manifest`/`timeline_planner` already turn
-`manifest.beats.json` (+ scenes + cast) into a script, clips, and a plan. The teaser is just a
-~6-12 panel "chapter" whose panels happen to come from several source chapters. Building the
-beats manifest + symlinking the scenes is the entire integration; no stage is forked.
+### Why synthetic-episode reuse — and what is reused (TOOLS, not handlers)
+`script_expander`/`local_tts_from_manifest`/`timeline_planner`/`render_prep` + `npx remotion
+render` already turn `manifest.beats.json` (+ scenes + cast) into a script, clips, a plan, and a
+`segment_*.mp4`. The teaser is just a ~6-12 panel "chapter" whose panels happen to come from
+several source chapters. Building the beats manifest + symlinking the scenes is the entire
+integration; no **tool** is forked.
+
+**The reuse is at the TOOL level, NOT the worker-handler level.** The `_h_render_segment` and
+`_h_voiceover` handlers are **chapter-keyed**: they gate on `job["chapter_id"]`
+(`gates.render_allowed`/`voice_allowed`), look the chapter up via `_chapter(con, chapter_id)`, and
+`_h_voiceover` drives `studio run <series_id> --chapters <number>`. The teaser has **no chapter
+row, no `chapter_id`, no chapter-scoped gate**, so those handlers cannot run on it. `_h_teaser`
+instead invokes the same **tool subprocesses** that `_h_render_segment` runs internally, pointed
+at the teaser dir. "No new render/TTS code" is true of the tools; it is not a claim about reusing
+the `_h_*` handlers.
 
 ## Inputs — all cached, nothing recomputed
 
@@ -131,16 +141,21 @@ Pure, testable functions + a thin `main()`. Module boundaries:
 ```
 
 ### `main()`
-Args: `--bundle-id`, `--series-dir`, `--out-dir` (`dist/bundle_<id>/teaser`), `--backend`/`--model`/
-`--project`/`--location` (mirroring `gemini_narrative_pass`). Reads the cached inputs, runs
-Stage 1 → Stage 2, writes `manifest.teaser.json` + a `manifest.beats.json` (panel_narration
-shape the scripted stage consumes) + merged `manifest.cast.json`, and symlinks the winning
-`scene_files` into `teaser/scenes/`. Exits "no teaser" (rc 0, writes nothing prependable) when
-the bundle is single-chapter or no `understood.json` exists.
+Args: `--bundle-id`, `--chapter-dirs` (the ordered list of source-chapter `ep_dir`s, resolved by
+the worker from `bundle_chapters` → chapter rows so the planner does not touch the DB),
+`--out-dir` (`dist/bundle_<id>/teaser`), `--backend`/`--model`/`--project`/`--location` (mirroring
+`gemini_narrative_pass`). For each `ep_dir` it reads the cached inputs and builds the flattened
+panel sequence (each panel tagged with its source `chapter_number` + abs `scene_file`), runs
+Stage 1 → Stage 2, writes `manifest.teaser.json` + a `manifest.beats.json` (panel_narration shape
+the scripted stage consumes) + merged `manifest.cast.json`, and symlinks the winning `scene_files`
+into `teaser/scenes/`. Exits "no teaser" (rc 0, writes nothing prependable) when the bundle is
+single-chapter or no `understood.json` exists.
 
-## Stage 3 — materialize the segment (reuse, no new code)
+## Stage 3 — materialize the segment (reuse the TOOLS, not the handlers)
 
-The worker runs the existing stages against the teaser dir:
+`_h_teaser` invokes the same tool subprocesses `_h_render_segment` runs internally, pointed at the
+teaser dir (it does **not** call the chapter-keyed `_h_render_segment`/`_h_voiceover` handlers —
+the teaser has no `chapter_id`):
 1. `script_expander.py` (gemini_verbatim) → `teaser/manifest.script.json`
 2. `local_tts_from_manifest.py` → `teaser/tts/` clips (qwen-mlx, same as chapters)
 3. `timeline_planner.py` / `render_prep` → `teaser/render.plan.json` + `render.plan.clean.json`
@@ -151,27 +166,46 @@ The worker runs the existing stages against the teaser dir:
 No branding wrap on the teaser (it is itself the opening). The existing render seats every shot
 at its absolute `start_sec`, so the teaser segment is A/V-aligned like any chapter (no drift).
 
+**Cut-judge cache:** `render_prep` runs per-panel visual judging cached per-ep in
+`.cut_judge_cache.json`, **keyed by file path** (`{filepath: {keep, reason}}`, looked up via
+`cache.get(f)` at `render_prep.py:1343`). The teaser's panels are symlinks to source panels that
+**already passed visual QA in their own chapter**, so re-judging them is wasted gemma cost. Before
+running `render_prep`, the plan should seed `teaser/.cut_judge_cache.json` by **remapping** each
+source verdict onto the teaser's symlink path (resolve the teaser `scenes/*` symlink → source path
+→ source-chapter cache verdict → re-key under the teaser path). A verbatim copy would miss
+(the teaser paths aren't keys in the source cache) and silently re-judge everything. This is a
+fail-soft optimization only — a cache miss just re-pays gemma, no correctness impact.
+
 ## Integration
 
 ### Worker (`studio/worker.py`)
-- New handler **`_h_teaser`** (job kind `"teaser"`): runs `teaser_planner.py`, then drives the
-  scripted→voiced→planned→render_segment stages on the teaser dir, then writes
-  `dist/bundle_<id>/teaser.mp4`. Records a `stage_run` like other jobs. Gated by bundle approval.
-- **`_h_concat`** change: if `dist/bundle_<id>/teaser.mp4` exists **and** the teaser is approved,
-  prepend it to `segs` before `wrap_with_branding`. One added line in the segment assembly; the
-  ffmpeg stream-copy concat is format-compatible because the teaser is rendered by the same
-  remotion composition as the chapter segments.
+- New handler **`_h_teaser`** (job kind `"teaser"`): resolves the bundle's chapter `ep_dir`s
+  (`bundle_chapters` → chapter rows), runs `teaser_planner.py --chapter-dirs …`, then invokes the
+  render TOOLS directly on the teaser dir (`script_expander.py`, `local_tts_from_manifest.py`,
+  `timeline_planner.py`/`render_prep.py`, `npx remotion render` — the same subprocesses
+  `_h_render_segment` runs internally), and writes `dist/bundle_<id>/teaser.mp4`. Sets
+  `bundle.teaser_state='planned'` on success. Records a `stage_run` like other jobs.
+- **`_h_concat`** change: if `dist/bundle_<id>/teaser.mp4` exists **and**
+  `bundle.teaser_state='approved'`, prepend it to `segs` before `wrap_with_branding`. One added
+  line in the segment assembly; the ffmpeg stream-copy concat is format-compatible because the
+  teaser is rendered by the same remotion composition as the chapter segments.
 
-### Gates (`studio/dashboard/gates.py`)
-- `concat_allowed` additionally requires: teaser **approved** OR teaser explicitly **declined**
-  ("no teaser for this bundle"). A planned-but-unreviewed teaser blocks concat, mirroring the
-  existing per-chapter approval discipline.
+### State + Gates (`studio/dashboard/gates.py`)
+- Add a **`bundle.teaser_state TEXT NOT NULL DEFAULT 'none'`** column with states
+  `none → planned → approved | declined` (a single `approval` row cannot express "declined / no
+  teaser", which would otherwise deadlock concat — so a column, not an approval row, owns this).
+  `none` = not planned yet; `planned` = rendered, awaiting review; `approved` = include it;
+  `declined` = this bundle ships with no teaser.
+- `concat_allowed(con, bundle_id)` additionally requires `teaser_state IN ('none','approved','declined')`.
+  Only `teaser_state='planned'` (rendered-but-unreviewed) blocks concat, mirroring the existing
+  per-chapter approval discipline. A bundle that never plans a teaser (`none`) concats freely.
 
 ### Dashboard (`studio/dashboard/`)
-- Bundle page: **"Plan teaser"** button → enqueues the `teaser` job. A **review card** shows the
-  chosen window thumbnails, the teaser narration, `reason`, and `spoiler_boundary`, with
-  **Approve** / **Decline** / **Re-plan** actions. (Worker/dashboard change → **daemon restart**
-  on deploy, per the standing rule.)
+- Bundle page: **"Plan teaser"** button → enqueues the `teaser` job (sets `teaser_state='planned'`
+  on completion). A **review card** shows the chosen window thumbnails, the teaser narration,
+  `reason`, and `spoiler_boundary`, with **Approve** (`teaser_state='approved'`) / **Decline**
+  (`teaser_state='declined'`) / **Re-plan** (re-enqueue) actions. (Worker/dashboard change →
+  **daemon restart** on deploy, per the standing rule.)
 
 ### Config (`studio.toml [teaser]`)
 ```toml
@@ -188,9 +222,10 @@ Mirrored as fields in `studio/config.py` with `STUDIO_TEASER_*` env overrides, f
 existing config pattern.
 
 ### DB
-The existing `bundle` / `bundle_chapter` / `approval` (with `bundle_id`) tables suffice. Teaser
-approval is an `approval` row scoped to the bundle with a `kind="teaser"` marker (or a
-`bundle.teaser_state` column if cleaner — decide in the plan). No schema redesign.
+One additive column: **`bundle.teaser_state TEXT NOT NULL DEFAULT 'none'`** (states above). The
+existing `bundle` / `bundle_chapter` tables are otherwise unchanged. The teaser deliberately does
+**not** reuse the `approval` table (whose column is `gate`, and which only inserts approvals — it
+cannot represent an explicit "declined / no teaser", which the column does). No schema redesign.
 
 ## Determinism + Tests
 
