@@ -65,6 +65,22 @@ def render_allowed(con: sqlite3.Connection, chapter_id: int) -> Tuple[bool, str]
 
 
 def concat_allowed(con: sqlite3.Connection, bundle_id: int) -> Tuple[bool, str]:
+    # A teaser that's PLANNED but not yet reviewed blocks the bundle — never
+    # ship a teaser nobody approved. 'approved'/'declined'/'none' all proceed.
+    # None-safe: fetchone() is None when the bundle row doesn't exist (the
+    # legacy concat-gate test calls this with no bundle row).
+    row = con.execute("SELECT teaser_state FROM bundle WHERE id=?",
+                      (bundle_id,)).fetchone()
+    if row and row[0] == "planned":
+        return False, "teaser planned but not reviewed"
     if not _has_approval(con, "concat", bundle_id=bundle_id):
         return False, "needs concat approval"
+    return True, ""
+
+
+def teaser_allowed(con: sqlite3.Connection, bundle_id: int) -> Tuple[bool, str]:
+    """The teaser is the bundle's cold open — confirm-upstream-before-render:
+    the user must read+approve the selected hook before it's prepended."""
+    if not _has_approval(con, "teaser", bundle_id=bundle_id):
+        return False, "needs teaser approval"
     return True, ""
