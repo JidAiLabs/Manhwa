@@ -72,6 +72,7 @@ def connect(path: Path | str) -> sqlite3.Connection:
           kind TEXT NOT NULL,
           season_no INTEGER,
           state TEXT NOT NULL DEFAULT 'collecting',
+          teaser_state TEXT NOT NULL DEFAULT 'none',
           output_path TEXT,
           meta_json TEXT DEFAULT '{}'
         );
@@ -108,5 +109,10 @@ def connect(path: Path | str) -> sqlite3.Connection:
         # series (cleared when you bulk-run it or dismiss it)
         con.execute("ALTER TABLE series ADD COLUMN new_pending INTEGER "
                     "NOT NULL DEFAULT 0")
+    bcols = {r[1] for r in con.execute("PRAGMA table_info(bundle)")}
+    if "teaser_state" not in bcols:
+        # arc-teaser sequencing: none|planned|approved|declined
+        con.execute("ALTER TABLE bundle ADD COLUMN teaser_state TEXT "
+                    "NOT NULL DEFAULT 'none'")
     con.commit()
     return con
