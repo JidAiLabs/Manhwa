@@ -64,29 +64,61 @@ def test_score_panel_power_reveal_outscores_calm_exposition():
     assert sh["score"] > sc["score"]
 
 
-# ---------------------------------------------------------------- Task 5
-def test_payoff_tail_excluded():
-    seq = [{"scene_file": f"p{i}", "panel_kind": "story", "intensity": "calm",
-            "description": "x", "action": "", "dialogue": "", "subjects": []} for i in range(10)]
-    wins = tp.score_windows(seq, min_panels=2, max_panels=3, payoff_tail_frac=0.2, shortlist_n=5)
-    # last 20% (p8,p9) must not appear in any returned window
-    assert all(p["scene_file"] not in ("p8", "p9") for w in wins for p in w["panels"])
+# ---------------------------------------------------------------- Task 5 (montage)
+def _mk_panel(scene, ch, *, kind="story", intensity="tense", desc="", subjects=None):
+    return {"scene_file": scene, "chapter_number": ch, "panel_kind": kind,
+            "intensity": intensity, "description": desc, "action": "",
+            "dialogue": "", "subjects": subjects or []}
 
 
-def test_windows_respect_max_panels_and_nonoverlap():
-    seq = [{"scene_file": f"p{i}", "panel_kind": "story", "intensity": "tense",
-            "description": "exam", "action": "fight", "dialogue": "", "subjects": []} for i in range(12)]
-    wins = tp.score_windows(seq, min_panels=4, max_panels=10, payoff_tail_frac=0.2, shortlist_n=3)
-    assert wins and all(4 <= len(w["panels"]) <= 10 for w in wins)
-    # non-overlapping shortlist
-    spans = sorted((w["start"], w["end"]) for w in wins)
-    assert all(spans[i][1] <= spans[i + 1][0] for i in range(len(spans) - 1))
+def test_select_montage_climaxes_on_power_reveal_and_spans_chapters():
+    descs = ["the entrance exam begins", "a clan heir mocks the outcast",
+             "the survival trial turns deadly", "the duel escalates"]
+    panels = []
+    for ch in (1, 2):                                   # earlier setup chapters
+        for i, d in enumerate(descs):
+            panels.append(_mk_panel(f"ch{ch}_s{i}.jpg", ch, intensity="tense", desc=d))
+    for i in range(3):                                  # calm filler in last chapter
+        panels.append(_mk_panel(f"ch3_f{i}.jpg", 3, intensity="calm",
+                                desc="a quiet aftermath in the courtyard"))
+    # the genre-defining climax lives in the LAST chapter
+    panels.append(_mk_panel("ch3_climax.jpg", 3, intensity="explosive",
+                            desc="the nano core activates, energy surging and aura glowing"))
+
+    montage = tp.select_montage(panels, max_panels=6, min_panels=4, payoff_tail_frac=0.0)
+    assert montage is not None
+    assert len(montage) <= 6
+    # the power/transformation reveal is the LAST montage element
+    assert montage[-1]["scene_file"] == "ch3_climax.jpg"
+    assert montage[-1]["is_climax"] is True
+    assert all(p["is_climax"] is False for p in montage[:-1])
+    # the montage spans more than one chapter (an arc, not one chapter)
+    assert len({p["chapter_number"] for p in montage}) > 1
 
 
-def test_no_windows_when_too_few_panels():
-    seq = [{"scene_file": "p0", "panel_kind": "story", "intensity": "calm",
-            "description": "x", "action": "", "dialogue": "", "subjects": []}]
-    assert tp.score_windows(seq, min_panels=4, max_panels=10, payoff_tail_frac=0.2, shortlist_n=3) == []
+def test_select_montage_calm_bundle_still_returns_something():
+    panels = [_mk_panel(f"s{i}.jpg", (i // 3) + 1, intensity="calm",
+                        desc="they share a quiet meal") for i in range(9)]
+    montage = tp.select_montage(panels, max_panels=5, min_panels=4)
+    assert montage is not None
+    assert 4 <= len(montage) <= 5
+    assert montage[-1]["is_climax"] is True
+
+
+def test_select_montage_none_when_too_few_eligible():
+    panels = [_mk_panel("s0.jpg", 1, intensity="calm", desc="x")]
+    assert tp.select_montage(panels, max_panels=10, min_panels=4) is None
+
+
+def test_select_montage_payoff_tail_trims_the_end():
+    # a climax-worthy panel sits in the trimmed tail -> not pulled into the montage
+    panels = [_mk_panel(f"s{i}.jpg", 1, intensity="tense", desc="the duel rages on")
+              for i in range(8)]
+    panels.append(_mk_panel("late.jpg", 2, intensity="explosive",
+                            desc="the nano core activates, energy surging, aura glowing"))
+    montage = tp.select_montage(panels, max_panels=4, min_panels=2, payoff_tail_frac=0.5)
+    assert montage is not None
+    assert all(p["scene_file"] != "late.jpg" for p in montage)
 
 
 # ---------------------------------------------------------------- Task 6

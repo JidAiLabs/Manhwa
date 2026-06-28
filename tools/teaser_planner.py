@@ -287,6 +287,114 @@ def score_windows(
 
 
 # --------------------------------------------------------------------------- #
+# Arc-montage selector — builds to the power/transformation reveal
+# --------------------------------------------------------------------------- #
+def _chapter_key(panel: Dict[str, Any]) -> Any:
+    """Sortable chapter key; ``None`` sorts LAST so unnumbered panels trail."""
+    cn = panel.get("chapter_number")
+    return cn if cn is not None else float("inf")
+
+
+def _norm_text(panel: Dict[str, Any]) -> str:
+    """Whitespace-collapsed, lowercased panel text — for near-duplicate checks."""
+    return re.sub(r"\s+", " ", _panel_text(panel)).strip().lower()
+
+
+def _scene_base(panel: Dict[str, Any]) -> str:
+    return os.path.basename(str(panel.get("scene_file") or ""))
+
+
+def select_montage(
+    panels: List[Dict[str, Any]],
+    *,
+    max_panels: int,
+    min_panels: int,
+    payoff_tail_frac: float = 0.0,
+) -> Optional[List[Dict[str, Any]]]:
+    """Select an ARC MONTAGE that BUILDS to the power/transformation reveal.
+
+    Unlike the old single-window selection, this spans the whole eligible pool and
+    deliberately ends on the genre-defining hook ("what the protagonist becomes").
+
+      1. ``pool = eligible_panels(panels)``; return ``None`` if shorter than
+         ``min_panels``.
+      2. ``payoff_tail_frac`` (default ``0.0`` — OFF) optionally trims a literal
+         final-cliffhanger sliver off the END of the pool. The power reveal is the
+         HOOK, not an outcome spoiler, so by default nothing is excluded.
+      3. CLIMAX = the panel with the highest ``(power_reveal, intensity_rank,
+         score)`` — the transformation/power reveal. It is ALWAYS the LAST montage
+         panel; ties break to the later (closer-to-the-reveal) panel.
+      4. SETUP = the next strongest panels by score, SPREAD across chapters (capped
+         at ~``ceil(max_panels / n_chapters)+1`` per chapter, the climax counted),
+         skipping near-duplicate adjacent panels, up to ``max_panels-1`` of them.
+      5. ORDER = setup sorted CHRONOLOGICALLY by ``(chapter_number, reading
+         index)``, then the climax appended LAST. The montage builds to the reveal;
+         it is NOT required to be globally chronological.
+
+    Returns the ordered montage (shallow copies with an ``is_climax`` flag on the
+    last panel), or ``None`` when too few panels are eligible.
+    """
+    pool = eligible_panels(panels)
+    n = len(pool)
+    if n < min_panels:
+        return None
+
+    # optional literal-cliffhanger trim off the tail (default OFF)
+    if payoff_tail_frac and payoff_tail_frac > 0.0:
+        tail = int(math.ceil(n * payoff_tail_frac))
+        if tail > 0:
+            pool = pool[: max(0, n - tail)]
+        if len(pool) < min_panels:
+            return None
+
+    # score every panel once, carrying its reading-order index
+    scored = [(i, p, score_panel(p)) for i, p in enumerate(pool)]
+
+    # climax = the power/transformation reveal (ties -> later panel)
+    climax_i, climax_p, _csc = max(
+        scored,
+        key=lambda t: (t[2]["power_reveal"], t[2]["intensity_rank"],
+                       t[2]["score"], t[0]),
+    )
+
+    n_chapters = len({_chapter_key(p) for _, p, _ in scored})
+    per_cap = math.ceil(max_panels / max(1, n_chapters)) + 1
+
+    # setup = strongest remaining panels, spread across chapters, no near-dupes
+    per_chapter: Dict[Any, int] = {_chapter_key(climax_p): 1}   # climax counts
+    seen_meta = [(climax_i, _norm_text(climax_p), _scene_base(climax_p))]
+    setup: List[tuple] = []
+    limit = max(0, max_panels - 1)
+    candidates = sorted(
+        (t for t in scored if t[0] != climax_i),
+        key=lambda t: (-t[2]["score"], t[0]),
+    )
+    for idx, p, _sc in candidates:
+        if len(setup) >= limit:
+            break
+        ck = _chapter_key(p)
+        if per_chapter.get(ck, 0) >= per_cap:
+            continue
+        ntext, nbase = _norm_text(p), _scene_base(p)
+        if any(abs(idx - j) <= 1 and (ntext == jt or (nbase and nbase == jb))
+               for (j, jt, jb) in seen_meta):
+            continue
+        setup.append((idx, p))
+        seen_meta.append((idx, ntext, nbase))
+        per_chapter[ck] = per_chapter.get(ck, 0) + 1
+
+    # order: setup chronological, climax LAST
+    setup.sort(key=lambda ip: (_chapter_key(ip[1]), ip[0]))
+    ordered = [p for _, p in setup] + [climax_p]
+    out: List[Dict[str, Any]] = []
+    for p in ordered:
+        q = dict(p)
+        q["is_climax"] = p is climax_p
+        out.append(q)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Task 6: Stage-2 select + write narration (one injected model call)
 # --------------------------------------------------------------------------- #
 def _sanitize_chapter_number(ch_num: Any) -> str:
