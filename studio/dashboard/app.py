@@ -115,6 +115,38 @@ def _gallery(ep_dir: Optional[str]) -> List[Dict[str, Any]]:
             for bt in beats]
 
 
+def _teaser_card(bid: int) -> Optional[Dict[str, Any]]:
+    """Review-card data for a PLANNED teaser: the model's reason/spoiler note +
+    per-panel narration + thumbnails. The teaser keeps each scene as a symlink
+    into the source chapter under ongoing/, so we resolve the link back and serve
+    it via the existing /media mount. Returns None when no teaser was planned."""
+    tdir = REPO / "dist" / f"bundle_{bid}" / "teaser"
+    mf = tdir / "manifest.teaser.json"
+    if not mf.exists():
+        return None
+    try:
+        t = json.loads(mf.read_text())
+    except Exception:
+        return None
+    ongoing = (REPO / "ongoing").resolve()
+    lines = {p.get("scene_file"): (p.get("line") or "")
+             for p in (t.get("panel_narration") or [])}
+    panels = []
+    for sf in (t.get("scene_files") or []):
+        img = None
+        try:
+            rel = (tdir / "scenes" / sf).resolve().relative_to(ongoing)
+            img = f"/media/{rel}"
+        except Exception:
+            img = None
+        panels.append({"file": sf, "line": lines.get(sf, ""), "img": img})
+    return {"reason": t.get("reason") or "",
+            "rewind_line": t.get("rewind_line") or "",
+            "spoiler_boundary": t.get("spoiler_boundary") or "",
+            "source_chapters": t.get("source_chapters") or [],
+            "panels": panels}
+
+
 def _stage_timeline(con: sqlite3.Connection, ch: Dict[str, Any]) -> List[Dict[str, Any]]:
     done_idx = _status_idx(ch["status"])
     runs: Dict[str, float] = {}
@@ -409,9 +441,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         c = con()
         rows = []
         for r in c.execute("SELECT id, series_id, title, kind, season_no, "
-                           "state, output_path FROM bundle ORDER BY id"):
+                           "state, output_path, teaser_state FROM bundle "
+                           "ORDER BY id"):
             b = dict(zip(("id", "series_id", "title", "kind", "season_no",
-                          "state", "output_path"), r))
+                          "state", "output_path", "teaser_state"), r))
 
             def probe(cid: int) -> bool:
                 row = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
@@ -438,7 +471,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             b.update(ready=ready, total=total,
                      runtime=eta.fmt_eta(bundles.projected_runtime_sec(
                          c, b["id"], plan_dur)),
-                     approved=gates.concat_allowed(c, b["id"])[0])
+                     approved=gates.concat_allowed(c, b["id"])[0],
+                     teaser_card=_teaser_card(b["id"]))
             rows.append(b)
         series = [dict(zip(("id", "title"), r)) for r in
                   c.execute("SELECT id, title FROM series ORDER BY id")]
@@ -630,6 +664,31 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     title: str = Form("")):
         bundles.create_bundle(con(), series_id, kind, season_no=season_no,
                               title=title)
+        return RedirectResponse("/videos", status_code=303)
+
+    @app.post("/bundles/{bid}/teaser/plan")
+    def post_teaser_plan(bid: int):
+        # select a high-stakes hook window across the bundle + render the cold
+        # open; the worker handler does the model select + full render.
+        jobs.enqueue(con(), "plan_teaser", bundle_id=bid)
+        return RedirectResponse("/videos", status_code=303)
+
+    @app.post("/bundles/{bid}/teaser/approve")
+    def post_teaser_approve(bid: int):
+        # confirm-upstream-before-render: record the gate AND flip the state so
+        # the concat gate (which reads teaser_state) lets the bundle proceed.
+        c = con()
+        gates.approve(c, "teaser", bundle_id=bid)
+        c.execute("UPDATE bundle SET teaser_state='approved' WHERE id=?", (bid,))
+        c.commit()
+        return RedirectResponse("/videos", status_code=303)
+
+    @app.post("/bundles/{bid}/teaser/decline")
+    def post_teaser_decline(bid: int):
+        # operator rejected the hook — unblock the concat without prepending it.
+        c = con()
+        c.execute("UPDATE bundle SET teaser_state='declined' WHERE id=?", (bid,))
+        c.commit()
         return RedirectResponse("/videos", status_code=303)
 
     @app.post("/discovery/{anilist_id}/track")
