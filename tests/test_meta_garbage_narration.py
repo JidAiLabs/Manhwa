@@ -11,7 +11,7 @@ full generation; on the last attempt fall back to a clean line (what_happens if
 clean, else a neutral bridge). NEVER voice the meta-garbage.
 
 Stubs the model (no Gemma/network), in the importlib style of
-test_register_narration.py / test_cast_tokens.py.
+test_cast_tokens.py.
 """
 from __future__ import annotations
 

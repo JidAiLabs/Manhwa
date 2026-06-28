@@ -25,42 +25,11 @@ def _cast():
     }]}
 
 
-def _analyze(lines, *, story=None, vision=None, opening=False):
+def _analyze(lines, *, story=None, vision=None):
     return rs.analyze_recap_style(
         _script(lines), _beats(lines),
         story or {}, _cast(), vision or {},
-        opening_chapter=opening,
     )
-
-
-def test_opening_chapter_path_detection():
-    assert rs.is_opening_chapter_path("/x/Chapter_1")
-    assert rs.is_opening_chapter_path("/x/Episode_1")
-    assert rs.is_opening_chapter_path("/x/Ep. 0 - Prologue")
-    assert not rs.is_opening_chapter_path("/x/Chapter_16")
-
-
-def test_hook_present_accepts_short_premise_and_rejects_scenery():
-    story = {
-        "logline": "An assassinated prince receives a futuristic nano machine.",
-        "premise": "The prince survives an ambush through future technology.",
-    }
-    good = _analyze(
-        ["An assassinated prince receives future tech and rewrites his fate."],
-        story=story, opening=True)
-    assert good["metrics"]["hook_present"] is True
-    assert not any(i["code"] == "hook_present" for i in good["issues"])
-
-    bad = _analyze(
-        ["Under the pale moon, silence hangs over the misty mountains."],
-        story=story, opening=True)
-    assert bad["metrics"]["hook_present"] is False
-    assert any(i["code"] == "hook_present" for i in bad["issues"])
-
-    missing_turn = _analyze(
-        ["An assassinated prince is cornered by enemies over his bloodline."],
-        story=story, opening=True)
-    assert missing_turn["metrics"]["hook_present"] is False
 
 
 def test_name_ration_flags_repeated_full_protagonist_name():
@@ -94,7 +63,7 @@ def test_sauce_density_uses_only_connective_eligible_panels():
         for i in range(1, 11)
     ]
     report = rs.analyze_recap_style(
-        _script(lines), beats, {}, _cast(), {}, opening_chapter=False)
+        _script(lines), beats, {}, _cast(), {})
     assert report["metrics"]["sauce_eligible_lines"] == 1
     assert report["metrics"]["sauce_density"] == 1.0
 
@@ -209,14 +178,3 @@ def test_identity_reveal_safeguard_rewrites_without_chapter_specific_rules():
     panels = beats["beats"][0]["panel_narration"]
     assert panels[1]["line"] == "The stranger stands there in unfamiliar clothes."
     assert "Prince Cheon" not in beats["beats"][0]["narration"]
-
-
-def test_opening_hook_is_applied_after_generation_and_punchup():
-    beats = _beats(["Under the pale moon, the mountains wait.", "He runs."])
-    beats["beats"][0]["panel_narration"][0]["line_plain"] = "Old opening."
-    story = {"hook": "A hunted prince inherits a nano machine from the future."}
-    assert rs.apply_opening_hook(beats, story)
-    first = beats["beats"][0]["panel_narration"][0]
-    assert first["line"] == story["hook"]
-    assert first["line_plain"] == story["hook"]
-    assert beats["beats"][0]["narration"].startswith(story["hook"])

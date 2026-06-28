@@ -77,8 +77,7 @@ def test_group_panels_full_pipeline_with_stub_covers_everything():
 
     def stub(payload):
         captured["payload"] = payload
-        return {"chapter": {"hook": "A lonely reader finishes a novel and inherits its apocalypse.",
-                            "logline": "A lonely reader's novel becomes real.",
+        return {"chapter": {"logline": "A lonely reader's novel becomes real.",
                             "premise": "He alone knows how the world ends."},
                 "beats": [{"scene_files": ["p0", "p1"], "segment": "present"},
                           {"scene_files": ["p2", "p3", "p4"], "segment": "flashback"}]}
@@ -94,71 +93,22 @@ def test_group_panels_full_pipeline_with_stub_covers_everything():
 def test_group_schema_requires_nonoptional_story_spine_fields():
     assert set(sg.GROUP_SCHEMA["required"]) == {"chapter", "beats"}
     chapter = sg.GROUP_SCHEMA["properties"]["chapter"]
-    assert set(chapter["required"]) == {"hook", "logline", "premise"}
+    assert set(chapter["required"]) == {"logline", "premise"}
     assert chapter["properties"]["logline"]["minLength"] >= 1
     assert chapter["properties"]["premise"]["minLength"] >= 1
 
 
 def test_chapter_spine_complete_rejects_blank_fields():
     assert sg._chapter_spine_complete(
-        {"hook": "A hunted prince inherits forbidden technology from the future.",
-         "logline": "A prince is hunted.", "premise": "His bloodline is fatal."})
+        {"logline": "A prince is hunted.", "premise": "His bloodline is fatal."})
     assert not sg._chapter_spine_complete({"logline": "", "premise": "x"})
     assert not sg._chapter_spine_complete({})
-    assert not sg._chapter_spine_complete(
-        {"hook": "Too short.", "logline": "A prince is hunted.",
-         "premise": "His bloodline is fatal."})
 
 
 def test_grouping_context_cannot_starve_structured_output():
     assert sg._normalized_group_num_ctx(None) == 16384
     assert sg._normalized_group_num_ctx(8192) == 12288
     assert sg._normalized_group_num_ctx(16384) == 16384
-
-
-def test_story_spine_rejects_unsupported_bloodline_power_fusion():
-    payload = {"panels": [
-        {"description": "Assassins hunt him because of his royal bloodline."},
-        {"description": "A nano machine activates inside the wounded prince."},
-    ]}
-    chapter = {
-        "hook": "A hunted prince discovers futuristic power hidden inside his bloodline.",
-        "logline": "A hunted prince survives.",
-        "premise": "An ambush ends with a nano machine activation.",
-    }
-    assert "fuses lineage" in sg._chapter_spine_issue(chapter, payload)
-    linked = {"panels": [{
-        "description": "His inherited bloodline magic awakens a forbidden power.",
-    }]}
-    assert sg._chapter_spine_issue(chapter, linked) == ""
-
-
-def test_story_spine_hook_must_carry_genre_defining_turn():
-    payload = {"panels": [
-        {"description": "A prince is cornered by assassins."},
-        {"description": "A nano machine activates inside him."},
-    ]}
-    chapter = {
-        "hook": "A hunted prince is cornered by assassins because of his bloodline.",
-        "logline": "A hunted prince awakens a nano machine.",
-        "premise": "Future technology changes his fate.",
-    }
-    assert "omits the genre-defining" in sg._chapter_spine_issue(chapter, payload)
-
-
-def test_weak_hook_promotes_valid_technology_logline_without_extra_call():
-    payload = {"panels": [
-        {"description": "A prince is cornered by assassins."},
-        {"description": "A nano machine activates inside him."},
-    ]}
-    chapter = {
-        "hook": "A hunted prince is cornered by assassins because of his bloodline.",
-        "logline": "A hunted prince survives an ambush and awakens a futuristic nano machine.",
-        "premise": "Future technology changes his fate.",
-    }
-    assert sg._repair_hook_from_spine(chapter, payload)
-    assert chapter["hook"] == chapter["logline"]
-    assert sg._chapter_spine_issue(chapter, payload) == ""
 
 
 def test_nonstory_files_drops_chrome_empty_and_parse_failures():

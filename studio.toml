@@ -34,11 +34,6 @@ vision_backend = "apple"
 # regenerates them, and the strictly-better safeguard reverts any non-improvement. false = current
 # pipeline unchanged. Env STUDIO_SEMANTIC_HEAL=1 toggles per-run (used for the A/B comparison).
 semantic_heal = false
-# Legacy grouped-narration splitter. Keep OFF: panel_narration already provides
-# one purpose-written, content-aligned line per panel. Turning this on discards
-# that alignment and positionally re-splits the joined group text.
-narration_microbeats = false
-narration_microbeat_max_words = 28
 
 [tts]
 # voiced backend: "qwen-mlx" (Apple MLX, 8-bit Base clone — PRODUCTION 2026-06-22:

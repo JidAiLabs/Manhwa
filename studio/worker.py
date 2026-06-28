@@ -339,9 +339,6 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
              "--vision", vision, "--out", str(ep / "manifest.script.json"),
              "--model", cfg.script_model, "--narration-source",
              "gemini_verbatim", "--cast", cast]
-    if getattr(cfg, "narration_microbeats", False):
-        sargs += ["--microbeats", "--microbeat-max-words",
-                  str(getattr(cfg, "narration_microbeat_max_words", 28))]
     if _stream(sargs, log, env=env) != 0:
         raise RuntimeError("script_expander (heal) failed")
 

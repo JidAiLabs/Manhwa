@@ -44,21 +44,6 @@ class Config:
                                              # OFF = current pipeline byte-for-byte
                                              # unchanged. Env STUDIO_SEMANTIC_HEAL
                                              # wins (per-run toggle).
-    narration_register: bool = False        # opt-in register-aware narration:
-                                             # the beated stage passes
-                                             # --register-mode so a calibrated
-                                             # classifier picks FAST (terse,
-                                             # plot-forward) vs DEEP (cinematic
-                                             # inner monologue) PER beat and the
-                                             # narration line adapts. OFF =
-                                             # current uniform-cinematic narration
-                                             # byte-for-byte unchanged.
-    narration_microbeats: bool = False      # opt-in script materialization:
-                                             # split long grouped narration into
-                                             # shorter panel-aligned beats after
-                                             # the grounded/persona pass, with no
-                                             # extra model call.
-    narration_microbeat_max_words: int = 28
     narration_sanitize: bool = True         # advertiser-safety pass over the
                                              # FINAL narration before TTS: the
                                              # scripted stage runs
@@ -148,15 +133,6 @@ def load(path: Path | None = None) -> Config:
         semantic_heal=(os.environ.get("STUDIO_SEMANTIC_HEAL", "").lower()
                        in ("1", "true", "yes")
                        or bool(m.get("semantic_heal", False))),
-        narration_register=(os.environ.get("STUDIO_NARRATION_REGISTER", "").lower()
-                            in ("1", "true", "yes")
-                            or bool(m.get("narration_register", False))),
-        narration_microbeats=_env_bool("STUDIO_NARRATION_MICROBEATS",
-                                       bool(m.get("narration_microbeats", False))),
-        narration_microbeat_max_words=int(
-            os.environ.get("STUDIO_NARRATION_MICROBEAT_MAX_WORDS")
-            or m.get("narration_microbeat_max_words", 28)
-        ),
         narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
                                      bool(m.get("narration_sanitize", True))),
     )

@@ -35,9 +35,7 @@ if _TOOLS_DIR not in sys.path:
 
 from narration_consistency import strip_chrome_opener  # noqa: E402
 from recap_style import (  # noqa: E402
-    OPENING_HOOK_RULE,
     RECAP_STYLE_RULES,
-    apply_opening_hook,
     is_spoken_fragment,
     repair_spoken_fragments,
 )
@@ -244,7 +242,6 @@ def genre_key(genre_text: str) -> str:
 def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
                  humor: str, genre: str = "",
                  classes: Optional[Dict[Any, str]] = None,
-                 opening_hook: bool = False,
                  story_context: str = "") -> str:
     """Build the LLM prompt for either per-beat or per-panel lines.
 
@@ -257,8 +254,6 @@ def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
     addon = GENRE_ADDONS.get(genre_key(genre), "")
     guide = BASE_PERSONA + ("\n\n" + addon if addon else "")
     guide += "\n\n" + RECAP_STYLE_RULES
-    if opening_hook:
-        guide += "\n\n" + OPENING_HOOK_RULE
     if story_context:
         guide += ("\n\nWHOLE-CHAPTER STORY SPINE (context only; invent nothing):\n"
                   + story_context)
@@ -660,9 +655,7 @@ def main() -> int:
     ap.add_argument("--script", default="",
                     help="manifest.script.json for genre auto-detection")
     ap.add_argument("--story", default="",
-                    help="manifest.story.json for whole-chapter hook context")
-    ap.add_argument("--opening-hook", action="store_true",
-                    help="preserve/strengthen the first-chapter premise hook")
+                    help="manifest.story.json for whole-chapter spine context")
     ap.add_argument("--batch-size", type=int,
                     default=int(os.environ.get("STUDIO_PUNCHUP_BATCH_SIZE", "0")),
                     help="per-panel lines per rewrite call; 0=auto by context")
@@ -725,7 +718,6 @@ def main() -> int:
         return build_prompt(
             batch, cast_names, args.humor, genre=args.genre,
             classes=classes,
-            opening_hook=bool(args.opening_hook and index == 0),
             story_context=story_context)
 
     if args.backend == "ollama":
@@ -783,13 +775,6 @@ def main() -> int:
                     classes=classes)
         applied = out["stats"]["punchup_applied"]
 
-    if args.opening_hook and args.story and os.path.exists(args.story):
-        try:
-            story_obj = json.load(open(args.story))
-        except Exception:
-            story_obj = {}
-        out.setdefault("stats", {})["opening_hook_applied"] = apply_opening_hook(
-            out, story_obj)
     out.setdefault("stats", {})["spoken_fragments_repaired"] = (
         repair_spoken_fragments(out))
 

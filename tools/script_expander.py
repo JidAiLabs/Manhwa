@@ -853,8 +853,6 @@ def _build_verbatim_section(
     genre_mode: str,
     proper_case: Optional[Dict[str, str]] = None,
     wpm: int = 135,
-    microbeats: bool = False,
-    microbeat_max_words: int = 28,
     tts_merge_short: bool = True,
 ) -> Dict[str, Any]:
     """Materialize one script section directly from beats[].narration — the
@@ -899,7 +897,7 @@ def _build_verbatim_section(
             payload_beat = pbeats[idx] if idx < len(pbeats) and isinstance(pbeats[idx], dict) else {}
         # Error beats must be silenced even if panel_narration was padded in.
         panel_lines = [] if b.get("error") else (b.get("panel_narration") or [])
-        if panel_lines and not microbeats:
+        if panel_lines:
             # Per-panel path (Chunk 5): each panel's line → its own paragraph +
             # shot, aligned by construction (no positional guessing).
             items = [
@@ -917,25 +915,11 @@ def _build_verbatim_section(
                 # per-panel because each shot carries all its scene_files.
                 items = merge_short_panel_items(items)
         else:
-            # Legacy / microbeat A-B path: single paragraph or word-count split.
+            # No panel_narration (error beats / legacy manifests without per-panel
+            # lines): one paragraph for the whole beat. The shot builder assigns
+            # the scene file from the beat's allowed list.
             text, _ = normalize_caps_for_tts(base, proper_case)
-            panel_files = _selected_scene_files_for_microbeats(b, payload_beat)
-            # Never split a group into more script beats than it has distinct shown
-            # panels: each microbeat becomes its own timeline segment, so a 1-panel
-            # group split into N would re-cut to the SAME frame N times (a visible
-            # hitch on a static image). Cap the split at the panel budget so a
-            # panel-sparse group HOLDS its one image as a single continuous shot.
-            max_parts = max(1, len(panel_files))
-            parts = (
-                _split_recap_microbeats(text, max_words=microbeat_max_words, max_parts=max_parts)
-                if microbeats else [text]
-            )
-            if not parts:
-                parts = ["The scene continues."]
-            items = [
-                (part, _scene_for_microbeat(panel_files, i, len(parts)))
-                for i, part in enumerate(parts)
-            ]
+            items = [(text, [])]
 
         for line, sfiles in items:
             t2, had = normalize_caps_for_tts(line, proper_case)
@@ -959,8 +943,8 @@ def _build_verbatim_section(
 
     # shots is now always built in the loop via _build_microbeat_shot; fall back
     # to payload-derived shots only for old manifests where NO beat in the chunk
-    # has panel_narration AND microbeats is off (i.e. the old one-shot-per-beat
-    # default path that predates Chunk 5).
+    # has panel_narration (the old one-shot-per-beat default path that predates
+    # Chunk 5).
     if shots:
         shots = _normalize_shots(shots)
     else:
@@ -1388,173 +1372,6 @@ def _dedupe_scene_files(items: List[str]) -> List[str]:
     return out
 
 
-def _selected_scene_files_for_microbeats(
-    source_beat: Dict[str, Any],
-    payload_beat: Dict[str, Any],
-) -> List[str]:
-    allowed = payload_beat.get("allowed_scene_files") or payload_beat.get("scene_files") or []
-    if not isinstance(allowed, list):
-        allowed = []
-    allowed_files = _dedupe_scene_files([str(x) for x in allowed if x])
-    allowed_set = set(allowed_files)
-
-    selected: List[str] = []
-    for e in source_beat.get("scene_selection") or []:
-        if not isinstance(e, dict):
-            continue
-        role = str(e.get("role") or "keep").strip().lower()
-        if role in {"drop", "redundant", "skip"}:
-            continue
-        sf = str(e.get("scene_file") or "").strip()
-        if sf and (not allowed_set or sf in allowed_set):
-            selected.append(sf)
-
-    if not selected:
-        raw = source_beat.get("scene_files") or []
-        if not isinstance(raw, list):
-            raw = []
-        selected = [str(x) for x in raw if x]
-
-    if allowed_set:
-        selected = [x for x in selected if x in allowed_set]
-
-    return _dedupe_scene_files(selected or allowed_files)
-
-
-def _split_recap_microbeats(
-    text: str, *, max_words: int, max_parts: Optional[int] = None
-) -> List[str]:
-    """Split a grouped recap line into short spoken beats without rewriting it.
-
-    This keeps the Gemini/punchup wording intact while letting TTS/timeline align
-    the narration to individual panels. No model call, no new story facts.
-
-    ``max_parts`` caps the number of beats produced: each beat becomes its own
-    timeline segment, so a group must never be split into more beats than it has
-    distinct shown panels (otherwise the video re-cuts to the same frame). When
-    the natural split exceeds the cap, adjacent parts are merged back down so the
-    full narration is preserved across exactly ``max_parts`` beats.
-    """
-    max_words = max(8, int(max_words or 18))
-    cap = None if max_parts is None else max(1, int(max_parts))
-    src = re.sub(r"\s+", " ", str(text or "")).strip()
-    if not src:
-        return []
-    if cap == 1:
-        # single-panel group: hold the whole narration as one beat, no re-cuts.
-        return [src]
-
-    sentences = re.split(r"(?<=[.!?…])\s+(?=[\"'A-Z0-9])", src)
-    if not sentences:
-        sentences = [src]
-
-    slack = max(4, max_words // 3)
-
-    def finish(part: str) -> str:
-        s = re.sub(r"\s+", " ", str(part or "")).strip()
-        if s and s[0].islower():
-            s = s[0].upper() + s[1:]
-        if s.endswith((",", ";", ":")):
-            s = s[:-1].rstrip() + "."
-        return s
-
-    def merge_short(parts: List[str]) -> List[str]:
-        min_words = max(7, max_words // 2)
-        merged: List[str] = []
-        for part in [p for p in parts if p]:
-            if not merged:
-                merged.append(part)
-                continue
-            prev = merged[-1]
-            combo = f"{prev} {part}".strip()
-            if (_words(prev) < min_words or _words(part) < min_words) and _words(combo) <= max_words + slack:
-                merged[-1] = combo
-            else:
-                merged.append(part)
-        if len(merged) >= 2 and _words(merged[-1]) < min_words:
-            combo = f"{merged[-2]} {merged[-1]}".strip()
-            if _words(combo) <= max_words + slack:
-                merged[-2] = combo
-                merged.pop()
-        return merged
-
-    chunks: List[str] = []
-    for sentence in [s.strip() for s in sentences if s.strip()]:
-        if _words(sentence) <= max_words:
-            chunks.append(sentence)
-            continue
-
-        # Prefer natural clause seams before falling back to word chunks.
-        clauses = re.split(r"(?<=[,;:])\s+", sentence)
-        buf: List[str] = []
-        for clause in [c.strip() for c in clauses if c.strip()]:
-            trial = " ".join(buf + [clause]).strip()
-            if buf and _words(trial) > max_words:
-                chunks.append(" ".join(buf).strip())
-                buf = [clause]
-            else:
-                buf.append(clause)
-        if buf:
-            chunks.append(" ".join(buf).strip())
-
-    chunks = merge_short(chunks)
-
-    final: List[str] = []
-    for chunk in chunks:
-        words = chunk.split()
-        if _words(chunk) <= max_words + slack:
-            final.append(finish(chunk))
-            continue
-        for i in range(0, len(words), max_words):
-            part = " ".join(words[i : i + max_words]).strip()
-            if part:
-                final.append(finish(part))
-
-    final = [c for c in final if c]
-
-    # Cap the beat count at the panel budget: merge adjacent beats (preserving
-    # word order and the full narration) until at most ``cap`` remain, so the
-    # split never produces more shots than the group has distinct panels.
-    if cap is not None and len(final) > cap:
-        final = _merge_parts_to_cap(final, cap)
-
-    return final
-
-
-def _merge_parts_to_cap(parts: List[str], cap: int) -> List[str]:
-    """Merge a list of split beats down to at most ``cap`` beats, preserving
-    word order and content. Distributes the parts as evenly as possible across
-    ``cap`` buckets (front-loading any remainder) and joins each bucket back into
-    one beat. No words are dropped — the full narration is retained."""
-    parts = [p for p in parts if p]
-    cap = max(1, int(cap))
-    if len(parts) <= cap:
-        return parts
-
-    n = len(parts)
-    base, extra = divmod(n, cap)
-    out: List[str] = []
-    i = 0
-    for b in range(cap):
-        take = base + (1 if b < extra else 0)
-        bucket = parts[i : i + take]
-        i += take
-        merged = re.sub(r"\s+", " ", " ".join(bucket)).strip()
-        if merged:
-            out.append(merged)
-    return out
-
-
-def _scene_for_microbeat(files: List[str], index: int, total: int) -> List[str]:
-    files = _dedupe_scene_files(files)
-    if not files:
-        return []
-    if total <= 1:
-        return files[:1]
-    pos = min(len(files) - 1, int((index * len(files)) / max(1, total)))
-    return files[pos : pos + 1]
-
-
 def _build_microbeat_shot(
     payload_beat: Dict[str, Any],
     paragraph: str,
@@ -1934,17 +1751,6 @@ def main() -> int:
         help="Optional manifest.cast.json; gemini_verbatim uses its names to keep "
         "proper nouns cased when normalizing shout-caps OCR dialogue.",
     )
-    ap.add_argument(
-        "--microbeats",
-        action="store_true",
-        help="For gemini_verbatim, split long grouped narration into short panel-aligned beats.",
-    )
-    ap.add_argument(
-        "--microbeat-max-words",
-        type=int,
-        default=28,
-        help="Target maximum words per deterministic microbeat when --microbeats is set.",
-    )
     ap.add_argument("--max-output-tokens", type=int, default=2600)
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--resume", action="store_true")
@@ -2210,8 +2016,6 @@ def main() -> int:
                 genre_mode=genre_mode,
                 proper_case=proper_case,
                 wpm=int(args.wpm),
-                microbeats=bool(args.microbeats),
-                microbeat_max_words=int(args.microbeat_max_words),
             )
 
         for _attempt in range(0 if obj is not None else args.retries + 1):
@@ -2397,8 +2201,6 @@ def main() -> int:
         "source_vision_manifest": os.path.abspath(args.vision) if args.vision else "",
         "model": args.model,
         "narration_source": args.narration_source,
-        "microbeats": bool(args.microbeats),
-        "microbeat_max_words": int(args.microbeat_max_words),
         "minutes_range": {"min": args.min_minutes, "max": args.max_minutes},
         "duration_mode": args.duration_mode,
         "words_per_beat": int(args.words_per_beat),

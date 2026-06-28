@@ -183,21 +183,15 @@ def test_prompt_contains_persona_and_rules():
         assert needle in p
 
 
-def test_prompt_includes_recap_rules_and_optional_opening_hook():
+def test_prompt_includes_recap_rules_and_story_spine():
     base = npu.build_prompt(
         [{"group_id": 1, "panel_index": 0, "narration": ORIG}],
         ["Prince Cheon"], "cinematic", genre="murim")
     assert "NO SCREEN READING" in base
     assert "REVEAL PACING" in base
-    assert "OPENING-CHAPTER HOOK" not in base
-    opening = npu.build_prompt(
-        [{"group_id": 1, "panel_index": 0, "narration": ORIG}],
-        ["Prince Cheon"], "cinematic", genre="murim",
-        opening_hook=True)
-    assert "OPENING-CHAPTER HOOK" in opening
     with_story = npu.build_prompt(
         [{"group_id": 1, "narration": ORIG}], ["Prince Cheon"], "full",
-        opening_hook=True, story_context="A prince receives a nano machine.")
+        story_context="A prince receives a nano machine.")
     assert "WHOLE-CHAPTER STORY SPINE" in with_story
     assert "A prince receives a nano machine." in with_story
 
@@ -268,11 +262,6 @@ def test_story_context_reads_logline_and_premise(tmp_path):
     context = npu._story_context(str(path))
     assert "A hunted prince survives." in context
     assert "Future technology changes his fate." in context
-
-
-def test_production_config_keeps_legacy_microbeats_off():
-    from studio.config import load, REPO_ROOT
-    assert load(REPO_ROOT / "studio.toml").narration_microbeats is False
 
 
 def test_genre_addons_change_the_comedy_axis():

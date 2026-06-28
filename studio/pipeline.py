@@ -20,7 +20,6 @@ from typing import Callable
 from studio.catalog import repo
 from studio.catalog.models import STATUS_ORDER, fail_status, next_status, Chapter
 from studio.config import Config
-from tools.recap_style import is_opening_chapter_path
 
 
 # ---------------------------------------------------------------------------
@@ -265,14 +264,6 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         if cfg.beats_backend == "ollama":
             beats_args += ["--backend", "ollama",
                            "--ollama-model", cfg.beats_model]
-        if cfg.narration_register:
-            # opt-in register-aware narration: per beat, FAST (terse) vs DEEP
-            # (cinematic) is chosen by a calibrated classifier and the narration
-            # line adapts. scene_selection + grounding are untouched. OFF by
-            # default -> the uniform-cinematic narration is byte-for-byte unchanged.
-            beats_args += ["--register-mode"]
-        if is_opening_chapter_path(str(ep_dir)):
-            beats_args += ["--opening-hook"]
         _run_tool("gemini_narrative_pass.py",
                   beats_args + [
                    # Send enough panels per group that the scene_selection
@@ -289,8 +280,6 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                       "--story", str(ep_dir / "manifest.story.json"),
                       "--episode-dir", str(ep_dir),
                       "--humor", cfg.punchup]
-        if is_opening_chapter_path(str(ep_dir)):
-            punch_args += ["--opening-hook"]
         if cfg.beats_backend == "ollama":
             punch_args += ["--backend", "ollama",
                            "--ollama-model", cfg.beats_model]
@@ -310,9 +299,6 @@ def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
         # (A/B winner) — zero LLM calls, so no OpenAI credential gate. --cast
         # keeps proper nouns cased when shout-caps OCR dialogue is normalized.
         args += ["--cast", str(p["cast"])]
-        if cfg.narration_microbeats:
-            args += ["--microbeats", "--microbeat-max-words",
-                     str(cfg.narration_microbeat_max_words)]
     else:
         _check_openai()
     _run_tool("script_expander.py", args)

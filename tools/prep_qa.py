@@ -53,7 +53,7 @@ from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 from narration_consistency import audio_consistency, strip_chrome_opener
 from manifest_freshness import verify_chapter as _verify_chapter_freshness
-from recap_style import analyze_recap_style, is_opening_chapter_path
+from recap_style import analyze_recap_style
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
@@ -1575,8 +1575,7 @@ def main() -> int:
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
 
     recap_style = analyze_recap_style(
-        script_obj, beats_obj, story_obj, cast_obj, vitems,
-        opening_chapter=is_opening_chapter_path(ep))
+        script_obj, beats_obj, story_obj, cast_obj, vitems)
     for issue in recap_style["issues"]:
         flags.append(_flag(
             str(issue.get("code") or "recap_style"),

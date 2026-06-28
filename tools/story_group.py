@@ -37,10 +37,9 @@ GROUP_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
         "chapter": {"type": "OBJECT", "properties": {
-            "hook": {"type": "STRING", "minLength": 12},
             "logline": {"type": "STRING", "minLength": 12},
             "premise": {"type": "STRING", "minLength": 12},
-        }, "required": ["hook", "logline", "premise"]},
+        }, "required": ["logline", "premise"]},
         "beats": {"type": "ARRAY", "items": {
             "type": "OBJECT",
             "properties": {
@@ -78,8 +77,7 @@ SYSTEM = (
     "in order. Do not target a fixed number of spans or a fixed panel count. The "
     "downstream script/timeline renders panel-level cues; these spans are only "
     "story context and must follow the source's natural rhythm.\n"
-    "ALSO return 'chapter': a HOOK (8-18 spoken words that immediately state the "
-    "protagonist/situation and genre-defining turn; no scenery or slow setup), a "
+    "ALSO return 'chapter': a "
     "LOGLINE (one vivid sentence — what this chapter is about, its arc), and a "
     "PREMISE (1-2 sentences: the situation + the stakes), "
     "synthesized from the WHOLE sequence. This is the through-line the narrator "
@@ -89,8 +87,7 @@ SYSTEM = (
     "a power/technology, do not claim the power comes from that bloodline unless "
     "the panels explicitly say so. Prefer a simple accurate sequence over a clever "
     "but unsupported causal connection. "
-    "chapter.hook, chapter.logline and chapter.premise are REQUIRED and MUST "
-    "NEVER be blank."
+    "chapter.logline and chapter.premise are REQUIRED and MUST NEVER be blank."
 )
 
 
@@ -102,77 +99,15 @@ def _norm_segment(s: Any) -> str:
 def _chapter_spine_complete(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
-    hook_words = len(re.findall(r"[A-Za-z0-9']+",
-                                str(value.get("hook") or "")))
-    return bool(8 <= hook_words <= 22
-                and str(value.get("logline") or "").strip()
+    return bool(str(value.get("logline") or "").strip()
                 and str(value.get("premise") or "").strip())
-
-
-_LINEAGE_RE = re.compile(
-    r"\b(?:bloodline|lineage|descendan\w*|family blood|royal blood)\b", re.I)
-_POWER_OR_TECH_RE = re.compile(
-    r"\b(?:power|ability|system|technology|tech|nano|machine|skill|magic|"
-    r"awakening|awakened|gift)\w*\b", re.I)
 
 
 def _chapter_spine_issue(value: Any, payload: Dict[str, Any]) -> str:
     """Return why the spine is unsafe, or empty string when it is usable."""
     if not _chapter_spine_complete(value):
-        return "chapter hook/logline/premise is blank or hook is not 8-22 words"
-    hook = str(value.get("hook") or "")
-    spine_rest = (str(value.get("logline") or "") + " "
-                  + str(value.get("premise") or ""))
-    if _POWER_OR_TECH_RE.search(spine_rest) and not _POWER_OR_TECH_RE.search(hook):
-        return (
-            "hook omits the genre-defining power/system/magic/technology turn "
-            "that appears in the chapter logline or premise")
-    if _LINEAGE_RE.search(hook) and _POWER_OR_TECH_RE.search(hook):
-        source_lines = []
-        for panel in payload.get("panels") or []:
-            source_lines.append(" ".join(str(panel.get(k) or "")
-                                         for k in ("description", "action", "dialogue")))
-        if not any(_LINEAGE_RE.search(line) and _POWER_OR_TECH_RE.search(line)
-                   for line in source_lines):
-            return (
-                "hook fuses lineage/bloodline with a power or technology, but no "
-                "source panel explicitly links those concepts")
+        return "chapter logline/premise is blank"
     return ""
-
-
-def _repair_hook_from_spine(value: Any, payload: Dict[str, Any]) -> bool:
-    """Promote a valid logline/premise sentence when the model's hook is weak."""
-    if not isinstance(value, dict):
-        return False
-    current = str(value.get("hook") or "")
-    spine_rest = (str(value.get("logline") or "") + " "
-                  + str(value.get("premise") or ""))
-    needs_turn = bool(_POWER_OR_TECH_RE.search(spine_rest))
-
-    candidates = [str(value.get("logline") or "").strip()]
-    candidates.extend(
-        s.strip() for s in re.split(r"(?<=[.!?])\s+",
-                                    str(value.get("premise") or "").strip())
-        if s.strip())
-    for candidate in candidates:
-        words = len(re.findall(r"[A-Za-z0-9']+", candidate))
-        if not 8 <= words <= 22:
-            continue
-        if needs_turn and not _POWER_OR_TECH_RE.search(candidate):
-            continue
-        if _LINEAGE_RE.search(candidate) and _POWER_OR_TECH_RE.search(candidate):
-            source_lines = [
-                " ".join(str(panel.get(k) or "")
-                         for k in ("description", "action", "dialogue"))
-                for panel in payload.get("panels") or []]
-            if not any(_LINEAGE_RE.search(line)
-                       and _POWER_OR_TECH_RE.search(line)
-                       for line in source_lines):
-                continue
-        if candidate != current:
-            value["hook"] = candidate
-            return True
-    return False
 
 
 def _normalized_group_num_ctx(value: Any) -> int:
@@ -572,15 +507,13 @@ def main() -> int:
                 instruction += (
                     "\n\nREPAIR: the previous chapter story spine was invalid: "
                     + issue + ". Return the complete grouping again with a "
-                    "specific, source-grounded hook, logline, and premise. Do not "
+                    "specific, source-grounded logline and premise. Do not "
                     "use placeholders or fuse separate facts into a new cause.")
             parsed, _raw, _usage = _call_model_with_backoff(
                 client=client, model=model, system_instruction=instruction,
                 user_payload=payload, image_paths=[], response_schema=GROUP_SCHEMA,
                 max_output_tokens=3000, temperature=args.temperature,
                 backoff_max=60.0, backend=args.backend)
-            if isinstance(parsed, dict):
-                _repair_hook_from_spine(parsed.get("chapter"), payload)
             issue = _chapter_spine_issue(
                 (parsed or {}).get("chapter") if isinstance(parsed, dict) else None,
                 payload)
@@ -596,7 +529,6 @@ def main() -> int:
     shots, chapter = group_panels(story, call_fn, max_beat_len=mbl)
     logline = str((chapter or {}).get("logline") or "").strip()
     premise = str((chapter or {}).get("premise") or "").strip()
-    hook = str((chapter or {}).get("hook") or "").strip()
     spine_issue = _chapter_spine_issue(chapter, build_grouping_payload(story))
     if spine_issue:
         raise SystemExit(
@@ -625,7 +557,6 @@ def main() -> int:
         os.path.dirname(os.path.abspath(args.out)), "manifest.story.json")
     spine = {
         "source_groups": os.path.abspath(args.out),
-        "hook": hook,
         "logline": logline,
         "premise": premise,
         "arc": [{"group_id": s["shot_id"], "arc_label": s["arc_label"],

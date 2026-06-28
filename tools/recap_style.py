@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import math
-import os
 import re
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -42,31 +41,8 @@ unfamiliar arrival is treated as unknown by the story, call them "the stranger",
 the current or earlier story text has actually established that identity."""
 
 
-OPENING_HOOK_RULE = """OPENING-CHAPTER HOOK: this is the first chapter of the
-series. The FIRST panel_narration line is a one-breath premise hook, ideally
-10-16 words and never more than 22. It may use the whole-chapter logline/premise
-as the sole exception to current-panel-only grounding, but it may not invent or
-misstate the premise. Name the protagonist/situation and genre-defining turn
-immediately. No scenery, weather, philosophy, title, or slow setup. Every later
-panel line returns to normal local grounding."""
-
-
 _TAG_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
-_ATMOSPHERIC_OPEN_RE = re.compile(
-    r"^(?:under|beneath|amidst?|within|across|deep within|as)\b.{0,45}"
-    r"\b(?:moon|night|sky|mist|fog|wind|shadow|silence|mountain|forest)\b",
-    re.I,
-)
-_ACTION_RE = re.compile(
-    r"\b(?:attack|ambush|assassinat|awaken|betray|die|dies|died|escape|fight|"
-    r"hunt|kill|regress|reincarnat|return|revive|summon|transport|wake|wakes|"
-    r"unlock|activate|become|becomes|gain|gets|loses|discovers?)\w*\b",
-    re.I,
-)
-_POWER_OR_TECH_RE = re.compile(
-    r"\b(?:power|ability|system|technology|tech|nano|machine|skill|magic|"
-    r"awakening|awakened|gift)\w*\b", re.I)
 _POINTER_RE = re.compile(
     r"\b(?:like (?:a|an|he|she|they|it)|as if|basically|pretty much|"
     r"straight out of|the .*? version of|giving .*? vibes|think of|"
@@ -99,31 +75,10 @@ _IDENTITY_QUESTION_RE = re.compile(
     r"identify yourself|what are you|where did (?:he|she|they) come from)\b",
     re.I,
 )
-_STOPWORDS = frozenset({
-    "a", "an", "and", "as", "at", "be", "by", "for", "from", "he", "her",
-    "his", "in", "is", "it", "its", "of", "on", "or", "she", "that", "the",
-    "their", "them", "they", "this", "to", "was", "were", "with", "you",
-})
 _GENERIC_PROTAGONIST_NAMES = {
     "our protagonist", "the protagonist", "protagonist", "our guy", "our boy",
     "the hero", "our hero", "main character", "mc",
 }
-
-
-def is_opening_chapter_path(path: str) -> bool:
-    """Best-effort chapter-one detection from the pipeline episode directory."""
-    name = os.path.basename(str(path or "").rstrip("/")).lower()
-    if "prologue" in name:
-        return True
-    m = re.search(r"(?:chapter|episode|ep\.?)\D*(\d+(?:\.\d+)?)", name, re.I)
-    if not m:
-        m = re.search(r"(?:^|\D)(\d+(?:\.\d+)?)(?:\D|$)", name)
-    if not m:
-        return False
-    try:
-        return float(m.group(1)) <= 1.0
-    except (TypeError, ValueError):
-        return False
 
 
 def _words(text: str) -> List[str]:
@@ -231,13 +186,6 @@ def panel_rows(beats_obj: Mapping[str, Any]) -> List[Dict[str, str]]:
     return out
 
 
-def _story_terms(story_obj: Mapping[str, Any]) -> set[str]:
-    text = " ".join(str(story_obj.get(k) or "")
-                    for k in ("hook", "logline", "premise"))
-    return {w.lower() for w in _words(text)
-            if len(w) >= 4 and w.lower() not in _STOPWORDS}
-
-
 def _protagonist_names(cast_obj: Mapping[str, Any]) -> List[str]:
     names: List[str] = []
     for member in cast_obj.get("cast") or cast_obj.get("characters") or []:
@@ -267,37 +215,6 @@ def _count_names(lines: Sequence[str], names: Sequence[str]) -> int:
     joined = " ".join(lines)
     return sum(len(re.findall(rf"(?<!\w){re.escape(name)}(?!\w)", joined, re.I))
                for name in names)
-
-
-def apply_opening_hook(
-    beats_obj: Dict[str, Any],
-    story_obj: Mapping[str, Any],
-) -> bool:
-    """Set the first spoken panel/beat line to the verified chapter hook."""
-    hook = str(story_obj.get("hook") or "").strip()
-    if not 8 <= len(_words(hook)) <= 22:
-        return False
-    for beat in beats_obj.get("beats") or []:
-        panels = beat.get("panel_narration") or []
-        if panels:
-            panels[0]["line"] = hook
-            if "line_plain" in panels[0]:
-                panels[0]["line_plain"] = hook
-            beat["narration"] = " ".join(
-                str(p.get("line") or "").strip() for p in panels
-                if str(p.get("line") or "").strip())
-            if beat.get("narration_plain") is not None:
-                beat["narration_plain"] = " ".join(
-                    str(p.get("line_plain") or p.get("line") or "").strip()
-                    for p in panels
-                    if str(p.get("line_plain") or p.get("line") or "").strip())
-            return True
-        if str(beat.get("narration") or "").strip():
-            beat["narration"] = hook
-            if beat.get("narration_plain") is not None:
-                beat["narration_plain"] = hook
-            return True
-    return False
 
 
 def neutralize_identity_reveal_leaks(
@@ -371,39 +288,12 @@ def analyze_recap_style(
     story_obj: Mapping[str, Any],
     cast_obj: Mapping[str, Any],
     vision_by_file: Mapping[str, Mapping[str, Any]],
-    *,
-    opening_chapter: bool,
 ) -> Dict[str, Any]:
     """Return deterministic metrics plus WARN-worthy style/reveal issues."""
     lines = script_lines(script_obj)
     rows = panel_rows(beats_obj)
     panel_lines = [r["line"] for r in rows] or lines
     issues: List[Dict[str, str]] = []
-
-    first = lines[0] if lines else ""
-    hook_words = len(_words(first))
-    terms = _story_terms(story_obj)
-    overlap = len({w.lower() for w in _words(first)} & terms)
-    hook_ok = None
-    if opening_chapter:
-        story_text = " ".join(str(story_obj.get(k) or "")
-                              for k in ("hook", "logline", "premise"))
-        needs_turn = bool(_POWER_OR_TECH_RE.search(story_text))
-        has_turn = bool(_POWER_OR_TECH_RE.search(first))
-        hook_ok = bool(
-            first and hook_words <= 22
-            and not _ATMOSPHERIC_OPEN_RE.search(first)
-            and (has_turn if needs_turn else True)
-            and ((overlap >= 2) if terms else bool(_ACTION_RE.search(first)))
-        )
-        if not hook_ok:
-            issues.append({
-                "code": "hook_present",
-                "detail": (
-                    f"opening line is not a verified one-breath premise hook "
-                    f"(words={hook_words}, story-term overlap={overlap}); start "
-                    "with protagonist + situation + genre-defining turn"),
-            })
 
     names = _protagonist_names(cast_obj)
     name_uses = _count_names(lines, names)
@@ -501,10 +391,6 @@ def analyze_recap_style(
 
     return {
         "metrics": {
-            "opening_chapter": opening_chapter,
-            "hook_present": hook_ok,
-            "hook_words": hook_words,
-            "hook_story_term_overlap": overlap,
             "protagonist_names": names,
             "protagonist_name_uses": name_uses,
             "protagonist_name_allowance": name_allowance,

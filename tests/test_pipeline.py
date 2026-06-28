@@ -566,60 +566,6 @@ class TestScriptedNarrationSource:
         assert ch.status == "voiced_failed"
         assert "ELEVENLABS_API_KEY" in (ch.error or "")
 
-    def test_microbeats_flag_threads_to_script_expander(self, tmp_path, monkeypatch):
-        import studio.pipeline as pipeline_mod
-
-        ep_dir = tmp_path / "ep"
-        ep_dir.mkdir()
-
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-
-        stub = _capturing_stub(ep_dir)
-        monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
-
-        con = connect(tmp_path / "test.db")
-        chapter = _chapter_at(con, ep_dir, "beated",
-                              _GROUPED_MARKERS + ["manifest.beats.json", "manifest.cast.json"])
-        cfg = replace(_make_cfg(tmp_path),
-                      narration_microbeats=True,
-                      narration_microbeat_max_words=14)
-        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
-
-        se_args = next(a for n, a in stub.calls if n == "script_expander.py")
-        assert "--microbeats" in se_args
-        assert se_args[se_args.index("--microbeat-max-words") + 1] == "14"
-
-
-    def test_microbeats_false_by_default_not_passed_to_script_expander(
-            self, tmp_path, monkeypatch):
-        """narration_microbeats defaults to False — the per-panel path is taken
-        automatically when the flag is absent (script_expander branches on
-        panel_narration presence, not --microbeats).  Guard that the flag is
-        never injected when the config default is used."""
-        import studio.pipeline as pipeline_mod
-
-        ep_dir = tmp_path / "ep"
-        ep_dir.mkdir()
-
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
-
-        stub = _capturing_stub(ep_dir)
-        monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
-
-        con = connect(tmp_path / "test.db")
-        chapter = _chapter_at(con, ep_dir, "beated",
-                              _GROUPED_MARKERS + ["manifest.beats.json", "manifest.cast.json"])
-        cfg = _make_cfg(tmp_path)
-        assert cfg.narration_microbeats is False   # production default
-
-        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
-
-        se_args = next(a for n, a in stub.calls if n == "script_expander.py")
-        assert "--microbeats" not in se_args
-
-
 class TestConfigNarrationSource:
     def test_load_parses_models_narration_source(self, tmp_path):
         from studio.config import load
@@ -632,18 +578,6 @@ class TestConfigNarrationSource:
         toml = tmp_path / "studio.toml"
         toml.write_text("")
         assert load(toml).narration_source == "gemini_verbatim"
-
-    def test_load_parses_microbeats(self, tmp_path):
-        from studio.config import load
-        toml = tmp_path / "studio.toml"
-        toml.write_text(
-            '[models]\n'
-            'narration_microbeats = true\n'
-            'narration_microbeat_max_words = 14\n'
-        )
-        cfg = load(toml)
-        assert cfg.narration_microbeats is True
-        assert cfg.narration_microbeat_max_words == 14
 
 
 class TestMissingEpDir:
@@ -732,28 +666,3 @@ def test_beated_without_marker_regenerates(tmp_path, monkeypatch):
     assert "gemini_narrative_pass.py" in stub.calls       # normal regeneration
 
 
-def test_beated_register_mode_still_runs_punchup(tmp_path, monkeypatch):
-    import json
-    import studio.pipeline as pipeline_mod
-    ep = tmp_path / "ep"
-    ep.mkdir()
-    for m in ("manifest.cast.json", "manifest.groups.json",
-              "manifest.vision.json"):
-        (ep / m).write_text("{}")
-    (tmp_path / "keys").mkdir()
-    (tmp_path / "keys" / "gcp-vision.json").write_text(
-        json.dumps({"project_id": "t"}))
-    monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", tmp_path)
-    stub = _tool_stub([ep])
-    monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
-    cfg = Config(sites={}, yolo_weights=tmp_path / "f.pt",
-                 detect_backend="yolo", gallerydl_sleep=0.0,
-                 punchup="cinematic", beats_backend="ollama",
-                 narration_register=True)
-
-    pipeline_mod._stage_beated(ep, cfg)
-
-    gemini = [args for script, args in stub.call_args
-              if script == "gemini_narrative_pass.py"]
-    assert gemini and "--register-mode" in gemini[0]
-    assert "narration_punchup.py" in stub.calls

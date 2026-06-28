@@ -215,201 +215,6 @@ def test_verbatim_section_is_valid_with_one_shot_per_beat():
     assert sec["cliffhanger_line"]  # taken from the last beat's hook chain
 
 
-def test_verbatim_microbeats_split_one_group_across_selected_panels():
-    chunk = [{
-        "group_id": 16,
-        "beat_id": 1,
-        "beat_title": "Counter",
-        "narration": (
-            "The prince absorbs the insult without flinching. "
-            "Then he steps in and turns the attack back on them."
-        ),
-        "what_happens": "The prince counters.",
-        "hook": "They realize too late.",
-        "mood_words": ["serious"],
-        "scene_files": ["a.jpg", "b.jpg"],
-        "scene_selection": [
-            {"scene_file": "a.jpg", "role": "keep", "intensity": "calm"},
-            {"scene_file": "b.jpg", "role": "keep", "intensity": "tense"},
-        ],
-    }]
-    payload = {"section_index": 0, "word_target": 120, "beats": [{
-        "beat_id": 1,
-        "group_id": 16,
-        "allowed_scene_files": ["a.jpg", "b.jpg"],
-        "scene_files": ["a.jpg", "b.jpg"],
-        "ocr_snippets_by_scene_file": {},
-    }]}
-
-    sec = se._build_verbatim_section(
-        section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="unknown",
-        microbeats=True, microbeat_max_words=12)
-
-    assert sec["script_paragraphs"] == [
-        "The prince absorbs the insult without flinching.",
-        "Then he steps in and turns the attack back on them.",
-    ]
-    assert [s["group_id"] for s in sec["shots"]] == [16, 16]
-    assert [s["scene_files"] for s in sec["shots"]] == [["a.jpg"], ["b.jpg"]]
-    for para, tts in zip(sec["script_paragraphs"], sec["tts_paragraphs_v3"]):
-        _tag, rest = se._split_leading_bracket_tag(tts)
-        assert rest == para
-
-
-def test_verbatim_microbeats_one_panel_group_is_not_split():
-    """A panel-sparse group (1 distinct shown panel) must HOLD its single image
-    as one continuous shot with the full narration — never re-cut to the same
-    frame N times. Regression for Nano Ch1 g0011 (1-panel group split into 3
-    sub-beats all showing the same back-of-head panel)."""
-    chunk = [{
-        "group_id": 11,
-        "beat_id": 1,
-        "beat_title": "System wakes",
-        "narration": (
-            "The system stirs awake inside his mind. "
-            "A pale window unfolds before his eyes. "
-            "He reads the words and feels the world tilt."
-        ),
-        "what_happens": "The system activates.",
-        "hook": "Everything is about to change.",
-        "mood_words": ["serious"],
-        "scene_files": ["a.jpg"],
-        "scene_selection": [
-            {"scene_file": "a.jpg", "role": "keep", "intensity": "tense"},
-        ],
-    }]
-    payload = {"section_index": 0, "word_target": 120, "beats": [{
-        "beat_id": 1,
-        "group_id": 11,
-        "allowed_scene_files": ["a.jpg"],
-        "scene_files": ["a.jpg"],
-        "ocr_snippets_by_scene_file": {},
-    }]}
-
-    sec = se._build_verbatim_section(
-        section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="unknown",
-        microbeats=True, microbeat_max_words=8)
-
-    # one distinct panel -> one held shot, full narration, no re-cuts
-    assert len(sec["shots"]) == 1
-    assert [s["group_id"] for s in sec["shots"]] == [11]
-    assert sec["shots"][0]["scene_files"] == ["a.jpg"]
-    assert len(sec["script_paragraphs"]) == 1
-    # the whole narration is kept (nothing dropped)
-    assert "system stirs awake" in sec["script_paragraphs"][0]
-    assert "world tilt" in sec["script_paragraphs"][0]
-
-
-def test_verbatim_microbeats_split_count_never_exceeds_distinct_panels():
-    """A 3-panel group with a long narration may split, but the number of
-    microbeats per group must never exceed the group's distinct shown-panel
-    count (here 2 keep + 1 redundant -> cap of 2)."""
-    chunk = [{
-        "group_id": 12,
-        "beat_id": 1,
-        "beat_title": "Clash",
-        "narration": (
-            "He raises his blade against the storm. "
-            "The first strike lands like thunder. "
-            "The second splits the shield clean. "
-            "And the third drives the enemy back."
-        ),
-        "what_happens": "He attacks.",
-        "hook": "The tide turns.",
-        "mood_words": ["serious"],
-        "scene_files": ["a.jpg", "b.jpg", "c.jpg"],
-        "scene_selection": [
-            {"scene_file": "a.jpg", "role": "keep", "intensity": "tense"},
-            {"scene_file": "b.jpg", "role": "redundant"},
-            {"scene_file": "c.jpg", "role": "keep", "intensity": "tense"},
-        ],
-    }]
-    payload = {"section_index": 0, "word_target": 120, "beats": [{
-        "beat_id": 1,
-        "group_id": 12,
-        "allowed_scene_files": ["a.jpg", "b.jpg", "c.jpg"],
-        "scene_files": ["a.jpg", "b.jpg", "c.jpg"],
-        "ocr_snippets_by_scene_file": {},
-    }]}
-
-    sec = se._build_verbatim_section(
-        section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="unknown",
-        microbeats=True, microbeat_max_words=6)
-
-    # 2 distinct kept panels -> at most 2 microbeats
-    shots = [s for s in sec["shots"] if s["group_id"] == 12]
-    assert 1 <= len(shots) <= 2
-    assert len(sec["script_paragraphs"]) == len(shots)
-
-
-def test_verbatim_microbeats_short_narration_unchanged_with_four_panels():
-    """A panel-rich group whose narration is already short stays a single beat
-    — capping at panel count does not force extra splits."""
-    chunk = [{
-        "group_id": 13,
-        "beat_id": 1,
-        "beat_title": "Pause",
-        "narration": "He stops and listens.",
-        "what_happens": "He pauses.",
-        "mood_words": [],
-        "scene_files": ["a.jpg", "b.jpg", "c.jpg", "d.jpg"],
-        "scene_selection": [
-            {"scene_file": "a.jpg", "role": "keep"},
-            {"scene_file": "b.jpg", "role": "keep"},
-            {"scene_file": "c.jpg", "role": "keep"},
-            {"scene_file": "d.jpg", "role": "keep"},
-        ],
-    }]
-    payload = {"beats": [{
-        "beat_id": 1,
-        "group_id": 13,
-        "allowed_scene_files": ["a.jpg", "b.jpg", "c.jpg", "d.jpg"],
-        "scene_files": ["a.jpg", "b.jpg", "c.jpg", "d.jpg"],
-        "ocr_snippets_by_scene_file": {},
-    }]}
-
-    sec = se._build_verbatim_section(
-        section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="unknown",
-        microbeats=True, microbeat_max_words=28)
-
-    assert len(sec["script_paragraphs"]) == 1
-    assert sec["script_paragraphs"][0] == "He stops and listens."
-    assert len(sec["shots"]) == 1
-
-
-def test_verbatim_microbeats_ignore_redundant_scene_selection():
-    chunk = [{
-        "group_id": 17,
-        "beat_id": 1,
-        "beat_title": "Read",
-        "narration": "He reads the message, and the room goes cold.",
-        "what_happens": "He reads.",
-        "mood_words": [],
-        "scene_files": ["a.jpg", "b.jpg"],
-        "scene_selection": [
-            {"scene_file": "a.jpg", "role": "redundant"},
-            {"scene_file": "b.jpg", "role": "keep"},
-        ],
-    }]
-    payload = {"beats": [{
-        "beat_id": 1,
-        "group_id": 17,
-        "allowed_scene_files": ["a.jpg", "b.jpg"],
-        "scene_files": ["a.jpg", "b.jpg"],
-        "ocr_snippets_by_scene_file": {},
-    }]}
-
-    sec = se._build_verbatim_section(
-        section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="unknown", microbeats=True)
-
-    assert sec["shots"][0]["scene_files"] == ["b.jpg"]
-
-
 def test_verbatim_title_card_uses_story_hook_not_chapter_heading():
     chunk = [{
         "group_id": 5,
@@ -432,7 +237,7 @@ def test_verbatim_title_card_uses_story_hook_not_chapter_heading():
 
     sec = se._build_verbatim_section(
         section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="unknown", microbeats=True)
+        word_target=120, genre_mode="unknown")
 
     assert sec["script_paragraphs"] == ["The truth is finally about to surface."]
     assert "Chapter" not in sec["tts_paragraphs_v3"][0]
@@ -515,7 +320,7 @@ def test_one_segment_per_panel_aligned():
     payload = {"beats": [{"group_id": 7, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"]}]}
     sec = se._build_verbatim_section(
         section_index=0, chunk=beats, payload=payload, word_target=120,
-        genre_mode="action", proper_case=None, wpm=170, microbeats=False)
+        genre_mode="action", proper_case=None, wpm=170)
     assert len(sec["shots"]) == 3
     assert [s.get("scene_files") for s in sec["shots"]] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
     assert len(sec["script_paragraphs"]) == 3
@@ -572,7 +377,7 @@ def test_error_beat_is_silenced_even_with_panel_narration():
     payload = {"beats": [{"group_id": 5, "scene_files": ["p1.jpg"]}]}
     sec = se._build_verbatim_section(
         section_index=0, chunk=beats, payload=payload,
-        word_target=120, genre_mode="action", proper_case=None, wpm=170, microbeats=False)
+        word_target=120, genre_mode="action", proper_case=None, wpm=170)
     joined = " ".join(sec["script_paragraphs"]).lower()
     assert "hallucinated" not in joined
     assert "the scene continues" in joined
@@ -710,7 +515,7 @@ def test_merge_integration_four_short_lines_fewer_shots():
     payload = {"beats": [{"group_id": 1, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg"]}]}
     sec = se._build_verbatim_section(
         section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="action", microbeats=False)
+        word_target=120, genre_mode="action")
 
     shots = sec["shots"]
     paras = sec["script_paragraphs"]
@@ -743,7 +548,7 @@ def test_merge_integration_long_lines_no_merge():
     payload = {"beats": [{"group_id": 2, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"]}]}
     sec = se._build_verbatim_section(
         section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="action", microbeats=False)
+        word_target=120, genre_mode="action")
 
     assert len(sec["shots"]) == 3, "long lines must not be over-merged"
     assert len(sec["script_paragraphs"]) == 3
@@ -761,7 +566,7 @@ def test_merge_integration_disabled_by_flag():
     payload = {"beats": [{"group_id": 3, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"]}]}
     sec = se._build_verbatim_section(
         section_index=0, chunk=chunk, payload=payload,
-        word_target=120, genre_mode="action", microbeats=False,
+        word_target=120, genre_mode="action",
         tts_merge_short=False)
 
     assert len(sec["shots"]) == 3, "merge disabled → must be 1 shot per panel"

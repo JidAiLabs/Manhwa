@@ -26,31 +26,11 @@ def test_build_arg_parser_understood_flag():
     assert args.understood == "x.json"
 
 
-def test_build_arg_parser_opening_hook_flag():
-    parser = gnp.build_arg_parser()
-    args = parser.parse_args([
-        "--groups-manifest", "g.json",
-        "--vision-manifest", "v.json",
-        "--out", "out.json",
-        "--opening-hook",
-    ])
-    assert args.opening_hook is True
-
-
 def test_recap_rules_cover_density_name_ration_and_reveal_pacing():
     rules = gnp.RECAP_STYLE_RULES
     for phrase in ("NO SCREEN READING", "POINT, DON'T PAINT", "RATION NAMES",
                    "ADD TEXTURE", "COMPRESS DRAG", "REVEAL PACING"):
         assert phrase in rules
-    assert "FIRST panel_narration line" in gnp.OPENING_HOOK_RULE
-
-
-def test_opening_hook_postprocessor_is_available_to_generator():
-    beats = {"beats": [{"panel_narration": [
-        {"scene_file": "a.jpg", "line": "Atmospheric opening."}]}]}
-    story = {"hook": "A hunted prince inherits forbidden technology from the future."}
-    assert gnp.apply_opening_hook(beats, story)
-    assert beats["beats"][0]["panel_narration"][0]["line"] == story["hook"]
 
 
 # ---------------------------------------------------------------------------
