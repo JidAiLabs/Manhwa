@@ -64,6 +64,22 @@ def test_score_panel_power_reveal_outscores_calm_exposition():
     assert sh["score"] > sc["score"]
 
 
+def test_score_panel_transformation_outscores_generic_combat():
+    """The genre-defining transformation cue must weigh MORE than generic combat:
+    a 'nano core activates / system window' panel outscores a 'swings a blade with
+    great force' panel on power_reveal (and on total score), at equal intensity."""
+    transform = {"scene_file": "t.jpg", "panel_kind": "story", "intensity": "intense",
+                 "description": "the nano core activates, a system window opens",
+                 "action": "", "dialogue": "", "subjects": []}
+    combat = {"scene_file": "c.jpg", "panel_kind": "story", "intensity": "intense",
+              "description": "he swings a blade with great force", "action": "",
+              "dialogue": "", "subjects": []}
+    st, sc = tp.score_panel(transform), tp.score_panel(combat)
+    assert st["power_reveal"] > sc["power_reveal"]
+    assert sc["power_reveal"] > 0          # generic combat still carries SOME power signal
+    assert st["score"] > sc["score"]
+
+
 # ---------------------------------------------------------------- Task 5 (montage)
 def _mk_panel(scene, ch, *, kind="story", intensity="tense", desc="", subjects=None):
     return {"scene_file": scene, "chapter_number": ch, "panel_kind": kind,
@@ -94,6 +110,48 @@ def test_select_montage_climaxes_on_power_reveal_and_spans_chapters():
     assert all(p["is_climax"] is False for p in montage[:-1])
     # the montage spans more than one chapter (an arc, not one chapter)
     assert len({p["chapter_number"] for p in montage}) > 1
+
+
+def test_select_montage_climaxes_on_late_transformation_not_early_combat():
+    """The teaser must climax on the LATE genre-defining transformation reveal —
+    not an EARLIER high-intensity generic-combat frame (the old single-argmax bug
+    where Nano Machine landed the climax on a ch5 combat panel instead of the ch8
+    nano activation)."""
+    panels = []
+    # EARLY: a combat-stuffed, explosive frame (what the old argmax wrongly picked).
+    panels.append(_mk_panel(
+        "ch5_combat.jpg", 5, intensity="explosive",
+        desc="he swings his blade, the strike clashing with raw force, "
+             "energy and aura bursting in a shockwave"))
+    for i in range(4):                                       # mid-arc setup
+        panels.append(_mk_panel(f"ch6_s{i}.jpg", 6, intensity="tense",
+                                desc="the duel rages on"))
+    # LATE: the genre-defining transformation reveal (only 'intense').
+    panels.append(_mk_panel(
+        "ch8_transform.jpg", 8, intensity="intense",
+        desc="the nano core activates, a system window opens"))
+
+    montage = tp.select_montage(panels, max_panels=6, min_panels=4)
+    assert montage is not None
+    # the LATE transformation reveal is the climax, NOT the early combat frame
+    assert montage[-1]["scene_file"] == "ch8_transform.jpg"
+    assert montage[-1]["is_climax"] is True
+    assert all(p["is_climax"] is False
+               for p in montage if p["scene_file"] == "ch5_combat.jpg")
+
+
+def test_select_montage_no_transform_cue_fallback():
+    """With NO transformation cue anywhere, the selector falls back to the highest
+    power/intensity panel (and does not crash)."""
+    panels = [_mk_panel(f"s{i}.jpg", (i // 3) + 1, intensity="tense",
+                        desc="the duel rages on") for i in range(6)]
+    # a combat-heavy explosive peak, but still NO transformation cue
+    panels.append(_mk_panel("peak.jpg", 3, intensity="explosive",
+                            desc="he swings a blade, force and energy clashing"))
+    montage = tp.select_montage(panels, max_panels=5, min_panels=4)
+    assert montage is not None
+    assert montage[-1]["is_climax"] is True
+    assert montage[-1]["scene_file"] == "peak.jpg"
 
 
 def test_select_montage_calm_bundle_still_returns_something():

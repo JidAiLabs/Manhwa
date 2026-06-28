@@ -12,11 +12,13 @@ This module is split in two stages:
   Stage 1 — DETERMINISTIC, $0, pure functions. No LLM, no I/O.
     eligible_panels  — drop chrome/empty/error panels, keep story|caption|system.
     score_panel      — score one panel (keyword families + intensity + the
-                       POWER/TRANSFORMATION power_reveal signal).
+                       two-tier power signal: a HIGH-weighted transformation cue
+                       vs a LOW-weighted generic-combat cue).
     score_window     — score one contiguous window (legacy aggregate scorer).
-    select_montage   — pick the climax (highest power_reveal/intensity/score) as
-                       the LAST panel, then the strongest setup panels SPREAD
-                       across chapters, ordered chronologically before the climax.
+    select_montage   — pick the climax (the LATEST strong transformation beat, so
+                       a teased arc builds to it) as the LAST panel, then the
+                       strongest setup panels SPREAD across chapters, ordered
+                       chronologically before the climax.
 
   Stage 2 — one injectable model call that WRITES per-panel narration building to
     the (already selected) climax, then materializes the synthetic teaser dir.
@@ -63,12 +65,22 @@ _POWER_RE = re.compile(
     r"\b(system|status window|skill|rank up|awaken|hidden|impossible|level|power|technique)\w*", re.I)
 _ENEMY_RE = re.compile(
     r"\b(elder|heir|clan|authority|enemy|assassin|master|commander|villain)\w*", re.I)
-# POWER / TRANSFORMATION reveal — the genre-defining turn the montage climaxes
-# on ("what the protagonist becomes"): the power activates / awakens / transforms.
-# Agnostic genre cues only (no per-series words).
-_POWER_REVEAL_RE = re.compile(
-    r"\b(nano|machine|activat|awaken|transform|unleash|surge|aura|energy|glow|"
-    r"radiat|system (window|notification)|power|force|erupt|burst|shockwave|swirl)\w*",
+# POWER / TRANSFORMATION reveal — split into two tiers (agnostic cues only):
+#   _TRANSFORM_RE = the GENRE-DEFINING turn the montage climaxes on ("what the
+#     protagonist becomes"): the awakening / system-activation / power-up / fusion /
+#     evolution / regression. Weighted HIGH — this is the climax driver.
+#   _COMBAT_RE    = the broader, generic power/combat cues (a blow lands, energy
+#     flares). Weighted LOW — a fight beat is teaser-worthy but is NOT the reveal.
+# Tiering them lets a "nano core activates / system notification" panel outscore a
+# "swings a blade with great force" panel, so the climax lands on the reveal.
+_TRANSFORM_RE = re.compile(
+    r"\b(awaken|activat|unlock|nano|machine|system (window|notification|message)?|"
+    r"core|fuse|fused|transform|evolv|ascend|unleash|surge|awakening|"
+    r"power[- ]?up|reincarnat|regress|level up|new power|reborn)\w*",
+    re.I)
+_COMBAT_RE = re.compile(
+    r"\b(strike|blade|clash|force|energy|aura|glow|radiat|erupt|burst|"
+    r"shockwave|swirl|slash|impact|blast)\w*",
     re.I)
 
 # Per-signal keyword hits are capped so one keyword-stuffed window can't dominate.
@@ -85,9 +97,12 @@ _W_ENEMY = 0.6
 _W_INTENSITY = 1.5
 _W_VARIETY = 0.5
 _W_CLARITY_PENALTY = 0.75
-# The power/transformation reveal is the climax driver — weighted heavily so a
-# panel where the power activates outranks ordinary exposition.
-_W_POWER_REVEAL = 2.0
+# Two-tier power signal. The TRANSFORMATION cue is the climax driver — weighted so
+# heavily that a single transform hit (>= _W_TRANSFORM) outranks a fully
+# combat-stuffed panel (<= _SIGNAL_CAP * _W_COMBAT). A generic combat cue is
+# teaser-worthy but secondary, so it carries a much smaller weight.
+_W_TRANSFORM = 3.0
+_W_COMBAT = 0.5
 
 
 # --------------------------------------------------------------------------- #
@@ -124,14 +139,17 @@ def _signal_counts(text: str) -> Dict[str, int]:
     """Capped keyword-family hit counts over ``text`` (shared by panel/window).
 
     Each family is capped at ``_SIGNAL_CAP`` so one keyword-stuffed slice can't
-    dominate. ``power_reveal`` is the POWER/TRANSFORMATION signal (the climax cue).
+    dominate. ``transform`` is the GENRE-DEFINING reveal tier (the climax driver)
+    and ``combat`` the lower, generic power/fight tier; ``score_panel`` blends them
+    into ``power_reveal``.
     """
     return {
         "stakes": min(len(_STAKES_RE.findall(text)), _SIGNAL_CAP),
         "social": min(len(_SOCIAL_RE.findall(text)), _SIGNAL_CAP),
         "power": min(len(_POWER_RE.findall(text)), _SIGNAL_CAP),
         "enemy": min(len(_ENEMY_RE.findall(text)), _SIGNAL_CAP),
-        "power_reveal": min(len(_POWER_REVEAL_RE.findall(text)), _SIGNAL_CAP),
+        "transform": min(len(_TRANSFORM_RE.findall(text)), _SIGNAL_CAP),
+        "combat": min(len(_COMBAT_RE.findall(text)), _SIGNAL_CAP),
     }
 
 
@@ -139,25 +157,31 @@ def score_panel(panel: Dict[str, Any]) -> Dict[str, Any]:
     """Score ONE panel for the arc-montage selector.
 
     A weighted sum of the keyword families (each capped at ``_SIGNAL_CAP``) + the
-    panel's intensity rank + the POWER/TRANSFORMATION ``power_reveal`` component —
-    the signal that drives climax selection. Returns ``{"score", "power_reveal",
-    "intensity_rank", "signals"}``; ``power_reveal``/``intensity_rank`` are lifted
-    to the top level so ``select_montage`` can rank ``(power_reveal, intensity_rank,
-    score)`` without re-parsing the panel.
+    panel's intensity rank + the two-tier power signal. ``power_reveal`` is the
+    transform-weighted power score ``_W_TRANSFORM * transform + _W_COMBAT *
+    combat`` — the GENRE-DEFINING transformation cue dominates generic combat, so
+    a "the nano core activates" panel outranks a "swings a blade with force" one.
+
+    Returns ``{"score", "power_reveal", "transform_hits", "intensity_rank",
+    "signals"}``; ``power_reveal``/``transform_hits``/``intensity_rank`` are lifted
+    to the top level so ``select_montage`` can pick the climax (latest strong
+    transformation beat) without re-parsing the panel.
     """
     c = _signal_counts(_panel_text(panel))
     intensity_rank = INTENSITY_RANK.get(panel.get("intensity"), 0)
+    power_reveal = _W_TRANSFORM * c["transform"] + _W_COMBAT * c["combat"]
     score = (
         _W_STAKES * c["stakes"]
         + _W_SOCIAL * c["social"]
         + _W_POWER * c["power"]
         + _W_ENEMY * c["enemy"]
         + _W_INTENSITY * intensity_rank
-        + _W_POWER_REVEAL * c["power_reveal"]
+        + power_reveal
     )
     return {
         "score": float(score),
-        "power_reveal": c["power_reveal"],
+        "power_reveal": float(power_reveal),
+        "transform_hits": c["transform"],
         "intensity_rank": intensity_rank,
         "signals": {**c, "intensity_rank": intensity_rank},
     }
@@ -254,9 +278,13 @@ def select_montage(
       2. ``payoff_tail_frac`` (default ``0.0`` — OFF) optionally trims a literal
          final-cliffhanger sliver off the END of the pool. The power reveal is the
          HOOK, not an outcome spoiler, so by default nothing is excluded.
-      3. CLIMAX = the panel with the highest ``(power_reveal, intensity_rank,
-         score)`` — the transformation/power reveal. It is ALWAYS the LAST montage
-         panel; ties break to the later (closer-to-the-reveal) panel.
+      3. CLIMAX = the LATEST STRONG TRANSFORMATION beat (a teased arc BUILDS to
+         the reveal, so it comes late). Take the top band of panels whose
+         transform-weighted ``power_reveal`` is ``>= 0.8 * max`` AND that carry at
+         least one transform cue, then pick the one LATEST in reading order
+         ``(chapter_number, index)``. If NO panel has any transform cue, fall back
+         to the single highest ``(power_reveal, intensity_rank, score)``. It is
+         ALWAYS the LAST montage panel.
       4. SETUP = the next strongest panels by score, SPREAD across chapters (capped
          at ~``ceil(max_panels / n_chapters)+1`` per chapter, the climax counted),
          skipping near-duplicate adjacent panels, up to ``max_panels-1`` of them.
@@ -283,12 +311,24 @@ def select_montage(
     # score every panel once, carrying its reading-order index
     scored = [(i, p, score_panel(p)) for i, p in enumerate(pool)]
 
-    # climax = the power/transformation reveal (ties -> later panel)
-    climax_i, climax_p, _csc = max(
-        scored,
-        key=lambda t: (t[2]["power_reveal"], t[2]["intensity_rank"],
-                       t[2]["score"], t[0]),
-    )
+    # CLIMAX = the LATEST STRONG TRANSFORMATION beat. A teased arc builds TO the
+    # genre-defining reveal, so among the panels that actually carry the reveal we
+    # bias to the late-arc one rather than the global power argmax (which would
+    # wrongly grab an earlier, more violent combat frame).
+    if any(t[2]["transform_hits"] > 0 for t in scored):
+        max_tp = max(t[2]["power_reveal"] for t in scored)
+        band = [t for t in scored
+                if t[2]["transform_hits"] > 0 and t[2]["power_reveal"] >= 0.8 * max_tp]
+        # latest in reading order: max (chapter_number, index)
+        climax_i, climax_p, _csc = max(band, key=lambda t: (_chapter_key(t[1]), t[0]))
+    else:
+        # no transformation cue anywhere — fall back to the single highest
+        # (power_reveal, intensity, score) so calm/non-power bundles still work.
+        climax_i, climax_p, _csc = max(
+            scored,
+            key=lambda t: (t[2]["power_reveal"], t[2]["intensity_rank"],
+                           t[2]["score"], t[0]),
+        )
 
     n_chapters = len({_chapter_key(p) for _, p, _ in scored})
     per_cap = math.ceil(max_panels / max(1, n_chapters)) + 1
