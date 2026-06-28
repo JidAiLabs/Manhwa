@@ -60,6 +60,13 @@ _POWER_RE = re.compile(
     r"\b(system|status window|skill|rank up|awaken|hidden|impossible|level|power|technique)\w*", re.I)
 _ENEMY_RE = re.compile(
     r"\b(elder|heir|clan|authority|enemy|assassin|master|commander|villain)\w*", re.I)
+# POWER / TRANSFORMATION reveal — the genre-defining turn the montage climaxes
+# on ("what the protagonist becomes"): the power activates / awakens / transforms.
+# Agnostic genre cues only (no per-series words).
+_POWER_REVEAL_RE = re.compile(
+    r"\b(nano|machine|activat|awaken|transform|unleash|surge|aura|energy|glow|"
+    r"radiat|system (window|notification)|power|force|erupt|burst|shockwave|swirl)\w*",
+    re.I)
 
 # Per-signal keyword hits are capped so one keyword-stuffed window can't dominate.
 _SIGNAL_CAP = 4
@@ -75,6 +82,9 @@ _W_ENEMY = 0.6
 _W_INTENSITY = 1.5
 _W_VARIETY = 0.5
 _W_CLARITY_PENALTY = 0.75
+# The power/transformation reveal is the climax driver — weighted heavily so a
+# panel where the power activates outranks ordinary exposition.
+_W_POWER_REVEAL = 2.0
 
 
 # --------------------------------------------------------------------------- #
@@ -107,6 +117,49 @@ def _panel_text(panel: Dict[str, Any]) -> str:
     )
 
 
+def _signal_counts(text: str) -> Dict[str, int]:
+    """Capped keyword-family hit counts over ``text`` (shared by panel/window).
+
+    Each family is capped at ``_SIGNAL_CAP`` so one keyword-stuffed slice can't
+    dominate. ``power_reveal`` is the POWER/TRANSFORMATION signal (the climax cue).
+    """
+    return {
+        "stakes": min(len(_STAKES_RE.findall(text)), _SIGNAL_CAP),
+        "social": min(len(_SOCIAL_RE.findall(text)), _SIGNAL_CAP),
+        "power": min(len(_POWER_RE.findall(text)), _SIGNAL_CAP),
+        "enemy": min(len(_ENEMY_RE.findall(text)), _SIGNAL_CAP),
+        "power_reveal": min(len(_POWER_REVEAL_RE.findall(text)), _SIGNAL_CAP),
+    }
+
+
+def score_panel(panel: Dict[str, Any]) -> Dict[str, Any]:
+    """Score ONE panel for the arc-montage selector.
+
+    A weighted sum of the keyword families (each capped at ``_SIGNAL_CAP``) + the
+    panel's intensity rank + the POWER/TRANSFORMATION ``power_reveal`` component —
+    the signal that drives climax selection. Returns ``{"score", "power_reveal",
+    "intensity_rank", "signals"}``; ``power_reveal``/``intensity_rank`` are lifted
+    to the top level so ``select_montage`` can rank ``(power_reveal, intensity_rank,
+    score)`` without re-parsing the panel.
+    """
+    c = _signal_counts(_panel_text(panel))
+    intensity_rank = INTENSITY_RANK.get(panel.get("intensity"), 0)
+    score = (
+        _W_STAKES * c["stakes"]
+        + _W_SOCIAL * c["social"]
+        + _W_POWER * c["power"]
+        + _W_ENEMY * c["enemy"]
+        + _W_INTENSITY * intensity_rank
+        + _W_POWER_REVEAL * c["power_reveal"]
+    )
+    return {
+        "score": float(score),
+        "power_reveal": c["power_reveal"],
+        "intensity_rank": intensity_rank,
+        "signals": {**c, "intensity_rank": intensity_rank},
+    }
+
+
 def score_window(panels: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Score one contiguous window of panels for teaser-worthiness.
 
@@ -123,10 +176,8 @@ def score_window(panels: List[Dict[str, Any]]) -> Dict[str, Any]:
         return {"score": 0.0, "signals": {}}
 
     text = " ".join(_panel_text(p) for p in panels)
-    stakes = min(len(_STAKES_RE.findall(text)), _SIGNAL_CAP)
-    social = min(len(_SOCIAL_RE.findall(text)), _SIGNAL_CAP)
-    power = min(len(_POWER_RE.findall(text)), _SIGNAL_CAP)
-    enemy = min(len(_ENEMY_RE.findall(text)), _SIGNAL_CAP)
+    c = _signal_counts(text)
+    stakes, social, power, enemy = c["stakes"], c["social"], c["power"], c["enemy"]
 
     intensity_peak = max(
         INTENSITY_RANK.get(p.get("intensity"), 0) for p in panels

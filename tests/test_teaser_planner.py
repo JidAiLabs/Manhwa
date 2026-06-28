@@ -50,6 +50,20 @@ def test_score_window_high_stakes_beats_calm():
     assert tp.score_window(hot)["score"] > tp.score_window(calm)["score"]
 
 
+def test_score_panel_power_reveal_outscores_calm_exposition():
+    hot = {"scene_file": "h.jpg", "panel_kind": "story", "intensity": "explosive",
+           "description": "the nano core activates, energy surging and aura glowing",
+           "action": "", "dialogue": "", "subjects": []}
+    calm = {"scene_file": "c.jpg", "panel_kind": "story", "intensity": "calm",
+            "description": "they share a quiet meal and chat about the weather",
+            "action": "", "dialogue": "", "subjects": []}
+    sh, sc = tp.score_panel(hot), tp.score_panel(calm)
+    # the transformation panel carries the power_reveal signal; calm exposition has none
+    assert sh["power_reveal"] > sc["power_reveal"]
+    assert sc["power_reveal"] == 0
+    assert sh["score"] > sc["score"]
+
+
 # ---------------------------------------------------------------- Task 5
 def test_payoff_tail_excluded():
     seq = [{"scene_file": f"p{i}", "panel_kind": "story", "intensity": "calm",
