@@ -779,31 +779,6 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
         con.commit()
 
 
-def _seed_cut_judge_cache(chapter_dirs: List[Path], out_dir: Path,
-                          log: TextIO) -> None:
-    """Fail-soft: the teaser reuses the source panels' exact basenames, so seed
-    render_prep's per-cut visual-judge cache from the source chapters (a plain
-    basename-keyed merge) to skip re-paying the Gemma judging pass. Skipping only
-    re-pays judging — no correctness impact — so any error here is swallowed."""
-    try:
-        merged: Dict[str, Any] = {}
-        for cd in chapter_dirs:
-            src = Path(cd) / "scenes_clean" / ".cut_judge_cache.json"
-            if not src.exists():
-                continue
-            data = json.loads(src.read_text())
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    merged.setdefault(os.path.basename(str(k)), v)
-        if merged:
-            dst = out_dir / "scenes_clean" / ".cut_judge_cache.json"
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text(json.dumps(merged))
-            log.write(f"[teaser] seeded {len(merged)} cut-judge verdict(s)\n")
-    except Exception as exc:                       # cache is an optimization only
-        log.write(f"[teaser] cut-judge cache seed skipped: {exc}\n")
-
-
 def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
               log: TextIO) -> None:
     """Plan + render a bundle's ARC TEASER (the cold open). teaser_planner.py
@@ -824,6 +799,15 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
     chapter_dirs = [Path(_chapter(con, cid)["ep_dir"] or "")
                     for cid in bundles.bundle_chapters(con, bid)]
     out_dir = REPO / "dist" / f"bundle_{bid}" / "teaser"
+    # Re-plan from a clean slate: clear any prior teaser state + the rendered
+    # teaser.mp4 up front, so a re-plan that selects NO window can't leave a stale
+    # approved teaser that the concat would still prepend. 'planned' is set again
+    # only if this run actually produces a teaser.
+    con.execute("UPDATE bundle SET teaser_state='none' WHERE id=?", (bid,))
+    con.commit()
+    teaser_mp4 = REPO / "dist" / f"bundle_{bid}" / "teaser.mp4"
+    if teaser_mp4.exists():
+        teaser_mp4.unlink()
     with record_stage(con, chapter_id=None, stage="plan_teaser"):
         # 1) select the window + materialize the synthetic teaser episode dir
         argv = [PY, str(REPO / "tools" / "teaser_planner.py"),
@@ -869,7 +853,6 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
                        "--tts-index", str(out_dir / "tts" / "tts_index.json"),
                        "--out", str(out_dir / "render.plan.json"),
                        "--mode", "narrated", "--min-cut-sec", "3.5"])
-        _seed_cut_judge_cache(chapter_dirs, out_dir, log)
         if _stream([PY, str(REPO / "tools" / "render_prep.py"),
                     "--plan", str(out_dir / "render.plan.json"),
                     "--scenes-manifest", str(out_dir / "manifest.scenes.json"),
@@ -887,7 +870,6 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
         if not seg.exists():
             raise RuntimeError(f"teaser render missing {seg}")
         # 3) copy to the bundle's teaser.mp4 + mark planned for review
-        teaser_mp4 = REPO / "dist" / f"bundle_{bid}" / "teaser.mp4"
         teaser_mp4.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(str(seg), str(teaser_mp4))
         con.execute("UPDATE bundle SET teaser_state='planned' WHERE id=?", (bid,))
