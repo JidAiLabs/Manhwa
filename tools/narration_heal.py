@@ -57,9 +57,10 @@ def _note_for(code: str, detail: str) -> str:
     if code == "fragment_dangle":
         return "The narration is a dangling fragment — make it a complete sentence."
     if code == "shot_description":
-        return ("This line describes the camera/shot, not the story — re-narrate "
-                "what HAPPENS in the panel; never name a shot, panel, frame, or "
-                "camera.")
+        return ("This line describes the artwork or a visual effect (motion blur, "
+                "speed lines, 'is depicted') instead of the story — re-narrate the "
+                "ACTION and its impact dramatically; never name an effect, blur, "
+                "the panel, image, or camera.")
     if code in ("beats_incomplete", "empty_item", "silent_group"):
         return ("The narration is empty — describe what actually happens in this "
                 "panel (and cover any on-panel caption).")

@@ -16,6 +16,12 @@ facial expressions, or other details the viewer can already see unless that
 detail changes the plot. NEVER name the shot, camera, panel, image, or frame,
 and NEVER open with "A close-up shot shows...", "The panel focuses on...", or
 "A wide shot captures..." — narrate the STORY and the action, never the picture.
+Narrate the ACTION and its impact/stakes, never how the panel is DRAWN: NEVER
+describe visual effects or rendering — no "motion blur", "speed lines", "blurry
+streaks", "creating ... effects", "is depicted", "the panel/image shows". For an
+action/motion panel (a strike, a dash, an impact), say WHAT happens and the
+consequence (who strikes whom, the force, the result) — e.g. "He whips his blade
+around in a vicious arc" — not "a sword is being swung with motion blur".
 Each line must advance action, cause, stakes, thought, revelation, or
 consequence. A quick panel may continue the surrounding thought, but every panel
 line must remain an independently speakable complete clause.
@@ -131,10 +137,47 @@ _SHOT_DESC_RE = re.compile(
 )
 
 
+# RENDERING / VISUAL-EFFECT prose: a line that describes HOW the panel is DRAWN —
+# the motion blur, speed lines, streaks, or "X is depicted" — instead of WHAT
+# happens in the story. These shipped in Nano ch1 on ACTION panels ("...is depicted
+# through motion blur.", "A sword is being swung ... creating motion blur effects.",
+# "A blade swings through the air with lethal speed."). The camera/shot regex above
+# missed them. Agnostic: the vocabulary is rendering-craft language, never per-series
+# words. PRECISE by construction — a CHARACTER moving/striking fast ("He moved with
+# lethal speed.", "She lunged, blade flashing toward his throat.") names NO effect
+# and is NOT matched. Two arms: (1) an explicit effect/depiction phrase; (2) an
+# inanimate weapon shown swinging through EMPTY air (no actor, no impact) — the
+# motion-blur panel rendered as prose.
+_EFFECT_DESC_RE = re.compile(
+    r"(?:\b(?:"
+    r"motion[- ]blur"
+    r"|speed[- ]lines?"
+    r"|blurry\s+streaks?"
+    r"|streaks?"
+    r"|blur\s+effects?"
+    r"|creating\b[^.?!]*?\beffects?"
+    r"|(?:is|are)\s+depicted|depicted\s+through"
+    r"|high[- ]speed\s+(?:motion|effects?)"
+    r"|the\s+(?:panel|image|artwork)\s+(?:shows?|depicts?)"
+    r")\b)"
+    r"|"
+    r"(?:\b(?:an?|the)\s+"
+    r"(?:blade|sword|saber|sabre|katana|knife|dagger|spear|lance|axe|"
+    r"scythe|hammer|fist|claw|whip|staff|weapon|arrow)\s+"
+    r"(?:swings?|swung|swinging|slashes?|slashing|slices?|slicing|sweeps?|"
+    r"sweeping|cuts?|cutting|arcs?|arcing|whips?|whipping)\s+"
+    r"through\s+the\s+air\b)",
+    re.I,
+)
+
+
 def is_shot_description(text: str) -> bool:
-    """True when a narration line names the shot/camera/panel/frame instead of
-    narrating the story ('A close-up shot shows...'). Series-agnostic."""
-    return bool(_SHOT_DESC_RE.search(_TAG_RE.sub("", str(text or ""))))
+    """True when a narration line names the shot/camera/panel/frame ('A close-up
+    shot shows...') OR describes the ARTWORK'S RENDERING / a visual effect ('motion
+    blur', 'speed lines', '...is depicted', a weapon 'swings through the air')
+    instead of narrating the story. Series-agnostic."""
+    clean = _TAG_RE.sub("", str(text or ""))
+    return bool(_SHOT_DESC_RE.search(clean) or _EFFECT_DESC_RE.search(clean))
 
 
 def _words(text: str) -> List[str]:
@@ -606,9 +649,11 @@ def analyze_recap_style(
     if shot_desc_count:
         issues.append({
             "code": "shot_description",
-            "detail": (f"{shot_desc_count} line(s) name the shot/camera/panel "
-                       "(e.g. 'A close-up shot shows...') instead of narrating the "
-                       "story; describe what HAPPENS, never the picture"),
+            "detail": (f"{shot_desc_count} line(s) name the shot/camera/panel or "
+                       "describe the artwork's rendering / a visual effect (e.g. 'A "
+                       "close-up shot shows...', 'motion blur', '...is depicted') "
+                       "instead of narrating the story; describe what HAPPENS and "
+                       "its impact, never the picture or how it is drawn"),
         })
 
     word_counts = [len(_words(line)) for line in panel_lines if line]

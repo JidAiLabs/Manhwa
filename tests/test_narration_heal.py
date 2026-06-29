@@ -60,7 +60,9 @@ def test_chrome_narration_heals_even_as_a_warning():
 
 
 def test_shot_description_is_healable_error():
-    # D4: a line that names the camera/shot must heal (re-narrate the story).
+    # D4: a line that names the camera/shot OR the artwork's rendering / a visual
+    # effect (motion blur, speed lines, "is depicted") must heal (re-narrate the
+    # ACTION as story).
     assert "shot_description" in nh.HEALABLE
     rep = {"flags": [_flag("shot_description", "ERROR",
                            "narration names the shot/camera, not the story: "
@@ -69,7 +71,11 @@ def test_shot_description_is_healable_error():
     corr = nh.corrections_from_qa(rep)
     assert set(corr) == {5}
     note = corr[5].lower()
-    assert "shot" in note and ("camera" in note or "happens" in note)
+    # broadened note: names the artwork / a visual effect AND tells it to
+    # re-narrate the ACTION; still mentions the camera.
+    assert "effect" in note or "blur" in note
+    assert "camera" in note
+    assert "action" in note or "re-narrate" in note
 
 
 def test_empty_report_is_empty():

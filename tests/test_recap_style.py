@@ -371,6 +371,45 @@ def test_shot_description_is_flagged_and_story_line_is_not():
     assert not any(i["code"] == "shot_description" for i in report2["issues"])
 
 
+def test_visual_effect_description_is_flagged_and_dramatic_action_is_not():
+    # Nano ch1 shipped these on ACTION/motion panels: gemma described the
+    # ARTWORK'S RENDERING (motion blur / speed lines / "is depicted" / a weapon
+    # swinging through empty air) instead of the STORY. The camera/shot detector
+    # missed all three, so they passed QA and shipped. They must flag now.
+    bad = [
+        "A sense of rapid movement or a passing object is depicted through motion blur.",
+        "A sword is being swung with high velocity, creating motion blur effects.",
+        "A blade swings through the air with lethal speed.",
+    ]
+    for line in bad:
+        assert rs.is_shot_description(line), line
+    # legit dramatic narration that merely names a CHARACTER's speed/motion (or
+    # a strike with an impact/target) must STILL pass — it names no rendering.
+    legit = [
+        "He moved with lethal speed.",
+        "He cut them down in a single brutal arc.",
+        "Blood sprayed as the blade found its mark.",
+        "She lunged, blade flashing toward his throat.",
+    ]
+    for line in legit:
+        assert not rs.is_shot_description(line), line
+
+    report = _analyze(bad)
+    assert report["metrics"]["shot_description_lines"] == 3
+    assert any(i["code"] == "shot_description" for i in report["issues"])
+
+    report2 = _analyze(legit)
+    assert report2["metrics"]["shot_description_lines"] == 0
+    assert not any(i["code"] == "shot_description" for i in report2["issues"])
+
+
+def test_recap_rules_forbid_rendering_and_visual_effect_language():
+    # FIX 2 mirror: rule 1 must firmly ban naming the rendering / a visual effect.
+    rules = rs.RECAP_STYLE_RULES.lower()
+    assert "motion blur" in rules
+    assert "visual effect" in rules or "rendering" in rules
+
+
 def test_story_naming_the_figure_resolves_and_allows_name():
     # Once the story's OWN text (OCR) names the figure, the identity is
     # established and the protagonist name is allowed again.
