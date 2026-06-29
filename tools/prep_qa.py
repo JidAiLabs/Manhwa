@@ -470,12 +470,15 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
     else:
         compare_items = plan_items
 
+    from sfx_scrub import scrub_sfx_quotes  # mirror the script stage's scrub
     for gid, seg, text in compare_items:
         narr = bn.get(gid)
-        # scrub series-intro/title-card chrome from the beats side too, matching
-        # what the script stage voices — otherwise a legitimately-scrubbed plan
-        # reads as "stale" against an un-scrubbed beats line (false positive).
-        a, b = _norm_narr(text), _norm_narr(strip_chrome_opener(narr or ""))
+        # scrub series-intro/title-card chrome AND SFX/onomatopoeia/fragment quotes
+        # from the beats side too, matching what the script stage actually voices —
+        # otherwise a legitimately-scrubbed plan reads as "stale" against the raw,
+        # un-scrubbed beats line (false-positive narration_stale flood).
+        a, b = (_norm_narr(text),
+                _norm_narr(scrub_sfx_quotes(strip_chrome_opener(narr or ""))))
         if not a or not b:
             continue
         sim = SequenceMatcher(None, a, b).ratio()
