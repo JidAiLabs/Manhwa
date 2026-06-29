@@ -447,6 +447,24 @@ def _schema_to_json_schema(s: Any) -> Any:
     return s
 
 
+def _bumped_num_ctx(err_str: str, cur_ctx: int, num_predict: int,
+                    ctx_max: int = 16384) -> Optional[int]:
+    """If *err_str* is an ollama context-exceed error, return a num_ctx that fits
+    the reported prompt + a generation/headroom margin (rounded up to 1k, capped
+    at *ctx_max*); else None. Lets a rare oversized beats group retry at a
+    fit-to-prompt context instead of hard-failing the whole chapter, while normal
+    groups stay at the small default (no gemma SWA-cache thrash)."""
+    if "context" not in err_str.lower():
+        return None
+    m = (re.search(r"\((\d+)\s*tokens\)", err_str)
+         or re.search(r"n_prompt_tokens[\"\s:]+(\d+)", err_str))
+    if not m:
+        return None
+    need = int(m.group(1)) + max(0, int(num_predict)) + 1024
+    fit = min(int(ctx_max), ((need + 1023) // 1024) * 1024)
+    return fit if fit > int(cur_ctx) else None
+
+
 def _call_model(
     *,
     client: Optional[genai.Client],
@@ -471,19 +489,33 @@ def _call_model(
         if images:
             msg["images"] = images
         from ollama_compat import chat as _ollama_chat
-        resp = _ollama_chat(
+        # 16k thrashed gemma's SWA cache (full prompt re-processing every call ->
+        # ~32min wedge), so beats run at a small default (8k) that fits the typical
+        # ~1-7.5k prompt. An oversized group (many panels) can overflow it -> we
+        # catch the ollama context-exceed error and retry THAT call at a
+        # fit-to-prompt num_ctx (capped), so small groups stay fast and a big group
+        # never hard-fails the whole chapter. Both env-tunable.
+        ctx0 = int(os.environ.get("STUDIO_BEATS_NUM_CTX", "8192"))
+        ctx_max = int(os.environ.get("STUDIO_BEATS_NUM_CTX_MAX", "16384"))
+        _kw = dict(
             model=model,
             messages=[{"role": "system", "content": system_instruction}, msg],
             format=_schema_to_json_schema(response_schema),
             think=False,  # Gemma 4 thinks by default and burns the budget
             options={"temperature": temperature,
                      "num_predict": max_output_tokens,
-                     # 16k thrashed gemma's SWA cache (full prompt re-processing
-                     # every call -> ~32min wedge). Beats prompts measure ~1-7.5k
-                     # tokens, so 8k fits with headroom and matches the understand
-                     # stage's working cap. Env-tunable.
-                     "num_ctx": int(os.environ.get("STUDIO_BEATS_NUM_CTX", "8192"))},
+                     "num_ctx": ctx0},
         )
+        try:
+            resp = _ollama_chat(**_kw)
+        except Exception as e:
+            nb = _bumped_num_ctx(str(e), ctx0, max_output_tokens, ctx_max)
+            if nb is None:
+                raise
+            print(f"[beats] prompt exceeds num_ctx {ctx0}; retry at num_ctx={nb}",
+                  file=sys.stderr)
+            _kw["options"]["num_ctx"] = nb
+            resp = _ollama_chat(**_kw)
         raw = (resp.get("message") or {}).get("content") or ""
         usage = {"input": int(resp.get("prompt_eval_count") or 0),
                  "output": int(resp.get("eval_count") or 0), "cached": 0}

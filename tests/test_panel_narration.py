@@ -142,3 +142,17 @@ def test_group_payload_threads_full_panel_understanding():
     assert scene["action"] == "The assassin raises his sword."
     assert scene["dialogue"] == "Who are you?"
     assert scene["subjects"] == ["masked assassin", "unfamiliar stranger"]
+
+
+def test_bumped_num_ctx_fits_oversized_beats_prompt():
+    # the real ollama error from a 9358-token group hitting num_ctx 8192
+    err = ('{"error":{"code":400,"message":"request (9358 tokens) exceeds the '
+           'available context size (8192 tokens), try increasing it",'
+           '"type":"exceed_context_size_error","n_prompt_tokens":9358,"n_ctx":8192}}')
+    nb = gnp._bumped_num_ctx(err, cur_ctx=8192, num_predict=2048, ctx_max=16384)
+    assert nb is not None and nb % 1024 == 0
+    assert 9358 <= nb <= 16384 and nb > 8192      # fits the prompt, capped, bigger
+    # a non-context error must NOT trigger a bump
+    assert gnp._bumped_num_ctx("connection refused", 8192, 2048) is None
+    # already large enough -> no bump
+    assert gnp._bumped_num_ctx(err, cur_ctx=16384, num_predict=2048, ctx_max=16384) is None
