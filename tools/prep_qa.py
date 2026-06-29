@@ -457,18 +457,21 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
             continue
         plan_items.append((int(m.group(1)), seg, str(item.get("tts_text") or "")))
 
-    if bool((script_obj or {}).get("microbeats")):
-        grouped: Dict[int, List[str]] = {}
-        first_seg: Dict[int, str] = {}
-        for gid, seg, text in plan_items:
-            grouped.setdefault(gid, []).append(text)
-            first_seg.setdefault(gid, seg)
-        compare_items = [
-            (gid, first_seg.get(gid, f"g{gid:04d}_p00"), " ".join(texts))
-            for gid, texts in grouped.items()
-        ]
-    else:
-        compare_items = plan_items
+    # Per-panel narration emits ONE plan segment per panel (g####_p##), but `bn`
+    # is keyed per GROUP (the joined group narration). Always re-join a group's
+    # per-panel plan text before comparing to its group narration — otherwise each
+    # single panel line reads as "stale" against the full group text (false
+    # narration_stale flood). (This used to be gated on the now-removed `microbeats`
+    # flag; per-panel narration makes it the universal case.)
+    grouped: Dict[int, List[str]] = {}
+    first_seg: Dict[int, str] = {}
+    for gid, seg, text in plan_items:
+        grouped.setdefault(gid, []).append(text)
+        first_seg.setdefault(gid, seg)
+    compare_items = [
+        (gid, first_seg.get(gid, f"g{gid:04d}_p00"), " ".join(texts))
+        for gid, texts in grouped.items()
+    ]
 
     from sfx_scrub import scrub_sfx_quotes  # mirror the script stage's scrub
     for gid, seg, text in compare_items:
