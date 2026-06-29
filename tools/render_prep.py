@@ -645,31 +645,6 @@ def clean_scene_image(
     return out
 
 
-def clean_panel_image(
-    img: np.ndarray,
-    panel_kind: str,
-    boxes: Sequence[Tuple[int, int, int, int]],
-    *,
-    text_boxes: Optional[Sequence[Tuple[int, int, int, int]]] = None,
-) -> np.ndarray:
-    """Bubble-text removal that honors panel_kind (the D3 husk fix).
-
-    Blanking a speech bubble on STORY artwork leaves an empty white husk that
-    reads as broken on screen (IE p000007 "...SHIT!! / I CAN'T MOVE": real art,
-    blanked=True). The dialogue IS voiced, but the user's direction (option b,
-    zero smear) is to keep the drawn text in the art rather than gut it — so a
-    `story` panel is returned byte-identical (a fresh copy, never blanked).
-    Every other kind (caption / document / system / bubble-dominated) is blanked
-    via clean_scene_image exactly as before.
-    """
-    if str(panel_kind or "").strip().lower() == "story":
-        return img.copy()
-    blist = list(boxes or [])
-    if not blist and not (text_boxes or []):
-        return img.copy()
-    return clean_scene_image(img, blist, text_boxes=text_boxes)
-
-
 def bubble_coverage(
     shape: Tuple[int, ...],
     boxes: Sequence[Tuple[int, int, int, int]],
@@ -2101,15 +2076,14 @@ def main() -> int:
                                 return True
                         return False
                     words = [w for w in words if not _in_protected(w)]
-                # orphan-word blanking needs the cleaner even with zero
-                # detected bubbles (spiky balloons evade the detector) — BUT a
-                # STORY-art panel keeps its drawn text (clean_panel_image, the D3
-                # husk fix): blanking a bubble on real artwork leaves an empty
-                # white husk. caption/system/doc panels are still blanked.
-                story = _panel_kind(fname) == "story" and fname not in system_files
-                out = clean_panel_image(img, _panel_kind(fname), boxes,
-                                        text_boxes=words)
-                cleaned_cache[fname] = (out, [] if story else boxes)
+                # orphan-word blanking needs the cleaner even with zero detected
+                # bubbles (spiky balloons evade the detector). Clean the TEXT
+                # ONLY — keep the bubble shape, never inpaint/blur. System panels
+                # are kept whole above (their styled text IS the content);
+                # bubble-only panels are folded to narration upstream, so neither
+                # reaches this default path.
+                out = clean_scene_image(img, boxes, text_boxes=words)
+                cleaned_cache[fname] = (out, boxes)
         return cleaned_cache[fname]
 
     # Chrome is decided at the single chokepoint (scene_chrome.is_chrome_scene),

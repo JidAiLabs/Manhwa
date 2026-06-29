@@ -1488,16 +1488,3 @@ def test_cap_repeats_no_reemit_across_groups_global():
     assert counts["P.jpg"] == 1                                  # P emitted ONCE chapter-wide
 
 
-# ---- D3: empty-bubble husk on STORY art ------------------------------------
-
-def test_clean_panel_image_story_keeps_drawn_text_caption_blanks():
-    """D3: blanking a speech bubble on STORY art leaves an empty white husk
-    (IE p000007 '...SHIT!! / I CAN'T MOVE'). option b (zero smear): leave the
-    drawn text on story panels; caption/system/doc panels are still blanked."""
-    img = _bubble_scene()
-    boxes = [(30, 50, 170, 150)]
-    story = rp.clean_panel_image(img, "story", boxes)
-    assert np.array_equal(story, img)               # byte-identical: text kept, no husk
-    cap = rp.clean_panel_image(img, "caption", boxes)
-    assert not np.array_equal(cap, img)             # caption: bubble text blanked
-    assert cap[95:105, 72:128].mean() > 230         # ...dark text became bubble-white
