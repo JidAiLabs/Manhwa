@@ -34,15 +34,17 @@ panel line; do not target one-third of the panel count. Typical panel lines land
 around 4-10 spoken words, quick actions can be 2-5, and only pivotal/reveal panels
 need 12-18. This project's adaptation of the compression rule is higher
 information density at the existing pace.
-6. REVEAL PACING: cast matching is not permission to spoil an identity. When a
-new, transformed, masked, hooded, glowing, silhouetted, disguised, or otherwise
-unfamiliar arrival is treated as unknown by the story, call them "the stranger",
-"the intruder", or another grounded neutral handle, and CARRY that handle across
-the following panels. Do NOT switch to a cast name or a familiar stand-in like
-"our guy" on a later clear-view panel just because the figure now resembles a
-known character — a power/transformation reveal is a mystery to PRESERVE, not an
-identity to assume. Use a cast name only after the current or earlier story text
-has actually named that identity."""
+6. REVEAL PACING: NAME established cast members so the audience can follow who is
+who — recognition is the priority, so NAME ESTABLISHED characters (including the
+protagonist) normally on their OWN panels. Reserve a neutral handle ("the
+stranger", "the intruder") ONLY for a figure THIS panel itself presents as
+genuinely concealed, masked, hooded, glowing, silhouetted, transformed, or
+newly-arrived AND not yet matched to a known character. Do NOT neutralize an
+established character just because a separate mysterious figure is nearby, and do
+NOT keep calling a clearly-shown, already-known character "the stranger". A
+power/transformation reveal of an UNKNOWN figure is a mystery to preserve — but
+once the story's own text or the character's established look identifies someone,
+use their name."""
 
 
 _TAG_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
@@ -73,6 +75,17 @@ _CONCEALED_RE = re.compile(
     r"\b(?:silhouette|glowing|masked|hooded|disguised|transformed|unfamiliar|"
     r"mysterious|stranger|intruder|unknown|shadowy|newcomer|gear unlike|"
     r"cloaked|veiled)\b",
+    re.I,
+)
+# Broader "this panel refers to the still-unresolved figure" cue: concealment
+# (above) PLUS the transformation/power/advanced-gear signals a clear-view panel
+# of that figure carries (a later panel of the blue-goggled, lightning-wreathed
+# arrival). Used ONLY to disambiguate WHICH figure a panel shows once a window is
+# already open — NOT to open one (opening stays gated to _CONCEALED_RE). Agnostic:
+# generic power/gear vocabulary, never per-series words.
+_POWER_GEAR_RE = re.compile(
+    r"\b(?:lightning|sparks?|electric\w*|crackl\w*|energy|aura|blazing|radiant|"
+    r"goggles|visor|helmet|futuristic|glow|glows|glowed)\b",
     re.I,
 )
 _IDENTITY_QUESTION_RE = re.compile(
@@ -162,6 +175,59 @@ def repair_spoken_fragments(beats_obj: Dict[str, Any]) -> int:
                 str(p.get("line") or "").strip() for p in panels
                 if str(p.get("line") or "").strip())
     return changed
+
+
+def _norm_line(text: str) -> str:
+    """Normalize a panel line for duplicate comparison: drop mood tags, lowercase,
+    collapse to alphanumeric tokens. So 'Ancestor...?' == '[panicked] Ancestor?'."""
+    s = _TAG_RE.sub("", str(text or "")).lower()
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def dedupe_consecutive_panel_lines(beats_obj: Dict[str, Any]) -> int:
+    """Merge out a panel whose narration line is an EXACT (normalized) duplicate of
+    the IMMEDIATELY-PRECEDING panel's line (within or across beats) — the p95/p96
+    "Ancestor...?" bug, where the same spoken line shipped over two panels. The
+    earlier (better-placed) panel survives with the single line; the duplicate
+    panel + its scene_file + its scene_selection entry are dropped, so the two cuts
+    collapse to ONE and the line is voiced once. Never empties a beat (a beat whose
+    only panel is the duplicate keeps it; the render-side hold then covers it).
+    Returns the number of panels merged out. Agnostic + deterministic."""
+    removed = 0
+    prev_norm: str | None = None
+    for beat in beats_obj.get("beats") or []:
+        panels = beat.get("panel_narration") or []
+        if not panels:
+            continue
+        kept: List[Dict[str, Any]] = []
+        for idx, panel in enumerate(panels):
+            norm = _norm_line(panel.get("line"))
+            is_dup = bool(norm) and norm == prev_norm
+            last = idx == len(panels) - 1
+            # never empty a beat: if nothing kept yet and this is the last panel,
+            # keep it even when it duplicates the previous line.
+            if is_dup and not (last and not kept):
+                removed += 1
+                continue
+            kept.append(panel)
+            if norm:
+                prev_norm = norm
+        if len(kept) != len(panels):
+            kept_files = {str(p.get("scene_file")) for p in kept
+                          if p.get("scene_file")}
+            beat["panel_narration"] = kept
+            if isinstance(beat.get("scene_files"), list):
+                beat["scene_files"] = [f for f in beat["scene_files"]
+                                       if str(f) in kept_files]
+            if isinstance(beat.get("scene_selection"), list):
+                beat["scene_selection"] = [
+                    s for s in beat["scene_selection"]
+                    if isinstance(s, dict)
+                    and str(s.get("scene_file")) in kept_files]
+            beat["narration"] = " ".join(
+                str(p.get("line") or "").strip() for p in kept
+                if str(p.get("line") or "").strip())
+    return removed
 
 
 def script_lines(script_obj: Mapping[str, Any]) -> List[str]:
@@ -275,6 +341,42 @@ def _subject_tokens(*srcs: Mapping[str, Any]) -> set:
     return toks
 
 
+def _protagonist_desc_tokens(cast_obj: Mapping[str, Any]) -> set:
+    """Significant (len>3) tokens of the protagonist's cast visual_description —
+    the fingerprint used to recognize the ESTABLISHED protagonist on a panel so
+    he is never neutralized to 'the stranger'. Empty when the cast carries no
+    description (then the disambiguation falls back to the cue-only path)."""
+    toks: set = set()
+    for member in cast_obj.get("cast") or cast_obj.get("characters") or []:
+        if not isinstance(member, dict):
+            continue
+        if not (member.get("is_protagonist")
+                or str(member.get("role") or "").lower() == "protagonist"):
+            continue
+        desc = str(member.get("visual_description") or "")
+        toks.update(w for w in _WORD_RE.findall(desc.lower()) if len(w) > 3)
+    return toks
+
+
+def _panel_understanding_tokens(*srcs: Mapping[str, Any]) -> set:
+    """Significant (len>3) tokens from a panel's UNDERSTANDING (subjects +
+    description/action/setting) — what the panel actually shows, used to match it
+    against the protagonist's visual_description fingerprint."""
+    toks: set = set()
+    for src in srcs:
+        if not isinstance(src, Mapping):
+            continue
+        for key in ("description", "action", "setting"):
+            toks.update(w for w in _WORD_RE.findall(str(src.get(key) or "").lower())
+                        if len(w) > 3)
+        subs = src.get("subjects")
+        if isinstance(subs, (list, tuple)):
+            for s in subs:
+                toks.update(w for w in _WORD_RE.findall(str(s).lower())
+                            if len(w) > 3)
+    return toks
+
+
 def _concealment_blob(line: str, *srcs: Mapping[str, Any]) -> str:
     """Text scanned for a concealment/transformation cue: the panel line plus
     its understood/vision description, action, and subjects."""
@@ -296,29 +398,33 @@ def neutralize_identity_reveal_leaks(
     vision_by_file: Mapping[str, Mapping[str, Any]],
     understood_by_file: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> int:
-    """Carry an "unresolved figure" state across panels and neutralize any
-    protagonist NAME *or* generic HANDLE ("our guy") that gets attached to a
-    figure the story hasn't resolved yet — replacing it with "the stranger".
+    """PER-PANEL, SUBJECT-AWARE neutralization: replace a protagonist NAME or
+    generic HANDLE ("our guy") with "the stranger" ONLY on a panel that actually
+    shows the still-unresolved concealed figure — NEVER as a blanket carry-across
+    that nukes the established protagonist too.
 
-    Agnostic by construction: the concealment/transformation cues and the
-    familiar handles are generic; the actual identity comes only from the cast
-    (``cast_obj``) and the per-panel understanding (``understood_by_file`` /
-    ``vision_by_file`` subjects), never from hardcoded series words.
+    Agnostic by construction: concealment/power/gear cues and the familiar handles
+    are generic; identity comes only from the cast (``cast_obj`` names +
+    visual_description) and the per-panel understanding (``understood_by_file`` /
+    ``vision_by_file`` subjects/description), never from hardcoded series words.
 
-    State machine, scanning panels in story order:
-      * A panel opens/extends the window when its line OR its understood/vision
-        subjects/description match a concealment cue (``_CONCEALED_RE``); an OCR
-        "who are you" question is an OPTIONAL extra trigger, no longer required.
-      * While the window is active *from an earlier panel* (a carried state), a
-        protagonist name/handle on the current panel is neutralized. A cue first
-        seen on the SAME panel governs only later panels — so a protagonist
-        named alongside a separate concealed figure on one line survives.
-      * The window closes when the story's OWN text (OCR) names the protagonist
-        (identity established), or after a conservative scene/topic break
-        (``_UNRESOLVED_CLEAR_AFTER`` cue-free panels with a different subject
-        focus). Erring toward staying-unresolved is the safe default.
+    A panel's protagonist reference is neutralized ONLY when ALL hold:
+      * an unresolved-figure window is OPEN from an EARLIER panel (opened by a
+        genuine concealment cue ``_CONCEALED_RE``; an OCR "who are you" question is
+        an optional extra trigger). The window itself is just a gate.
+      * THIS panel's own understanding refers to the UNRESOLVED figure — its line/
+        subjects/description carry a concealment OR power/transformation/gear cue
+        (``_POWER_GEAR_RE``): the later clear-view panel of the masked arrival.
+      * THIS panel does NOT clearly match the ESTABLISHED protagonist — its
+        understanding tokens do not overlap the protagonist's cast
+        visual_description (>=2 shared significant tokens). When a panel plainly
+        shows the established protagonist, he is NAMED, never neutralized.
+    The window closes when the story's OWN text (OCR) names the protagonist, or
+    after a conservative scene/topic break (``_UNRESOLVED_CLEAR_AFTER`` cue-free
+    panels with a different subject focus).
     """
     names = _protagonist_names(cast_obj)
+    protag_desc = _protagonist_desc_tokens(cast_obj)
     understood_by_file = understood_by_file or {}
 
     refs: List[Dict[str, Any]] = []
@@ -343,6 +449,7 @@ def neutralize_identity_reveal_leaks(
         understood = understood_by_file.get(sf) or {}
         vis = vision_by_file.get(sf) or {}
         ocr = str(vis.get("ocr_clean") or vis.get("text") or "")
+        blob = _concealment_blob(line, understood, vis)
 
         # RESOLUTION: the story's own text names the protagonist -> identity is
         # established; stop neutralizing (this panel included).
@@ -353,16 +460,24 @@ def neutralize_identity_reveal_leaks(
             panels_since_cue = 0
             cue_subjects = set()
 
-        # NEUTRALIZE only a carried window (cue from an earlier panel).
+        # NEUTRALIZE: only a carried window AND only when THIS panel's own
+        # understanding refers to the unresolved figure (concealment/power/gear)
+        # AND does not clearly match the established protagonist.
         if unresolved and _has_protagonist_ref(line, names):
-            rewritten = _neutralize_protagonist_refs(line, names)
-            if rewritten != line:
-                panel["line"] = rewritten
-                changed += 1
-                changed_beats.add(id(ref["beat"]))
+            refers_to_unresolved = bool(_CONCEALED_RE.search(blob)
+                                        or _POWER_GEAR_RE.search(blob))
+            panel_tokens = _panel_understanding_tokens(understood, vis)
+            matches_protagonist = (len(protag_desc) >= 2
+                                   and len(protag_desc & panel_tokens) >= 2)
+            if refers_to_unresolved and not matches_protagonist:
+                rewritten = _neutralize_protagonist_refs(line, names)
+                if rewritten != line:
+                    panel["line"] = rewritten
+                    changed += 1
+                    changed_beats.add(id(ref["beat"]))
 
         # UPDATE STATE from THIS panel's cues (governs the panels that follow).
-        has_cue = bool(_CONCEALED_RE.search(_concealment_blob(line, understood, vis)))
+        has_cue = bool(_CONCEALED_RE.search(blob))
         if not has_cue and _IDENTITY_QUESTION_RE.search(ocr):
             has_cue = True  # optional extra trigger
         cur_subjects = _subject_tokens(understood, vis)

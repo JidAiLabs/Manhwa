@@ -33,6 +33,26 @@ def test_recap_rules_cover_density_name_ration_and_reveal_pacing():
         assert phrase in rules
 
 
+def test_dialogue_rule_allows_punchy_quote_forbids_onomatopoeia_and_fragments():
+    rule = gnp._DIALOGUE_RULE.lower()
+    assert "paraphrase" in rule
+    # allows a short complete punchy quote
+    assert "quote" in rule and ("punchy" in rule or "threat" in rule)
+    # forbids onomatopoeia / sound effects and incomplete trailing-off fragments
+    assert "onomatopoeia" in rule
+    assert "fragment" in rule
+
+
+def test_dedupe_consecutive_panel_lines_reexported():
+    # Bug 2/3 narration-level dedup is available to the narrative pass.
+    assert hasattr(gnp, "dedupe_consecutive_panel_lines")
+    beats = {"beats": [{"group_id": 1, "scene_files": ["a.jpg", "b.jpg"],
+                        "panel_narration": [
+                            {"scene_file": "a.jpg", "line": "Same line."},
+                            {"scene_file": "b.jpg", "line": "Same line."}]}]}
+    assert gnp.dedupe_consecutive_panel_lines(beats) == 1
+
+
 # ---------------------------------------------------------------------------
 # Task 3a: align_panel_narration repair-fill helper
 # ---------------------------------------------------------------------------

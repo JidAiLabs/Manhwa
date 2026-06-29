@@ -239,6 +239,116 @@ def test_name_on_concealed_arrival_neutralized_without_ocr():
         "The stranger stands there in unfamiliar clothes.")
 
 
+def _cast_with_desc():
+    return {"cast": [{
+        "canonical_name": "Prince Cheon",
+        "aliases": [],
+        "role": "protagonist",
+        "is_protagonist": True,
+        "visual_description": "a wounded young prince in torn royal robes",
+    }]}
+
+
+def test_established_protagonist_not_neutralized_after_concealed_figure(_=None):
+    # BUG 4 regression (commit 5ee94cb over-neutralized): a concealed blue figure
+    # appears, then the ESTABLISHED wounded protagonist (matching his cast
+    # visual_description) is named on the FOLLOWING panels. He must stay NAMED —
+    # only a later panel that actually shows the unresolved blue figure (mislabeled
+    # with the protagonist handle) is neutralized.
+    beats = _beats([
+        "A glowing blue silhouette appears between the killers.",  # concealed figure
+        "Our guy lies bleeding against the wall.",                 # established protag
+        "Prince Cheon coughs up blood, his royal robes torn.",     # established, named
+        "Our guy stands wreathed in crackling blue lightning.",    # MISLABELED blue figure
+    ])
+    understood = {
+        "p001.jpg": {"subjects": ["a glowing blue silhouette"]},
+        "p002.jpg": {"subjects": ["a wounded young prince", "blood"]},
+        "p003.jpg": {"subjects": ["the bleeding prince", "torn royal robes"]},
+        "p004.jpg": {"subjects": ["a young man with blue goggles",
+                                  "crackling blue energy"]},
+    }
+    changed = rs.neutralize_identity_reveal_leaks(
+        beats, _cast_with_desc(), {}, understood)
+    panels = beats["beats"][0]["panel_narration"]
+    # the established protagonist keeps his name/handle on his own panels
+    assert panels[1]["line"] == "Our guy lies bleeding against the wall."
+    assert panels[2]["line"].startswith("Prince Cheon")
+    # only the mislabeled blue-figure panel is neutralized
+    assert panels[3]["line"] == (
+        "The stranger stands wreathed in crackling blue lightning.")
+    assert changed == 1
+    assert "the stranger" not in panels[1]["line"].lower()
+
+
+def test_reveal_pacing_rule_leads_with_recognition_not_blanket_carry():
+    rules = rs.RECAP_STYLE_RULES
+    assert "REVEAL PACING" in rules
+    # rebalanced: lead with NAMING established cast for recognition
+    assert "name established" in rules.lower()
+    # the old blanket "carry that handle across" instruction is gone
+    assert "carry that handle across" not in rules.lower()
+
+
+def test_dedupe_consecutive_duplicate_panel_lines_merges_to_one():
+    # BUG 2/3 (p95 & p96 both "Ancestor...?"): an exact-duplicate consecutive
+    # panel line must not ship twice — the duplicate panel is merged out.
+    beats = {"beats": [{
+        "group_id": 1,
+        "scene_files": ["p95.jpg", "p96.jpg", "p97.jpg"],
+        "panel_narration": [
+            {"scene_file": "p95.jpg", "line": "Ancestor...?"},
+            {"scene_file": "p96.jpg", "line": "Ancestor...?"},  # exact dup
+            {"scene_file": "p97.jpg", "line": "He turns away."},
+        ],
+        "scene_selection": [
+            {"scene_file": "p95.jpg", "role": "keep"},
+            {"scene_file": "p96.jpg", "role": "keep"},
+            {"scene_file": "p97.jpg", "role": "keep"},
+        ],
+    }]}
+    removed = rs.dedupe_consecutive_panel_lines(beats)
+    assert removed == 1
+    b = beats["beats"][0]
+    assert [p["scene_file"] for p in b["panel_narration"]] == ["p95.jpg", "p97.jpg"]
+    assert b["scene_files"] == ["p95.jpg", "p97.jpg"]
+    assert [s["scene_file"] for s in b["scene_selection"]] == ["p95.jpg", "p97.jpg"]
+    assert b["narration"] == "Ancestor...? He turns away."
+
+
+def test_dedupe_consecutive_across_beat_boundary():
+    beats = {"beats": [
+        {"group_id": 1, "scene_files": ["a.jpg"],
+         "panel_narration": [{"scene_file": "a.jpg", "line": "The blade falls."}]},
+        {"group_id": 2, "scene_files": ["b.jpg", "c.jpg"],
+         "panel_narration": [
+             {"scene_file": "b.jpg", "line": "The blade falls."},   # dup of prev beat
+             {"scene_file": "c.jpg", "line": "Silence."}]},
+    ]}
+    removed = rs.dedupe_consecutive_panel_lines(beats)
+    assert removed == 1
+    assert [p["scene_file"] for p in beats["beats"][1]["panel_narration"]] == ["c.jpg"]
+
+
+def test_dedupe_never_empties_a_beat():
+    beats = {"beats": [
+        {"group_id": 1, "scene_files": ["a.jpg"],
+         "panel_narration": [{"scene_file": "a.jpg", "line": "Hold."}]},
+        {"group_id": 2, "scene_files": ["b.jpg"],
+         "panel_narration": [{"scene_file": "b.jpg", "line": "Hold."}]},  # sole dup
+    ]}
+    removed = rs.dedupe_consecutive_panel_lines(beats)
+    assert removed == 0
+    assert len(beats["beats"][1]["panel_narration"]) == 1
+
+
+def test_dedupe_keeps_distinct_lines():
+    beats = _beats(["He draws the blade.", "She blocks it.", "Sparks fly."])
+    removed = rs.dedupe_consecutive_panel_lines(beats)
+    assert removed == 0
+    assert len(beats["beats"][0]["panel_narration"]) == 3
+
+
 def test_story_naming_the_figure_resolves_and_allows_name():
     # Once the story's OWN text (OCR) names the figure, the identity is
     # established and the protagonist name is allowed again.

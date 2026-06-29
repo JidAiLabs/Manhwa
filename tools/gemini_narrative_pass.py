@@ -38,6 +38,7 @@ from usage_cost import UsageAccumulator  # noqa: E402
 from narration_safe_rules import SAFE_NARRATION_RULES  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
+    dedupe_consecutive_panel_lines,
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
@@ -138,12 +139,15 @@ def _clean_fallback_narration(beat_title: str, what_happens: str) -> str:
 # so copying it verbatim reads as garbled shouting ("KILL HIM!", "SERVES YOU RIGHT!
 # Mon", "...SINCE OUR COMRA"). Paraphrase what is said into the recap voice instead.
 _DIALOGUE_RULE = (
-    "DIALOGUE: convey what a character SAYS or THINKS in the NARRATOR'S OWN clean "
-    "words — PARAPHRASE it into the narration. Do NOT copy the on-screen / OCR text "
-    "verbatim: bubble text is ALL-CAPS, often mis-read, truncated mid-word, or a raw "
-    "sound effect, so quoting it reads as garbled shouting. You may voice a short "
-    "line directly ONLY when it is clean, COMPLETE, and in natural sentence case "
-    "(never ALL-CAPS, never a fragment, never onomatopoeia). When in doubt, "
+    "DIALOGUE: PARAPHRASE the bulk of what a character SAYS or THINKS into the "
+    "NARRATOR'S OWN clean words. You MAY quote a SHORT, COMPLETE, punchy real line "
+    "directly — a threat, a taunt, a key line, a name — when it is clean natural "
+    "sentence case and attributed to who says it (e.g. he sneers that it 'serves "
+    "them right'). But NEVER copy raw on-screen / OCR text verbatim (it is ALL-CAPS, "
+    "mis-read, or truncated mid-word, so it reads as garbled shouting); NEVER quote "
+    "a sound effect or onomatopoeia (huh, ugh, keuk, ack, grr, a raw scream); and "
+    "NEVER quote an incomplete, trailing-off fragment such as 'Ancestor...?' or "
+    "'Wait, what—' — finish the thought in your own words instead. When in doubt, "
     "paraphrase. NEVER voice publication chrome — ads, credits, 'subscribe/follow/"
     "join our Discord', watermarks, scanlator or site names."
 )
@@ -930,17 +934,19 @@ def main() -> int:
         "      them (if it says 'beast' it is a beast, not a 'hound'), do not change their number\n"
         "      (two stay two, never 'a pack/swarm'), and do not add a creature/person not listed.\n"
         "      Do NOT invent a SYSTEM the world lacks (no 'server'/'game'/'respawn' on a real scene).\n"
-        "    - IDENTITY + NAMES: use the CHAPTER CAST only after the story has established\n"
-        "      who the person is. A visual match alone must NOT spoil a transformed, masked,\n"
-        "      hooded, glowing, silhouetted, disguised, or newly-arrived identity (e.g. 'gear\n"
-        "      unlike anything'); if the characters treat them as unknown, use a grounded\n"
-        "      neutral handle until the reveal, and CARRY that handle across the FOLLOWING\n"
-        "      panels — do NOT switch to the protagonist's name or a familiar handle like\n"
-        "      'our guy' on a later clear-view panel just because the figure now looks like a\n"
-        "      known character. A power/transformation reveal is a mystery to PRESERVE, not an\n"
-        "      identity to assume; use a cast identity only after the story's own text names them.\n"
-        "      Once introduced, ration the protagonist's real name and usually use\n"
-        "      pronouns or a relaxed stand-in. Same established person keeps the same identity.\n"
+        "    - IDENTITY + NAMES: NAME established CHAPTER CAST members so the audience can\n"
+        "      follow who is who — recognition is the priority. NAME the protagonist (or a\n"
+        "      relaxed stand-in like 'our guy') normally on HIS OWN panels, even when a\n"
+        "      separate mysterious figure is on screen nearby. Reserve a grounded NEUTRAL\n"
+        "      handle ('the stranger', 'the intruder') ONLY for a figure THIS panel itself\n"
+        "      presents as genuinely concealed — transformed, masked, hooded, glowing,\n"
+        "      silhouetted, disguised, or newly-arrived (e.g. 'gear unlike anything') — and not\n"
+        "      yet matched to a known character. Do NOT neutralize an ESTABLISHED character\n"
+        "      just because a concealed figure appears, and do NOT keep calling a clearly-shown,\n"
+        "      already-known character 'the stranger'. A power/transformation reveal of an\n"
+        "      UNKNOWN figure is a mystery to preserve — but once the story's own text or the\n"
+        "      character's established look identifies someone, use their name. Once introduced,\n"
+        "      ration the protagonist's real name and usually use pronouns or a relaxed stand-in.\n"
         "    - DIALOGUE — quote SPARINGLY, recap-style: PARAPHRASE the bulk into narration and\n"
         "      QUOTE only a SHORT punchy fragment (a threat, a name, a key line — a few words),\n"
         "      attributed. Do NOT quote a whole long bubble; NEVER stack two long quotes in a row.\n"
@@ -1180,6 +1186,9 @@ def main() -> int:
     identity_reveals_neutralized = neutralize_identity_reveal_leaks(
         {"beats": beats_out}, {"cast": cast_list}, vision_by_file, u_by_file)
     spoken_fragments_repaired = repair_spoken_fragments({"beats": beats_out})
+    # an exact-duplicate consecutive panel line (p95/p96 'Ancestor...?') must not
+    # ship twice — merge the duplicate panel out so the line is voiced once.
+    consecutive_dups_merged = dedupe_consecutive_panel_lines({"beats": beats_out})
     out_obj = {
         "source_groups_manifest": os.path.abspath(args.groups_manifest),
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
@@ -1190,6 +1199,7 @@ def main() -> int:
             "regenerated": regenerated,
             "identity_reveals_neutralized": identity_reveals_neutralized,
             "spoken_fragments_repaired": spoken_fragments_repaired,
+            "consecutive_dups_merged": consecutive_dups_merged,
             "usage": {
                 "calls": usage.calls,
                 "input_tokens": usage.input_tokens,

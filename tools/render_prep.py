@@ -1438,6 +1438,45 @@ def static_on_consecutive_repeats(plan: Dict[str, Any]) -> Dict[str, Any]:
     return plan
 
 
+def _norm_tts_text(text: Any) -> str:
+    """Normalize a segment's narration for duplicate comparison: drop a leading
+    [mood] tag, lowercase, collapse to alphanumeric tokens."""
+    s = re.sub(r"^\s*\[[^\]]+\]\s*", "", str(text or "")).lower()
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def merge_consecutive_duplicate_narration(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """AGNOSTIC: two consecutive timeline segments carrying the SAME narration are
+    one spoken line voiced over two panels (the p95/p96 'Ancestor...?' bug).
+    Collapse each later duplicate to ONE static held cut of the FIRST segment's
+    image, so the repeated line reads as one continuous held shot — never a second
+    animated panel, never a re-played pan. (The narration-level dedup upstream
+    removes the duplicate at the source; this is the render-side safety net.)
+    Branding items reset the run. Empty/whitespace narration never counts as a
+    duplicate."""
+    prev_text: Optional[str] = None
+    prev_img: Optional[str] = None
+    for it in (plan or {}).get("timeline") or []:
+        if it.get("branding"):
+            prev_text, prev_img = None, None
+            continue
+        text = _norm_tts_text(it.get("tts_text"))
+        cuts = it.get("cuts") or []
+        cur_img = str((cuts[-1].get("file") if cuts else
+                       it.get("primary_scene_file")) or "")
+        if text and text == prev_text and prev_img:
+            dur = round(float(it.get("duration_sec") or 0.0), 4)
+            it["cuts"] = [{"file": prev_img, "start": 0.0, "dur": dur,
+                           "held": True, "motion": dict(_STATIC_MOTION)}]
+            # prev_text / prev_img unchanged so a 3rd identical line also holds
+        else:
+            if text:
+                prev_text = text
+            if cur_img:
+                prev_img = cur_img
+    return plan
+
+
 def rewrite_plan(
     plan: Dict[str, Any],
     *,
@@ -2133,6 +2172,9 @@ def main() -> int:
     out_plan = rewrite_plan(plan, scenes_subdir="scenes_clean",
                             scene_dims=scene_dims,
                             cuts_by_segment=cuts_by_segment)
+    # consecutive segments with the SAME narration -> hold the first image (the
+    # p95/p96 dup); then force static motion on ANY consecutive same-image repeat.
+    out_plan = merge_consecutive_duplicate_narration(out_plan)
     out_plan = static_on_consecutive_repeats(out_plan)
 
     outro_dur = 0.0

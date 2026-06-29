@@ -1130,3 +1130,61 @@ def test_static_on_consecutive_repeats():
     assert tl[2]["cuts"][0]["motion"]["mode"] == "pan"       # new file (first b) stays
     assert tl[3]["cuts"][0]["motion"]["mode"] == "static"    # b again after g3 -> static
     assert tl[3]["cuts"][1]["motion"]["mode"] == "static"    # within-segment repeat too
+
+
+def test_merge_consecutive_duplicate_narration_holds_static():
+    # p95/p96 both "Ancestor...?" -> the duplicate segment holds the FIRST
+    # segment's image as ONE static cut (no second animated panel, no re-voiced
+    # loop of the same line).
+    plan = {"timeline": [
+        {"segment_id": "g1", "tts_text": "Ancestor...?", "duration_sec": 3.0,
+         "primary_scene_file": "p95.jpg",
+         "cuts": [{"file": "p95.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g2", "tts_text": "[panicked] Ancestor...?", "duration_sec": 3.0,
+         "primary_scene_file": "p96.jpg",
+         "cuts": [{"file": "p96.jpg", "motion": {"mode": "kenburns"}}]},
+        {"segment_id": "g3", "tts_text": "He turns away.", "duration_sec": 2.0,
+         "primary_scene_file": "p97.jpg",
+         "cuts": [{"file": "p97.jpg", "motion": {"mode": "pan"}}]},
+    ]}
+    tl = rp.merge_consecutive_duplicate_narration(plan)["timeline"]
+    # first segment is untouched
+    assert tl[0]["cuts"][0]["file"] == "p95.jpg"
+    assert tl[0]["cuts"][0]["motion"]["mode"] == "pan"
+    # duplicate (normalized match across mood tag) collapses to one held static cut
+    assert len(tl[1]["cuts"]) == 1
+    assert tl[1]["cuts"][0]["file"] == "p95.jpg"
+    assert tl[1]["cuts"][0]["held"] is True
+    assert tl[1]["cuts"][0]["motion"]["mode"] == "static"
+    assert tl[1]["cuts"][0]["dur"] == 3.0
+    # distinct narration is untouched
+    assert tl[2]["cuts"][0]["file"] == "p97.jpg"
+    assert tl[2]["cuts"][0]["motion"]["mode"] == "pan"
+
+
+def test_merge_consecutive_duplicate_narration_three_in_a_row():
+    plan = {"timeline": [
+        {"segment_id": "g1", "tts_text": "Silence.", "duration_sec": 2.0,
+         "cuts": [{"file": "a.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g2", "tts_text": "Silence.", "duration_sec": 2.0,
+         "cuts": [{"file": "b.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g3", "tts_text": "Silence.", "duration_sec": 2.0,
+         "cuts": [{"file": "c.jpg", "motion": {"mode": "pan"}}]},
+    ]}
+    tl = rp.merge_consecutive_duplicate_narration(plan)["timeline"]
+    assert tl[0]["cuts"][0]["file"] == "a.jpg"
+    assert tl[1]["cuts"][0]["file"] == "a.jpg" and tl[1]["cuts"][0]["held"]
+    assert tl[2]["cuts"][0]["file"] == "a.jpg" and tl[2]["cuts"][0]["held"]
+
+
+def test_merge_consecutive_duplicate_narration_empty_text_not_merged():
+    # empty/whitespace tts_text must NOT count as a duplicate of empty
+    plan = {"timeline": [
+        {"segment_id": "g1", "tts_text": "", "duration_sec": 2.0,
+         "cuts": [{"file": "a.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g2", "tts_text": "  ", "duration_sec": 2.0,
+         "cuts": [{"file": "b.jpg", "motion": {"mode": "pan"}}]},
+    ]}
+    tl = rp.merge_consecutive_duplicate_narration(plan)["timeline"]
+    assert tl[1]["cuts"][0]["file"] == "b.jpg"
+    assert not tl[1]["cuts"][0].get("held")

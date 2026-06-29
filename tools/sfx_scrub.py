@@ -40,14 +40,51 @@ def _is_sfx_token(tok: str) -> bool:
     return False
 
 
+def _content_words(q: str) -> list:
+    """Real spoken-content tokens in a quote: alpha words >=3 chars that are not
+    onomatopoeia. Drives the fragment heuristic (a stub has <=2 of these)."""
+    return [t for t in re.findall(r"[A-Za-z']+", q)
+            if not _is_sfx_token(t) and len(re.sub(r"[^a-z]", "", t.lower())) >= 3]
+
+
 def is_sfx_quote(q: str) -> bool:
     """True when a quoted span carries no real spoken content (pure SFX/garble)."""
     toks = re.findall(r"[A-Za-z']+", q)
     if not toks:
         return bool(re.search(r"[!?]{2,}", q) or q.strip())  # pure punctuation/garble
-    real = [t for t in toks
-            if not _is_sfx_token(t) and len(re.sub(r"[^a-z]", "", t.lower())) >= 3]
-    return len(real) == 0
+    return len(_content_words(q)) == 0
+
+
+# An incomplete fragment is HALF a thought, not a quotable line: a leading-
+# ellipsis continuation ("...serves you right"), a trailing-off stub with almost
+# no content ("Ancestor...?", "And then..."), or a dangling cut-off dash ("But—",
+# "Wait, what—"). Detected by PATTERN, agnostically — no per-series wordlist.
+_LEAD_ELLIPSIS_RE = re.compile(r'^\s*(?:\.{2,}|…)')
+_TRAIL_ELLIPSIS_RE = re.compile(r'(?:\.{2,}|…)\s*[?!]*\s*$')
+_TRAIL_DASH_RE = re.compile(r'[—–-]\s*[?!]*\s*$')
+
+
+def is_fragment_quote(q: str) -> bool:
+    """True for an incomplete, non-standalone quoted fragment (must NOT be voiced).
+
+    A complete punchy line — even a short one ("Kill him!", "Serves them right.")
+    — is NOT a fragment and stays quotable. Pattern-based, series-agnostic.
+    """
+    s = str(q or "").strip()
+    if not s:
+        return False
+    if _LEAD_ELLIPSIS_RE.search(s):
+        return True
+    if (_TRAIL_ELLIPSIS_RE.search(s) or _TRAIL_DASH_RE.search(s)) \
+            and len(_content_words(s)) <= 2:
+        return True
+    return False
+
+
+def is_droppable_quote(q: str) -> bool:
+    """A quoted span that must never be voiced: pure SFX/onomatopoeia OR an
+    incomplete trailing/leading fragment."""
+    return is_sfx_quote(q) or is_fragment_quote(q)
 
 
 _QUOTE_RE = re.compile(r'(["“‘’”])(.+?)(["“‘’”])')
@@ -58,15 +95,22 @@ def sfx_quotes(text: str) -> list:
     return [m.group(2) for m in _QUOTE_RE.finditer(text) if is_sfx_quote(m.group(2))]
 
 
+def droppable_quotes(text: str) -> list:
+    """Every droppable quoted span (SFX or incomplete fragment) in *text*."""
+    return [m.group(2) for m in _QUOTE_RE.finditer(text)
+            if is_droppable_quote(m.group(2))]
+
+
 def scrub_sfx_quotes(text: str) -> str:
-    """Remove pure-SFX quoted spans + obvious dangling lead-ins, conservatively.
-    Real spoken quotes are left untouched. (The proper fix is to re-narrate the
-    beat from panels; this keeps a clean line for the verbatim path meanwhile.)"""
+    """Remove un-voiceable quoted spans (pure SFX/onomatopoeia AND incomplete
+    trailing/leading fragments) + obvious dangling lead-ins, conservatively.
+    Real, complete, punchy quotes are left untouched. (The proper fix is to
+    re-narrate the beat from panels; this keeps a clean line meanwhile.)"""
     # remove an optional lead-in (of/like/saying/colon/comma) TOGETHER with the
-    # SFX quote, so "cries of \"EUAACK\" as he fell" -> "cries as he fell".
+    # dropped quote, so "cries of \"EUAACK\" as he fell" -> "cries as he fell".
     full = re.compile(r'(?:\s*\b(?:of|like|saying)\b|\s*[:,])?\s*'
                       r'(["“‘’”])(.+?)(["“‘’”])')
-    out = full.sub(lambda m: "" if is_sfx_quote(m.group(2)) else m.group(0), text)
+    out = full.sub(lambda m: "" if is_droppable_quote(m.group(2)) else m.group(0), text)
     out = re.sub(r"\s+([,.;:!?])", r"\1", out)
     out = re.sub(r"([,;:])\s*\.", ".", out)
     out = re.sub(r"\s{2,}", " ", out).strip()
@@ -83,4 +127,7 @@ if __name__ == "__main__":   # smoke check
     s = scrub_sfx_quotes('He let out desperate cries of "EUAACK...!! ACK!!!" as he fell.')
     assert "EUAACK" not in s and "ACK" not in s, s
     assert "Kill him" in scrub_sfx_quotes('The order rang out: "Kill him!"')
+    assert is_fragment_quote("Ancestor...?")
+    assert not is_fragment_quote("Kill him!")
+    assert "Ancestor" not in scrub_sfx_quotes('He mutters "Ancestor...?" softly.')
     print("sfx_scrub smoke OK:", repr(s))
