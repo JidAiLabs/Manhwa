@@ -1,5 +1,6 @@
-"""chapter_history: ONE row per chapter for the dashboard, per-stage time
-SUMMED across the prepare/voiceover/heal re-runs (replaces per-JOB spam)."""
+"""chapter_history: ONE row per chapter for the dashboard, per-stage time =
+the LATEST attempt per stage (last-run cost, NOT the lifetime sum across every
+re-run) (replaces per-JOB spam)."""
 from studio.catalog.db import connect
 from studio.dashboard import jobs
 
@@ -19,16 +20,18 @@ def _stage(con, cid, stage, dur, ok=1):
                 "VALUES (?,?,?,?)", (cid, stage, dur, ok))
 
 
-def test_chapter_history_sums_stages_and_orders_recent_first(tmp_path):
+def test_chapter_history_latest_per_stage_and_orders_recent_first(tmp_path):
     con = connect(tmp_path / "s.db")
     _seed(con)
-    # Ch8: a prepare pass + a voiceover pass -> qa_scan and prepped run TWICE
+    # Ch8: a prepare pass + a voiceover pass -> qa_scan and prepped run TWICE.
+    # The row must show the LATEST attempt per stage (last-run cost), NOT the
+    # lifetime sum across both passes.
     _stage(con, 8, "chain:scripted", 600)     # 10 min prep (once)
-    _stage(con, 8, "qa_scan", 240)            # prepare QA
-    _stage(con, 8, "prepped", 90)
+    _stage(con, 8, "qa_scan", 240)            # prepare QA  (earlier attempt)
+    _stage(con, 8, "prepped", 90)             #             (earlier attempt)
     _stage(con, 8, "voiced", 480)             # 8 min voice
-    _stage(con, 8, "prepped", 480)            # voiceover render-prep
-    _stage(con, 8, "qa_scan", 840)            # voiceover QA
+    _stage(con, 8, "prepped", 480)            # voiceover render-prep (LATEST)
+    _stage(con, 8, "qa_scan", 840)            # voiceover QA          (LATEST)
     _stage(con, 8, "render_segment", 570)
     _stage(con, 9, "chain:scripted", 300)     # Ch9 only prepped (most recent)
     con.commit()
@@ -37,13 +40,30 @@ def test_chapter_history_sums_stages_and_orders_recent_first(tmp_path):
     assert [r["chapter_id"] for r in h] == [9, 8]     # most-recently-active first
     ch8 = next(r for r in h if r["chapter_id"] == 8)
     bd = {s["label"]: s["sec"] for s in ch8["breakdown"]}
-    assert bd["QA"] == 240 + 840                       # qa_scan SUMMED across passes
-    assert bd["render-prep"] == 90 + 480              # prepped SUMMED
+    assert bd["QA"] == 840                             # qa_scan: LATEST attempt only
+    assert bd["render-prep"] == 480                   # prepped: LATEST attempt only
     assert bd["prep"] == 600 and bd["voice"] == 480 and bd["render"] == 570
-    assert ch8["total_sec"] == 600 + 240 + 90 + 480 + 480 + 840 + 570
+    assert ch8["total_sec"] == 600 + 480 + 480 + 840 + 570   # latest-per-stage sum
     assert [s["label"] for s in ch8["breakdown"]] == [
         "prep", "voice", "render-prep", "QA", "render"]   # canonical order
     assert ch8["scope_name"] == "Nano Machine · Chapter 8"
+
+
+def test_chapter_history_total_is_last_run_not_lifetime(tmp_path):
+    """A chapter re-run many times during debugging must show the LAST run's
+    cost, not the ever-growing lifetime sum. Same stage, 3 attempts → the row
+    reports the latest (0.5s), never the 630.5s lifetime total."""
+    con = connect(tmp_path / "s.db")
+    _seed(con)
+    _stage(con, 8, "chain:scripted", 600)     # first (slow) debug run
+    _stage(con, 8, "chain:scripted", 30)      # second run
+    _stage(con, 8, "chain:scripted", 0.5)     # latest run (the one to show)
+    con.commit()
+
+    ch8 = next(r for r in jobs.chapter_history(con) if r["chapter_id"] == 8)
+    prep = next(s for s in ch8["breakdown"] if s["label"] == "prep")
+    assert prep["sec"] == 0.5                  # latest attempt, NOT 600+30+0.5
+    assert ch8["total_sec"] == 0.5             # total = latest-per-stage, not 630.5
 
 
 def test_chapter_history_flags_failed_stage(tmp_path):
@@ -68,7 +88,7 @@ def test_chapter_history_recovered_stage_not_flagged(tmp_path):
     prep = next(s for s in jobs.chapter_history(con)[0]["breakdown"]
                 if s["label"] == "prep")
     assert prep["ok"] == 1                          # latest attempt won → no "!"
-    assert prep["sec"] == 700                        # total time still summed
+    assert prep["sec"] == 600                        # latest attempt's time, not sum
 
 
 def test_failed_chapters_only_lists_dead_lettered(tmp_path):

@@ -220,7 +220,8 @@ def queue_view(con: sqlite3.Connection) -> List[Dict[str, Any]]:
 
 # stage_run.stage -> short label, in display order. A stage appears multiple
 # times per chapter (prepare + voiceover both run prep/QA, heal loops re-run
-# them) so we SUM per stage — one row shows the chapter's TOTAL time per activity.
+# them); we report the LATEST attempt per stage so the row shows the LAST run's
+# cost, not an ever-growing lifetime total accumulated across debug re-runs.
 _CHAPTER_STAGE_LABELS = [
     ("chain:scripted", "prep"),
     ("voiced", "voice"),
@@ -233,8 +234,9 @@ _CHAPTER_STAGE_LABELS = [
 def chapter_history(con: sqlite3.Connection,
                     limit: int = 15) -> List[Dict[str, Any]]:
     """One row per chapter for the dashboard: the per-stage time breakdown
-    (summed across prepare/voiceover/heal re-runs) + total, most-recently-active
-    first. Replaces the per-JOB spam — a chapter's whole cost on a single line."""
+    (the LATEST attempt per stage — last-run cost, NOT a lifetime sum across
+    re-runs) + total, most-recently-active first. Replaces the per-JOB spam —
+    a chapter's last-run cost on a single line."""
     # exclude chapters with a RUNNING job — they're shown live in the 'running'
     # section, and their stage_run total would be PARTIAL (an in-progress stage
     # isn't recorded until it finishes) → confusingly different from the running
@@ -248,11 +250,20 @@ def chapter_history(con: sqlite3.Connection,
     out: List[Dict[str, Any]] = []
     for cid, _last in rows:
         agg: Dict[str, Any] = {}
-        # duration = sum across all attempts (total cost incl. retries); ok =
-        # the LATEST attempt's outcome, not MIN-over-history — a stage that FAILED
-        # then recovered must not keep flashing "!" once it has succeeded.
+        # duration AND ok both come from the LATEST attempt per stage (the most
+        # recent stage_run row, ORDER BY id DESC LIMIT 1) — so the row shows the
+        # LAST run's cost, not a lifetime sum that grows with every debug re-run.
+        # ok being latest (not MIN-over-history) also means a stage that FAILED
+        # then recovered won't keep flashing "!" once it has succeeded.
+        # NOTE: "latest attempt" = the last stage_run row; a heal loop that
+        # re-runs a stage MULTIPLE times within a SINGLE run shows only the last
+        # iteration's duration (a slight undercount of heal cost) — acceptable;
+        # upgrade to per-run-session summation only if heal cost visibility matters.
         for stage, dur, ok in con.execute(
-                "SELECT sr.stage, COALESCE(SUM(sr.duration_sec), 0.0), "
+                "SELECT sr.stage, "
+                "(SELECT s2.duration_sec FROM stage_run s2 "
+                " WHERE s2.chapter_id=sr.chapter_id AND s2.stage=sr.stage "
+                " ORDER BY s2.id DESC LIMIT 1), "
                 "(SELECT s2.ok FROM stage_run s2 WHERE s2.chapter_id=sr.chapter_id "
                 " AND s2.stage=sr.stage ORDER BY s2.id DESC LIMIT 1) "
                 "FROM stage_run sr WHERE sr.chapter_id=? GROUP BY sr.stage", (cid,)):
