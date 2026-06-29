@@ -59,6 +59,19 @@ def test_chrome_narration_heals_even_as_a_warning():
     assert "interface" in corr[3].lower() or "view count" in corr[3]
 
 
+def test_shot_description_is_healable_error():
+    # D4: a line that names the camera/shot must heal (re-narrate the story).
+    assert "shot_description" in nh.HEALABLE
+    rep = {"flags": [_flag("shot_description", "ERROR",
+                           "narration names the shot/camera, not the story: "
+                           "'A close-up shot shows his trembling hands.'",
+                           "g0005_p04")]}
+    corr = nh.corrections_from_qa(rep)
+    assert set(corr) == {5}
+    note = corr[5].lower()
+    assert "shot" in note and ("camera" in note or "happens" in note)
+
+
 def test_empty_report_is_empty():
     assert nh.corrections_from_qa({}) == {}
     assert nh.corrections_from_qa({"flags": []}) == {}

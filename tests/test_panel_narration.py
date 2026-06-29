@@ -66,6 +66,25 @@ def test_align_pads_missing_panels_from_understanding():
     assert [p["scene_file"] for p in out] == files
     assert out[1]["line"] == "the beast lunges"
 
+def test_align_pad_never_emits_camera_prose_verbatim():
+    # BUG D4: the understanding `description` is camera/shot framing ("A close-up
+    # shot shows..."). The pad must NOT copy it verbatim — prefer the concrete
+    # action/subjects, else a neutral bridge; never raw camera prose.
+    files = ["a.jpg"]
+    camera = "A close-up shot shows his trembling hands."
+    out = gnp.align_panel_narration(files, [], {"a.jpg": {"description": camera}})
+    assert out[0]["line"] != camera
+    assert not gnp.is_shot_description(out[0]["line"])
+
+    # action/subjects are preferred over a camera-prose description
+    out2 = gnp.align_panel_narration(files, [], {"a.jpg": {
+        "description": camera, "action": "He clenches his fists."}})
+    assert out2[0]["line"] == "He clenches his fists."
+    out3 = gnp.align_panel_narration(files, [], {"a.jpg": {
+        "description": camera, "subjects": ["a wounded prince"]}})
+    assert "wounded prince" in out3[0]["line"]
+
+
 def test_align_is_positional_when_model_omits_scene_file():
     files = ["a.jpg", "b.jpg"]
     model = [{"line": "First."}, {"line": "Second."}]

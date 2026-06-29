@@ -13,9 +13,12 @@ the one-line-per-panel contract. Every surviving panel still gets a line and a
 cut; compression removes verbal drag, NEVER panel coverage or plot:
 1. NO SCREEN READING: do not narrate weather, lighting, hair, clothing, poses,
 facial expressions, or other details the viewer can already see unless that
-detail changes the plot. Each line must advance action, cause, stakes, thought,
-revelation, or consequence. A quick panel may continue the surrounding thought,
-but every panel line must remain an independently speakable complete clause.
+detail changes the plot. NEVER name the shot, camera, panel, image, or frame,
+and NEVER open with "A close-up shot shows...", "The panel focuses on...", or
+"A wide shot captures..." — narrate the STORY and the action, never the picture.
+Each line must advance action, cause, stakes, thought, revelation, or
+consequence. A quick panel may continue the surrounding thought, but every panel
+line must remain an independently speakable complete clause.
 2. POINT, DON'T PAINT: when the source naturally evokes a familiar anime, game,
 movie, superhero, internet, or everyday-life reference, one short comparison
 can replace a paragraph of description. It is figurative framing, never a new
@@ -106,6 +109,32 @@ _PROTAGONIST_HANDLE_RE = re.compile(
 # unresolved-identity window is treated as closed. Conservative on purpose:
 # staying unresolved a few extra panels is safer than mislabeling the figure.
 _UNRESOLVED_CLEAR_AFTER = 5
+
+# SHOT/CAMERA prose: a line that NAMES the shot/panel/frame instead of narrating
+# the story ("A close-up shot shows...", "The panel focuses on...", "A wide shot
+# captures..."). This is the align-pad bug (D4) copying a panel's camera-prose
+# understanding `description` verbatim. Pattern-based + agnostic: (a/an/the) +
+# optional camera adjectives + a shot/picture noun, then a camera/presentation
+# verb. The tight verb set keeps it off ordinary story lines ("The scene shifts.",
+# "A long shadow falls...").
+_SHOT_DESC_RE = re.compile(
+    r"\b(?:an?|the)\s+"
+    r"(?:(?:extreme|medium|wide|low|high|overhead|close[- ]?up|long|tight|"
+    r"establishing|aerial|distant|dramatic|sweeping|bird['’]?s[- ]?eye)\s+){0,3}"
+    r"(?:shot|panel|image|frame|scene|angle|view|close[- ]?up|"
+    r"composition|perspective)\b"
+    r"[^.?!]{0,40}?\b"
+    r"(?:shows?|focus(?:es|ing)?(?:\s+on)?|captures?|depicts?|reveals?|"
+    r"frames?|cuts?\s+to|zooms?(?:\s+(?:in|out))?|pans?\s+(?:to|across|over)|"
+    r"displays?|showcases?|portrays?|presents?)\b",
+    re.I,
+)
+
+
+def is_shot_description(text: str) -> bool:
+    """True when a narration line names the shot/camera/panel/frame instead of
+    narrating the story ('A close-up shot shows...'). Series-agnostic."""
+    return bool(_SHOT_DESC_RE.search(_TAG_RE.sub("", str(text or ""))))
 
 
 def _words(text: str) -> List[str]:
@@ -573,6 +602,15 @@ def analyze_recap_style(
                        "of reading scenery or reactions back to the viewer"),
         })
 
+    shot_desc_count = sum(1 for line in panel_lines if is_shot_description(line))
+    if shot_desc_count:
+        issues.append({
+            "code": "shot_description",
+            "detail": (f"{shot_desc_count} line(s) name the shot/camera/panel "
+                       "(e.g. 'A close-up shot shows...') instead of narrating the "
+                       "story; describe what HAPPENS, never the picture"),
+        })
+
     word_counts = [len(_words(line)) for line in panel_lines if line]
     avg_words = (sum(word_counts) / len(word_counts)) if word_counts else 0.0
     long_count = sum(1 for n in word_counts if n > 22)
@@ -626,6 +664,7 @@ def analyze_recap_style(
             "average_words_per_panel_line": round(avg_words, 2),
             "overlong_panel_lines": long_count,
             "spoken_fragments": fragment_count,
+            "shot_description_lines": shot_desc_count,
             "identity_reveal_leaks": identity_leaks,
         },
         "issues": issues,

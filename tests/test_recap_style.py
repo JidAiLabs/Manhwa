@@ -349,6 +349,28 @@ def test_dedupe_keeps_distinct_lines():
     assert len(beats["beats"][0]["panel_narration"]) == 3
 
 
+def test_shot_description_is_flagged_and_story_line_is_not():
+    # BUG D4: the align pad copied a panel's camera-prose description verbatim
+    # ("A close-up shot shows..."). analyze_recap_style must flag it.
+    assert rs.is_shot_description("A close-up shot shows his trembling hands.")
+    assert rs.is_shot_description("The panel focuses on the bloody blade.")
+    assert rs.is_shot_description("A wide shot captures the burning city.")
+    # normal story lines never trip it
+    assert not rs.is_shot_description("He draws the blade and lunges.")
+    assert not rs.is_shot_description("The scene shifts.")
+    assert not rs.is_shot_description("A long shadow falls across the courtyard.")
+
+    camera = ["A close-up shot shows his trembling hands."] * 3
+    report = _analyze(camera)
+    assert report["metrics"]["shot_description_lines"] == 3
+    assert any(i["code"] == "shot_description" for i in report["issues"])
+
+    story = ["He draws the blade and lunges."] * 3
+    report2 = _analyze(story)
+    assert report2["metrics"]["shot_description_lines"] == 0
+    assert not any(i["code"] == "shot_description" for i in report2["issues"])
+
+
 def test_story_naming_the_figure_resolves_and_allows_name():
     # Once the story's OWN text (OCR) names the figure, the identity is
     # established and the protagonist name is allowed again.

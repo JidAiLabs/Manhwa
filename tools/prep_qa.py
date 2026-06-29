@@ -53,7 +53,7 @@ from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 from narration_consistency import audio_consistency, strip_chrome_opener
 from manifest_freshness import verify_chapter as _verify_chapter_freshness
-from recap_style import analyze_recap_style
+from recap_style import analyze_recap_style, is_shot_description
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
@@ -736,6 +736,29 @@ def raw_caps_voiced_flags(script_obj: Any) -> List[Dict[str, Any]]:
     return flags
 
 
+def shot_description_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """A panel line that NAMES the shot/camera/panel/frame instead of narrating
+    the story ('A close-up shot shows...', 'The panel focuses on...'). This is the
+    align_panel_narration pad copying a panel's camera-prose understanding
+    `description` verbatim — it must be re-narrated as story. ERROR + healable
+    per group (segment_id g####)."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for p in b.get("panel_narration") or []:
+            line = str(p.get("line") or "").strip()
+            if line and is_shot_description(line):
+                flags.append(_flag(
+                    "shot_description", ERROR,
+                    f"narration names the shot/camera, not the story: {line[:80]!r} "
+                    "— re-narrate what HAPPENS in the panel",
+                    scene=str(p.get("scene_file") or ""),
+                    segment_id=seg))
+    return flags
+
+
 def held_repeat_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     """A single panel shown in >=3 consecutive cuts (a frozen/looping repeat with
     a restarting pan — the eye-panel-3x bug). >=4 = panels lost upstream (block);
@@ -1263,7 +1286,10 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
         tile = sum(float(c.get("dur") or 0.0) for c in cuts)
         item_dur = float(item.get("duration_sec") or 0.0)
         if abs(tile - item_dur) > 0.51:
-            flags.append(_flag("cut_gap", WARN,
+            # A residual time-hole = a black screen on the timeline; never ship
+            # it silently. ERROR blocks autopilot's spotless-QA advance and parks
+            # the chapter for review (the render_prep fix removes the cause).
+            flags.append(_flag("cut_gap", ERROR,
                                f"cuts tile {tile:.2f}s of a {item_dur:.2f}s "
                                "item (gap or overlap on screen)",
                                segment_id=seg))
@@ -1577,6 +1603,7 @@ def main() -> int:
     flags.extend(held_repeat_flags(plan))
     flags.extend(sfx_voiced_flags(script_obj))
     flags.extend(raw_caps_voiced_flags(script_obj))
+    flags.extend(shot_description_flags(beats_obj))
     flags.extend(story_flags(plan, beats_obj, vitems))
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
 

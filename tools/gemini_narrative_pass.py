@@ -39,6 +39,7 @@ from narration_safe_rules import SAFE_NARRATION_RULES  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     dedupe_consecutive_panel_lines,
+    is_shot_description,
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
@@ -140,16 +141,18 @@ def _clean_fallback_narration(beat_title: str, what_happens: str) -> str:
 # Mon", "...SINCE OUR COMRA"). Paraphrase what is said into the recap voice instead.
 _DIALOGUE_RULE = (
     "DIALOGUE: PARAPHRASE the bulk of what a character SAYS or THINKS into the "
-    "NARRATOR'S OWN clean words. You MAY quote a SHORT, COMPLETE, punchy real line "
-    "directly — a threat, a taunt, a key line, a name — when it is clean natural "
-    "sentence case and attributed to who says it (e.g. he sneers that it 'serves "
-    "them right'). But NEVER copy raw on-screen / OCR text verbatim (it is ALL-CAPS, "
-    "mis-read, or truncated mid-word, so it reads as garbled shouting); NEVER quote "
-    "a sound effect or onomatopoeia (huh, ugh, keuk, ack, grr, a raw scream); and "
-    "NEVER quote an incomplete, trailing-off fragment such as 'Ancestor...?' or "
-    "'Wait, what—' — finish the thought in your own words instead. When in doubt, "
-    "paraphrase. NEVER voice publication chrome — ads, credits, 'subscribe/follow/"
-    "join our Discord', watermarks, scanlator or site names."
+    "NARRATOR'S OWN clean words — but DO quote occasionally for impact. A few "
+    "SHORT (<=6 words), COMPLETE, punchy real lines per chapter — a threat, a "
+    "taunt, a key line, a name — land harder than any paraphrase (e.g. he mutters "
+    "'I can't move.', she spits 'Damn you.', he sneers that it 'serves them "
+    "right'). Quote where a real line hits hard; paraphrase everything else. Write "
+    "EVERY quote in clean sentence case attributed to who says it. NEVER copy raw "
+    "on-screen / OCR text verbatim (it is ALL-CAPS, mis-read, or truncated mid-"
+    "word, so it reads as garbled shouting); NEVER quote a sound effect or "
+    "onomatopoeia (huh, ugh, keuk, ack, grr, a raw scream); NEVER quote an "
+    "incomplete, trailing-off fragment such as 'Ancestor...?' — finish the thought "
+    "in your own words instead. NEVER voice publication chrome — ads, credits, "
+    "'subscribe/follow/join our Discord', watermarks, scanlator or site names."
 )
 
 
@@ -829,12 +832,21 @@ def align_panel_narration(scene_files, model_panels, understand_by_file=None):
     for f in files:                       # positional fill for unkeyed panels
         if f not in keyed and leftover:
             keyed[f] = leftover.pop(0)
-    for f in files:                       # grounded pad — never empty
+    for f in files:                       # grounded pad — never empty, never camera prose
         if f not in keyed:
             u = understand_by_file.get(f) or {}
-            subj = ", ".join(str(s) for s in (u.get("subjects") or []) if s)
-            keyed[f] = (str(u.get("description") or u.get("action") or "").strip()
-                        or subj.strip() or "The moment holds.")
+            action = str(u.get("action") or "").strip()
+            desc = str(u.get("description") or "").strip()
+            subj = ", ".join(str(s) for s in (u.get("subjects") or []) if s).strip()
+            # D4: the understanding `description` is often camera/shot framing
+            # ("A close-up shot shows..."). NEVER copy that verbatim. Prefer the
+            # concrete action, then a NON-camera description, then the named
+            # subjects; if everything usable is camera prose or empty, leave a
+            # short heal-flaggable bridge instead of reading the picture.
+            keyed[f] = next(
+                (c for c in (action, desc, subj)
+                 if c and not is_shot_description(c)),
+                "The moment holds.")
     out = [{"scene_file": f, "line": keyed[f]} for f in files]
     if leftover and out:                  # fold any remaining overflow into the last panel
         out[-1]["line"] = (out[-1]["line"] + " " + " ".join(leftover)).strip()
@@ -947,17 +959,23 @@ def main() -> int:
         "      UNKNOWN figure is a mystery to preserve — but once the story's own text or the\n"
         "      character's established look identifies someone, use their name. Once introduced,\n"
         "      ration the protagonist's real name and usually use pronouns or a relaxed stand-in.\n"
-        "    - DIALOGUE — quote SPARINGLY, recap-style: PARAPHRASE the bulk into narration and\n"
-        "      QUOTE only a SHORT punchy fragment (a threat, a name, a key line — a few words),\n"
-        "      attributed. Do NOT quote a whole long bubble; NEVER stack two long quotes in a row.\n"
-        "      Good: the Assassins sneer that his 'peasant blood' changes nothing -> a painless death.\n"
-        "      inner_thought -> render as the character's thought (at most one short quote).\n"
-        "      NEVER quote UI text/watermarks/counters/sound-effects — only real character speech.\n"
+        "    - DIALOGUE — quote selectively, recap-style: PARAPHRASE the bulk into narration but\n"
+        "      DO quote occasionally for impact. QUOTE a SHORT (<=6 words), COMPLETE, punchy real\n"
+        "      line (a threat, a name, a key line) in clean sentence case, attributed — e.g. he\n"
+        "      mutters 'I can't move.', she spits 'Damn you.'. A few such quotes per chapter land\n"
+        "      hard; paraphrase everything else. Do NOT quote a whole long bubble; NEVER stack two\n"
+        "      long quotes in a row. Good: the Assassins sneer that his 'peasant blood' changes\n"
+        "      nothing -> a painless death. inner_thought -> render as the character's thought (at\n"
+        "      most one short quote). NEVER quote UI text/watermarks/counters/sound-effects, raw\n"
+        "      ALL-CAPS/garbled OCR, or a trailing-off stub ('Ancestor...?') — only real,\n"
+        "      complete, sentence-case character speech.\n"
         "    - ACTION beats (a fight, a knife drawn, a strike — few words, lots of motion) are the\n"
         "      CLIMAX: describe the PHYSICAL action vividly and grounded — who draws/strikes/dodges\n"
         "      what, and the stakes (e.g. 'Prince Cheon finally rips his hidden knife free to defend\n"
         "      himself'). Do NOT skip them or retreat into vague atmosphere.\n"
-        "    - Present tense, active voice; cinematic but accurate. No camera words.\n"
+        "    - Present tense, active voice; cinematic but accurate. NEVER name the\n"
+        "      shot/camera/panel/image/frame; NEVER begin 'A close-up shot shows...'\n"
+        "      or 'The panel shows...'. Narrate the STORY, not the picture.\n"
         "    - PUBLICATION CHROME: if a panel is a series cover, title/chapter-number card,\n"
         "      publisher or studio logo, app UI screen, or credits page — do NOT describe it.\n"
         "      Never narrate 'the chapter opens with...', view counts, or studio names.\n"

@@ -57,8 +57,10 @@ def is_sfx_quote(q: str) -> bool:
 
 # An incomplete fragment is HALF a thought, not a quotable line: a leading-
 # ellipsis continuation ("...serves you right"), a trailing-off stub with almost
-# no content ("Ancestor...?", "And then..."), or a dangling cut-off dash ("But—",
-# "Wait, what—"). Detected by PATTERN, agnostically — no per-series wordlist.
+# no content ("Ancestor...?", "And then..."), or a CONTENTLESS dangling dash
+# ("Ngh—", a bare "—"). An intentional interruption that carries a real word
+# ("Hey, you—") is a deliberate quotable line and is KEPT. Detected by PATTERN,
+# agnostically — no per-series wordlist.
 _LEAD_ELLIPSIS_RE = re.compile(r'^\s*(?:\.{2,}|…)')
 _TRAIL_ELLIPSIS_RE = re.compile(r'(?:\.{2,}|…)\s*[?!]*\s*$')
 _TRAIL_DASH_RE = re.compile(r'[—–-]\s*[?!]*\s*$')
@@ -68,15 +70,24 @@ def is_fragment_quote(q: str) -> bool:
     """True for an incomplete, non-standalone quoted fragment (must NOT be voiced).
 
     A complete punchy line — even a short one ("Kill him!", "Serves them right.")
-    — is NOT a fragment and stays quotable. Pattern-based, series-agnostic.
+    — is NOT a fragment and stays quotable. A short trailing-dash interruption
+    that carries >=1 real content word ("Hey, you—") is an INTENTIONAL line and
+    is also kept; only a contentless dash stub ("Ngh—", "—") is a fragment.
+    Pattern-based, series-agnostic.
     """
     s = str(q or "").strip()
     if not s:
         return False
     if _LEAD_ELLIPSIS_RE.search(s):
         return True
-    if (_TRAIL_ELLIPSIS_RE.search(s) or _TRAIL_DASH_RE.search(s)) \
-            and len(_content_words(s)) <= 2:
+    content = len(_content_words(s))
+    # a trailing-off ELLIPSIS stub with almost no content ("Ancestor...?")
+    if _TRAIL_ELLIPSIS_RE.search(s) and content <= 2:
+        return True
+    # a dangling DASH is a fragment ONLY when it carries NO real content word
+    # ("Ngh—", a bare "—"); "Hey, you—" (>=1 content word) is an intentional,
+    # quotable interruption and must be KEPT.
+    if _TRAIL_DASH_RE.search(s) and content == 0:
         return True
     return False
 

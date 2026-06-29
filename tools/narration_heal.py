@@ -30,6 +30,7 @@ HEALABLE = {
     "caption_unvoiced", "chrome_narration", "fragment_dangle",
     "filler_narration", "beats_incomplete",
     "empty_item", "silent_group", "grounding_weak",
+    "shot_description",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -55,6 +56,10 @@ def _note_for(code: str, detail: str) -> str:
                 "'the screen/chapter shows'.")
     if code == "fragment_dangle":
         return "The narration is a dangling fragment — make it a complete sentence."
+    if code == "shot_description":
+        return ("This line describes the camera/shot, not the story — re-narrate "
+                "what HAPPENS in the panel; never name a shot, panel, frame, or "
+                "camera.")
     if code in ("beats_incomplete", "empty_item", "silent_group"):
         return ("The narration is empty — describe what actually happens in this "
                 "panel (and cover any on-panel caption).")

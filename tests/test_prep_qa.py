@@ -1274,3 +1274,51 @@ def test_raw_caps_voiced_flags_agnostic():
     ok = {"sections": [{"section_index": 0, "tts_paragraphs_v3":
           ["His HP hit zero and he collapsed."]}]}
     assert pq.raw_caps_voiced_flags(ok) == []
+
+
+def test_clean_short_quote_does_not_trip_raw_caps():
+    # D5: a clean sentence-case quote ("I can't move.") is fine to voice and must
+    # NOT trip the raw-caps OCR-dump verifier.
+    ok = {"sections": [{"section_index": 0, "tts_paragraphs_v3":
+          ['He gasps, "I can\'t move."']}]}
+    assert pq.raw_caps_voiced_flags(ok) == []
+
+
+def test_shot_description_flags_camera_prose_per_group_as_error():
+    # D4: the align pad copied a panel's camera-prose description verbatim. The
+    # voiced narration naming the shot/camera is an ERROR, healable per group.
+    beats = {"beats": [{
+        "group_id": 5,
+        "panel_narration": [
+            {"scene_file": "p000034.jpg",
+             "line": "A close-up shot shows his trembling hands."},
+            {"scene_file": "p000035.jpg", "line": "He clenches his fists."},
+        ],
+    }]}
+    fl = pq.shot_description_flags(beats)
+    assert [f["code"] for f in fl] == ["shot_description"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0005"
+    assert fl[0]["scene"] == "p000034.jpg"
+
+
+def test_shot_description_flags_clean_when_story_lines():
+    beats = {"beats": [{"group_id": 1, "panel_narration": [
+        {"scene_file": "a.jpg", "line": "He draws the blade and lunges."},
+        {"scene_file": "b.jpg", "line": "The scene shifts to the throne room."},
+    ]}]}
+    assert pq.shot_description_flags(beats) == []
+
+
+def test_cut_gap_is_error_not_warn():
+    # D1-backstop: a residual render-plan time-hole (black screen) must BLOCK
+    # autopilot, not ship silently as a WARN.
+    items = [_item("g0001_p00", ["p000001.jpg"], dur=8.0)]
+    items[0]["cuts"] = [{"file": "p000001.jpg", "start": 0.0, "dur": 3.0}]  # 5s hole
+    plan = _plan(items)
+    plan["scene_dims"] = {"p000001.jpg": {"w": 100, "h": 100, "doc": False}}
+    fl = pq.plan_flags(plan, clean_files={"p000001.jpg"},
+                       audio_exists=lambda p: True)
+    gaps = [f for f in fl if f["code"] == "cut_gap"]
+    assert len(gaps) == 1
+    assert gaps[0]["severity"] == "ERROR"
