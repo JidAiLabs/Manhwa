@@ -33,6 +33,14 @@ from gemini_narrative_pass import (                                   # noqa: E4
 
 _SEGMENTS = ("present", "flashback", "dream")
 
+# Cap PANELS PER BEAT (not narration length). A single beat of 29/35 panels
+# overflows the grouping/narration model (gemma4:26b) and parse-fails, which then
+# collapses the whole group to one fallback shot. Keeping beats <= this many
+# panels lets the model emit valid JSON per beat. Each panel still gets its own
+# content-scaled narration downstream — this only bounds how many panels share
+# one context span/shot. Operators can pass --max-beat-len 0 to disable.
+DEFAULT_MAX_BEAT_LEN = 15
+
 GROUP_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
@@ -444,9 +452,12 @@ def main() -> int:
     ap.add_argument("--model", default="gemini-2.5-flash")
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="")
-    ap.add_argument("--max-beat-len", type=int, default=0,
-                    help="explicit cap panels per context span; 0 = trust "
-                         "semantic boundaries with NO global target count")
+    ap.add_argument("--max-beat-len", type=int, default=DEFAULT_MAX_BEAT_LEN,
+                    help="cap PANELS per context span so each beat stays small "
+                         "enough for the model to emit valid JSON (default "
+                         f"{DEFAULT_MAX_BEAT_LEN}); 0 = no cap (trust semantic "
+                         "boundaries). Caps panels-per-beat only, never narration "
+                         "length.")
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="0 = deterministic beat boundaries + segment tags")
     ap.add_argument(
@@ -543,8 +554,9 @@ def main() -> int:
 
     # The reference-channel contract has no magic group count. These spans are
     # context for narration continuity only; panel/cue rows drive the script and
-    # render timeline downstream. A positive --max-beat-len is an operator safety
-    # override, never a default creative target.
+    # render timeline downstream. --max-beat-len caps PANELS PER BEAT (default
+    # DEFAULT_MAX_BEAT_LEN) so an over-long beat never overflows the model and
+    # parse-fails; it never caps narration length. Pass 0 to disable the cap.
     mbl = int(args.max_beat_len or 0)
     shots, chapter = group_panels(story, call_fn, max_beat_len=mbl)
     logline = str((chapter or {}).get("logline") or "").strip()

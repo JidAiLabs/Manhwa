@@ -182,6 +182,65 @@ def test_near_identical_single_cut_noop():
     assert len(out) == 1
 
 
+# ---- FIX 4: narration-bearing panels are protected from the dedup ------------
+# REGRESSION (panel-collapse): a panel that owns its own narration segment must
+# never be dropped as a "duplicate". Only a TRUE same-file consecutive run folds
+# (merge_consecutive_same_image_cuts); distinct files are always kept.
+
+def test_narrated_files_from_plan_collects_owning_panels():
+    plan = {"timeline": [
+        {"segment_id": "g0001_p00", "primary_scene_file": "p1.jpg",
+         "tts_text": "He draws his blade.", "cuts": [{"file": "p1.jpg"}]},
+        {"segment_id": "g0001_p01", "primary_scene_file": "p2.jpg",
+         "tts_text": "", "cuts": [{"file": "p2.jpg"}]},          # no narration -> not owned
+        {"segment_id": "branding_intro", "primary_scene_file": "logo.jpg",
+         "tts_text": "x", "branding": True, "cuts": [{"file": "logo.jpg"}]},  # skipped
+        {"segment_id": "g0002_p00", "primary_scene_file": "scenes/p3.jpg",
+         "tts_text": "[tense] The countdown begins.", "cuts": [{"file": "p3.jpg"}]},
+    ]}
+    got = rp.narrated_files_from_plan(plan)
+    assert got == {"p1.jpg", "p3.jpg"}          # basename; narration-bearing only
+
+
+def test_narration_bearing_panel_survives_near_identical_drop():
+    """Two near-identical DISTINCT files each own a narration line. Without
+    protection the later would be dropped as a dup; once it is in `protect`
+    (because it owns a narration segment) BOTH survive — every distinct narrated
+    panel is shown."""
+    base = _pattern(400, 300)
+    near = (base.astype(np.int16) + 2).clip(0, 255).astype(np.uint8)
+    cuts = [{"file": "p1.jpg", "start": 0.0, "dur": 4.0},
+            {"file": "p2.jpg", "start": 4.0, "dur": 4.0}]
+    imgs = {"p1.jpg": base, "p2.jpg": near}
+    # baseline: unprotected -> the later near-identical panel drops
+    _, dropped = rp.drop_near_identical_cuts(cuts, imgs)
+    assert dropped == ["p2.jpg"]
+    # protected (owns a narration segment) -> nothing dropped, both shown
+    out, dropped = rp.drop_near_identical_cuts(cuts, imgs, protect={"p2.jpg"})
+    assert dropped == []
+    assert [c["file"] for c in out] == ["p1.jpg", "p2.jpg"]
+
+
+def test_true_same_file_consecutive_merges_to_one_kenburns():
+    """A TRUE exact same-FILE consecutive run folds into ONE continuous Ken Burns
+    (the legit collapse we keep) — distinct files are never merged."""
+    plan = {"timeline": [
+        {"segment_id": "g0001_p00", "cuts": [
+            {"file": "p1.jpg", "start": 0.0, "dur": 2.0},
+            {"file": "p1.jpg", "start": 2.0, "dur": 3.0}]},      # same file x2
+        {"segment_id": "g0001_p01", "cuts": [
+            {"file": "p2.jpg", "start": 0.0, "dur": 2.0},
+            {"file": "p3.jpg", "start": 2.0, "dur": 2.0}]},      # distinct files
+    ]}
+    out = rp.merge_consecutive_same_image_cuts(plan)
+    first = out["timeline"][0]["cuts"]
+    assert len(first) == 1                         # same-file run collapsed to one
+    assert first[0]["file"] == "p1.jpg"
+    assert abs(first[0]["dur"] - 5.0) < 1e-6       # summed duration, one Ken Burns
+    second = out["timeline"][1]["cuts"]
+    assert [c["file"] for c in second] == ["p2.jpg", "p3.jpg"]   # distinct never merged
+
+
 # ---- 3. uniform light border trim -------------------------------------------
 
 def test_content_bbox_trims_light_page_margin():

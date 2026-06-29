@@ -68,16 +68,22 @@ def test_build_cuts_protected_story_panel_survives_redundant_verdict():
     assert "p16.jpg" not in files        # unprotected redundant caption still drops
 
 
-def test_drop_caption_cards_keeps_scenes_and_holds_for_caption_only_beats():
+def test_drop_caption_cards_folds_caption_only_beats_without_held_duplicate():
+    """REGRESSION (panel-collapse / p097x3): a caption-only beat must NOT hold a
+    stand-in copy of an adjacent real panel — that manufactured the repeated
+    static cut. It folds (its words ride the adjacent narration upstream) and
+    shows NOTHING of its own; the bare caption card never becomes a shot."""
     caps = {"cap1.jpg", "cap2.jpg"}
     order = [
         (1, ["cap1.jpg", "scene1.jpg", "cap2.jpg"]),  # mixed -> scene only, caps out
-        (2, ["cap1.jpg"]),                              # caption-only -> hold a scene
+        (2, ["cap1.jpg"]),                              # caption-only -> NO held copy
         (3, ["scene3.jpg"]),
     ]
     m = tp.drop_caption_cards(order, caps)
     assert m[1] == ["scene1.jpg"]      # the bare cards drop; the scene stays
-    assert m[2] == ["scene1.jpg"]      # held the previous real scene (never blank)
+    assert m[2] == []                  # caption-only: no held neighbor duplicate
+    assert m[2] != ["scene1.jpg"]      # not the previous real panel
+    assert m[2] != ["scene3.jpg"]      # not the next real panel either
     assert m[3] == ["scene3.jpg"]
     # nothing flagged -> unchanged
     assert tp.drop_caption_cards([(1, ["a.jpg"])], set()) == {1: ["a.jpg"]}

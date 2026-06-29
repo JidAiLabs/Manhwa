@@ -135,6 +135,19 @@ def _clean_fallback_narration(beat_title: str, what_happens: str) -> str:
     return "The scene shifts."
 
 
+def demote_backfilled_error(beat: Dict[str, Any]) -> Dict[str, Any]:
+    """A GROUP-level JSON parse failure sets `error`, but the per-panel narration
+    is still backfilled (one valid line per surviving scene_file). Once those
+    lines exist the beat carries REAL narration — rename the parse-failure flag to
+    `group_parse_error` so no downstream stage (script_expander, prep QA, resume)
+    silences a beat that has valid lines, while keeping the telemetry. No-op on a
+    healthy beat, and on an error beat with no usable panel_narration the flag
+    stays so it is still regenerated/handled as a failure."""
+    if beat.get("error") and beat.get("panel_narration"):
+        beat["group_parse_error"] = beat.pop("error")
+    return beat
+
+
 # Convey dialogue in the NARRATOR'S clean words. The on-screen bubble text is raw
 # OCR — ALL-CAPS, frequently mis-read, truncated mid-word, or a pure sound effect —
 # so copying it verbatim reads as garbled shouting ("KILL HIM!", "SERVES YOU RIGHT!
@@ -1224,6 +1237,10 @@ def main() -> int:
         assert len(beat["panel_narration"]) == len(surviving), (
             f"panel_narration/scene_files mismatch in group {gid}")
         beat["narration"] = " ".join(p["line"] for p in beat["panel_narration"]).strip() or beat.get("narration", "")
+
+        # The per-panel backfill above gives even a parse-failed beat valid lines;
+        # demote the silencing `error` flag so those lines actually reach render.
+        demote_backfilled_error(beat)
 
         # Guarantee exactly one sanitized selection entry per scene (defaults to
         # 'keep' so a parse gap never silently drops a panel).

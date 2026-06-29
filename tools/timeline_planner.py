@@ -1328,31 +1328,15 @@ def caption_files(vision_path: str) -> "set":
 def drop_caption_cards(group_order: List[tuple], caption_set: "set") -> Dict[int, List[str]]:
     """Per beat, show its NON-caption panels (real scenes + in-world screens) and
     drop the bare caption cards — their words ride the narration. A beat left with
-    nothing but captions HOLDS the nearest real panel (previous preferred, else
-    next) so the narration never plays over a blank black card. group_order is an
+    nothing but captions shows NOTHING of its own (empty list): it must NOT hold a
+    stand-in copy of an adjacent real panel — that manufactured a repeated static
+    cut (the p097x3 panel-collapse symptom). Caption-only beats are already folded
+    into a same-segment neighbour upstream (story_group.merge_caption_solos), so a
+    bare card reaching here has no real panel of its own to show. group_order is an
     ordered list of (group_id, [panel basenames])."""
     if not caption_set:
         return {gid: list(files) for gid, files in group_order}
-    shown: Dict[int, Optional[List[str]]] = {}
-    for gid, files in group_order:
-        keep = [f for f in files if f not in caption_set]
-        shown[gid] = keep or None                       # None -> all-caption, fill
-    prev: Optional[str] = None
-    for gid, _ in group_order:
-        if shown[gid]:
-            prev = shown[gid][-1]
-        elif prev:
-            shown[gid] = [prev]
-    nxt: Optional[str] = None
-    for gid, files in reversed(group_order):
-        if shown[gid]:
-            nxt = shown[gid][0]
-        elif nxt:
-            shown[gid] = [nxt]
-    for gid, files in group_order:                       # whole beat was captions
-        if not shown[gid]:                               # and no scene anywhere
-            shown[gid] = list(files[:1])
-    return {gid: v for gid, v in shown.items()}
+    return {gid: [f for f in files if f not in caption_set] for gid, files in group_order}
 
 
 # -----------------------------
@@ -1490,8 +1474,11 @@ def main() -> int:
             dropped_summary.append({"group_id": group_id,
                                     "dropped_publication_chrome": scene_files})
             continue
-        # caption cards out, real scenes (held if needed) in — words stay in narration
-        scene_files = montage.get(group_id) or scene_files
+        # caption cards out, real scenes in — words stay in narration. Respect an
+        # EXPLICIT empty montage entry (a caption-only beat shows nothing of its
+        # own; never hold a stand-in copy of a neighbour) — only fall back to the
+        # group's own files when the beat is absent from the montage entirely.
+        scene_files = montage.get(group_id, scene_files)
 
         # Filter (clean preferred)
         if args.prefer_clean and args.clean_scene_dir and scene_files:

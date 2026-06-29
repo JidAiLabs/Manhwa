@@ -61,6 +61,21 @@ def test_default_grouping_has_no_magic_panel_cap():
     assert _files(shots) == [order]
 
 
+def test_default_max_beat_len_caps_group_size():
+    """REGRESSION (panel-collapse): the CLI now defaults to a finite cap so a huge
+    consecutive run is split into gemma-sized beats (a 29/35-panel group overflows
+    gemma4:26b and parse-fails). The cap limits PANELS PER BEAT only — it never
+    caps a panel's narration length."""
+    assert sg.DEFAULT_MAX_BEAT_LEN == 15
+    order = [f"p{i}" for i in range(40)]
+    shots = sg.repair_to_shots(order, [
+        {"scene_files": order, "segment": "present", "arc_label": "one long battle"}],
+        max_beat_len=sg.DEFAULT_MAX_BEAT_LEN)
+    # every emitted beat stays within the cap; full coverage preserved
+    assert all(len(s["scene_files"]) <= sg.DEFAULT_MAX_BEAT_LEN for s in shots)
+    assert [f for s in shots for f in s["scene_files"]] == order
+
+
 def test_flashback_segment_is_carried():
     shots = sg.repair_to_shots(ORDER[:3], [
         {"scene_files": ["p0"], "segment": "present"},

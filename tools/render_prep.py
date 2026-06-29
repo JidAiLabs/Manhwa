@@ -1580,6 +1580,26 @@ def _collapse_same_image_cuts_within_item(cuts: List[Dict[str, Any]]) -> List[Di
     return out
 
 
+def narrated_files_from_plan(plan: Dict[str, Any]) -> set:
+    """Every file that OWNS a distinct narration segment in the plan — the
+    primary panel of each per-panel narration item. Such a panel carries its own
+    spoken line and must NEVER be dropped as a 'duplicate' by the seam / visual /
+    near-identical / cross-segment dedup (the panel-collapse regression dropped
+    distinct narrated panels). A TRUE exact same-file consecutive run still folds
+    via merge_consecutive_same_image_cuts; caption / held / fallback panels carry
+    no narration of their own and stay droppable. Basenames, branding skipped."""
+    out: set = set()
+    for it in (plan or {}).get("timeline") or []:
+        if not isinstance(it, dict) or it.get("branding"):
+            continue
+        if not str(it.get("tts_text") or "").strip():
+            continue
+        pf = os.path.basename(str(it.get("primary_scene_file") or ""))
+        if pf:
+            out.add(pf)
+    return out
+
+
 def merge_consecutive_same_image_cuts(plan: Dict[str, Any]) -> Dict[str, Any]:
     """AGNOSTIC: when the SAME source image is shown across consecutive cuts, show
     it ONCE with ONE slow Ken Burns spanning the full merged duration — NOT static,
@@ -1906,6 +1926,16 @@ def main() -> int:
     system_files = {f for f, v in vision_item.items()
                     if str(v.get("panel_kind") or "").strip().lower() == "system"}
 
+    # Every panel that OWNS a distinct narration segment must survive the dedup —
+    # a panel carrying its own spoken line is never a "duplicate" (only a TRUE
+    # same-file consecutive run folds, via merge_consecutive_same_image_cuts).
+    # This is the no-drop-distinct guarantee that keeps all 113 narrated panels.
+    narrated_files = narrated_files_from_plan(plan)
+    protect_files = system_files | narrated_files
+    if narrated_files:
+        print(f"[ok] protecting {len(narrated_files)} narration-bearing panel(s) "
+              f"from the duplicate-drop")
+
     scenes_dir = os.path.join(args.episode_dir, "scenes")
     img_cache: Dict[str, Optional[np.ndarray]] = {}
 
@@ -2102,12 +2132,12 @@ def main() -> int:
     for item in plan.get("timeline") or []:
         cuts = item.get("cuts") or []
         new_cuts, dropped = drop_contained_duplicate_cuts(
-            cuts, geom, protect=system_files)
+            cuts, geom, protect=protect_files)
         if len(new_cuts) > 1:
             imgs = {str(c["file"]): _img(str(c["file"])) for c in new_cuts}
             imgs = {k: v for k, v in imgs.items() if v is not None}
             new_cuts, vdropped = drop_visual_duplicate_cuts(
-                new_cuts, imgs, protect=system_files)
+                new_cuts, imgs, protect=protect_files)
             dropped = list(dropped) + vdropped
             # near-identical SAME-SIZE pair (the 'reaction face with ?' repeat):
             # the containment filter above only catches small-in-big seam dups.
@@ -2115,7 +2145,7 @@ def main() -> int:
                 imgs = {k: v for k, v in imgs.items()
                         if k in {str(c["file"]) for c in new_cuts}}
                 new_cuts, ndropped = drop_near_identical_cuts(
-                    new_cuts, imgs, protect=system_files)
+                    new_cuts, imgs, protect=protect_files)
                 dropped = list(dropped) + ndropped
                 if ndropped:
                     print(f"[ok] {item.get('segment_id')}: "
@@ -2207,7 +2237,7 @@ def main() -> int:
     for _round in range(3):
         cuts_by_segment, xdropped = drop_cross_segment_duplicate_cuts(
             cuts_by_segment, order, _trimmed_clean, thresh=0.84,
-            coverage_by_file=cov_all, exempt=exempt_all, protect=system_files)
+            coverage_by_file=cov_all, exempt=exempt_all, protect=protect_files)
         for seg, f in xdropped:
             sole = (len(cuts_by_segment[seg]) == 1
                     and str(cuts_by_segment[seg][0]["file"]) == f)

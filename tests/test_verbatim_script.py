@@ -369,19 +369,48 @@ def test_cli_segment_ids_per_panel(tmp_path):
     assert len(sec["tts_paragraphs_v3"]) == 3
 
 
-def test_error_beat_is_silenced_even_with_panel_narration():
-    """An error beat with a padded panel_narration must still produce a single
-    'The scene continues.' paragraph — the panel line must not be voiced."""
-    beats = [{"group_id": 5, "error": "parse_failed", "scene_files": ["p1.jpg"],
-              "panel_narration": [{"scene_file": "p1.jpg", "line": "Some hallucinated line."}]}]
-    payload = {"beats": [{"group_id": 5, "scene_files": ["p1.jpg"]}]}
+def test_error_beat_with_valid_panel_narration_emits_one_shot_per_panel():
+    """REGRESSION (panel-collapse): a group whose GROUP-level JSON parse failed
+    still gets VALID per-panel lines backfilled (one per scene_file). The
+    `error` flag must NOT discard them — every panel keeps its own shot, so the
+    union of shown scene_files covers ALL panels (not collapsed to one
+    'The scene continues.' stand-in showing only the first panel)."""
+    beats = [{"group_id": 5, "error": "parse_failed_after_retries",
+              "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"],
+              "panel_narration": [
+                  {"scene_file": "p1.jpg", "line": "He steps onto the cracked arena floor."},
+                  {"scene_file": "p2.jpg", "line": "The hidden quest window flares to life."},
+                  {"scene_file": "p3.jpg", "line": "The countdown spirals toward the final number."}]}]
+    payload = {"beats": [{"group_id": 5, "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg"]}]}
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=beats, payload=payload,
+        word_target=120, genre_mode="action", proper_case=None, wpm=170,
+        tts_merge_short=False)
+    # one shot per panel — NOT collapsed to a single allowed[:1] stand-in
+    assert len(sec["shots"]) == 3
+    union = {f for s in sec["shots"] for f in (s.get("scene_files") or [])}
+    assert union == {"p1.jpg", "p2.jpg", "p3.jpg"}
+    joined = " ".join(sec["script_paragraphs"]).lower()
+    assert "the scene continues" not in joined
+    assert "quest window" in joined
+
+
+def test_error_beat_with_only_placeholder_lines_folds_to_one_shot():
+    """An error beat whose per-panel lines are empty/placeholder
+    ('The scene continues.') has nothing real to voice — it still folds to a
+    single fallback shot rather than emitting hollow per-panel cuts."""
+    beats = [{"group_id": 6, "error": "parse_failed_after_retries",
+              "scene_files": ["p1.jpg", "p2.jpg"],
+              "panel_narration": [
+                  {"scene_file": "p1.jpg", "line": "The scene continues."},
+                  {"scene_file": "p2.jpg", "line": ""}]}]
+    payload = {"beats": [{"group_id": 6, "scene_files": ["p1.jpg", "p2.jpg"]}]}
     sec = se._build_verbatim_section(
         section_index=0, chunk=beats, payload=payload,
         word_target=120, genre_mode="action", proper_case=None, wpm=170)
-    joined = " ".join(sec["script_paragraphs"]).lower()
-    assert "hallucinated" not in joined
-    assert "the scene continues" in joined
     assert len(sec["shots"]) == 1
+    joined = " ".join(sec["script_paragraphs"]).lower()
+    assert "the scene continues" in joined
 
 
 def test_legacy_path_unchanged_when_no_panel_narration():

@@ -12,6 +12,34 @@ _SPEC.loader.exec_module(gnp)  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
+# REGRESSION (panel-collapse): a parse-failed beat whose per-panel narration
+# was backfilled must NOT keep the silencing `error` flag — it carries valid
+# lines now, so the flag is renamed to `group_parse_error` (telemetry only).
+# ---------------------------------------------------------------------------
+
+def test_demote_backfilled_error_renames_flag_when_lines_present():
+    beat = {"group_id": 3, "error": "parse_failed_after_retries",
+            "panel_narration": [{"scene_file": "p1.jpg", "line": "He draws his blade."}]}
+    out = gnp.demote_backfilled_error(beat)
+    assert "error" not in out                       # no longer silences downstream
+    assert out["group_parse_error"] == "parse_failed_after_retries"   # telemetry kept
+    assert out["panel_narration"]                   # the real lines survive
+
+
+def test_demote_backfilled_error_keeps_flag_without_lines():
+    beat = {"group_id": 4, "error": "parse_failed_after_retries", "panel_narration": []}
+    out = gnp.demote_backfilled_error(beat)
+    assert out["error"] == "parse_failed_after_retries"   # nothing to honor -> stays errored
+    assert "group_parse_error" not in out
+
+
+def test_demote_backfilled_error_noop_on_healthy_beat():
+    beat = {"group_id": 5, "panel_narration": [{"scene_file": "p1.jpg", "line": "x"}]}
+    out = gnp.demote_backfilled_error(beat)
+    assert "error" not in out and "group_parse_error" not in out
+
+
+# ---------------------------------------------------------------------------
 # Task 3-pre: build_arg_parser + --understood flag
 # ---------------------------------------------------------------------------
 

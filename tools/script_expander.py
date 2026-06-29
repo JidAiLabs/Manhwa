@@ -895,15 +895,23 @@ def _build_verbatim_section(
         if payload_beat is None:
             pbeats = payload.get("beats") or []
             payload_beat = pbeats[idx] if idx < len(pbeats) and isinstance(pbeats[idx], dict) else {}
-        # Error beats must be silenced even if panel_narration was padded in.
-        panel_lines = [] if b.get("error") else (b.get("panel_narration") or [])
+        # HONOR per-panel lines regardless of the group-level `error` flag: a
+        # failed GROUP-level JSON parse still backfills VALID per-panel narration
+        # (one line per scene_file, see gemini_narrative_pass). Discarding them on
+        # `error` collapsed a 29/35-panel group to ONE "The scene continues." shot
+        # showing only allowed[:1] — the panel-collapse regression. A genuinely
+        # empty/placeholder beat still folds to one fallback shot below.
+        panel_lines = b.get("panel_narration") or []
         if panel_lines:
             # Per-panel path (Chunk 5): each panel's line → its own paragraph +
-            # shot, aligned by construction (no positional guessing).
+            # shot, aligned by construction (no positional guessing). Keep a line
+            # ONLY when it has real text and is not the parse-failure placeholder.
             items = [
-                (str(p.get("line") or "").strip(), [str(p.get("scene_file") or "").strip()])
+                (ln, [sf])
                 for p in panel_lines
-                if str(p.get("line") or "").strip()
+                for ln in [str(p.get("line") or "").strip()]
+                for sf in [str(p.get("scene_file") or "").strip()]
+                if ln and ln.lower() != "the scene continues."
             ]
             if not items:
                 # base is un-normalized here; the inner loop normalizes each line
