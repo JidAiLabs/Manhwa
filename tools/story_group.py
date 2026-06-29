@@ -300,20 +300,40 @@ def merge_caption_solos(shots: List[Dict[str, Any]], caption_set: set
                         ) -> List[Dict[str, Any]]:
     """A beat made of ONLY caption panels has no art to show — its bare text-on-
     plain image would be the entire shot. Fold it into the adjacent beat of the
-    SAME segment (prefer the previous one) so the caption's words ride that beat's
-    narration and the text image gets deduped. A closing caption with no same-
-    segment neighbour stays as-is. Renumbers shot_id to stay contiguous."""
+    SAME segment so the caption's words ride that beat's narration and the bubble
+    is never a standalone shown shot. PREFER the previous beat (a caption usually
+    closes the moment before it); a LEADING caption with no same-segment beat
+    before it folds FORWARD into the next same-segment beat (an intro caption
+    belongs WITH the moment it sets up — never stranded before it). A caption with
+    no same-segment neighbour on either side stays as-is. Renumbers shot_id."""
     cap = set(caption_set or [])
 
     def all_caption(s: Dict[str, Any]) -> bool:
         return bool(s["scene_files"]) and all(f in cap for f in s["scene_files"])
 
-    out: List[Dict[str, Any]] = []
+    # pass 1: fold backward into the previous same-segment beat (preferred).
+    back: List[Dict[str, Any]] = []
     for s in shots:
-        if all_caption(s) and out and out[-1]["segment"] == s["segment"]:
-            out[-1]["scene_files"].extend(s["scene_files"])     # weave into prev beat
+        if all_caption(s) and back and back[-1]["segment"] == s["segment"]:
+            back[-1]["scene_files"].extend(s["scene_files"])     # weave into prev beat
         else:
-            out.append({**s, "scene_files": list(s["scene_files"])})
+            back.append({**s, "scene_files": list(s["scene_files"])})
+
+    # pass 2: a caption-only beat that survived (no previous same-segment beat —
+    # it leads its segment) folds FORWARD into the next same-segment beat.
+    out: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(back):
+        s = back[i]
+        if (all_caption(s) and i + 1 < len(back)
+                and back[i + 1]["segment"] == s["segment"]):
+            nxt = back[i + 1]
+            nxt["scene_files"] = list(s["scene_files"]) + list(nxt["scene_files"])
+            out.append(nxt)
+            i += 2
+        else:
+            out.append(s)
+            i += 1
     for i, s in enumerate(out, 1):
         s["shot_id"] = i
     return out

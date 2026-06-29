@@ -268,6 +268,41 @@ def test_title_card_files_protects_story_system_cards_not_chrome():
     assert "d" not in cards                  # long promo is chrome, not protected
 
 
+def test_leading_caption_folds_forward_into_next_same_segment_beat():
+    # A caption that INTRODUCES the moment after it (no previous same-segment beat
+    # to fold back into) must ride the NEXT beat's art + narration, never stand
+    # alone as a shown bubble. (story_group SYSTEM prompt: never strand an intro
+    # caption before the moment it sets up.)
+    shots = [
+        {"shot_id": 1, "scene_files": ["c0"], "segment": "present", "arc_label": "intro cap"},
+        {"shot_id": 2, "scene_files": ["p1", "p2"], "segment": "present", "arc_label": "scene"}]
+    merged = sg.merge_caption_solos(shots, {"c0"})
+    assert [s["scene_files"] for s in merged] == [["c0", "p1", "p2"]]
+    assert [s["shot_id"] for s in merged] == [1]
+
+
+def test_caption_only_kept_out_of_standalone_shots_but_text_rides_neighbor():
+    # caption/empty/chrome are excluded as STANDALONE shots: empty/chrome never
+    # enter `story`; a caption folds into the adjacent ART beat so the bubble is
+    # never shown while its words stay in that beat for the narrator.
+    panels = [{"scene_file": "p0", "panel_kind": "story"},
+              {"scene_file": "cap", "panel_kind": "caption"},
+              {"scene_file": "emp", "panel_kind": "empty"},
+              {"scene_file": "p3", "panel_kind": "story"}]
+    nonstory = sg.nonstory_files(panels)             # empty excluded from `story`
+    assert "emp" in nonstory and "cap" not in nonstory
+    shots = [
+        {"shot_id": 1, "scene_files": ["p0"], "segment": "present", "arc_label": "a"},
+        {"shot_id": 2, "scene_files": ["cap"], "segment": "present", "arc_label": "c"},
+        {"shot_id": 3, "scene_files": ["p3"], "segment": "present", "arc_label": "b"}]
+    merged = sg.merge_caption_solos(shots, sg.caption_files(panels))
+    # no shot is caption-only: the caption rides p0's beat; no standalone bubble
+    cap = sg.caption_files(panels)
+    assert not any(s["scene_files"] and all(f in cap for f in s["scene_files"])
+                   for s in merged)
+    assert ["cap"] not in [s["scene_files"] for s in merged]
+
+
 def test_caption_closer_with_no_same_segment_neighbour_stays():
     shots = [
         {"shot_id": 1, "scene_files": ["p0"], "segment": "flashback", "arc_label": "x"},

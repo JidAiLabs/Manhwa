@@ -1115,21 +1115,104 @@ def test_judge_cut_visuals_drops_junk_keeps_good(tmp_path, monkeypatch):
     assert "sysy.jpg" not in calls          # exempt never even judged
 
 
-def test_static_on_consecutive_repeats():
-    # a panel repeated in consecutive cuts must NOT re-play its pan -> static.
+def test_merge_same_image_collapses_within_item_to_one_kenburns_cut():
+    # 3 consecutive same-image cuts in ONE item -> 1 merged cut spanning the total
+    # duration, with a single non-static slow Ken Burns (not N frozen holds).
     plan = {"timeline": [
-        {"segment_id": "g1", "cuts": [{"file": "a.jpg", "motion": {"mode": "pan"}}]},
-        {"segment_id": "g2", "cuts": [{"file": "a.jpg", "motion": {"mode": "pan"}}]},
-        {"segment_id": "g3", "cuts": [{"file": "b.jpg", "motion": {"mode": "pan"}}]},
-        {"segment_id": "g4", "cuts": [{"file": "b.jpg", "motion": {"mode": "kenburns"}},
-                                      {"file": "b.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g1", "duration_sec": 14.0, "cuts": [
+            {"file": "a.jpg", "start": 0.0, "dur": 4.0, "motion": {"mode": "pan"}},
+            {"file": "a.jpg", "start": 4.0, "dur": 5.0, "motion": {"mode": "static"}},
+            {"file": "a.jpg", "start": 9.0, "dur": 5.0, "motion": {"mode": "static"}},
+        ]},
     ]}
-    tl = rp.static_on_consecutive_repeats(plan)["timeline"]
-    assert tl[0]["cuts"][0]["motion"]["mode"] == "pan"       # first stays
-    assert tl[1]["cuts"][0]["motion"]["mode"] == "static"    # cross-segment repeat
-    assert tl[2]["cuts"][0]["motion"]["mode"] == "pan"       # new file (first b) stays
-    assert tl[3]["cuts"][0]["motion"]["mode"] == "static"    # b again after g3 -> static
-    assert tl[3]["cuts"][1]["motion"]["mode"] == "static"    # within-segment repeat too
+    cuts = rp.merge_consecutive_same_image_cuts(plan)["timeline"][0]["cuts"]
+    assert len(cuts) == 1 and cuts[0]["file"] == "a.jpg"
+    assert round(cuts[0]["dur"], 4) == 14.0                  # spans the full duration
+    m = cuts[0]["motion"]
+    assert m["mode"] != "static" and m["strength"] > 0       # NOT static
+    assert m["zoom"]["start"] != m["zoom"]["end"]            # a real Ken Burns
+
+
+def test_merge_same_image_one_continuous_slow_kenburns_across_segments():
+    # production case: p92 held over 3 per-panel narration SEGMENTS (g0024_p20,
+    # g0025_p00, g0025_p01) by cap_repeats_with_holds. Show the image ONCE with one
+    # slow Ken Burns spanning the whole run; per-segment audio + timing untouched.
+    plan = {"timeline": [
+        {"segment_id": "g0024_p20", "duration_sec": 4.0, "tts_audio": "a20.wav",
+         "cuts": [{"file": "p92.jpg", "start": 0.0, "dur": 4.0, "motion": {"mode": "pan"}}]},
+        {"segment_id": "g0025_p00", "duration_sec": 5.0, "tts_audio": "b00.wav",
+         "cuts": [{"file": "p92.jpg", "start": 0.0, "dur": 5.0, "held": True,
+                   "motion": {"mode": "static", "zoom": {"start": 1.0, "end": 1.0},
+                              "strength": 0.0}}]},
+        {"segment_id": "g0025_p01", "duration_sec": 5.0, "tts_audio": "b01.wav",
+         "cuts": [{"file": "p92.jpg", "start": 0.0, "dur": 5.0, "held": True,
+                   "motion": {"mode": "static", "zoom": {"start": 1.0, "end": 1.0},
+                              "strength": 0.0}}]},
+        {"segment_id": "g0026_p00", "duration_sec": 3.0, "tts_audio": "c.wav",
+         "cuts": [{"file": "p93.jpg", "start": 0.0, "dur": 3.0, "motion": {"mode": "pan"}}]},
+    ]}
+    tl = rp.merge_consecutive_same_image_cuts(plan)["timeline"]
+    # audio + per-segment timing intact: same items, same audio, same durations
+    assert [it["segment_id"] for it in tl] == \
+        ["g0024_p20", "g0025_p00", "g0025_p01", "g0026_p00"]
+    assert [it["tts_audio"] for it in tl] == ["a20.wav", "b00.wav", "b01.wav", "c.wav"]
+    assert [it["cuts"][0]["dur"] for it in tl] == [4.0, 5.0, 5.0, 3.0]
+    run = [tl[0]["cuts"][0], tl[1]["cuts"][0], tl[2]["cuts"][0]]
+    assert all(c["file"] == "p92.jpg" for c in run)              # one image, shown once
+    # NOT static / not frozen holds: every cut in the run animates
+    assert all(c["motion"]["mode"] != "static" and c["motion"]["strength"] > 0
+               for c in run)
+    # ONE continuous slow Ken Burns: head starts the pan, tail ends it, each slice
+    # continuous at the boundary (no restart, spread over the merged span)
+    assert run[0]["motion"]["zoom"]["start"] == rp._MERGE_ZOOM_START
+    assert run[2]["motion"]["zoom"]["end"] == rp._MERGE_ZOOM_END
+    assert run[0]["motion"]["zoom"]["start"] != run[2]["motion"]["zoom"]["end"]
+    assert run[0]["motion"]["zoom"]["end"] == run[1]["motion"]["zoom"]["start"]
+    assert run[1]["motion"]["zoom"]["end"] == run[2]["motion"]["zoom"]["start"]
+    # the distinct image after the run is untouched
+    assert tl[3]["cuts"][0]["motion"] == {"mode": "pan"}
+
+
+def test_merge_same_image_distinct_images_untouched():
+    plan = {"timeline": [
+        {"segment_id": "g1", "duration_sec": 4.0,
+         "cuts": [{"file": "a.jpg", "start": 0.0, "dur": 4.0, "motion": {"mode": "pan"}}]},
+        {"segment_id": "g2", "duration_sec": 4.0,
+         "cuts": [{"file": "b.jpg", "start": 0.0, "dur": 4.0, "motion": {"mode": "kb"}}]},
+    ]}
+    tl = rp.merge_consecutive_same_image_cuts(plan)["timeline"]
+    assert tl[0]["cuts"][0]["motion"] == {"mode": "pan"}
+    assert tl[1]["cuts"][0]["motion"] == {"mode": "kb"}
+
+
+def test_merge_same_image_branding_breaks_the_run():
+    # the same image either side of a branding item is NOT one run
+    plan = {"timeline": [
+        {"segment_id": "g1", "duration_sec": 4.0,
+         "cuts": [{"file": "a.jpg", "start": 0.0, "dur": 4.0, "motion": {"mode": "pan"}}]},
+        {"segment_id": "branding_outro", "branding": "outro", "cuts": []},
+        {"segment_id": "g2", "duration_sec": 4.0,
+         "cuts": [{"file": "a.jpg", "start": 0.0, "dur": 4.0, "motion": {"mode": "pan"}}]},
+    ]}
+    tl = rp.merge_consecutive_same_image_cuts(plan)["timeline"]
+    assert tl[0]["cuts"][0]["motion"] == {"mode": "pan"}
+    assert tl[2]["cuts"][0]["motion"] == {"mode": "pan"}
+
+
+def test_merge_same_image_longer_run_is_slower():
+    # the per-second zoom rate = total_zoom_delta / run_duration, so a longer merge
+    # moves slower (the user's "slowed to span the full duration").
+    def _rate(durs):
+        plan = {"timeline": [
+            {"segment_id": f"g{i}", "duration_sec": d,
+             "cuts": [{"file": "x.jpg", "start": 0.0, "dur": d, "motion": {"mode": "s"}}]}
+            for i, d in enumerate(durs)]}
+        tl = rp.merge_consecutive_same_image_cuts(plan)["timeline"]
+        total = sum(durs)
+        delta = tl[-1]["cuts"][0]["motion"]["zoom"]["end"] - \
+            tl[0]["cuts"][0]["motion"]["zoom"]["start"]
+        return delta / total
+    assert _rate([4.0, 5.0, 5.0]) < _rate([2.0, 2.0])       # longer span -> slower
 
 
 def test_merge_consecutive_duplicate_narration_holds_static():
@@ -1188,3 +1271,51 @@ def test_merge_consecutive_duplicate_narration_empty_text_not_merged():
     tl = rp.merge_consecutive_duplicate_narration(plan)["timeline"]
     assert tl[1]["cuts"][0]["file"] == "b.jpg"
     assert not tl[1]["cuts"][0].get("held")
+
+
+# ---- husk safety net: system-card protection must not shield a husk ----------
+
+def test_empty_husk_is_dropped_even_when_tagged_system():
+    # An empty-bubble husk (no recoverable art after blanking) must DROP even if a
+    # system_box was detected on it — the system-card protection cannot keep a
+    # contentless husk on screen (Nano ch1 p000020 was tagged sys -> shown 4.3s).
+    assert rp.exempt_from_drop(
+        recoverable=False, sys_box=True, title_card=False, rich=False,
+        visual_story=False, panel_kind="system", has_ocr=True) is False
+    # a husk a flat-card heuristic mislabeled a title card also drops
+    assert rp.exempt_from_drop(
+        recoverable=False, sys_box=False, title_card=True, rich=False,
+        visual_story=False, panel_kind="story", has_ocr=True) is False
+
+
+def test_content_bearing_system_card_stays_exempt():
+    # a REAL in-world system/stat card survives cleaning (its styled text IS the
+    # content) -> recoverable -> stays protected and shown.
+    assert rp.exempt_from_drop(
+        recoverable=True, sys_box=True, title_card=False, rich=False,
+        visual_story=False, panel_kind="system", has_ocr=True) is True
+    assert rp.exempt_from_drop(
+        recoverable=True, sys_box=False, title_card=True, rich=False,
+        visual_story=False, panel_kind="story", has_ocr=True) is True
+
+
+def test_exempt_from_drop_doc_and_visual_story_unconditional():
+    # document panels (text IS the content) and real story visuals are exempt
+    # regardless — they always carry content.
+    assert rp.exempt_from_drop(
+        recoverable=False, sys_box=False, title_card=False, rich=True,
+        visual_story=False, panel_kind="story", has_ocr=False) is True
+    assert rp.exempt_from_drop(
+        recoverable=False, sys_box=False, title_card=False, rich=False,
+        visual_story=True, panel_kind="story", has_ocr=False) is True
+
+
+def test_exempt_from_drop_broad_ocr_only_when_recoverable():
+    # story/caption/system with OCR is exempt ONLY if it survived cleaning; an
+    # emptied husk (not recoverable) is NOT shielded by carrying OCR.
+    assert rp.exempt_from_drop(
+        recoverable=True, sys_box=False, title_card=False, rich=False,
+        visual_story=False, panel_kind="caption", has_ocr=True) is True
+    assert rp.exempt_from_drop(
+        recoverable=False, sys_box=False, title_card=False, rich=False,
+        visual_story=False, panel_kind="caption", has_ocr=True) is False

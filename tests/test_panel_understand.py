@@ -131,3 +131,79 @@ def test_panel_schema_enumerates_system():
     enum = pu.PANEL_SCHEMA["properties"]["panel_kind"]["enum"]
     assert "system" in enum
     assert set(enum) == {"story", "chrome", "empty", "caption", "system"}
+
+
+# --- bubble-on-plain reclassification (the "husk" root cause) -----------------
+# A panel that is ONLY a speech/shout/caption bubble or text on a plain/blank/
+# white background, with NO drawn scene, must be 'caption' — its words ride the
+# narration and the bubble is never shown. The model non-deterministically labels
+# it 'story'/'system', which protects an empty-bubble husk on screen. A
+# deterministic rule is the guarantee. A real in-world system/stat/HUD window is a
+# STORY VISUAL and must NOT be reclassified.
+
+def test_bubble_on_plain_background_is_reclassified_caption():
+    f = pu._is_caption_bubble_on_plain
+    # Nano ch1 p000020: a shout bubble on a plain white background, no scene art
+    assert f("A single white speech bubble containing text centered against a "
+             "plain white background", [])
+    assert f("A lone shout bubble on a blank white background.", [])
+    assert f("A caption box of text over an empty black background.",
+             ["a text box"])
+    # subjects only describe the bubble/text itself -> still a caption
+    assert f("A speech balloon on a plain background.",
+             ["speech bubble", "text"])
+
+
+def test_real_system_window_is_not_reclassified():
+    f = pu._is_caption_bubble_on_plain
+    # an IN-WORLD status/stat/HUD window is a story visual — never demote it
+    assert not f("An in-world status window showing the character's stats on a "
+                 "plain background.", [])
+    assert not f("A blue SYSTEM notification window on a plain dark background.",
+                 ["system window"])
+    assert not f("A quest window on a blank background.", [])
+
+
+def test_real_scene_with_a_bubble_is_not_reclassified():
+    f = pu._is_caption_bubble_on_plain
+    # a drawn character/scene that happens to carry a bubble is NOT a husk
+    assert not f("A man shouts in a speech bubble against a plain white background.",
+                 ["man"])
+    assert not f("Two warriors clash, a speech bubble between them.",
+                 ["warrior", "sword"])
+    # no plain/blank-background signal at all -> not a husk
+    assert not f("A speech bubble over a busy city street at night.", [])
+
+
+def test_assemble_record_overrides_story_husk_to_caption():
+    # the model mislabeled the plain shout bubble 'story' -> deterministic caption
+    rec = pu.assemble_record("p000020.jpg", {
+        "description": "A single white speech bubble containing text centered "
+                       "against a plain white background",
+        "subjects": [], "dialogue": "PEASANT BLOOD... THEY SAY...?",
+        "action": "someone speaks", "intensity": "tense", "panel_kind": "story"})
+    assert rec["panel_kind"] == "caption"
+    assert rec["dialogue"] == "PEASANT BLOOD... THEY SAY...?"   # words preserved
+    # a mislabeled 'system' husk is also corrected
+    assert pu.assemble_record("p1.jpg", {
+        "description": "A plain speech bubble on a blank white background.",
+        "subjects": [], "action": "x", "intensity": "calm",
+        "panel_kind": "system"})["panel_kind"] == "caption"
+
+
+def test_assemble_record_keeps_real_system_window():
+    rec = pu.assemble_record("p2.jpg", {
+        "description": "An in-world STATUS window listing HP, MP and level on a "
+                       "plain background.",
+        "subjects": ["status window"], "dialogue": "STATUS",
+        "action": "the system appears", "intensity": "calm",
+        "panel_kind": "system"})
+    assert rec["panel_kind"] == "system"           # real system UI stays shown
+
+
+def test_assemble_record_keeps_real_story_scene():
+    rec = pu.assemble_record("p3.jpg", {
+        "description": "A man stands on a rooftop at dusk, speaking.",
+        "subjects": ["man"], "dialogue": "It's over.",
+        "action": "he speaks", "intensity": "tense", "panel_kind": "story"})
+    assert rec["panel_kind"] == "story"

@@ -70,10 +70,14 @@ SYSTEM = (
     "    'empty' = NO content: a blank or near-blank frame, a plain gradient / "
     "speed-line / texture transition with no subject, or speech bubbles with NO "
     "readable text.\n"
-    "    'caption' = the STORY'S NARRATIVE VOICE as text on a plain card: an author "
-    "monologue or scene-setting / transition line (e.g. a black card 'BACK THEN, I HAD "
-    "NO IDEA.'). Its words go in 'dialogue'; it is not a picture. A panel with real art "
-    "AND a caption is 'story'.\n"
+    "    'caption' = TEXT WITHOUT A SCENE: either the story's narrative VOICE as "
+    "text on a plain card (an author monologue or scene-setting / transition line, "
+    "e.g. a black card 'BACK THEN, I HAD NO IDEA.'), OR a lone speech / shout / "
+    "dialogue bubble (or any text) floating on a PLAIN / BLANK / WHITE / EMPTY "
+    "background with NO drawn scene, character, or object behind it (e.g. 'a single "
+    "white speech bubble against a plain white background'). Its words go in "
+    "'dialogue'; it is not a picture. A panel with REAL ART (a character, a place, "
+    "an object) AND a bubble/caption is 'story', not 'caption'.\n"
     "    'system' = an IN-WORLD GAME / SYSTEM INTERFACE the CHARACTER perceives — "
     "a QUEST window, a STATUS / STAT / SKILL screen, a NOTIFICATION / ALARM / level-up "
     "toast, or a SYSTEM MESSAGE (e.g. 'QUEST DIRECTIONS', 'STATUS', 'NOTIFICATION — You "
@@ -93,6 +97,66 @@ SYSTEM = (
 def _norm_panel_kind(v: Any) -> str:
     v = str(v or "").strip().lower()
     return v if v in ("story", "chrome", "empty", "caption", "system") else "story"
+
+
+# --- bubble/text-on-plain reclassification (the recurring "husk" root) --------
+# A panel that is ONLY a speech/shout/caption bubble or a line of text on a plain/
+# blank/white/empty background — with NO drawn scene — is a CAPTION: its words ride
+# the narration and the bubble is never shown. The model labels this 'story' (or
+# 'system') non-deterministically, which protects an EMPTY-bubble husk on screen
+# (Nano ch1 p000020). The model is the describer; a deterministic rule on its own
+# description/subjects is the guarantee. A real IN-WORLD system/stat/HUD/status
+# window is a STORY VISUAL and must NEVER be swept up by this rule.
+
+# a flat, featureless backdrop with no scene art ("plain white background",
+# "blank background", "solid black background", "empty background").
+_PLAIN_BG_RE = re.compile(
+    r"\b(?:plain|blank|empty|solid|featureless|white|black|gr[ae]y|grey)\s+"
+    r"(?:white\s+|black\s+|gr[ae]y\s+|grey\s+|colou?red\s+)?backgrounds?\b",
+    re.IGNORECASE)
+# the panel is ABOUT a bubble / balloon / caption-card / bare line of text.
+_BUBBLE_OR_TEXT_RE = re.compile(
+    r"\b(?:speech|shout|dialogue|thought)\s+(?:bubble|balloon)s?\b|"
+    r"\b(?:bubbles?|balloons?)\b|\bcaptions?\b|"
+    r"\b(?:line|box|card|panel)\s+of\s+text\b|"
+    r"\b(?:text|words?)\b",
+    re.IGNORECASE)
+# an in-world game/system interface — a STORY VISUAL; its presence vetoes the rule.
+_SYSTEM_WINDOW_RE = re.compile(
+    r"\b(?:system|status|stat|stats|quest|hud|window|screen|interface|menu|"
+    r"notification|alert|alarm|skill|level(?:\s*up)?|exp|hp|mp|inventory|"
+    r"dungeon|guild|health\s*bar|progress\s*bar|map)\b",
+    re.IGNORECASE)
+# a subject that merely names the bubble/text itself (so subjects "empty or only
+# describing the bubble/text" passes); anything else is a real drawn subject.
+_BUBBLE_TEXT_SUBJECT_RE = re.compile(
+    r"^(?:a\s+|an\s+|the\s+|some\s+)?(?:single\s+|lone\s+|plain\s+|white\s+|"
+    r"black\s+|empty\s+)*(?:speech\s+|shout\s+|dialogue\s+|thought\s+)?"
+    r"(?:bubbles?|balloons?|captions?|texts?|words?|letters?|"
+    r"text\s+box(?:es)?|backgrounds?)\s*$",
+    re.IGNORECASE)
+
+
+def _is_caption_bubble_on_plain(description: Any, subjects: Any) -> bool:
+    """True when the understanding describes ONLY a speech/shout/caption bubble or
+    bare text on a plain/blank/white/empty background, with NO real drawn scene.
+
+    Agnostic — keyed entirely on the model's own description/subjects, no manhwa
+    specifics. Vetoed when the description names an in-world system/stat/HUD/status
+    window (a story visual) or when subjects name a real drawn subject (a person,
+    creature, place, object) rather than the bubble/text itself."""
+    desc = str(description or "").strip()
+    if not desc:
+        return False
+    # never demote an in-world system/stat/HUD window — it is a kept story visual
+    if _SYSTEM_WINDOW_RE.search(desc):
+        return False
+    # subjects must be empty OR only describe the bubble/text itself
+    subs = [str(s).strip() for s in (subjects or []) if str(s).strip()]
+    if subs and not all(_BUBBLE_TEXT_SUBJECT_RE.match(s) for s in subs):
+        return False
+    # the description must read as a bubble/text panel AND name a plain backdrop
+    return bool(_BUBBLE_OR_TEXT_RE.search(desc) and _PLAIN_BG_RE.search(desc))
 
 
 def build_payload(panel: Dict[str, Any], prev_descs: List[str]) -> Dict[str, Any]:
@@ -122,16 +186,25 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
                 "intensity": "unknown", "panel_kind": "empty",
                 "error": "parse_failed"}
     inten = str(parsed.get("intensity") or "").lower()
+    description = str(parsed.get("description") or "").strip()
+    subjects = [str(s) for s in (parsed.get("subjects") or []) if s]
+    kind = _norm_panel_kind(parsed.get("panel_kind"))
+    # Deterministic husk override: a panel the model called 'story'/'system' that
+    # is really ONLY a bubble/text on a plain background is a caption — its words
+    # ride the narration and the bubble is never shown. Guarded so a real in-world
+    # system/stat/HUD window or any drawn scene is never reclassified.
+    if kind in ("story", "system") and _is_caption_bubble_on_plain(description, subjects):
+        kind = "caption"
     return {
         "scene_file": scene_file,
-        "description": str(parsed.get("description") or "").strip(),
-        "subjects": [str(s) for s in (parsed.get("subjects") or []) if s],
+        "description": description,
+        "subjects": subjects,
         "action": str(parsed.get("action") or "").strip(),
         "dialogue": str(parsed.get("dialogue") or "").strip(),
         "setting": str(parsed.get("setting") or "").strip(),
         "intensity": inten if inten in
         ("calm", "tense", "intense", "explosive") else "unknown",
-        "panel_kind": _norm_panel_kind(parsed.get("panel_kind")),
+        "panel_kind": kind,
     }
 
 

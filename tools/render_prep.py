@@ -1163,6 +1163,37 @@ def panel_recoverable(
     return bool(dead.get("recropped")) and art_content_score(cropped, []) >= min_art_score
 
 
+def exempt_from_drop(
+    *,
+    recoverable: bool,
+    sys_box: bool,
+    title_card: bool,
+    rich: bool,
+    visual_story: bool,
+    panel_kind: Optional[str],
+    has_ocr: bool,
+) -> bool:
+    """Whether a cut is protected from the bubble/husk drop gate.
+
+    Document panels (their text IS the content) and real story visuals are always
+    exempt. The SYSTEM-CARD / title-card protections apply ONLY when the panel
+    still has recoverable content after bubble-blanking: a contentless husk (an
+    empty bubble blanked down to a plain background) must NOT be shielded by a
+    detected system_box, or the system-card protection keeps an empty husk on
+    screen (Nano ch1 p000020). A genuine system/stat card keeps its styled text
+    (recoverable) and stays exempt. The broad 'story/caption/system carries OCR'
+    exemption likewise holds only when the panel survived cleaning."""
+    if rich:
+        return True
+    if visual_story:
+        return True
+    if recoverable and (sys_box or title_card):
+        return True
+    if recoverable and panel_kind in ("story", "caption", "system") and has_ocr:
+        return True
+    return False
+
+
 _SCENE_NUM_RE = re.compile(r"(\d+)")
 
 
@@ -1418,23 +1449,133 @@ _STATIC_MOTION = {"mode": "static", "zoom": {"start": 1.0, "end": 1.0},
                   "strength": 0.0}
 
 
-def static_on_consecutive_repeats(plan: Dict[str, Any]) -> Dict[str, Any]:
-    """AGNOSTIC: a panel may appear in consecutive cuts, but the Ken Burns must NOT
-    re-play on the repeat. Any cut whose file equals the immediately-preceding
-    SHOWN cut's file is forced to static motion, so a held/repeated panel reads as
-    one continuous hold instead of the same pan restarting. Covers every repeat
-    cause (starvation hold, planner dup, split-half), not just held cuts."""
-    prev = None
-    for it in (plan or {}).get("timeline") or []:
-        if it.get("branding"):
-            prev = None
+# One slow Ken Burns spanning a merged same-image run. The on-screen zoom/pan RATE
+# = (delta) / (run duration), so spreading a fixed delta over a longer run makes a
+# longer merge move SLOWER. Kept gentle (small zoom + pan) so a held panel drifts.
+_MERGE_ZOOM_START = 1.0
+_MERGE_ZOOM_END = 1.1
+_MERGE_BIAS_START = {"x": 0.3, "y": 0.15}
+_MERGE_BIAS_END = {"x": -0.3, "y": -0.15}
+_MERGE_STRENGTH = 0.6
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def _kenburns_slice(f0: float, f1: float) -> Dict[str, Any]:
+    """Motion for the slice [f0, f1] (fractions of a same-image run's total
+    duration) of ONE continuous slow Ken Burns. Slicing keeps zoom + pan
+    CONTINUOUS across the run's cuts (each slice starts where the previous ended),
+    so the repeated image reads as a single slow move, never a restart."""
+    return {
+        "mode": "kenburns",
+        "strength": _MERGE_STRENGTH,
+        "ease": "ease_in_out",
+        "start_bias": {"x": round(_lerp(_MERGE_BIAS_START["x"], _MERGE_BIAS_END["x"], f0), 4),
+                       "y": round(_lerp(_MERGE_BIAS_START["y"], _MERGE_BIAS_END["y"], f0), 4)},
+        "end_bias": {"x": round(_lerp(_MERGE_BIAS_START["x"], _MERGE_BIAS_END["x"], f1), 4),
+                     "y": round(_lerp(_MERGE_BIAS_START["y"], _MERGE_BIAS_END["y"], f1), 4)},
+        "zoom": {"start": round(_lerp(_MERGE_ZOOM_START, _MERGE_ZOOM_END, f0), 4),
+                 "end": round(_lerp(_MERGE_ZOOM_START, _MERGE_ZOOM_END, f1), 4)},
+    }
+
+
+def _item_sole_image(item: Dict[str, Any]) -> Optional[str]:
+    """The single source image an item shows end-to-end, or None when the item is
+    branding, has no cuts, shows a split (file2/layout), or shows more than one
+    image — none of those can join a cross-item same-image run."""
+    if item.get("branding"):
+        return None
+    cuts = item.get("cuts") or []
+    if not cuts or any(c.get("file2") or c.get("layout") for c in cuts):
+        return None
+    files = {str(c.get("file") or "") for c in cuts}
+    files.discard("")
+    return next(iter(files)) if len(files) == 1 else None
+
+
+def _collapse_same_image_cuts_within_item(cuts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Within ONE item, collapse a maximal run of consecutive same-image cuts into
+    a single cut whose dur is the sum, carrying one slow Ken Burns over the full
+    span. (A cross-item run can't collapse — each item is its own renderer Sequence
+    with its own audio — so that case is handled by continuous slices instead.)"""
+    out: List[Dict[str, Any]] = []
+    i, n = 0, len(cuts)
+    while i < n:
+        c = cuts[i]
+        f = str(c.get("file") or "")
+        if not f or c.get("file2") or c.get("layout"):
+            out.append(c)
+            i += 1
             continue
-        for c in it.get("cuts") or []:
-            f = str(c.get("file") or "")
-            if f and f == prev:
-                c["motion"] = dict(_STATIC_MOTION)
-            if f:
-                prev = f
+        j = i + 1
+        while (j < n and str(cuts[j].get("file") or "") == f
+               and not cuts[j].get("file2") and not cuts[j].get("layout")):
+            j += 1
+        run = cuts[i:j]
+        if len(run) >= 2:
+            total = round(sum(float(x.get("dur") or 0.0) for x in run), 4)
+            out.append({**run[0], "file": f, "dur": total, "held": True,
+                        "motion": _kenburns_slice(0.0, 1.0)})
+        else:
+            out.append(c)
+        i = j
+    return out
+
+
+def merge_consecutive_same_image_cuts(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """AGNOSTIC: when the SAME source image is shown across consecutive cuts, show
+    it ONCE with ONE slow Ken Burns spanning the full merged duration — NOT static,
+    NOT a re-animated loop, NOT N frozen holds.
+
+    Replaces the earlier static-on-repeat behavior. Two cases:
+      - within ONE item: consecutive same-image cuts collapse to a single cut whose
+        dur is the sum, with one slow Ken Burns over that duration.
+      - across CONSECUTIVE items (the production case: a panel held over several
+        per-panel narration segments by cap_repeats_with_holds): each item keeps
+        its own audio + duration (timing UNTOUCHED), but the run shares ONE
+        continuous slow Ken Burns sliced by cumulative time — so the still image
+        pans/zooms slowly and continuously across the whole run instead of
+        freezing or restarting. A cut can't span items (each item is its own
+        renderer Sequence with its own audio), so the continuous slice is how a
+        single slow move is expressed across the merged segments.
+
+    Composes with cap_repeats_with_holds / merge_consecutive_duplicate_narration:
+    they supply the held same-image cuts; this then animates the whole run as one
+    slow move (it overrides their interim static motion — no double-handling)."""
+    tl = (plan or {}).get("timeline") or []
+    # 1) within-item collapse (one item with repeated cuts -> one merged cut)
+    for item in tl:
+        if item.get("branding"):
+            continue
+        cuts = item.get("cuts") or []
+        if len(cuts) >= 2:
+            item["cuts"] = _collapse_same_image_cuts_within_item(cuts)
+    # 2) cross-item continuous Ken Burns over a run sharing one image
+    n = len(tl)
+    i = 0
+    while i < n:
+        img = _item_sole_image(tl[i])
+        if img is None:
+            i += 1
+            continue
+        j = i + 1
+        while j < n and _item_sole_image(tl[j]) == img:
+            j += 1
+        if j - i >= 2:
+            run = tl[i:j]
+            durs = [max(0.0, float((it.get("cuts") or [{}])[0].get("dur")
+                                   or it.get("duration_sec") or 0.0)) for it in run]
+            total = sum(durs) or float(len(run))
+            acc = 0.0
+            for it, d in zip(run, durs):
+                f0 = acc / total
+                acc += d
+                cut = (it.get("cuts") or [None])[0]
+                if cut is not None:
+                    cut["motion"] = _kenburns_slice(f0, acc / total)
+        i = j
     return plan
 
 
@@ -1945,23 +2086,19 @@ def main() -> int:
                         score = 1.0  # no recoverable region after cleaning
                     # System / title / document cards are story beats whose TEXT is
                     # the content — it sits on a flat card, NOT in an inpainted
-                    # bubble, so it survives cleaning. Keep them unconditionally,
-                    # even at low art (SYSTEM ACTIVATION, age/time cards).
-                    if img is not None and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02:
-                        exempt.add(f)  # system-message panel — story beat
-                    if rich:
-                        exempt.add(f)  # document panel: its text IS the content
-                    if _is_title_card(f):
-                        exempt.add(f)  # styled title/system card (age/org/title)
-                    if visual_story:
-                        exempt.add(f)  # real story visual despite text-heavy layout
-                    # The BROAD 'story/caption carries OCR' exemption ONLY holds when
-                    # the panel SURVIVES cleaning. An empty-bubble husk (its text was
-                    # inpainted away, leaving blank outlines over a gradient) is NOT
-                    # recoverable — so it is NOT exempted here and drops as the husk
-                    # it is, with a real neighbour held in its place.
-                    if recoverable and (vit.get("panel_kind") in ("story", "caption", "system")
-                            and str(vit.get("ocr_clean") or "").strip()):
+                    # bubble, so it survives cleaning. But the system-card / title-
+                    # card protection must NOT shield a CONTENTLESS HUSK (an empty
+                    # bubble blanked to a plain background): those protections apply
+                    # only when the panel is still recoverable, so a sys-tagged husk
+                    # drops and a real neighbour holds its place (exempt_from_drop).
+                    sys_box = bool(img is not None
+                                   and bubble_coverage(img.shape, _sys_boxes(f)) >= 0.02)
+                    if exempt_from_drop(
+                            recoverable=recoverable, sys_box=sys_box,
+                            title_card=_is_title_card(f), rich=rich,
+                            visual_story=visual_story,
+                            panel_kind=vit.get("panel_kind"),
+                            has_ocr=bool(str(vit.get("ocr_clean") or "").strip())):
                         exempt.add(f)
                 cov[f] = score
             new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)
@@ -2173,9 +2310,10 @@ def main() -> int:
                             scene_dims=scene_dims,
                             cuts_by_segment=cuts_by_segment)
     # consecutive segments with the SAME narration -> hold the first image (the
-    # p95/p96 dup); then force static motion on ANY consecutive same-image repeat.
+    # p95/p96 dup); then collapse ANY consecutive same-image run (held or planned)
+    # into ONE slow Ken Burns spanning the merged duration (audio/timing intact).
     out_plan = merge_consecutive_duplicate_narration(out_plan)
-    out_plan = static_on_consecutive_repeats(out_plan)
+    out_plan = merge_consecutive_same_image_cuts(out_plan)
 
     outro_dur = 0.0
     which = "none" if args.no_branding else args.branding
