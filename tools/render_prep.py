@@ -1357,13 +1357,9 @@ def cap_repeats_with_holds(
     holds: List[Tuple[str, str]] = []
     counts: Dict[str, int] = {}
     last_idx: Dict[str, int] = {}
-    group_shown: Dict[str, set] = {}
+    seen: set = set()  # every non-exempt file ever emitted (GLOBAL, not per-group)
     prev_file: Optional[str] = None
     for i, seg in enumerate(order):
-        # group key: g####_p## -> g#### (segments outside that scheme are their
-        # own group, so the per-group rule below is a no-op for them).
-        grp = re.sub(r"_p\d+$", "", str(seg))
-        seen = group_shown.setdefault(grp, set())
         cuts = list(cuts_by_segment.get(seg) or [])
         kept: List[Dict[str, Any]] = []
         for c in cuts:
@@ -1379,11 +1375,16 @@ def cap_repeats_with_holds(
             # only the GLOBAL cap, so a true system card may still recur far
             # apart (outside the window).
             near = f in last_idx and (i - last_idx[f]) <= 3
-            # GROUP-global cap for non-exempt panels: once a panel has been
-            # shown in this group it is NOT re-emitted later in the same group,
-            # even non-adjacently (gap > radius) — it would otherwise replay
-            # with the same animation (IE p000091 idx89&93, p000109 idx106&110).
-            # The previous distinct panel HOLDS that slot instead. Exempt
+            # GLOBAL cap for non-exempt panels: once a panel has been shown
+            # ANYWHERE it is NOT re-emitted again — not later in the same group,
+            # AND not in a later group, at any distance (gap > radius). The
+            # cross-group case otherwise replays the same image with the same
+            # animation (group N shows it, group N+1 shows it again — the
+            # within-group p000091 idx89&93 / p000109 idx106&110 dups were just
+            # the same bug inside one group). The previous distinct panel HOLDS
+            # that slot instead. Consecutive same-image runs are caught by
+            # `near` (held → merge_consecutive re-animates them as ONE continuous
+            # Ken Burns), so this never breaks the held-run case. Exempt
             # system/title cards are unaffected (they may legitimately recur).
             reused = f not in ex and f in seen
             if not near and not reused and (f in ex or counts.get(f, 0) < cap):

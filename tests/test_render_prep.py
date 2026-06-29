@@ -1019,31 +1019,33 @@ def test_substitute_garbage_holds_not_wrong_swaps():
 
 
 def test_cap_repeats_holds_previous_panel():
-    """The 'so what?' fix: a 3rd show is dropped and the previous panel
-    HOLDS through the segment — narration continues, no loop, no dead-end
-    human review."""
+    """GLOBAL cap: a non-exempt panel shows at most ONCE chapter-wide; any
+    re-show is dropped and the previous distinct panel HOLDS — narration
+    continues, the same image never re-animates. A,B,A,B,A → A and B each show
+    ONCE and the rest hold (merge_consecutive later animates the held same-image
+    run as ONE continuous pan); no fresh re-show of A."""
     cuts = {
         "g1": [{"file": "A.jpg", "start": 0.0, "dur": 4.0}],
         "g2": [{"file": "B.jpg", "start": 0.0, "dur": 4.0}],
         "g3": [{"file": "A.jpg", "start": 0.0, "dur": 4.0}],
         "g4": [{"file": "B.jpg", "start": 0.0, "dur": 4.0}],
-        "g5": [{"file": "A.jpg", "start": 0.0, "dur": 5.0}],   # 3rd A
+        "g5": [{"file": "A.jpg", "start": 0.0, "dur": 5.0}],   # 3rd A — dropped, holds B
     }
     order = ["g1", "g2", "g3", "g4", "g5"]
     out, holds = rp.cap_repeats_with_holds(
         cuts, durations={s: 4.0 for s in order} | {"g5": 5.0}, order=order)
-    # nearby-repeat rule: A,B,A,B,A collapses the mid alternation into a
-    # held stretch, then ends on a FRESH panel — better than spacing loops
-    assert holds == [("g3", "B.jpg"), ("g4", "B.jpg")]
+    # A,B,A,B,A: after the first A,B every reuse holds the previous distinct
+    # panel (B) — no same-image re-animation anywhere.
+    assert holds == [("g3", "B.jpg"), ("g4", "B.jpg"), ("g5", "B.jpg")]
     assert out["g3"][0]["held"] is True
     g5 = out["g5"][0]
-    assert not g5.get("held") and g5["file"] == "A.jpg"
+    assert g5.get("held") is True and g5["file"] == "B.jpg"   # 3rd A dropped → holds B
     counts = {}
     for s_ in order:
         for c in out[s_]:
             if not c.get("held"):
                 counts[c["file"]] = counts.get(c["file"], 0) + 1
-    assert max(counts.values()) <= 2
+    assert max(counts.values()) <= 1                          # each panel emitted ONCE
 
 
 def test_cap_repeats_exempts_sys_panels():
@@ -1458,10 +1460,12 @@ def test_cap_repeats_no_nonadjacent_reemit_within_group():
     assert counts["P.jpg"] == 1                                   # P emitted ONCE
 
 
-def test_cap_repeats_nonadjacent_reemit_allowed_across_groups():
-    """D2 is GROUP-scoped: the same panel may still recur in a DIFFERENT group
-    far apart (gap beyond the radius-3 near window, under the global cap) — the
-    per-group rule must not over-reach."""
+def test_cap_repeats_no_reemit_across_groups_global():
+    """D2 is GLOBAL, not group-scoped: a non-exempt panel shown in one group must
+    NOT replay in a LATER group either (group N shows it, group N+1 must not show
+    it again with the same animation — the cross-group repeat). It shows ONCE
+    chapter-wide; the later slot HOLDS the adjacent distinct panel. (Exempt cards
+    MAY still recur far apart — see test_cap_repeats_exempt_recurs_far_apart.)"""
     order = ["g0001_p00", "g0001_p01", "g0001_p02", "g0001_p03", "g0002_p00"]
     cuts = {
         "g0001_p00": [{"file": "P.jpg", "start": 0.0, "dur": 4.0}],
@@ -1474,7 +1478,14 @@ def test_cap_repeats_nonadjacent_reemit_allowed_across_groups():
     out, holds = rp.cap_repeats_with_holds(
         cuts, durations=durations, order=order)
     g2 = out["g0002_p00"][0]
-    assert not g2.get("held") and g2["file"] == "P.jpg"          # fresh in new group
+    assert g2.get("held") is True and g2["file"] == "S.jpg"      # holds adjacent, NOT P
+    assert ("g0002_p00", "S.jpg") in holds
+    counts = {}
+    for s in order:
+        for c in out[s]:
+            if not c.get("held"):
+                counts[c["file"]] = counts.get(c["file"], 0) + 1
+    assert counts["P.jpg"] == 1                                  # P emitted ONCE chapter-wide
 
 
 # ---- D3: empty-bubble husk on STORY art ------------------------------------
