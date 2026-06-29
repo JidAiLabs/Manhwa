@@ -273,38 +273,37 @@ def _mini_plan():
     ], "total_duration_sec": 18.0}
 
 
-def test_branding_drops_intro_appends_outro_only():
-    # channel decision (2026-06-15): NO intro on any video — even with intro_dur
-    # passed, only the outro is appended; the video opens straight on the story.
+def test_branding_drops_intro_and_outro_ends_on_last_panel():
+    # channel decision (2026-06-15): NO intro. (2026-06-29): NO outro either —
+    # every video now ends on the last STORY panel; the only branding left is the
+    # corner watermark overlay drawn by remotion/src/Branding.tsx (not a timeline
+    # item). insert_branding_items must therefore never emit a branding_outro item,
+    # even when an outro_dur is passed in.
     plan = _mini_plan()
     out = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.1)
     tl = out["timeline"]
-    assert [t["segment_id"] for t in tl] == [
-        "g0001_p00", "g0002_p01", "branding_outro"]
-    assert all(t.get("branding") != "intro" for t in tl)   # no intro anywhere
-    outro = tl[-1]
-    assert outro["branding"] == "outro" and outro["duration_sec"] >= 12.1
-    assert out["total_duration_sec"] == outro["end_sec"]
+    assert [t["segment_id"] for t in tl] == ["g0001_p00", "g0002_p01"]
+    assert all(t.get("branding") not in ("intro", "outro") for t in tl)
+    assert all(t.get("segment_id") != "branding_outro" for t in tl)
+    # the video ends on the last story panel, unchanged duration
+    assert out["total_duration_sec"] == 18.0
 
 
-def test_branding_which_intro_only_and_outro_only():
-    # bundle segments: FIRST chapter renders intro only, LAST outro only,
-    # middles none — so a concatenated season has exactly one intro/outro
+def test_branding_no_outro_for_any_which():
+    # bundle segments used to render intro-on-first / outro-on-last; now NO
+    # position carries any branding item — a concatenated season ends on its
+    # last story panel.
     plan = {"timeline": [
         {"segment_id": "g0001_p00", "start_sec": 0.0, "end_sec": 10.0,
          "duration_sec": 10.0, "cuts": [{"file": "a.jpg", "start": 0, "dur": 10}]}],
         "total_duration_sec": 10.0}
-    # "intro" (a bundle's first segment) now carries NO branding at all
-    intro = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
-                                     which="intro")
-    assert [i.get("branding") for i in intro["timeline"]] == [None]
-    outro = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
-                                     which="outro")
-    segs = [i.get("branding") for i in outro["timeline"]]
-    assert "outro" in segs and "intro" not in segs
-    none = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
-                                    which="none")
-    assert [i.get("branding") for i in none["timeline"]] == [None]
+    for which in ("both", "intro", "outro", "none"):
+        out = rp.insert_branding_items(plan, intro_dur=6.0, outro_dur=12.0,
+                                       which=which)
+        brandings = [i.get("branding") for i in out["timeline"]]
+        assert brandings == [None], which
+        assert all(i.get("segment_id") != "branding_outro"
+                   for i in out["timeline"]), which
 
 
 def test_branding_untouched_when_durations_zero():

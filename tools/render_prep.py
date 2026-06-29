@@ -1717,13 +1717,13 @@ def insert_branding_items(
 
     if which not in ("both", "intro", "outro", "none"):
         raise ValueError(f"branding which={which!r}")
-    # channel decision (2026-06-15): NO intro on any video — videos open on the
-    # story, outro only. The intro arg + the "intro"/"both" modes are kept for
-    # compat but never insert an intro; "intro" (a bundle's first segment) now
-    # carries no branding at all.
+    # channel decision (2026-06-15): NO intro on any video. (2026-06-29): NO
+    # outro either — every video now ends on the last STORY panel. The only
+    # branding left in-frame is the corner watermark overlay, drawn by the
+    # renderer (remotion/src/Branding.tsx), NOT a timeline item. The intro/outro
+    # args + the which modes are kept for caller compat but never insert anything.
     intro_dur = 0.0
-    if which in ("none", "intro"):
-        outro_dur = 0.0
+    outro_dur = 0.0
 
     new_tl: List[Dict[str, Any]] = list(tl)
     if intro_dur > 0:
@@ -2392,13 +2392,14 @@ def main() -> int:
     out_plan = merge_consecutive_duplicate_narration(out_plan)
     out_plan = merge_consecutive_same_image_cuts(out_plan)
 
-    outro_dur = 0.0
     which = "none" if args.no_branding else args.branding
     if which != "none":
-        # NO intro on any video (channel decision) — only the outro is read/added.
-        outro_dur = _wav_duration_sec(os.path.join(args.branding_dir, "outro.wav"))
+        # No intro AND no outro timeline items anymore (channel decision) — the
+        # call is kept so the --branding contract is unchanged for bundle
+        # callers, but insert_branding_items now inserts nothing; the video ends
+        # on its last story panel (only the corner watermark overlay remains).
         out_plan = insert_branding_items(out_plan, intro_dur=0.0,
-                                         outro_dur=outro_dur, which=which)
+                                         outro_dur=0.0, which=which)
 
     out_path = args.out_plan or (os.path.splitext(args.plan)[0] + ".clean.json")
     with open(out_path, "w", encoding="utf-8") as f:
@@ -2406,7 +2407,7 @@ def main() -> int:
 
     print(f"[ok] wrote={out_path} shown={len(shown)} "
           f"seam_dups_dropped={sorted(set(all_dropped))} bubbles_inpainted={bubbles_cleaned} "
-          f"branding=outro:{outro_dur:.1f}s (no intro) "
+          f"branding=none (ends on last story panel) "
           f"total={out_plan.get('total_duration_sec', 0)/60:.1f}min")
     return 0
 
