@@ -51,13 +51,17 @@ def drop_contained_duplicate_cuts(
     geom_by_file: Dict[str, Dict[str, float]],
     *,
     contain_frac: float = 0.8,
+    protect: Optional[set] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Drop cuts whose GLOBAL box is >= contain_frac inside another cut's box.
 
     geom_by_file: {file: {x1,y1,x2,y2}} in global page pixels. The smaller box
     is the fragment; the complete panel survives. Freed time is redistributed
-    proportionally so the shot window stays fully covered.
+    proportionally so the shot window stays fully covered. *protect* files (a
+    system card whose text IS the on-screen beat) are never dropped.
     """
+    prot = protect or set()
+
     def area(g: Dict[str, float]) -> float:
         return max(0.0, g["x2"] - g["x1"]) * max(0.0, g["y2"] - g["y1"])
 
@@ -79,7 +83,7 @@ def drop_contained_duplicate_cuts(
             iy = max(0.0, min(small["y2"], big["y2"]) - max(small["y1"], big["y1"]))
             a = area(small)
             if a > 0 and (ix * iy) / a >= contain_frac:
-                if small_file not in dropped:
+                if small_file not in dropped and small_file not in prot:
                     dropped.append(small_file)
 
     return _redistribute(cuts, dropped), dropped
@@ -150,6 +154,7 @@ def drop_cross_segment_duplicate_cuts(
     coverage_by_file: Optional[Dict[str, float]] = None,
     exempt: Optional[set] = None,
     min_cov: float = 0.99,
+    protect: Optional[set] = None,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]]]:
     """Consecutive SHOWN cuts must differ — across segment boundaries too.
 
@@ -167,9 +172,13 @@ def drop_cross_segment_duplicate_cuts(
     killed because it embeds a caption box like its blank neighbour p92). So
     such panels are skipped entirely here — neither flagged nor used as the
     `prev_file` reference; the garbage-substitution pass handles them. This is
-    art-style agnostic: it keys on coverage geometry, never on pixels."""
+    art-style agnostic: it keys on coverage geometry, never on pixels. *protect*
+    files (a system card whose text IS the on-screen beat) are kept verbatim:
+    never flagged a duplicate and never used as a comparison reference, so a
+    system card always survives to be shown."""
     cov = coverage_by_file or {}
     ex = exempt or set()
+    prot = protect or set()
 
     def _blank_ref(f: str) -> bool:
         return bool(cov) and f not in ex and cov.get(f, 0.0) >= min_cov
@@ -182,9 +191,9 @@ def drop_cross_segment_duplicate_cuts(
         cuts = out.get(seg) or []
         for c in cuts:
             f = str(c.get("file"))
-            if _blank_ref(f):
-                kept.append(c)        # caption/blank: never a visual dup or
-                continue              # a reference — leave prev_file intact
+            if _blank_ref(f) or f in prot:
+                kept.append(c)        # caption/blank/system card: never a visual
+                continue              # dup or a reference — leave prev_file intact
             dup = False
             if prev_file and prev_file != f:
                 ia, ib = get_img(prev_file), get_img(f)
@@ -238,8 +247,11 @@ def drop_visual_duplicate_cuts(
     *,
     thresh: float = 0.92,
     area_ratio_max: float = 0.9,
+    protect: Optional[set] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Drop the smaller cut of any pair whose pixels match inside the larger."""
+    """Drop the smaller cut of any pair whose pixels match inside the larger.
+    *protect* files (system cards) are never dropped."""
+    prot = protect or set()
     dropped: List[str] = []
     n = len(cuts)
     for i in range(n):
@@ -253,7 +265,8 @@ def drop_visual_duplicate_cuts(
             (small_f, small), (big_f, big) = sorted(
                 [(fi, a), (fj, b)], key=lambda kv: kv[1].shape[0] * kv[1].shape[1])
             ratio = (small.shape[0] * small.shape[1]) / max(1, big.shape[0] * big.shape[1])
-            if ratio <= area_ratio_max and visually_contained(small, big, thresh=thresh):
+            if (ratio <= area_ratio_max and small_f not in prot
+                    and visually_contained(small, big, thresh=thresh)):
                 dropped.append(small_f)
     return _redistribute(cuts, dropped), dropped
 
@@ -287,6 +300,7 @@ def drop_near_identical_cuts(
     *,
     thresh: float = 0.96,
     min_area_ratio: float = 0.7,
+    protect: Optional[set] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Drop the LATER of any pair of SIMILAR-SIZED, near-identical cuts.
 
@@ -301,7 +315,9 @@ def drop_near_identical_cuts(
     filter. The EARLIER cut is kept, the later dropped, freed time redistributed.
     Conservative by design: 0.96 NCC means the same drawing barely changed —
     two distinct panels (different characters/scenes) score far lower and survive.
+    *protect* files (system cards) are never dropped.
     """
+    prot = protect or set()
     dropped: List[str] = []
     n = len(cuts)
     for i in range(n):
@@ -310,7 +326,7 @@ def drop_near_identical_cuts(
             continue
         for j in range(i + 1, n):
             fj = str(cuts[j]["file"])
-            if fj in dropped or fi == fj:
+            if fj in dropped or fi == fj or fj in prot:
                 continue
             a, b = images_by_file.get(fi), images_by_file.get(fj)
             if a is None or b is None:
@@ -1176,20 +1192,25 @@ def exempt_from_drop(
     """Whether a cut is protected from the bubble/husk drop gate.
 
     Document panels (their text IS the content) and real story visuals are always
-    exempt. The SYSTEM-CARD / title-card protections apply ONLY when the panel
-    still has recoverable content after bubble-blanking: a contentless husk (an
-    empty bubble blanked down to a plain background) must NOT be shielded by a
-    detected system_box, or the system-card protection keeps an empty husk on
-    screen (Nano ch1 p000020). A genuine system/stat card keeps its styled text
-    (recoverable) and stays exempt. The broad 'story/caption/system carries OCR'
-    exemption likewise holds only when the panel survived cleaning."""
+    exempt. A SYSTEM / title card is ALSO unconditionally exempt: its text sits on
+    a flat card (NOT inside an inpainted bubble), so the text IS the on-screen
+    story beat and the card must always be shown — even when blanking would leave
+    it "empty-looking" (a notification on a plain white background: Nano ch1
+    p000114 "7TH GENERATION NANO MACHINE", non-recoverable after its text is
+    blanked). This does NOT shield an empty DIALOGUE bubble: that panel is marked
+    panel_kind=caption by the understanding and excluded UPSTREAM (panel_understand
+    + story_group fold its text into the adjacent art's narration), so it never
+    reaches this gate as a "system" husk (Nano ch1 p000020). The broad
+    'story/caption carries OCR' exemption stays gated on `recoverable` — a
+    contentless caption husk (no recoverable art after cleaning) is NOT shielded
+    and still drops."""
     if rich:
         return True
     if visual_story:
         return True
-    if recoverable and (sys_box or title_card):
+    if sys_box or title_card or panel_kind == "system":
         return True
-    if recoverable and panel_kind in ("story", "caption", "system") and has_ocr:
+    if recoverable and panel_kind in ("story", "caption") and has_ocr:
         return True
     return False
 
@@ -1841,6 +1862,15 @@ def main() -> int:
         with open(beats_path, "r", encoding="utf-8") as f:
             speech_files = speech_mode_files(json.load(f))
 
+    # Panels the understanding labeled a SYSTEM card (an in-world notification /
+    # status window — Nano ch1 p000114 "7TH GENERATION NANO MACHINE"). Their TEXT
+    # is the on-screen story beat, so they are kept + shown UNCONDITIONALLY: never
+    # husk-dropped (exempt_from_drop), never seam/visual deduped away (protect),
+    # never bubble-blanked (_cleaned), never sent to the visual judge (sysf). The
+    # empty DIALOGUE bubble is a different panel_kind (caption), excluded upstream.
+    system_files = {f for f, v in vision_item.items()
+                    if str(v.get("panel_kind") or "").strip().lower() == "system"}
+
     scenes_dir = os.path.join(args.episode_dir, "scenes")
     img_cache: Dict[str, Optional[np.ndarray]] = {}
 
@@ -1907,6 +1937,9 @@ def main() -> int:
         return doc_like(text_score.get(fname, 0.0), len(words), words,
                         speech_shaped_boxes(_boxes(fname), panel_w))
 
+    def _panel_kind(fname: str) -> str:
+        return str(vision_item.get(fname, {}).get("panel_kind") or "").strip().lower()
+
     def _is_inworld_screen(fname: str) -> bool:
         """An in-world device/app screen the understanding rescued chrome->story
         (panel_understand stamps subjects=['an in-world screen']): its on-screen
@@ -1953,9 +1986,11 @@ def main() -> int:
             img = _img(fname)
             if img is None:
                 cleaned_cache[fname] = (None, [])
-            elif _is_title_card(fname) and fname not in speech_files:
+            elif ((_is_title_card(fname) or _panel_kind(fname) == "system")
+                  and fname not in speech_files):
                 # title/system card: the styled text IS the content (SKY
-                # CORPORATION, age cards) — never blank it
+                # CORPORATION, age cards, the "7TH GENERATION NANO MACHINE"
+                # notification) — never blank it, or the card ships empty
                 cleaned_cache[fname] = (img.copy(), [])
             elif _is_inworld_screen(fname) or (_text_rich(fname) and fname not in speech_files):
                 # DOCUMENT panel (word-rich, no speech per Gemini) OR a rescued
@@ -2028,18 +2063,21 @@ def main() -> int:
     exempt_all: set = set()
     for item in plan.get("timeline") or []:
         cuts = item.get("cuts") or []
-        new_cuts, dropped = drop_contained_duplicate_cuts(cuts, geom)
+        new_cuts, dropped = drop_contained_duplicate_cuts(
+            cuts, geom, protect=system_files)
         if len(new_cuts) > 1:
             imgs = {str(c["file"]): _img(str(c["file"])) for c in new_cuts}
             imgs = {k: v for k, v in imgs.items() if v is not None}
-            new_cuts, vdropped = drop_visual_duplicate_cuts(new_cuts, imgs)
+            new_cuts, vdropped = drop_visual_duplicate_cuts(
+                new_cuts, imgs, protect=system_files)
             dropped = list(dropped) + vdropped
             # near-identical SAME-SIZE pair (the 'reaction face with ?' repeat):
             # the containment filter above only catches small-in-big seam dups.
             if len(new_cuts) > 1:
                 imgs = {k: v for k, v in imgs.items()
                         if k in {str(c["file"]) for c in new_cuts}}
-                new_cuts, ndropped = drop_near_identical_cuts(new_cuts, imgs)
+                new_cuts, ndropped = drop_near_identical_cuts(
+                    new_cuts, imgs, protect=system_files)
                 dropped = list(dropped) + ndropped
                 if ndropped:
                     print(f"[ok] {item.get('segment_id')}: "
@@ -2131,7 +2169,7 @@ def main() -> int:
     for _round in range(3):
         cuts_by_segment, xdropped = drop_cross_segment_duplicate_cuts(
             cuts_by_segment, order, _trimmed_clean, thresh=0.84,
-            coverage_by_file=cov_all, exempt=exempt_all)
+            coverage_by_file=cov_all, exempt=exempt_all, protect=system_files)
         for seg, f in xdropped:
             sole = (len(cuts_by_segment[seg]) == 1
                     and str(cuts_by_segment[seg][0]["file"]) == f)
@@ -2194,9 +2232,10 @@ def main() -> int:
         # Document-like panels (text-rich) are never recropped or split.
         rich = _text_rich(fname)
         orig = _img(fname)
-        sysf = bool(orig is not None
-                    and bubble_coverage(orig.shape, _sys_boxes(fname)) >= 0.02
-                    or _is_title_card(fname))   # title cards are sys-protected
+        sysf = bool((orig is not None
+                     and bubble_coverage(orig.shape, _sys_boxes(fname)) >= 0.02)
+                    or _is_title_card(fname)
+                    or _panel_kind(fname) == "system")   # sys cards are protected
         blanked = bool(boxes) or (not rich and not sysf
                                   and bool(word_boxes_by_file.get(fname)))
         parts, pinfo = select_panel_crops(img, boxes, text_rich=rich,

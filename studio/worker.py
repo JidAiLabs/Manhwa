@@ -28,6 +28,16 @@ REPO = Path(__file__).resolve().parent.parent
 PY = str(REPO / ".eval_venv" / "bin" / "python")
 
 
+class NonRetryableError(RuntimeError):
+    """A DETERMINISTIC failure that re-running the identical pipeline will only
+    reproduce — e.g. a prep-QA BLOCKING flag (`_CRITICAL_QA_CODES` such as
+    `system_card_unshown`) that the auto-heal cannot fix. The worker must fail it
+    ONCE and park the chapter for human review instead of auto-retrying: a retry
+    re-pays the whole ~30-40min prepare for an identical block (the 520->521->522
+    ~90min burn). Auto-retry is reserved for TRANSIENT errors (429/timeout/exit
+    124/IO/network), which raise a plain RuntimeError."""
+
+
 @contextlib.contextmanager
 def record_stage(con: sqlite3.Connection, *, chapter_id: Optional[int],
                  stage: str, series_id: Optional[int] = None):
@@ -273,8 +283,9 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
          0 if critical else 1, ch["series_id"]))
     con.commit()
     if critical and not heal_aware:
-        raise RuntimeError(f"prep-QA found BLOCKING flags ({sorted(critical)}) — "
-                           f"open the report in {ep}")
+        raise NonRetryableError(
+            f"prep-QA found BLOCKING flags ({sorted(critical)}) — "
+            f"open the report in {ep}")
     return codes
 
 
@@ -583,7 +594,7 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     # Codes the heal DID remove are no longer in `codes`, so they don't block.
     blocking = (codes & _CRITICAL_QA_CODES) | (codes & stuck_visual)
     if blocking:
-        raise RuntimeError(
+        raise NonRetryableError(
             f"prep-QA has BLOCKING errors after auto-heal ({sorted(blocking)}) — "
             f"open the report in {ep}")
     if codes:
@@ -785,8 +796,8 @@ def _h_qa_scan(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
          1 if rc == 0 else 0, ch["series_id"]))
     con.commit()
     if rc != 0:
-        raise RuntimeError("prep-QA found ERROR-severity flags "
-                           f"(exit {rc}) — see report in {ch['ep_dir']}")
+        raise NonRetryableError("prep-QA found ERROR-severity flags "
+                                f"(exit {rc}) — see report in {ch['ep_dir']}")
 
 
 def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
@@ -1128,10 +1139,16 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
         # chapter is re-attempted BEFORE new queued work (user directive). After
         # max attempts it stays failed and is surfaced on the Series tab for a
         # manual reload (see jobs.failed_chapters).
+        #
+        # A DETERMINISTIC failure (NonRetryableError — a prep-QA BLOCKING flag the
+        # heal can't fix) is NEVER retried: re-running the identical pipeline only
+        # reproduces the block, burning ~30-40min per attempt (the 520->521->522
+        # ~90min loop). It fails ONCE and parks the chapter for human review.
         max_attempts = int(os.environ.get("STUDIO_JOB_MAX_ATTEMPTS", "3"))
         retry_priority = int(os.environ.get("STUDIO_RETRY_PRIORITY", "1"))
         attempt = int((job.get("payload") or {}).get("_attempt", 0))
-        if job["type"] != "heartbeat" and attempt + 1 < max_attempts:
+        if (job["type"] != "heartbeat" and attempt + 1 < max_attempts
+                and not isinstance(e, NonRetryableError)):
             payload = dict(job.get("payload") or {})
             payload["_attempt"] = attempt + 1
             rid = jobs.enqueue(con, job["type"],

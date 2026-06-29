@@ -1273,19 +1273,80 @@ def test_merge_consecutive_duplicate_narration_empty_text_not_merged():
     assert not tl[1]["cuts"][0].get("held")
 
 
-# ---- husk safety net: system-card protection must not shield a husk ----------
+# ---- system-card guarantee vs empty-bubble exclusion (the ping-pong fix) ------
+# These two tests are the BOTH-SIDES guard so the fix can't ping-pong: a system
+# card is ALWAYS kept (its text IS the beat), while the empty dialogue bubble is
+# still excluded (its text becomes narration). They must hold simultaneously.
 
-def test_empty_husk_is_dropped_even_when_tagged_system():
-    # An empty-bubble husk (no recoverable art after blanking) must DROP even if a
-    # system_box was detected on it — the system-card protection cannot keep a
-    # contentless husk on screen (Nano ch1 p000020 was tagged sys -> shown 4.3s).
+def test_system_card_unconditionally_exempt_even_when_blanked_to_husk():
+    # The regression (9118b8b) gated the system/title-card exemption on
+    # `recoverable`, so a text-on-plain system card (Nano ch1 p000114
+    # "7TH GENERATION NANO MACHINE") went non-recoverable after its text was
+    # blanked and was DROPPED -> system_card_unshown. A system card's TEXT is the
+    # on-screen story beat: it must ALWAYS be exempt, regardless of recoverability.
     assert rp.exempt_from_drop(
         recoverable=False, sys_box=True, title_card=False, rich=False,
-        visual_story=False, panel_kind="system", has_ocr=True) is False
-    # a husk a flat-card heuristic mislabeled a title card also drops
+        visual_story=False, panel_kind="system", has_ocr=True) is True
+    # even with NO sys_box detection (weights missing / undetected), the
+    # understanding's panel_kind="system" alone keeps it shown
+    assert rp.exempt_from_drop(
+        recoverable=False, sys_box=False, title_card=False, rich=False,
+        visual_story=False, panel_kind="system", has_ocr=True) is True
+    # a styled title card is likewise unconditionally kept
     assert rp.exempt_from_drop(
         recoverable=False, sys_box=False, title_card=True, rich=False,
-        visual_story=False, panel_kind="story", has_ocr=True) is False
+        visual_story=False, panel_kind="story", has_ocr=True) is True
+
+
+def test_empty_dialogue_caption_husk_is_not_exempt_and_drops():
+    # The OTHER half of the ping-pong: an empty DIALOGUE bubble (Nano ch1 p000020)
+    # whose text becomes narration is marked panel_kind=caption upstream and folded
+    # away (panel_understand + story_group). Here, defense-in-depth, a caption husk
+    # that is NON-recoverable after cleaning is NOT shielded — the system-card
+    # guarantee above does not keep it (no sys_box, no title_card, kind != system).
+    assert rp.exempt_from_drop(
+        recoverable=False, sys_box=False, title_card=False, rich=False,
+        visual_story=False, panel_kind="caption", has_ocr=True) is False
+    # a recoverable caption (real art survives behind the blanked bubble) stays
+    assert rp.exempt_from_drop(
+        recoverable=True, sys_box=False, title_card=False, rich=False,
+        visual_story=False, panel_kind="caption", has_ocr=True) is True
+
+
+def test_near_identical_dedup_never_drops_protected_system_card():
+    # Two near-identical cards back-to-back: normally the LATER drops. When the
+    # later is a system card (its text IS the beat) it must SURVIVE — protect it.
+    a = _stamp(np.full((400, 400, 3), 200, np.uint8), 5)
+    cuts = [{"file": "art.jpg", "start": 0.0, "dur": 3.0},
+            {"file": "sys.jpg", "start": 3.0, "dur": 3.0}]
+    imgs = {"art.jpg": a, "sys.jpg": a.copy()}
+    # baseline: without protection the later near-identical cut drops
+    _, d0 = rp.drop_near_identical_cuts(cuts, imgs)
+    assert d0 == ["sys.jpg"]
+    # protected: the system card is kept and stays shown
+    out, dropped = rp.drop_near_identical_cuts(cuts, imgs, protect={"sys.jpg"})
+    assert dropped == []
+    assert [c["file"] for c in out] == ["art.jpg", "sys.jpg"]
+
+
+def test_cross_segment_dedup_never_drops_protected_system_card():
+    # A system card visually matching the prior segment's panel would normally be
+    # flagged a cross-segment duplicate; protect keeps it shown.
+    big = _stamp(np.full((600, 400, 3), 200, np.uint8), 7)
+    other = _stamp(np.full((600, 400, 3), 200, np.uint8), 99)
+    cbs = {"g1": [{"file": "a.jpg", "start": 0.0, "dur": 4.0}],
+           "g2": [{"file": "sys.jpg", "start": 0.0, "dur": 3.0},
+                  {"file": "c.jpg", "start": 3.0, "dur": 3.0}]}
+    imgs = {"a.jpg": big, "sys.jpg": big.copy(), "c.jpg": other}
+    # baseline: sys.jpg matches a.jpg across the seam -> flagged dropped
+    _, d0 = rp.drop_cross_segment_duplicate_cuts(
+        cbs, ["g1", "g2"], lambda f: imgs.get(f))
+    assert ("g2", "sys.jpg") in d0
+    # protected: the system card is never flagged and stays in the shown cuts
+    out, dropped = rp.drop_cross_segment_duplicate_cuts(
+        cbs, ["g1", "g2"], lambda f: imgs.get(f), protect={"sys.jpg"})
+    assert ("g2", "sys.jpg") not in dropped
+    assert "sys.jpg" in [c["file"] for c in out["g2"]]
 
 
 def test_content_bearing_system_card_stays_exempt():

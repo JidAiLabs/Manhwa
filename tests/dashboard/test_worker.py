@@ -66,6 +66,68 @@ def test_run_once_operator_cancel_marks_cancelled_no_retry(tmp_path):
                        "state='queued'").fetchone()[0] == 0   # no auto-retry
 
 
+def test_transient_failure_is_auto_retried(tmp_path):
+    """A TRANSIENT failure (network blip / exit 124 / timeout) raises a plain
+    RuntimeError -> the worker re-enqueues the job so an unattended run recovers."""
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "boom", chapter_id=1)
+
+    def boom(c, job, log):
+        raise RuntimeError("ffmpeg exited 124 (timeout)")   # transient
+
+    worker.run_once(con, handlers={"boom": boom}, log_dir=str(tmp_path))
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "failed"
+    # a retry was re-enqueued (auto-retry path)
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='boom' AND "
+                       "state='queued'").fetchone()[0] == 1
+
+
+def test_deterministic_qa_block_is_not_retried(tmp_path):
+    """A DETERMINISTIC QA-BLOCKING failure (NonRetryableError) parks the chapter:
+    fail ONCE, never re-enqueue — re-running the identical pipeline only reproduces
+    the block (the system_card_unshown 520->521->522 ~90min burn)."""
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "boom", chapter_id=1)
+
+    def boom(c, job, log):
+        raise worker.NonRetryableError(
+            "prep-QA has BLOCKING errors after auto-heal (['system_card_unshown'])")
+
+    worker.run_once(con, handlers={"boom": boom}, log_dir=str(tmp_path))
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (jid,)).fetchone()
+    assert state == "failed" and "system_card_unshown" in err
+    # NO auto-retry re-enqueued (and the error has no "auto-retry N/3" suffix)
+    assert "auto-retry" not in err
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='boom' AND "
+                       "state='queued'").fetchone()[0] == 0
+
+
+def test_prepare_deterministic_qa_block_does_not_burn_retries(tmp_path, monkeypatch):
+    """End-to-end: a prepare whose QA stays RED on a BLOCKING code after auto-heal
+    fails once and is NOT re-queued — the retry-burn is gone."""
+    con = _con(tmp_path)
+    _seed_chapter(con, tmp_path)
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: {"system_card_unshown"})
+    monkeypatch.setattr(worker, "_heal_to_green", lambda c, ch, ep, log: None)
+    monkeypatch.setattr(worker, "_heal_visual_drops",
+                        lambda c, ch, ep, log: set())
+    monkeypatch.setattr(worker, "_qa_error_codes",
+                        lambda ep: {"system_card_unshown"})   # BLOCKING, stays red
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='prepare' ORDER BY id LIMIT 1"
+    ).fetchone()
+    assert state == "failed" and "system_card_unshown" in err
+    # the burn fix: a deterministic QA block parks the chapter, never re-queues
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='prepare' AND "
+                       "state='queued'").fetchone()[0] == 0
+
+
 def test_render_segment_gate_refusal(tmp_path):
     con = _con(tmp_path)
     jid = jobs.enqueue(con, "render_segment", chapter_id=9)
