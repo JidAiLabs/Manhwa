@@ -409,6 +409,40 @@ def test_apply_punchup_preserves_alignment_and_plain():
     assert accepted == 2   # both panels accepted
 
 
+def test_post_punchup_backstop_reneutralizes_concealed_figure():
+    """The beats pass neutralizes a concealed figure's identity, but the persona
+    punchup runs AFTER it and can re-attach the protagonist handle ('our guy') to
+    that same still-unresolved figure. The post-punchup backstop must neutralize
+    it back to a neutral handle on a panel whose understanding carries a
+    concealment/power cue and does NOT match the established protagonist."""
+    cast = {"cast": [{"canonical_name": "Kim Dokja", "is_protagonist": True,
+                      "visual_description": "ordinary office worker glasses"}]}
+    # post-punch beats: panel 0 OPENS the unresolved window (concealment cue);
+    # panel 1 was rewritten by persona to 'Our guy ...' on the SAME masked figure.
+    out = {"beats": [{"group_id": 1, "panel_narration": [
+        {"scene_file": "p0.jpg",
+         "line": "A hooded figure appears in the smoke.",
+         "line_plain": "A hooded figure appears in the smoke."},
+        {"scene_file": "p1.jpg",
+         "line": "Our guy raises a hand wreathed in lightning.",
+         "line_plain": "The stranger raises a hand wreathed in lightning."}]}]}
+    understood = {
+        "p0.jpg": {"subjects": ["hooded stranger"],
+                   "description": "a masked, hooded figure emerges from smoke"},
+        "p1.jpg": {"subjects": ["glowing figure"],
+                   "description": "the masked figure crackling with lightning"}}
+    vision = {"p0.jpg": {"ocr_clean": ""}, "p1.jpg": {"ocr_clean": ""}}
+
+    counts = npu.apply_post_punchup_backstop(out, cast, vision, understood)
+
+    line = out["beats"][0]["panel_narration"][1]["line"].lower()
+    assert "our guy" not in line            # protagonist handle removed
+    assert "stranger" in line               # neutral handle restored
+    assert counts["identity_reveals_neutralized"] >= 1
+    # the joined narration is rebuilt from the neutralized panel line
+    assert "our guy" not in out["beats"][0]["narration"].lower()
+
+
 def test_apply_punchup_rejects_chrome_and_keeps_plain():
     """The grounding gate must fire per line: chrome-leaking or overlong
     rewrites are rejected and the grounded plain line is restored."""

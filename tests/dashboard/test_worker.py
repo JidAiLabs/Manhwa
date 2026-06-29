@@ -252,6 +252,89 @@ def test_heal_to_green_fast_qa_then_final_semantic(tmp_path, monkeypatch):
     assert "--semantic" in qa_cmds[1]
 
 
+def _heal_cfg():
+    import types
+    return (types.SimpleNamespace(beats_model="m", beats_backend="ollama",
+                                  punchup="off", script_model="s",
+                                  narration_source="gemini_verbatim",
+                                  semantic_heal=False), "p", "l")
+
+
+def test_heal_to_green_narration_stale_only_rescripts_and_stops(
+        tmp_path, monkeypatch):
+    """narration_stale is NOT re-narratable: when it's the ONLY remaining ERROR
+    (narration_heal returns no corrections), the heal must re-run the SCRIPTED
+    stage (script_expander) + re-plan ONCE and stop — it must not loop to the
+    cap re-narrating, which can never clear a staleness flag (the 2.6h bug)."""
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "narration_stale", "severity": "ERROR",
+         "segment_id": "g0001_p00"}]}))
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep), "number": 1}
+
+    calls = []
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        calls.append(s)
+        if "narration_heal.py" in s:                 # nothing is healable now
+            json.dump({}, open(cmd[cmd.index("--out") + 1], "w"))
+        return 0
+
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_beats_cfg", _heal_cfg)
+    monkeypatch.setattr(worker, "_series_env", lambda c, sid: None)
+    regen = []
+    monkeypatch.setattr(worker, "_regen_flagged", lambda *a, **k: regen.append(1))
+    qa = []
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda *a, **k: qa.append(1) or set())
+
+    worker._heal_to_green(con, ch, ep, open(tmp_path / "log.txt", "w"))
+
+    assert any("script_expander.py" in c for c in calls)     # scripted re-run
+    assert any("timeline_planner.py" in c for c in calls)    # + re-plan
+    assert regen == []                                       # NO re-narration
+    assert sum("narration_heal.py" in c for c in calls) == 1  # not _HEAL_MAX
+    assert qa == [1]                                         # one re-QA, then stop
+
+
+def test_heal_to_green_stops_early_when_error_set_repeats(tmp_path, monkeypatch):
+    """If a regen cycle leaves the ERROR set unchanged, the loop stops early
+    instead of burning all _HEAL_MAX cycles on an identical re-narration."""
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    # a healable ERROR the (stubbed) regen never clears -> identical every cycle
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "caption_unvoiced", "severity": "ERROR",
+         "segment_id": "g0001_p00", "detail": "missing: 'HELLO'"}]}))
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep), "number": 1}
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        if "narration_heal.py" in s:
+            json.dump({"1": "cover the caption"},
+                      open(cmd[cmd.index("--out") + 1], "w"))
+        return 0
+
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_beats_cfg", _heal_cfg)
+    monkeypatch.setattr(worker, "_series_env", lambda c, sid: None)
+    regen = []
+    monkeypatch.setattr(worker, "_regen_flagged", lambda *a, **k: regen.append(1))
+    # re-QA leaves prep_qa.json unchanged -> the ERROR set repeats every cycle
+    monkeypatch.setattr(worker, "_run_prep_and_qa", lambda *a, **k: set())
+
+    worker._heal_to_green(con, ch, ep, open(tmp_path / "log.txt", "w"))
+
+    # cycle 1 regens; cycle 2 sees the same ERROR set and stops -> 1 regen, far
+    # fewer than _HEAL_MAX
+    assert regen == [1]
+
+
 # ---- autopilot: spotless QA advances without human clicks -------------------
 
 def _autopilot_series(con, tmp_path, *, autopilot=1, flags=()):

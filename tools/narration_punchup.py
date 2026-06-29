@@ -36,7 +36,9 @@ if _TOOLS_DIR not in sys.path:
 from narration_consistency import strip_chrome_opener  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
+    dedupe_consecutive_panel_lines,
     is_spoken_fragment,
+    neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
 
@@ -634,6 +636,73 @@ def apply_panel_punchup(
     return accepted
 
 
+def _vision_by_file(ep_dir: str) -> Dict[str, Dict[str, Any]]:
+    """{scene_file: vision item} from manifest.vision.json (for the identity
+    backstop's concealment/OCR signals). Empty on any failure."""
+    if not ep_dir:
+        return {}
+    try:
+        v = json.load(open(os.path.join(ep_dir, "manifest.vision.json")))
+        return {str(i.get("scene_file")): i for i in v.get("items") or []
+                if i.get("scene_file")}
+    except Exception:
+        return {}
+
+
+def _understood_by_file(ep_dir: str) -> Dict[str, Dict[str, Any]]:
+    """{scene_file: understood panel} from manifest.panels.understood.json (the
+    per-panel subjects/description the identity backstop matches against the
+    protagonist fingerprint). Empty on any failure."""
+    if not ep_dir:
+        return {}
+    try:
+        u = json.load(open(os.path.join(ep_dir, "manifest.panels.understood.json")))
+        return {str(p.get("scene_file")): p for p in u.get("panels") or []
+                if p.get("scene_file")}
+    except Exception:
+        return {}
+
+
+def _cast_obj(cast_path: str) -> Dict[str, Any]:
+    """Full manifest.cast.json object (needed for protagonist names + visual
+    fingerprint); _cast_names() only returns the bare names."""
+    if not cast_path or not os.path.exists(cast_path):
+        return {"cast": []}
+    try:
+        obj = json.load(open(cast_path))
+        return obj if isinstance(obj, dict) else {"cast": []}
+    except Exception:
+        return {"cast": []}
+
+
+def apply_post_punchup_backstop(
+    out: Dict[str, Any],
+    cast_obj: Dict[str, Any],
+    vision_by_file: Dict[str, Any],
+    understood_by_file: Dict[str, Any],
+) -> Dict[str, int]:
+    """Re-assert the identity/dedup backstop AFTER the persona pass, in place.
+
+    The beats pass already neutralizes a concealed/unresolved figure's identity
+    BEFORE this punchup runs — but the persona rewrite can re-attach a
+    protagonist handle ("our guy") to that same still-concealed figure, so the
+    mis-ID would resurface in the FINAL beats that ship. Re-running
+    neutralize_identity_reveal_leaks (+ the consecutive-dup merge), exactly as
+    gemini_narrative_pass does at ITS tail, makes the persona pass unable to leave
+    a concealed figure tagged as the protagonist or ship a duplicated consecutive
+    line. Agnostic: cues/handles are generic; identity comes only from the cast +
+    the per-panel understanding."""
+    n_ident = neutralize_identity_reveal_leaks(
+        out, cast_obj or {"cast": []}, vision_by_file or {},
+        understood_by_file or {})
+    n_dups = dedupe_consecutive_panel_lines(out)
+    stats = out.setdefault("stats", {})
+    stats["identity_reveals_neutralized"] = n_ident
+    stats["consecutive_dups_merged"] = n_dups
+    return {"identity_reveals_neutralized": n_ident,
+            "consecutive_dups_merged": n_dups}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--beats", required=True)
@@ -777,6 +846,16 @@ def main() -> int:
 
     out.setdefault("stats", {})["spoken_fragments_repaired"] = (
         repair_spoken_fragments(out))
+
+    # POST-PUNCHUP IDENTITY BACKSTOP: the persona pass runs AFTER the beats pass
+    # already neutralized concealed-figure identities, and it can re-introduce a
+    # protagonist handle ("our guy") on a still-unresolved figure. Re-apply the
+    # identity + consecutive-dup backstop here so a mis-ID can never survive into
+    # the final beats that ship.
+    apply_post_punchup_backstop(
+        out, _cast_obj(args.cast),
+        _vision_by_file(args.episode_dir),
+        _understood_by_file(args.episode_dir))
 
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)

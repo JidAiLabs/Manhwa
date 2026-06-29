@@ -335,12 +335,37 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
             aargs += ["--backend", "vertex", "--model", cfg.beats_model,
                       "--project", project, "--location", location]
         _stream(aargs, log, env=env)
-    sargs = [PY, str(REPO / "tools" / "script_expander.py"), "--beats", beats,
-             "--vision", vision, "--out", str(ep / "manifest.script.json"),
-             "--model", cfg.script_model, "--narration-source",
-             "gemini_verbatim", "--cast", cast]
+    _rescript(ep, cfg, env, log)
+
+
+def _rescript(ep: Path, cfg, env, log: TextIO) -> None:
+    """Re-derive manifest.script.json from the (healed) beats — the SAME verbatim
+    invocation studio.pipeline._stage_scripted uses for the default narration
+    source. A `narration_stale` flag ('script.json predates manifest.beats.json')
+    can ONLY be cleared by RE-SCRIPTING + re-planning; re-narration makes the
+    plan↔beats divergence worse, which is exactly why narration_stale is no longer
+    in narration_heal.HEALABLE."""
+    src = getattr(cfg, "narration_source", None) or "gemini_verbatim"
+    sargs = [PY, str(REPO / "tools" / "script_expander.py"),
+             "--beats", str(ep / "manifest.beats.json"),
+             "--vision", str(ep / "manifest.vision.json"),
+             "--out", str(ep / "manifest.script.json"),
+             "--model", cfg.script_model, "--narration-source", src,
+             "--cast", str(ep / "manifest.cast.json")]
     if _stream(sargs, log, env=env) != 0:
         raise RuntimeError("script_expander (heal) failed")
+
+
+def _replan(ep: Path, log: TextIO) -> None:
+    """Rebuild render.plan.json from the current groups/beats/script/vision."""
+    if _stream([PY, str(REPO / "tools" / "timeline_planner.py"),
+                "--groups", str(ep / "manifest.groups.json"),
+                "--beats", str(ep / "manifest.beats.json"),
+                "--script", str(ep / "manifest.script.json"),
+                "--vision", str(ep / "manifest.vision.json"),
+                "--out", str(ep / "render.plan.json"),
+                "--mode", "narrated", "--min-cut-sec", "3.5"], log) != 0:
+        raise RuntimeError("timeline_planner (heal) failed")
 
 
 _HEAL_MAX = 4
@@ -357,6 +382,15 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
     semantic_heal = bool(getattr(cfg, "semantic_heal", False))
     project = location = env = None
     used_fast_qa = False
+    prev_error_codes: "set | None" = None      # convergence guard (no-progress)
+    stuck = False
+
+    def _ensure_cfg() -> None:                 # load cloud/ollama routing lazily
+        nonlocal cfg, project, location, env
+        if project is None:
+            cfg, project, location = _beats_cfg()
+            env = _series_env(con, ch["series_id"])
+
     for cycle in range(1, _HEAL_MAX + 1):
         heal_args = [PY, str(REPO / "tools" / "narration_heal.py"),
                      "--qa", str(ep / "prep_qa.json"), "--out", str(corr)]
@@ -368,6 +402,23 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
         except Exception:
             ncorr = 0
         if ncorr == 0:
+            # Nothing RE-NARRATABLE remains. But a `narration_stale` ERROR is NOT
+            # re-narratable (that is why it is out of narration_heal.HEALABLE) —
+            # the script/plan text has diverged from the beats and only a fresh
+            # SCRIPTED stage + re-plan clears it. If staleness is the ONLY thing
+            # left, fix it ONCE here instead of returning with it still red.
+            if "narration_stale" in _qa_error_codes(ep):
+                _ensure_cfg()
+                log.write("[heal] narration_stale is the only remaining issue -> "
+                          "re-running the scripted stage + re-plan (re-narration "
+                          "cannot clear a staleness flag)\n")
+                _rescript(ep, cfg, env, log)
+                with record_stage(con, chapter_id=ch["id"], stage="planned",
+                                  series_id=ch["series_id"]):
+                    _replan(ep, log)
+                _run_prep_and_qa(con, ch, log, heal_aware=True,
+                                 reuse_clean=True, semantic=True)
+                return
             if used_fast_qa:
                 log.write("[heal] final semantic QA scan after mechanical "
                           "heal cycle(s)\n")
@@ -375,31 +426,37 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                                  reuse_clean=True, semantic=True)
             log.write("[heal] no narration-healable flags remain\n")
             return
-        if project is None:                   # load cloud/ollama routing lazily
-            cfg, project, location = _beats_cfg()
-            env = _series_env(con, ch["series_id"])
+
+        # CONVERGENCE GUARD: if the PREVIOUS cycle's regen left the ERROR set
+        # exactly as it was, another identical re-narration won't help — stop
+        # early and log the stuck codes instead of burning the remaining cycles.
+        cur_error_codes = _qa_error_codes(ep)
+        if prev_error_codes is not None and cur_error_codes == prev_error_codes:
+            log.write(f"[heal] no progress (ERROR set unchanged: "
+                      f"{sorted(cur_error_codes)}) -> stopping early\n")
+            stuck = True
+            break
+        prev_error_codes = cur_error_codes
+
+        _ensure_cfg()
         log.write(f"[heal] cycle {cycle}/{_HEAL_MAX}: re-narrating {ncorr} "
                   "flagged group(s) from their panels\n")
         _regen_flagged(ep, cfg, project, location, str(corr), env, log)
         with record_stage(con, chapter_id=ch["id"], stage="planned",
                           series_id=ch["series_id"]):
-            if _stream([PY, str(REPO / "tools" / "timeline_planner.py"),
-                        "--groups", str(ep / "manifest.groups.json"),
-                        "--beats", str(ep / "manifest.beats.json"),
-                        "--script", str(ep / "manifest.script.json"),
-                        "--vision", str(ep / "manifest.vision.json"),
-                        "--out", str(ep / "render.plan.json"),
-                        "--mode", "narrated", "--min-cut-sec", "3.5"], log) != 0:
-                raise RuntimeError("timeline_planner (heal) failed")
+            _replan(ep, log)
         cycle_semantic = semantic_heal
         used_fast_qa = used_fast_qa or not cycle_semantic
         _run_prep_and_qa(con, ch, log, heal_aware=True, reuse_clean=True,
                          semantic=cycle_semantic)
     if used_fast_qa:
-        log.write("[heal] final semantic QA scan after hitting heal cap\n")
+        log.write("[heal] final semantic QA scan after "
+                  + ("an early no-progress stop\n" if stuck
+                     else f"hitting the {_HEAL_MAX}-cycle cap\n"))
         _run_prep_and_qa(con, ch, log, heal_aware=True,
                          reuse_clean=True, semantic=True)
-    log.write(f"[heal] hit the {_HEAL_MAX}-cycle cap\n")
+    log.write("[heal] " + ("stopped early — no progress\n" if stuck
+                           else f"hit the {_HEAL_MAX}-cycle cap\n"))
 
 
 # QA ERROR codes that re-narration CAN'T fix — the panel itself is the problem

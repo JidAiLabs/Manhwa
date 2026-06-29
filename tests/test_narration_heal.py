@@ -64,6 +64,18 @@ def test_empty_report_is_empty():
     assert nh.corrections_from_qa({"flags": []}) == {}
 
 
+def test_narration_stale_is_not_healable():
+    """narration_stale means script/plan DIVERGED from beats — only re-scripting
+    clears it. Re-narration changes the beats again, so the script stays behind
+    and the flag never clears (the heal-loop non-convergence). It must therefore
+    NOT be in HEALABLE and must produce NO correction."""
+    assert "narration_stale" not in nh.HEALABLE
+    rep = {"flags": [_flag("narration_stale", "ERROR",
+                           "plan text diverges; script.json predates "
+                           "manifest.beats.json", "g0004_p01")]}
+    assert nh.corrections_from_qa(rep) == {}
+
+
 # --- grounding_weak: QA-eyes report by default, opt-in quality heal ----------
 
 def test_grounding_weak_warn_is_report_only_by_default():

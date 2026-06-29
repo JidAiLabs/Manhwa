@@ -19,9 +19,16 @@ from typing import Any, Dict, List
 # ERROR codes a targeted per-group regeneration can plausibly fix (re-narrate
 # the group from its panels). Codes about cropping/montage/audio are NOT here —
 # they aren't narration problems.
+#
+# `narration_stale` is DELIBERATELY EXCLUDED: it means the plan/script text has
+# DIVERGED from the beats narration ("script.json predates manifest.beats.json")
+# — only RE-SCRIPTING + re-planning can clear it. Re-narration changes the beats
+# AGAIN, so the script stays behind and the flag never clears → the heal loop
+# burns to its cap (the 2.6h-chapter non-convergence). The worker handles
+# staleness by re-running the scripted stage, not by re-narrating.
 HEALABLE = {
     "caption_unvoiced", "chrome_narration", "fragment_dangle",
-    "filler_narration", "beats_incomplete", "narration_stale",
+    "filler_narration", "beats_incomplete",
     "empty_item", "silent_group", "grounding_weak",
 }
 
