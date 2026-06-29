@@ -1380,3 +1380,113 @@ def test_exempt_from_drop_broad_ocr_only_when_recoverable():
     assert rp.exempt_from_drop(
         recoverable=False, sys_box=False, title_card=False, rich=False,
         visual_story=False, panel_kind="caption", has_ocr=True) is False
+
+
+# ---- D1: partial-drop reflow (no black time-holes) --------------------------
+
+def test_cap_repeats_partial_drop_reflows_survivor_no_gap():
+    """D1: a multi-cut segment that loses SOME-but-not-all cuts must reflow its
+    survivors across the FULL window — otherwise the no-cut span renders as the
+    #000 background (black). Mirrors g0003_p06 / g0018_p37 / g0022_p16 gaps.
+
+    Segment cuts [A@0-2, B@2-4] (window 4s); B repeats a recently-shown panel
+    so it is dropped; survivor A must reflow to [0,4]."""
+    cuts = {
+        "g1_p00": [{"file": "B.jpg", "start": 0.0, "dur": 2.0}],     # B shown @idx0
+        "g1_p01": [{"file": "C.jpg", "start": 0.0, "dur": 4.0}],
+        "g1_p02": [{"file": "A.jpg", "start": 0.0, "dur": 2.0},      # window 4s
+                   {"file": "B.jpg", "start": 2.0, "dur": 2.0}],     # B near -> dropped
+    }
+    order = ["g1_p00", "g1_p01", "g1_p02"]
+    durations = {"g1_p00": 2.0, "g1_p01": 4.0, "g1_p02": 4.0}
+    out, _holds = rp.cap_repeats_with_holds(
+        cuts, durations=durations, order=order)
+    seg = out["g1_p02"]
+    assert [c["file"] for c in seg] == ["A.jpg"]                 # B dropped
+    assert seg[0]["start"] == 0.0                                # reflowed to start
+    assert abs(seg[0]["start"] + seg[0]["dur"] - 4.0) < 1e-6     # covers to window end
+
+
+def test_cap_repeats_partial_drop_survivors_tile_window():
+    """D1: with TWO survivors and a dropped middle cut, the survivors must tile
+    the window contiguously — next.start == prev.end, last.end == window end,
+    no overlap, no hole."""
+    cuts = {
+        "g2_p00": [{"file": "D.jpg", "start": 0.0, "dur": 2.0}],    # D shown @idx0
+        "g2_p01": [{"file": "X.jpg", "start": 0.0, "dur": 1.0},     # window 3s
+                   {"file": "D.jpg", "start": 1.0, "dur": 1.0},     # D near -> dropped
+                   {"file": "Y.jpg", "start": 2.0, "dur": 1.0}],
+    }
+    order = ["g2_p00", "g2_p01"]
+    durations = {"g2_p00": 2.0, "g2_p01": 3.0}
+    out, _holds = rp.cap_repeats_with_holds(
+        cuts, durations=durations, order=order)
+    seg = out["g2_p01"]
+    assert [c["file"] for c in seg] == ["X.jpg", "Y.jpg"]        # middle D dropped
+    assert seg[0]["start"] == 0.0
+    for prev, nxt in zip(seg, seg[1:]):
+        assert abs((prev["start"] + prev["dur"]) - nxt["start"]) < 1e-6  # no gap/overlap
+    assert abs((seg[-1]["start"] + seg[-1]["dur"]) - 3.0) < 1e-6         # window end
+
+
+# ---- D2: no non-adjacent re-emit of the same panel within a group -----------
+
+def test_cap_repeats_no_nonadjacent_reemit_within_group():
+    """D2: a non-exempt panel reused NON-adjacently in the SAME group (gap beyond
+    the radius-3 near window) must show ONCE; the later slot HOLDS the adjacent
+    distinct panel, with no black gap (IE p000091 idx89&93, p000109 idx106&110)."""
+    order = [f"g0001_p0{i}" for i in range(5)]
+    cuts = {
+        "g0001_p00": [{"file": "P.jpg", "start": 0.0, "dur": 4.0}],   # P 1st show
+        "g0001_p01": [{"file": "Q.jpg", "start": 0.0, "dur": 4.0}],
+        "g0001_p02": [{"file": "R.jpg", "start": 0.0, "dur": 4.0}],
+        "g0001_p03": [{"file": "S.jpg", "start": 0.0, "dur": 4.0}],
+        "g0001_p04": [{"file": "P.jpg", "start": 0.0, "dur": 5.0}],   # P again, gap 4
+    }
+    durations = {s: 4.0 for s in order} | {"g0001_p04": 5.0}
+    out, holds = rp.cap_repeats_with_holds(
+        cuts, durations=durations, order=order)
+    p04 = out["g0001_p04"][0]
+    assert p04.get("held") is True and p04["file"] == "S.jpg"     # holds adjacent panel
+    assert p04["start"] == 0.0 and abs(p04["dur"] - 5.0) < 1e-6   # full window, no gap
+    assert ("g0001_p04", "S.jpg") in holds
+    counts = {}
+    for s in order:
+        for c in out[s]:
+            if not c.get("held"):
+                counts[c["file"]] = counts.get(c["file"], 0) + 1
+    assert counts["P.jpg"] == 1                                   # P emitted ONCE
+
+
+def test_cap_repeats_nonadjacent_reemit_allowed_across_groups():
+    """D2 is GROUP-scoped: the same panel may still recur in a DIFFERENT group
+    far apart (gap beyond the radius-3 near window, under the global cap) — the
+    per-group rule must not over-reach."""
+    order = ["g0001_p00", "g0001_p01", "g0001_p02", "g0001_p03", "g0002_p00"]
+    cuts = {
+        "g0001_p00": [{"file": "P.jpg", "start": 0.0, "dur": 4.0}],
+        "g0001_p01": [{"file": "Q.jpg", "start": 0.0, "dur": 4.0}],
+        "g0001_p02": [{"file": "R.jpg", "start": 0.0, "dur": 4.0}],
+        "g0001_p03": [{"file": "S.jpg", "start": 0.0, "dur": 4.0}],
+        "g0002_p00": [{"file": "P.jpg", "start": 0.0, "dur": 4.0}],   # new group, gap 4
+    }
+    durations = {s: 4.0 for s in order}
+    out, holds = rp.cap_repeats_with_holds(
+        cuts, durations=durations, order=order)
+    g2 = out["g0002_p00"][0]
+    assert not g2.get("held") and g2["file"] == "P.jpg"          # fresh in new group
+
+
+# ---- D3: empty-bubble husk on STORY art ------------------------------------
+
+def test_clean_panel_image_story_keeps_drawn_text_caption_blanks():
+    """D3: blanking a speech bubble on STORY art leaves an empty white husk
+    (IE p000007 '...SHIT!! / I CAN'T MOVE'). option b (zero smear): leave the
+    drawn text on story panels; caption/system/doc panels are still blanked."""
+    img = _bubble_scene()
+    boxes = [(30, 50, 170, 150)]
+    story = rp.clean_panel_image(img, "story", boxes)
+    assert np.array_equal(story, img)               # byte-identical: text kept, no husk
+    cap = rp.clean_panel_image(img, "caption", boxes)
+    assert not np.array_equal(cap, img)             # caption: bubble text blanked
+    assert cap[95:105, 72:128].mean() > 230         # ...dark text became bubble-white

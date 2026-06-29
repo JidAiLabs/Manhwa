@@ -645,6 +645,31 @@ def clean_scene_image(
     return out
 
 
+def clean_panel_image(
+    img: np.ndarray,
+    panel_kind: str,
+    boxes: Sequence[Tuple[int, int, int, int]],
+    *,
+    text_boxes: Optional[Sequence[Tuple[int, int, int, int]]] = None,
+) -> np.ndarray:
+    """Bubble-text removal that honors panel_kind (the D3 husk fix).
+
+    Blanking a speech bubble on STORY artwork leaves an empty white husk that
+    reads as broken on screen (IE p000007 "...SHIT!! / I CAN'T MOVE": real art,
+    blanked=True). The dialogue IS voiced, but the user's direction (option b,
+    zero smear) is to keep the drawn text in the art rather than gut it — so a
+    `story` panel is returned byte-identical (a fresh copy, never blanked).
+    Every other kind (caption / document / system / bubble-dominated) is blanked
+    via clean_scene_image exactly as before.
+    """
+    if str(panel_kind or "").strip().lower() == "story":
+        return img.copy()
+    blist = list(boxes or [])
+    if not blist and not (text_boxes or []):
+        return img.copy()
+    return clean_scene_image(img, blist, text_boxes=text_boxes)
+
+
 def bubble_coverage(
     shape: Tuple[int, ...],
     boxes: Sequence[Tuple[int, int, int, int]],
@@ -1332,8 +1357,13 @@ def cap_repeats_with_holds(
     holds: List[Tuple[str, str]] = []
     counts: Dict[str, int] = {}
     last_idx: Dict[str, int] = {}
+    group_shown: Dict[str, set] = {}
     prev_file: Optional[str] = None
     for i, seg in enumerate(order):
+        # group key: g####_p## -> g#### (segments outside that scheme are their
+        # own group, so the per-group rule below is a no-op for them).
+        grp = re.sub(r"_p\d+$", "", str(seg))
+        seen = group_shown.setdefault(grp, set())
         cuts = list(cuts_by_segment.get(seg) or [])
         kept: List[Dict[str, Any]] = []
         for c in cuts:
@@ -1349,10 +1379,19 @@ def cap_repeats_with_holds(
             # only the GLOBAL cap, so a true system card may still recur far
             # apart (outside the window).
             near = f in last_idx and (i - last_idx[f]) <= 3
-            if not near and (f in ex or counts.get(f, 0) < cap):
+            # GROUP-global cap for non-exempt panels: once a panel has been
+            # shown in this group it is NOT re-emitted later in the same group,
+            # even non-adjacently (gap > radius) — it would otherwise replay
+            # with the same animation (IE p000091 idx89&93, p000109 idx106&110).
+            # The previous distinct panel HOLDS that slot instead. Exempt
+            # system/title cards are unaffected (they may legitimately recur).
+            reused = f not in ex and f in seen
+            if not near and not reused and (f in ex or counts.get(f, 0) < cap):
                 kept.append(c)
                 counts[f] = counts.get(f, 0) + 1
                 last_idx[f] = i
+                if f not in ex:
+                    seen.add(f)
         if not kept and cuts:
             if prev_file is None:
                 kept = [cuts[0]]            # nothing to hold yet
@@ -1370,6 +1409,26 @@ def cap_repeats_with_holds(
                                     "zoom": {"start": 1.0, "end": 1.0},
                                     "strength": 0.0}}]
                 holds.append((seg, prev_file))
+        elif kept and len(kept) < len(cuts):
+            # SOME-but-not-all cuts dropped: reflow the survivors across the
+            # FULL segment window. Without this the survivors keep their original
+            # start/dur and the dropped cut's span becomes a NO-CUT time hole —
+            # which renders as the #000 background, a black screen (g0003_p06
+            # front-gap, g0018_p37 / g0022_p16 tail-gaps). Survivors tile the
+            # whole window contiguously: no gap, no overlap. (Same math as
+            # _redistribute, applied in-place by identity so a repeated filename
+            # inside one segment can't drop the wrong instance.)
+            start0 = float(cuts[0].get("start") or 0.0)
+            total = sum(float(c.get("dur") or 0.0) for c in cuts)
+            surv_total = sum(float(c.get("dur") or 0.0) for c in kept)
+            scale = (total / surv_total) if surv_total > 0 else 1.0
+            t = start0
+            reflowed: List[Dict[str, Any]] = []
+            for c in kept:
+                d = round(float(c.get("dur") or 0.0) * scale, 4)
+                reflowed.append({**c, "start": round(t, 4), "dur": d})
+                t += d
+            kept = reflowed
         out[seg] = kept
         if kept and not kept[-1].get("held"):
             prev_file = str(kept[-1].get("file"))
@@ -2042,10 +2101,14 @@ def main() -> int:
                         return False
                     words = [w for w in words if not _in_protected(w)]
                 # orphan-word blanking needs the cleaner even with zero
-                # detected bubbles (spiky balloons evade the detector)
-                out = (clean_scene_image(img.copy(), boxes, text_boxes=words)
-                       if (boxes or words) else img.copy())
-                cleaned_cache[fname] = (out, boxes)
+                # detected bubbles (spiky balloons evade the detector) — BUT a
+                # STORY-art panel keeps its drawn text (clean_panel_image, the D3
+                # husk fix): blanking a bubble on real artwork leaves an empty
+                # white husk. caption/system/doc panels are still blanked.
+                story = _panel_kind(fname) == "story" and fname not in system_files
+                out = clean_panel_image(img, _panel_kind(fname), boxes,
+                                        text_boxes=words)
+                cleaned_cache[fname] = (out, [] if story else boxes)
         return cleaned_cache[fname]
 
     # Chrome is decided at the single chokepoint (scene_chrome.is_chrome_scene),
