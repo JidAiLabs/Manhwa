@@ -2,6 +2,8 @@
 import sqlite3
 from studio.catalog import db as catalog_db   # connect(path) -> new, migrated connection
 from studio.catalog import repo
+from studio.sources.base import SeriesMeta
+from studio import cli
 
 
 def _fresh_con(tmp_path):
@@ -54,3 +56,16 @@ def test_upsert_does_not_blank_existing_niche_on_metaless_redip(tmp_path):
                              title="t2", added_at="now")
     s = repo.get_series(con, sid)
     assert s.niche_primary == "C"
+
+
+def test_persist_series_classifies_and_stores_niche(tmp_path):
+    con = catalog_db.connect(tmp_path / "studio.db")
+    # Nano-class tags -> C primary + A secondary (proven set from Task 1.1)
+    meta = SeriesMeta(source="asura", series_url="u", title="Nano", slug="nano",
+                      genres=("Action", "Martial Arts", "Murim", "Mature", "Fantasy"),
+                      synopsis="A murim revenge story.")
+    sid = cli._persist_series(con, meta)
+    s = repo.get_series(con, sid)
+    assert s.niche_primary == "C"
+    assert s.niche_secondary == "A"
+    assert "Action" in (s.genres or "")   # raw tags stored for audit

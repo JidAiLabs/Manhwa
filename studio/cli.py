@@ -29,6 +29,7 @@ from studio.catalog import repo
 from studio.catalog.models import Chapter
 from studio import config as studio_config
 from studio.sources.base import get as get_adapter
+from tools.niche_modules import classify_niche, pick_primary_secondary
 
 
 # ---------------------------------------------------------------------------
@@ -98,19 +99,32 @@ def _sanitize_label(label: str) -> str:
 # Subcommand: add-series
 # ---------------------------------------------------------------------------
 
+def _persist_series(con, meta) -> int:
+    """Classify the niche from *meta*'s genres/synopsis and upsert the series
+    with the niche stored. Raw genre tags are joined and stored for audit."""
+    primary, secondary = pick_primary_secondary(
+        classify_niche(meta.genres, meta.synopsis)
+    )
+    return repo.upsert_series(
+        con,
+        source=meta.source,
+        series_url=meta.series_url,
+        slug=meta.slug,
+        title=meta.title,
+        added_at=_now_iso(),
+        niche_primary=primary,
+        niche_secondary=secondary,
+        genres=", ".join(meta.genres),
+        synopsis=meta.synopsis,
+    )
+
+
 def cmd_add_series(args: argparse.Namespace) -> int:
     adapter = get_adapter(args.source)
     now = _now_iso()
     meta = adapter.series_meta(args.series_url)
     con = _open_db()
-    sid = repo.upsert_series(
-        con,
-        meta.source,
-        meta.series_url,
-        meta.slug,
-        meta.title,
-        added_at=now,
-    )
+    sid = _persist_series(con, meta)
     chapters = adapter.list_chapters(args.series_url)
     for ch in chapters:
         repo.upsert_chapter(con, sid, ch.number, ch.label, ch.url, updated_at=now)
