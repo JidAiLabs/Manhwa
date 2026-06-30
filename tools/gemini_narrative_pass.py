@@ -166,7 +166,9 @@ _DIALOGUE_RULE = (
     "onomatopoeia (huh, ugh, keuk, ack, grr, a raw scream); NEVER quote an "
     "incomplete, trailing-off fragment such as 'Ancestor...?' — finish the thought "
     "in your own words instead. NEVER voice publication chrome — ads, credits, "
-    "'subscribe/follow/join our Discord', watermarks, scanlator or site names."
+    "'subscribe/follow/join our Discord', watermarks, scanlator or site names. "
+    "When a real line is short and iconic — a threat, a taunt, a name — prefer "
+    "QUOTING it (clean sentence case, attributed) over paraphrasing."
 )
 
 
