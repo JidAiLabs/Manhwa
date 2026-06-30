@@ -223,6 +223,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("No chapters match the selector.")
         return 0
 
+    series = repo.get_series(con, args.series_id)
+
     failed = False
     for ch in selected:
         from studio.catalog.models import STATUS_ORDER
@@ -239,6 +241,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             if idx < STATUS_ORDER.index("downloaded"):
                 print(f"  Skipping ch{ch.number} (status={ch.status}, not yet downloaded).")
                 continue
+
+        if ch.ep_dir:
+            pipeline.write_series_manifest(ch.ep_dir, series.niche_primary,
+                                           series.niche_secondary)
 
         print(f"  Running pipeline for ch{ch.number} (status={ch.status}) …")
         pipeline.run_chapter(con, ch, cfg, now_fn=_now_iso,

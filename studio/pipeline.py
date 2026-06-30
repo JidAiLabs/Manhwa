@@ -123,6 +123,15 @@ def _ep_paths(ep_dir: Path) -> dict:
     }
 
 
+def write_series_manifest(ep_dir, niche_primary, niche_secondary):
+    """Persist the per-series niche next to the chapter's other manifests so the
+    narration tools (narration_punchup, gemini_narrative_pass) auto-read it."""
+    import json, os
+    with open(os.path.join(ep_dir, "manifest.series.json"), "w", encoding="utf-8") as f:
+        json.dump({"niche_primary": niche_primary or "",
+                   "niche_secondary": niche_secondary or ""}, f)
+
+
 def _stage_stitch(ep_dir: Path, cfg: Config) -> None:
     p = _ep_paths(ep_dir)
     _run_tool("chunk_stitch_adaptive.py",
