@@ -558,6 +558,24 @@ def test_per_panel_no_merge_four_short_lines_four_shots():
         ["p1.jpg"], ["p2.jpg"], ["p3.jpg"], ["p4.jpg"]]
 
 
+def test_n_story_panels_yield_n_segments_one_to_one():
+    """C1 headline invariant: a beat of N short story-panel lines produces N
+    shots/paragraphs (→ N segment_ids minted in main, one clip each), NOT one
+    collapsed segment. segment_id is minted downstream from paragraph index, so
+    one paragraph per shown panel == one segment per shown panel."""
+    n = 6
+    panels = [{"scene_file": f"p{i}.jpg", "line": f"Beat{i}."} for i in range(n)]
+    chunk = [_panel_beat(9, panels)]
+    payload = {"beats": [{"group_id": 9, "scene_files": [p["scene_file"] for p in panels]}]}
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=chunk, payload=payload,
+        word_target=120, genre_mode="action")
+    assert len(sec["shots"]) == n
+    assert len(sec["script_paragraphs"]) == n
+    assert len(sec["tts_paragraphs_v3"]) == n
+    assert [s.get("scene_files") for s in sec["shots"]] == [[p["scene_file"]] for p in panels]
+
+
 def test_merge_integration_long_lines_no_merge():
     """Long panel lines (>6 words each) → one shot per panel (no over-merge)."""
     panels = [
