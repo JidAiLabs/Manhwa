@@ -380,6 +380,30 @@ def test_image_min_is_deterministic():
     assert tp.compute_image_min(1200, 1600, "intense") == tp.compute_image_min(1200, 1600, "intense")
 
 
+def test_index_dims_by_file_reads_width_height(tmp_path):
+    import json
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps({"items": [
+        {"scene_file": "a/p1.jpg", "width": 1200, "height": 1600},
+        {"scene_file": "p2.jpg", "width": 800, "height": 600},
+        {"scene_file": "p3.jpg"},  # no dims -> skipped
+    ]}))
+    out = tp.index_dims_by_file(str(vp))
+    assert out["p1.jpg"] == (1200, 1600)   # basename, ints
+    assert out["p2.jpg"] == (800, 600)
+    assert "p3.jpg" not in out
+
+
+def test_panel_intensity_matches_scene_selection():
+    beat = {"scene_selection": [
+        {"scene_file": "x/p1.jpg", "intensity": "explosive"},
+        {"scene_file": "p2.jpg", "intensity": "calm"},
+    ]}
+    assert tp._panel_intensity(beat, "p1.jpg") == "explosive"
+    assert tp._panel_intensity(beat, "p2.jpg") == "calm"
+    assert tp._panel_intensity(beat, "missing.jpg") == ""
+
+
 def test_panel_floor_is_two_seconds():
     # C4: the per-panel cut floor backstop is 2.0s (coupled to prep_qa flash_cut).
     assert tp.PANEL_FLOOR_SEC == 2.0

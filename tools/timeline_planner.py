@@ -1357,6 +1357,40 @@ def index_targets_by_file(vision_path: str) -> Dict[str, List[Dict[str, Any]]]:
     return out
 
 
+def index_dims_by_file(vision_path: str) -> Dict[str, "Tuple[int, int]"]:
+    """Map scene_file basename -> (width, height) px from the vision manifest, for
+    the C2 image-aware dwell floor. Degrades to {} on a missing/old manifest
+    (no dims) -> compute_image_min then falls back to the panel floor."""
+    out: Dict[str, Tuple[int, int]] = {}
+    if not vision_path or not os.path.exists(vision_path):
+        return out
+    try:
+        with open(vision_path, "r", encoding="utf-8") as fh:
+            items = json.load(fh).get("items") or []
+    except Exception:
+        return out
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        f = os.path.basename(str(it.get("scene_file") or ""))
+        w = it.get("width")
+        h = it.get("height")
+        if f and w and h:
+            out[f] = (int(w), int(h))
+    return out
+
+
+def _panel_intensity(beat: Dict[str, Any], fname: str) -> str:
+    """This panel's own understanding intensity (calm|tense|intense|explosive) from
+    the beat's per-panel scene_selection. Under 1:1 the segment is one panel, so
+    this is the segment's true intensity (no beat-max bleed)."""
+    fb = os.path.basename(str(fname or ""))
+    for e in (beat.get("scene_selection") or []):
+        if isinstance(e, dict) and os.path.basename(str(e.get("scene_file") or "")) == fb:
+            return str(e.get("intensity") or "")
+    return ""
+
+
 def caption_files(vision_path: str) -> "set":
     """Panels the understanding calls a CAPTION — a bare narrative-voice / inner-
     monologue text card ('BACK THEN, I HAD NO IDEA.', 'AND I...'). Their WORDS are
@@ -1503,6 +1537,7 @@ def main() -> int:
     # END centered on the panel's FACE instead of a generic drift that may land on
     # an inpainted (blank) speech bubble.
     targets_by_file = index_targets_by_file(args.vision)
+    dims_by_file = index_dims_by_file(args.vision)
     montage = drop_caption_cards(
         [(int(g.get("group_id") or g.get("shot_id") or 0),
           [os.path.basename(str(x)) for x in (g.get("scene_files") or []) if x])
@@ -1775,6 +1810,16 @@ def main() -> int:
                         except Exception:
                             audio_duration = 0.0
 
+            # C2: deterministic per-panel image dwell floor for this segment's
+            # primary panel (dims from vision width/height; intensity from the
+            # beat's own per-panel selection). Routed through compute_duration_sec
+            # -> build_cuts so sum(cuts) == duration_sec (no cut_gap/total_drift).
+            _seg_primary = segment_scene_files[0] if segment_scene_files else ""
+            _seg_w, _seg_h = dims_by_file.get(_seg_primary, (0, 0))
+            image_min = compute_image_min(_seg_w, _seg_h,
+                                          _panel_intensity(beat, _seg_primary)) \
+                if args.mode == "narrated" else 0.0
+
             dur = compute_duration_sec(
                 mode=args.mode,
                 tts_text=tts_text,
@@ -1784,6 +1829,7 @@ def main() -> int:
                 chars_per_sec=args.chars_per_sec,
                 audio_duration_sec=audio_duration,
                 audio_pad_sec=args.audio_pad_sec,
+                image_min=image_min,
             )
 
             motion_mode = _choose_motion_mode(beat, ordinal=this_beat_ordinal)
