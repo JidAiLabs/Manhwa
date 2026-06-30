@@ -924,6 +924,16 @@ def filter_scene_files(
 # -----------------------------
 # Cuts generation (NEW)
 # -----------------------------
+PANEL_FLOOR_SEC = 1.2   # keep == prep_qa flash_cut threshold
+
+
+def _floor_shot_dur(n_kept: int, shot_dur: float, floor: float) -> float:
+    """Extend a segment so each of n_kept panels gets >= floor seconds; never shrink."""
+    if n_kept and floor and shot_dur / n_kept < floor:
+        return float(n_kept) * float(floor)
+    return float(shot_dur)
+
+
 def build_cuts(
     scene_files: List[str],
     shot_dur: float,
@@ -931,6 +941,7 @@ def build_cuts(
     min_cut_sec: float,
     selection: Optional[List[Dict[str, Any]]] = None,
     protected: Optional["set"] = None,
+    floor: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """
     Create deterministic montage plan across scene_files:
@@ -958,6 +969,9 @@ def build_cuts(
     # faster montage when a beat is panel-dense) instead of stretching into
     # silence; one panel + a long line is simply a long hold. min_cut_sec is no
     # longer a hard cap — the story-grouper keeps beats small enough to watch.
+    # EXCEPTION: when `floor` is set and the panels are TOO dense to each get
+    # `floor` seconds (sub-second flashes), _floor_shot_dur (below) extends the
+    # segment to k*floor so no panel is sub-floor — a small, deliberate stretch.
     if selection:
         # selection scene_file values are basenames (from beats); match in kind.
         sel = [{**e, "scene_file": os.path.basename(str(e.get("scene_file") or ""))}
@@ -974,6 +988,7 @@ def build_cuts(
     if k == 0:
         return []
 
+    shot_dur = _floor_shot_dur(k, shot_dur, floor)   # extend if too tight; never shrink
     per = shot_dur / float(k)
     cuts: List[Dict[str, Any]] = []
     t = 0.0
@@ -1766,6 +1781,7 @@ def main() -> int:
                         min_cut_sec=float(args.min_cut_sec),
                         selection=beat.get("scene_selection"),
                         protected=protected,
+                        floor=PANEL_FLOOR_SEC,
                     )
 
             # PER-CUT motion: each cut is a DIFFERENT panel, so its pan must end on
@@ -1793,6 +1809,13 @@ def main() -> int:
                 cm["focus_y"] = round(_content_focus_y(tf), 3)
                 c["motion"] = cm
                 cut_ordinal += 1
+
+            # The floor may have EXTENDED the cut tiling beyond the audio `dur`
+            # (a panel-dense beat); adopt the cuts' real total so duration_sec /
+            # end_sec / time_cursor below stay byte-aligned with the tiling and
+            # audio placement (no cut_gap / total_drift). NEVER shrinks: cuts sum
+            # to >= the original dur. Cutless segments keep the audio dur.
+            dur = sum(float(c["dur"]) for c in cuts) if cuts else dur
 
             item: Dict[str, Any] = {
                 "segment_id": segment_id,
