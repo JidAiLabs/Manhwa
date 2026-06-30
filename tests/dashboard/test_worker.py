@@ -195,7 +195,7 @@ def test_qa_error_codes_reads_report(tmp_path):
     ep = tmp_path
     (ep / "prep_qa.json").write_text(json.dumps({"flags": [
         {"code": "narration_stale", "severity": "ERROR"},
-        {"code": "flash_cut", "severity": "WARN"}]}))
+        {"code": "ghost_text", "severity": "WARN"}]}))
     assert worker._qa_error_codes(ep) == {"narration_stale"}
     assert worker._qa_error_codes(tmp_path / "nope") == set()
 
@@ -412,7 +412,7 @@ def _autopilot_series(con, tmp_path, *, autopilot=1, flags=()):
 def test_autopilot_clean_report_advances_to_voice(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _autopilot_series(con, tmp_path, flags=[
-        {"code": "flash_cut", "severity": "WARN"}])   # ordinary WARN ok
+        {"code": "ghost_text", "severity": "WARN"}])   # ordinary WARN ok
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
                         lambda c, ch, log, **kw: set())

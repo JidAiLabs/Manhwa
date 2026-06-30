@@ -188,6 +188,9 @@ _CRITICAL_QA_CODES = {
     "audio_index_missing", "audio_missing", "audio_stale", "missing_audio",
     "missing_file", "missing_dims", "stale_dims",
     "empty_item", "montage_degenerate", "beats_incomplete",
+    # a sub-1.2s on-screen cut bypassed the per-panel floor (Task 3.3) — heal
+    # can't fix timing, so block LOUD rather than ship a subliminal flash.
+    "flash_cut",
     # manifest freshness — stale or missing manifests block render
     "stale_manifest", "missing_manifest",
     # a whole stitch chunk rendered as one panel (detection under-segmented) —

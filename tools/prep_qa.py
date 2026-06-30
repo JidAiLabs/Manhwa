@@ -1271,8 +1271,8 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                     seen_parent_segments.setdefault(
                         parent_scene(f), set()).add(seg)
             dur = float(c.get("dur") or 0.0)
-            if dur < 1.2:
-                flags.append(_flag("flash_cut", WARN,
+            if dur < 1.2 and not c.get("held"):
+                flags.append(_flag("flash_cut", ERROR,
                                    f"cut shows {c.get('file')} for only "
                                    f"{dur:.2f}s",
                                    scene=str(c.get("file") or ""),

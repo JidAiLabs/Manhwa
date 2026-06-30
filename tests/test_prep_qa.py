@@ -1335,3 +1335,26 @@ def test_cut_gap_is_error_not_warn():
     gaps = [f for f in fl if f["code"] == "cut_gap"]
     assert len(gaps) == 1
     assert gaps[0]["severity"] == "ERROR"
+
+
+def test_flash_cut_is_blocking_error():
+    # Task 3.4: a sub-1.2s on-screen cut is the loud backstop for the per-panel
+    # floor (Task 3.3) — it must BLOCK (ERROR), not merely WARN.
+    # _item(seg, files, dur=...) builds one cut from `files`; dur=0.3 -> the lone
+    # cut is 0.3s on screen, a flash cut.
+    plan = _plan([_item("g0001_p01", ["p.jpg"], dur=0.3)])
+    flags = pq.plan_flags(plan, clean_files={"p.jpg"},   # suppress missing_file noise
+                          audio_exists=lambda p: True)     # audio_exists is a CALLABLE
+    sev = {f["code"]: f["severity"] for f in flags}
+    assert sev.get("flash_cut") == pq.ERROR
+
+
+def test_flash_cut_held_card_is_not_flagged():
+    # a legitimately-short HELD card (mirrors the repeat_cut held guard) must not
+    # false-block: the held cut is the renderer's own pacing, not a flash.
+    item = _item("g0001_p01", ["p.jpg"], dur=0.3)
+    item["cuts"][0]["held"] = True
+    plan = _plan([item])
+    flags = pq.plan_flags(plan, clean_files={"p.jpg"},
+                          audio_exists=lambda p: True)
+    assert not any(f["code"] == "flash_cut" for f in flags)

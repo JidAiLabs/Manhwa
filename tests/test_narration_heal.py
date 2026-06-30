@@ -52,7 +52,7 @@ def test_chrome_narration_heals_even_as_a_warning():
     # ANY severity (other codes only heal as ERRORs)
     rep = {"flags": [
         _flag("chrome_narration", "WARN", "mentions 'view count'", "g0003_p02"),
-        _flag("flash_cut", "WARN", "too short", "g0004_p03"),   # other WARN -> skip
+        _flag("ghost_text", "WARN", "faint bubble text", "g0004_p03"),   # other WARN -> skip
     ]}
     corr = nh.corrections_from_qa(rep)
     assert set(corr) == {3}
