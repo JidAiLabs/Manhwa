@@ -108,8 +108,9 @@ native voice here — it's literally how this world works; use it freely.""",
 
 
 # intensity ranking from beats' scene_selection — the deterministic signal that
-# guards persona: cinematic is the baseline everywhere; only CONNECTIVE/COMIC
-# beats may take persona, DRAMATIC beats stay purely cinematic.
+# sets the persona TEMPERATURE: the channel voice is always on for every beat; the
+# tag only tunes it — DRAMATIC drops the jokes (never the voice), CONNECTIVE/COMIC
+# run warmer.
 _INTENSITY_RANK = {"": 0, "unknown": 0, "calm": 0, "tense": 1,
                    "intense": 2, "explosive": 3}
 
@@ -155,10 +156,10 @@ def _comic_cue_score(beat: Dict[str, Any]) -> int:
 
 def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
     """Per-group DRAMATIC/CONNECTIVE label from the strongest scene intensity in
-    the beat. Cinematic is the baseline for ALL beats; the tag only guards where
-    persona is allowed — DRAMATIC (intense/explosive) stays purely cinematic,
-    CONNECTIVE may take a light wink, and COMIC beats require a short grounded
-    punch because the art/text is already playing the moment for mockery or
+    the beat. The channel voice is always on for ALL beats; the tag only sets the
+    TEMPERATURE of that voice — DRAMATIC (intense/explosive) drops the jokes but
+    keeps the voice, CONNECTIVE runs warm and witty, and COMIC beats require a short
+    grounded punch because the art/text is already playing the moment for mockery or
     humiliation. Deterministic — no LLM."""
     out: Dict[int, str] = {}
     for b in (beats_obj or {}).get("beats") or []:
@@ -200,32 +201,28 @@ def classify_panel_lines(beats_obj: Dict[str, Any]) -> Dict[tuple, str]:
     return out
 
 
-CINEMATIC_RULES = """CINEMATIC IS THE BASELINE — write EVERY line with strong
-verbs, rhythm, emotional weight, stakes, and consequence. Cinematic does NOT
-mean adding weather, lighting, hair, mist, or trailer-grade atmosphere the
-viewer can already see. The whole recap lives in a story-forward cinematic voice.
-PERSONA / HUMOR IS AN OCCASIONAL SEASONING, never the default. Now and then —
-when a beat genuinely invites levity (a light aside, an absurd or triumphant
-mundane moment, a knowing wink at the audience) — add a BRIEF touch of the
-channel PERSONA VOICE: internet-native, dry, confident, intimate ("our guy"/
-"our boy"), a little hyperbole, and only the genre-appropriate framing the GENRE
-block allows (no game framing off-genre). Across eligible CONNECTIVE lines, aim
-for roughly one touch in four — enough to sound human, never pasted onto a
-serious beat.
-Use the DRAMATIC/CONNECTIVE/COMIC tag as the guard:
-- DRAMATIC, somber, eerie, tense, awe or tragic beats stay PURELY cinematic —
-  any wink there deflates the moment;
-- only a CONNECTIVE / mundane-aside beat may take the occasional persona touch;
-- COMIC means the beat itself is mockery, humiliation, a visual gag, or a
-  face-slap: keep the cinematic facts, but add ONE sharp recap-channel punch
-  or audience aside so the joke actually lands. The punch must be clearly
-  figurative/framing, never a new story event;
-- when unsure, stay cinematic.
+CINEMATIC_RULES = """THE CHANNEL VOICE IS THE BASELINE — write EVERY line in the
+persona: internet-native, dry, confident, a little arrogant — a sharp friend
+recapping the story, not a movie trailer narrator. This voice is ALWAYS ON, even on
+grave beats; it never switches off. Use the DRAMATIC/CONNECTIVE/COMIC tag ONLY to set
+the TEMPERATURE of that voice, never to remove it:
+- DRAMATIC (intense/explosive, somber, tragic, danger): keep the voice and its
+  confidence, but DROP THE JOKES — no winks or deflating asides; let the menace,
+  stakes, and consequence land in the same dry, characterful voice.
+- CONNECTIVE / mundane-aside: the voice runs warm and witty — this is where asides,
+  light hyperbole, and intimate stand-ins ("our guy"/"our boy") land most.
+- COMIC (mockery, humiliation, a visual gag, a face-slap): the beat is already a joke
+  — add ONE sharp recap-channel punch so it lands. The punch must be clearly
+  figurative/framing, never a new story event.
+Cinematic phrasing (strong verbs, rhythm, stakes) is the floor for EVERY line; it does
+NOT mean adding weather, lighting, hair, mist, or trailer-grade atmosphere the viewer
+can already see. The NICHE TEMPERATURE block (when present) further tunes how
+hot/cold/funny this voice runs.
 STORY CAPTIONS / narration-box text: WEAVE them into the line in the story's own
 first-person voice — you MAY rephrase for flow, but keep their MEANING and any key
 phrase, and never read a caption robotically as a bare standalone fragment.
-Keep every grounding rule for whatever you write: no invented facts, cast names
-verbatim, caption meaning preserved, mood tags preserved, no chrome."""
+Keep every grounding rule: no invented facts, cast names verbatim, caption meaning
+preserved, mood tags preserved, no chrome."""
 
 
 def genre_key(genre_text: str) -> str:
