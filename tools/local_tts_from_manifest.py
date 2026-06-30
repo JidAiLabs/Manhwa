@@ -1403,9 +1403,9 @@ def _make_qwen_mlx_synth(voice_ref: str) -> SynthFn:
     Loads the model ONCE, then clones per clip via ICL (ref_audio + ref_text).
     8-bit quantization flattens prosody, so expressiveness is pushed up via
     ``exaggeration`` (default 1.4, env ``STUDIO_MLX_EXAG``) + ``temperature``
-    (env ``STUDIO_MLX_TEMP``). NOTE: this evaluation backend applies a fixed
-    expressiveness; per-mood exaggeration mapping (like the torch path) is a
-    follow-up once the voice is approved. mlx-audio writes ``{prefix}_NNN.wav``,
+    (env ``STUDIO_MLX_TEMP``). The env ``STUDIO_MLX_EXAG`` is the neutral-center
+    expressiveness; per-clip mood is remapped onto the MLX band via
+    mlx_exaggeration (the voice is approved). mlx-audio writes ``{prefix}_NNN.wav``,
     so we synth to a temp prefix then move to the exact ``out_path`` the loop
     expects (keeping the clips/{segment_id}.wav + text_sha contract intact).
     """
@@ -1431,12 +1431,16 @@ def _make_qwen_mlx_synth(voice_ref: str) -> SynthFn:
                 os.remove(f)
             except OSError:
                 pass
-        # exaggeration goes through **kwargs -> model.generate (as the CLI does)
+        # exaggeration goes through **kwargs -> model.generate (as the CLI does).
+        # Remap the per-clip mood exaggeration onto the MLX band centered on the
+        # approved env baseline (env exag = neutral center), so a tense/explosive
+        # panel SOUNDS more intense instead of a flat fixed expressiveness.
+        clip_exag = mlx_exaggeration(float(exaggeration), neutral=exag)
         generate_audio(
             text=text, model=model,
             ref_audio=voice_ref, ref_text=(rtext or None),
             output_path=outdir, file_prefix=prefix, audio_format="wav",
-            temperature=temp, exaggeration=exag, verbose=False,
+            temperature=temp, exaggeration=clip_exag, verbose=False,
         )
         produced = sorted(glob.glob(os.path.join(outdir, prefix + "*.wav")))
         if not produced:
