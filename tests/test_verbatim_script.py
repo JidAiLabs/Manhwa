@@ -576,6 +576,31 @@ def test_n_story_panels_yield_n_segments_one_to_one():
     assert [s.get("scene_files") for s in sec["shots"]] == [[p["scene_file"]] for p in panels]
 
 
+def test_per_panel_intensity_no_beat_max_bleed():
+    """C3: under 1:1, an explosive panel escalates its OWN tag while a calm panel
+    in the same beat does NOT inherit the beat-max intensity."""
+    panels = [
+        {"scene_file": "p1.jpg", "line": "He waits in the quiet room alone tonight."},
+        {"scene_file": "p2.jpg", "line": "The blast tears the entire tower apart now."},
+    ]
+    beat = _panel_beat(7, panels)
+    beat["mood_words"] = []   # -> base tag 'serious' (escalatable) for both
+    beat["scene_selection"] = [
+        {"scene_file": "p1.jpg", "role": "keep", "intensity": "calm"},
+        {"scene_file": "p2.jpg", "role": "keep", "intensity": "explosive"},
+    ]
+    sec = se._build_verbatim_section(
+        section_index=0, chunk=[beat],
+        payload={"beats": [{"group_id": 7, "scene_files": ["p1.jpg", "p2.jpg"]}]},
+        word_target=120, genre_mode="action")
+    tts = sec["tts_paragraphs_v3"]
+    assert len(tts) == 2
+    t0 = se._split_leading_bracket_tag(tts[0])[0]
+    t1 = se._split_leading_bracket_tag(tts[1])[0]
+    assert t1 == "excited"      # explosive panel escalates (rank 3)
+    assert t0 != "excited"      # calm panel keeps 'serious' — no beat-max bleed
+
+
 def test_merge_integration_long_lines_no_merge():
     """Long panel lines (>6 words each) → one shot per panel (no over-merge)."""
     panels = [

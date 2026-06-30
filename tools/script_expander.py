@@ -743,6 +743,16 @@ def _intensity_rank_for_beat(beat: Dict[str, Any]) -> int:
     return rank
 
 
+def _intensity_rank_for_panel(beat: Dict[str, Any], fname: str) -> int:
+    """This panel's OWN scene_selection intensity as a rank 0..3 (no beat-max
+    bleed). Missing/unknown ranks 0."""
+    fb = os.path.basename(str(fname or ""))
+    for e in beat.get("scene_selection") or []:
+        if isinstance(e, dict) and os.path.basename(str(e.get("scene_file") or "")) == fb:
+            return _INTENSITY_RANK.get(str(e.get("intensity") or "").strip().lower(), 0)
+    return 0
+
+
 def _escalate_tag_for_intensity(tag: str, rank: int) -> str:
     """Bump a neutral mood tag only when the panels say the moment is a genuine
     explosive PEAK. A lone 'intense' panel (rank 2) no longer escalates —
@@ -943,7 +953,9 @@ def _build_verbatim_section(
     for i, tp in enumerate(tagged):
         tag, _rest = _split_leading_bracket_tag(str(tp))
         beat_for_para = para_beats[i] if i < len(para_beats) else (chunk[i] if i < len(chunk) and isinstance(chunk[i], dict) else {})
-        rank = _intensity_rank_for_beat(beat_for_para)
+        sf_for_para = (shots[i].get("scene_files") or [None])[0] if i < len(shots) else None
+        rank = (_intensity_rank_for_panel(beat_for_para, sf_for_para)
+                if sf_for_para else _intensity_rank_for_beat(beat_for_para))
         if shout_flags[i]:
             rank = max(rank, 2)
         tag = _escalate_tag_for_intensity(tag or "serious", rank)
