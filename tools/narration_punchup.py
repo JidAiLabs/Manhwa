@@ -34,6 +34,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
 from narration_consistency import strip_chrome_opener  # noqa: E402
+from niche_modules import register_block  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     dedupe_consecutive_panel_lines,
@@ -241,7 +242,8 @@ def genre_key(genre_text: str) -> str:
 def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
                  humor: str, genre: str = "",
                  classes: Optional[Dict[Any, str]] = None,
-                 story_context: str = "") -> str:
+                 story_context: str = "", niche: str = "",
+                 niche_secondary: str = "") -> str:
     """Build the LLM prompt for either per-beat or per-panel lines.
 
     When *lines* contain ``panel_index``, the contract is per-panel:
@@ -252,6 +254,9 @@ def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
     cast = ", ".join(cast_names) if cast_names else "(none listed)"
     addon = GENRE_ADDONS.get(genre_key(genre), "")
     guide = BASE_PERSONA + ("\n\n" + addon if addon else "")
+    nblock = register_block(niche, niche_secondary)
+    if nblock:
+        guide += "\n\n" + nblock
     guide += "\n\n" + RECAP_STYLE_RULES
     if story_context:
         guide += ("\n\nWHOLE-CHAPTER STORY SPINE (context only; invent nothing):\n"
@@ -541,6 +546,20 @@ def _story_context(story_path: str) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _load_niche(episode_dir, explicit_primary="", explicit_secondary=""):
+    """Explicit args win; else read <episode_dir>/manifest.series.json; else ('','')."""
+    if explicit_primary:
+        return (explicit_primary, explicit_secondary)
+    try:
+        with open(os.path.join(episode_dir, "manifest.series.json"),
+                  encoding="utf-8") as f:
+            d = json.load(f)
+        return (str(d.get("niche_primary") or ""),
+                str(d.get("niche_secondary") or ""))
+    except Exception:
+        return ("", "")
+
+
 def infer_genre_from_content(beats_obj: Dict[str, Any], ep_dir: str = "") -> str:
     """Read the manhwa TYPE off the chapter's own content so the persona adapts
     without any per-series config: a game/system world (status windows, skills,
@@ -720,6 +739,9 @@ def main() -> int:
                          "auto-read from --script section_genre_mode if given")
     ap.add_argument("--script", default="",
                     help="manifest.script.json for genre auto-detection")
+    ap.add_argument("--niche", default="",
+                    help="manhwa niche A/B/C/D; default reads --episode-dir/manifest.series.json")
+    ap.add_argument("--niche-secondary", default="")
     ap.add_argument("--story", default="",
                     help="manifest.story.json for whole-chapter spine context")
     ap.add_argument("--batch-size", type=int,
@@ -779,12 +801,15 @@ def main() -> int:
                             max_payload_chars=payload_chars)
                if use_per_panel else [lines])
     story_context = _story_context(args.story)
+    niche_p, niche_s = _load_niche(args.episode_dir, args.niche,
+                                   args.niche_secondary)
 
     def _prompt(batch: List[Dict[str, Any]], index: int) -> str:
         return build_prompt(
             batch, cast_names, args.humor, genre=args.genre,
             classes=classes,
-            story_context=story_context)
+            story_context=story_context,
+            niche=niche_p, niche_secondary=niche_s)
 
     if args.backend == "ollama":
         import ollama  # noqa: F401 — availability probe
