@@ -530,10 +530,11 @@ def _panel_beat(gid, panels):
     }
 
 
-def test_merge_integration_four_short_lines_fewer_shots():
-    """Four 1-word panel lines → fewer than 4 shots (merged); the contract
-    len(script_paragraphs) == len(shots) == len(tts_paragraphs_v3) holds;
-    every input scene_file appears across the shots."""
+def test_per_panel_no_merge_four_short_lines_four_shots():
+    """C1: with the short-line merge gated OFF (default), four 1-word panel lines
+    become FOUR shots (strict 1:1), not a merged few. The parallel-list contract
+    len(script_paragraphs) == len(shots) == len(tts_paragraphs_v3) holds, and
+    every input scene_file is its own shot."""
     panels = [
         {"scene_file": "p1.jpg", "line": "Run."},
         {"scene_file": "p2.jpg", "line": "Dodge."},
@@ -549,18 +550,12 @@ def test_merge_integration_four_short_lines_fewer_shots():
     shots = sec["shots"]
     paras = sec["script_paragraphs"]
     tts = sec["tts_paragraphs_v3"]
-
-    # Contract: all three parallel lists are the same length
     assert len(paras) == len(shots) == len(tts), (
         f"contract broken: paras={len(paras)} shots={len(shots)} tts={len(tts)}"
     )
-    # Merged: should have fewer shots than input panels
-    assert len(shots) < 4, f"expected merge to reduce shot count, got {len(shots)}"
-    # Coverage: every input scene_file appears in exactly one shot
-    all_shot_files = [f for s in shots for f in (s.get("scene_files") or [])]
-    assert sorted(all_shot_files) == ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg"], (
-        f"panel coverage broken: {all_shot_files}"
-    )
+    assert len(shots) == 4, f"merge must be OFF: expected 4 shots, got {len(shots)}"
+    assert [s.get("scene_files") for s in shots] == [
+        ["p1.jpg"], ["p2.jpg"], ["p3.jpg"], ["p4.jpg"]]
 
 
 def test_merge_integration_long_lines_no_merge():

@@ -853,7 +853,7 @@ def _build_verbatim_section(
     genre_mode: str,
     proper_case: Optional[Dict[str, str]] = None,
     wpm: int = 135,
-    tts_merge_short: bool = True,
+    tts_merge_short: bool = False,
 ) -> Dict[str, Any]:
     """Materialize one script section directly from beats[].narration — the
     image-grounded Gemini line (A/B Variant B) — with NO LLM call.
