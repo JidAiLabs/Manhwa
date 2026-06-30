@@ -325,3 +325,8 @@ def test_one_panel_segment_with_selection_still_one_cut():
     cuts = tp.build_cuts(["only.jpg"], 5.0, min_cut_sec=3.0, selection=sel)
     assert len(cuts) == 1
     assert cuts[0]["file"] == "only.jpg"
+
+
+def test_panel_floor_is_two_seconds():
+    # C4: the per-panel cut floor backstop is 2.0s (coupled to prep_qa flash_cut).
+    assert tp.PANEL_FLOOR_SEC == 2.0

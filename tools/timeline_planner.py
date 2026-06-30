@@ -924,7 +924,7 @@ def filter_scene_files(
 # -----------------------------
 # Cuts generation (NEW)
 # -----------------------------
-PANEL_FLOOR_SEC = 1.2   # keep == prep_qa flash_cut threshold
+PANEL_FLOOR_SEC = 2.0   # keep == prep_qa flash_cut threshold
 
 
 def _floor_shot_dur(n_kept: int, shot_dur: float, floor: float) -> float:
