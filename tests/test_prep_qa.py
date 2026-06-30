@@ -1358,3 +1358,11 @@ def test_flash_cut_held_card_is_not_flagged():
     flags = pq.plan_flags(plan, clean_files={"p.jpg"},
                           audio_exists=lambda p: True)
     assert not any(f["code"] == "flash_cut" for f in flags)
+
+
+def test_flash_cut_threshold_is_coupled_to_two_seconds():
+    # C4: a 1.5s non-held cut sits in the new 1.2-2.0 band -> must now flag
+    # (it did NOT at the old 1.2 threshold), keeping floor == flash_cut threshold.
+    plan = _plan([_item("g0001_p01", ["p.jpg"], dur=1.5)])
+    flags = pq.plan_flags(plan, clean_files={"p.jpg"}, audio_exists=lambda p: True)
+    assert any(f["code"] == "flash_cut" for f in flags)
