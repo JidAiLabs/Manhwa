@@ -294,6 +294,7 @@ def compute_duration_sec(
     chars_per_sec: float,
     audio_duration_sec: float,
     audio_pad_sec: float,
+    image_min: float = 0.0,
 ) -> float:
     base_min = float(base_min)
     max_sec = float(max_sec)
@@ -304,8 +305,10 @@ def compute_duration_sec(
         # is playing, the line's length governs (floored at base_min, no ceiling),
         # so a long beat just shows its panels longer instead of clipping the line
         # mid-sentence (the "...had absolutely no neigong at all" cut-off bug).
+        # C2: a visually heavy panel also floors the dwell at image_min (a FLOOR,
+        # never a cap — defaults to 0.0 so callers that don't pass it are unchanged).
         dur = float(audio_duration_sec) + float(audio_pad_sec)
-        return float(max(base_min, dur))
+        return float(max(base_min, dur, float(image_min)))
 
     overlay_chars = sum(text_len(o.get("text")) for o in overlays if isinstance(o, dict))
     narr_chars = text_len(tts_text) if mode == "narrated" else 0

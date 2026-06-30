@@ -327,6 +327,35 @@ def test_one_panel_segment_with_selection_still_one_cut():
     assert cuts[0]["file"] == "only.jpg"
 
 
+# ---- C2: image-aware duration --------------------------------------------
+
+def test_compute_duration_image_min_floors_short_audio():
+    # A visually heavy panel under a SHORT line: image_min raises the dwell above
+    # the audio+pad / base_min floor.
+    d = tp.compute_duration_sec(mode="narrated", tts_text="x", overlays=[],
+                                base_min=2.5, max_sec=25.0, chars_per_sec=18.0,
+                                audio_duration_sec=1.0, audio_pad_sec=0.2,
+                                image_min=3.4)
+    assert abs(d - 3.4) < 1e-6
+
+
+def test_compute_duration_image_min_never_truncates_long_audio():
+    # A long line still governs — image_min is a FLOOR, never a cap.
+    d = tp.compute_duration_sec(mode="narrated", tts_text="x", overlays=[],
+                                base_min=2.5, max_sec=25.0, chars_per_sec=18.0,
+                                audio_duration_sec=30.0, audio_pad_sec=0.2,
+                                image_min=3.4)
+    assert abs(d - 30.2) < 1e-6
+
+
+def test_compute_duration_image_min_default_is_noop():
+    # No image_min supplied -> identical to before (backward-compatible).
+    d = tp.compute_duration_sec(mode="narrated", tts_text="x", overlays=[],
+                                base_min=2.5, max_sec=25.0, chars_per_sec=18.0,
+                                audio_duration_sec=1.0, audio_pad_sec=0.2)
+    assert abs(d - 2.5) < 1e-6
+
+
 def test_panel_floor_is_two_seconds():
     # C4: the per-panel cut floor backstop is 2.0s (coupled to prep_qa flash_cut).
     assert tp.PANEL_FLOOR_SEC == 2.0
