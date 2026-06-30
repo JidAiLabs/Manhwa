@@ -206,61 +206,29 @@ def test_protected_story_files_reads_stamped_panel_kind(tmp_path):
     assert tp.protected_story_files("") == set()                  # missing -> empty
 
 
-# ---- group-protection -> per-segment propagation ---------------------------
-# THE in-world card bug: protected_story_files()/protected_card_files() add an
-# in-world STORY/system card (e.g. "SKY CORPORATION.") to the group's protected
-# set, but the planner emits ONE item per SCRIPT segment whose panels come from
-# the script's per-shot list — which EXCLUDES the card (the LLM tagged it
-# 'redundant'). So the card lands in no segment and never renders. The fix
-# guarantees every protected file in the group's scene_files is shown in at
-# least one segment.
+# ---- C1: 1:1 invariant replaces the inject_missing_protected band-aid --------
+# The old injector piled a dropped protected card onto ONE segment (the flash).
+# Under strict 1:1 every shown story panel is its OWN single-file segment, kept
+# through choose_kept_scenes by the protected set, so no panel is ever missing
+# from all segments — the injector is removed.
 
-def test_inject_missing_protected_adds_card_to_a_segment():
-    # group scene_files include the protected card; neither segment's per-shot
-    # pick chose it -> it must be injected into one segment.
-    picks = [["a.jpg", "b.jpg"], ["c.jpg"]]
-    out = tp.inject_missing_protected(
-        picks, ["a.jpg", "b.jpg", "c.jpg", "card.jpg"], {"card.jpg"})
-    shown = {f for p in out for f in p}
-    assert "card.jpg" in shown                 # protected card now rendered
-    # injected into the SMALLEST pick list (the closing 1-panel segment)
-    assert out[1] == ["c.jpg", "card.jpg"]
-    assert out[0] == ["a.jpg", "b.jpg"]        # other segment untouched
+def test_one_to_one_segments_show_every_story_panel():
+    # Each shown story panel is its own single-file segment; build_cuts surfaces
+    # each panel exactly once across the segments — no panel missing, none extra.
+    story_panels = ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg"]
+    shown = []
+    for p in story_panels:
+        cuts = tp.build_cuts([p], 4.0, min_cut_sec=3.0,
+                             protected={p}, floor=tp.PANEL_FLOOR_SEC)
+        assert len(cuts) == 1 and cuts[0]["file"] == p
+        shown.append(cuts[0]["file"])
+    assert sorted(shown) == sorted(story_panels)
 
 
-def test_inject_missing_protected_noop_when_already_shown():
-    picks = [["card.jpg"], ["d.jpg"]]
-    out = tp.inject_missing_protected(
-        picks, ["card.jpg", "d.jpg"], {"card.jpg"})
-    assert out == [["card.jpg"], ["d.jpg"]]     # already shown -> unchanged
-
-
-def test_inject_missing_protected_ignores_non_protected_drops():
-    # a non-protected redundant panel the per-shot selection dropped STAYS
-    # dropped (it never enters the protected set).
-    picks = [["a.jpg"], ["b.jpg"]]
-    out = tp.inject_missing_protected(
-        picks, ["a.jpg", "b.jpg", "redundant.jpg"], {"card.jpg"})
-    shown = {f for p in out for f in p}
-    assert "redundant.jpg" not in shown         # non-protected drop stays dropped
-    assert "card.jpg" not in shown              # not in group -> nothing to inject
-    assert out == [["a.jpg"], ["b.jpg"]]        # panel-rich group unaffected
-
-
-def test_inject_missing_protected_only_injects_files_in_group_scene_files():
-    # a protected file NOT in this group's scene_files is never injected here
-    # (it belongs to another group).
-    picks = [["a.jpg"]]
-    out = tp.inject_missing_protected(
-        picks, ["a.jpg"], {"other_group_card.jpg"})
-    assert out == [["a.jpg"]]
-
-
-def test_pick_protected_inject_segment_prefers_smallest_then_latest():
-    assert tp.pick_protected_inject_segment([["a", "b"], ["c"]]) == 1   # smallest
-    # tie on size -> the LATER segment (closing hold)
-    assert tp.pick_protected_inject_segment([["a"], ["b"]]) == 1
-    assert tp.pick_protected_inject_segment([]) == -1
+def test_inject_helpers_removed():
+    # The band-aid injector is gone — guard against accidental re-introduction.
+    assert not hasattr(tp, "inject_missing_protected")
+    assert not hasattr(tp, "pick_protected_inject_segment")
 
 
 # ---- filler-beat drop (build #3) -------------------------------------------

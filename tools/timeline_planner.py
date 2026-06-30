@@ -1034,67 +1034,6 @@ def build_cuts(
     return cuts
 
 
-def pick_protected_inject_segment(segment_picks: List[List[str]]) -> int:
-    """Choose WHICH of a group's segments should carry a still-missing protected
-    file (an in-world story/system card the per-shot LLM selection dropped, but
-    which the group's protection guarantees must be SHOWN at least once).
-
-    `segment_picks` is the ordered list of each emitted (non-filler) segment's
-    chosen `segment_scene_files`. We prefer the LAST real segment so the card
-    lands as a closing hold; among ties we prefer the segment whose pick list is
-    SMALLEST so the injected card gets a fairer share of the hold. Returns the
-    index into `segment_picks`, or -1 when there are no segments to inject into.
-    """
-    if not segment_picks:
-        return -1
-    n = len(segment_picks)
-    # smallest pick list wins; ties broken toward the LATER segment (closing hold)
-    best_idx = -1
-    best_key = None
-    for i in range(n):
-        key = (len(segment_picks[i]), -i)  # fewer files first, then later index
-        if best_key is None or key < best_key:
-            best_key = key
-            best_idx = i
-    return best_idx
-
-
-def inject_missing_protected(
-    segment_picks: List[List[str]],
-    group_scene_files: List[str],
-    protected: "set",
-) -> List[List[str]]:
-    """Make sure EVERY protected file in the group's `scene_files` is shown in at
-    least one of the group's segments. The per-SHOT (microbeat) selection picks
-    panels from the SCRIPT's per-shot list, which can EXCLUDE a protected card the
-    LLM tagged 'redundant' — the group-level protection never propagates to it, so
-    the card renders in NO segment. We compute the protected files that landed in
-    NO segment and append each to ONE chosen segment (see
-    pick_protected_inject_segment). Pure: returns a new list of pick lists,
-    leaving non-protected selection untouched.
-    """
-    picks = [list(p) for p in segment_picks]
-    prot = protected or set()
-    if not prot or not picks:
-        return picks
-    in_group = [f for f in group_scene_files if f in prot]
-    if not in_group:
-        return picks
-    shown: set = set()
-    for p in picks:
-        shown.update(p)
-    missing = [f for f in in_group if f not in shown]
-    if not missing:
-        return picks
-    idx = pick_protected_inject_segment(picks)
-    if idx < 0:
-        return picks
-    for f in missing:
-        if f not in picks[idx]:
-            picks[idx].append(f)
-    return picks
-
-
 _FILLER_NARRATION_RE = re.compile(
     r"^\s*(the\s+(scene|story)\s+continues|to\s+be\s+continued|continues?)\.?\s*$",
     re.I)
@@ -1732,14 +1671,11 @@ def main() -> int:
             fallback_srow = script_by_gid.get(fallback_sid) or script_by_gid.get(f"g{group_id:04d}")
             segments = [(fallback_sid, fallback_srow)]
 
-        # FIRST PASS: compute each NON-FILLER segment's per-shot panel pick, then
-        # guarantee every protected file in the GROUP's scene_files is shown in at
-        # least one segment. The per-shot (microbeat) selection picks from the
-        # SCRIPT's per-shot list, which can EXCLUDE a protected in-world story/
-        # system card (the LLM tagged it 'redundant') — the group protection never
-        # propagated to it, so the card rendered in NO segment. inject_missing_protected
-        # appends any still-missing protected file to ONE segment (the smallest,
-        # latest real one) so it always renders. Non-protected drops are untouched.
+        # Under strict 1:1 (C1) every shown story panel is born with its own
+        # segment + clip and is kept through choose_kept_scenes by the protected
+        # set (protected_story_files), so no protected file is ever missing from
+        # all segments — the old inject_missing_protected band-aid (which piled a
+        # dropped card onto one segment, the flash) has no work left and is gone.
         def _pick_for_segment(srow_: Any) -> List[str]:
             shot_sf = _scene_file_basenames((srow_ or {}).get("scene_files") or [])
             shot_fb = _scene_file_basenames((srow_ or {}).get("fallback_scene_files") or [])
@@ -1755,11 +1691,8 @@ def main() -> int:
                      if not (args.mode == "narrated"
                              and is_filler_narration(_safe_str(srow.get("paragraph")) if srow else ""))]
         emit_srows = {sid: srow for sid, srow in segments}
-        _pre_picks = [_pick_for_segment(emit_srows.get(sid)) for sid in emit_sids]
-        _inj_picks = inject_missing_protected(
-            _pre_picks, list(scene_files), protected & set(scene_files))
-        injected_picks_by_sid: Dict[str, List[str]] = {
-            sid: _inj_picks[i] for i, sid in enumerate(emit_sids)}
+        picks_by_sid: Dict[str, List[str]] = {
+            sid: _pick_for_segment(emit_srows.get(sid)) for sid in emit_sids}
 
         for segment_id, srow in segments:
             paragraph = _safe_str(srow.get("paragraph")) if srow else ""
@@ -1781,7 +1714,7 @@ def main() -> int:
             # in the FIRST PASS above, with any group-protected card injected so it
             # always renders). If the subset was context-only/filtered away, fall
             # back to the nearest real scene chosen for the group.
-            segment_scene_files = injected_picks_by_sid.get(segment_id)
+            segment_scene_files = picks_by_sid.get(segment_id)
             if segment_scene_files is None:
                 segment_scene_files = scene_files
                 if shot_scene_files:
