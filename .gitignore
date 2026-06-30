@@ -16,3 +16,4 @@ keys/
 .qwen_venv/
 .kokoro_venv/
 .playwright-mcp/
+.worktrees/
