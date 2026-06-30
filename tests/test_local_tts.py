@@ -60,6 +60,24 @@ def test_mood_to_exaggeration_scale():
     assert lt.mood_to_exaggeration("gibberish") == lt._DEFAULT_EXAGGERATION
 
 
+def test_mlx_exaggeration_neutral_maps_to_baseline():
+    assert abs(lt.mlx_exaggeration(0.5) - 1.4) < 1e-6   # mood-neutral -> MLX baseline
+
+
+def test_mlx_exaggeration_calm_below_baseline():
+    assert lt.mlx_exaggeration(0.30) < 1.4              # calm
+
+
+def test_mlx_exaggeration_explosive_above_baseline():
+    assert lt.mlx_exaggeration(0.92) > 1.4             # explosive
+
+
+def test_mlx_exaggeration_monotonic_and_bounded():
+    vals = [lt.mlx_exaggeration(x / 100.0) for x in range(0, 101)]
+    assert vals == sorted(vals)                          # non-decreasing
+    assert min(vals) >= 0.8 and max(vals) <= 2.0         # bounded
+
+
 # ---- item extraction (segment_id contract) -------------------------------
 
 def _script():

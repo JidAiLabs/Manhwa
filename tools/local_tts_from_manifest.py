@@ -162,6 +162,17 @@ def mood_to_exaggeration(tag: Optional[str]) -> float:
     return _DEFAULT_EXAGGERATION
 
 
+def mlx_exaggeration(mood_exag: float, *, neutral: float = 1.4,
+                     spread: float = 1.2, lo: float = 0.8, hi: float = 2.0) -> float:
+    """Affine-remap the 0..1 mood exaggeration (mood_to_exaggeration, ~0.5 neutral)
+    onto the MLX expressiveness band centered on `neutral` (STUDIO_MLX_EXAG). MLX
+    is centered ~1.4 while the mood scale is ~0.5, so a direct substitution would
+    flatten delivery; this keeps neutral lines at the approved baseline while calm
+    dips and intense/explosive lifts, bounded to a safe range."""
+    val = float(neutral) + (float(mood_exag) - 0.5) * float(spread)
+    return float(max(float(lo), min(float(hi), val)))
+
+
 def exaggeration_to_instruction(exaggeration: float) -> str:
     """Map the per-clip intensity (0..1) to a natural-language emotion instruction
     for instruction-driven backends like Qwen3-TTS. Keeps the adapter's synth_fn
