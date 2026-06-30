@@ -148,3 +148,107 @@ def test_demotion_never_touches_a_normal_story_panel():
     pu.apply_inworld_screen_overrides(
         panels, items, detect_fn=lambda sp: None, log=lambda _m: None)
     assert panels[0]["panel_kind"] == "story"        # untouched
+
+
+# --- system-card override: the trained system_box detector forces 'system' ---
+# Deterministic override so an in-world system/notification/stat card no longer
+# depends on gemma's non-deterministic roll. `detect_fn(scene_path) ->
+# system_box coverage fraction` is the injectable seam (the real one runs the
+# trained YOLO class-1 filter, mirroring render_prep's `_sys_boxes`).
+
+def test_system_box_promotes_caption_card_to_system():
+    # Nano ch1 p000114 "7TH GENERATION NANO MACHINE, STARTING ACTIVATION." —
+    # gemma rolled it 'caption' (text on plain white), so the grouper would FOLD
+    # it and it would never be shown. The trained system_box detector fires on it
+    # (measured cover 0.89) -> force 'system' (kept + shown, its text IS the beat).
+    panels = [{
+        "scene_file": "p000114.jpg", "panel_kind": "caption",
+        "description": "Blue text is displayed on a plain white background, "
+                       "announcing a process.",
+        "dialogue": "7TH GENERATION NANO MACHINE, STARTING ACTIVATION.",
+        "subjects": ["text"]}]
+    items = [{"scene_file": "p000114.jpg", "scene_path": "/s/p000114.jpg"}]
+    n = pu.apply_system_card_overrides(
+        panels, items, detect_fn=lambda sp: 0.89, log=lambda _m: None)
+    assert n == 1
+    assert panels[0]["panel_kind"] == "system"
+
+
+def test_system_box_does_not_promote_a_speech_bubble_husk():
+    # Nano ch1 p000020: a real speech-bubble husk on plain white ("PEASANT
+    # BLOOD... THEY SAY..?"). The detector ALSO false-fires class-1 here, but the
+    # understanding describes a SPEECH BUBBLE -> character speech, not a system
+    # message. It must STAY caption (folded), never shown as a bare bubble.
+    panels = [{
+        "scene_file": "p000020.jpg", "panel_kind": "caption",
+        "description": "A single white speech bubble with black text sits "
+                       "against a plain white background.",
+        "dialogue": "PEASANT BLOOD... THEY SAY..?", "subjects": []}]
+    items = [{"scene_file": "p000020.jpg", "scene_path": "/s/p000020.jpg"}]
+    n = pu.apply_system_card_overrides(
+        panels, items, detect_fn=lambda sp: 0.92, log=lambda _m: None)
+    assert n == 0
+    assert panels[0]["panel_kind"] == "caption"
+
+
+def test_system_box_never_touches_a_story_panel():
+    # Nano ch1 p000005: a real falling-character story strip. The detector
+    # false-fires class-1 on the tall strip, but a 'story' panel (real subjects /
+    # scene) is NEVER reclassified — the override only rescues folded
+    # caption/empty panels, so a detector FP can't demote real art.
+    panels = [{
+        "scene_file": "p000005.jpg", "panel_kind": "story",
+        "description": "Three sequential frames show a character falling down a "
+                       "dark, rocky cliffside.",
+        "dialogue": "EUAACK...!!", "subjects": ["a falling character"]}]
+    items = [{"scene_file": "p000005.jpg", "scene_path": "/s/p000005.jpg"}]
+    n = pu.apply_system_card_overrides(
+        panels, items, detect_fn=lambda sp: 0.93, log=lambda _m: None)
+    assert n == 0
+    assert panels[0]["panel_kind"] == "story"
+
+
+def test_system_box_no_detection_leaves_caption_folded():
+    # A normal text-only narration caption with NO system_box detection stays
+    # caption (its words ride the neighbouring beat's narration).
+    panels = [{
+        "scene_file": "p000006.jpg", "panel_kind": "caption",
+        "description": "Black narration text on a plain background.",
+        "dialogue": "BACK THEN, I HAD NO IDEA.", "subjects": ["text"]}]
+    items = [{"scene_file": "p000006.jpg", "scene_path": "/s/p000006.jpg"}]
+    n = pu.apply_system_card_overrides(
+        panels, items, detect_fn=lambda sp: 0.0, log=lambda _m: None)
+    assert n == 0
+    assert panels[0]["panel_kind"] == "caption"
+
+
+def test_system_box_below_coverage_floor_does_not_promote():
+    # A spurious SMALL system_box detection (below the dominance floor) must NOT
+    # promote — a system CARD fills its panel; a tiny box on a real narration
+    # caption is noise, not a card.
+    panels = [{
+        "scene_file": "p9.jpg", "panel_kind": "caption",
+        "description": "Plain text on a white background.",
+        "dialogue": "HELLO.", "subjects": ["text"]}]
+    items = [{"scene_file": "p9.jpg", "scene_path": "/s/p9.jpg"}]
+    n = pu.apply_system_card_overrides(
+        panels, items, detect_fn=lambda sp: 0.05, log=lambda _m: None)
+    assert n == 0
+    assert panels[0]["panel_kind"] == "caption"
+
+
+def test_system_box_override_fail_soft_when_weights_missing():
+    # Fail-soft: no detect_fn injected + a non-existent weights path -> the
+    # override is skipped (logged loudly), never crashes the stage, and leaves
+    # gemma's classification untouched.
+    panels = [{
+        "scene_file": "p000114.jpg", "panel_kind": "caption",
+        "description": "Blue text on a plain white background announcing a process.",
+        "dialogue": "7TH GENERATION NANO MACHINE.", "subjects": ["text"]}]
+    items = [{"scene_file": "p000114.jpg", "scene_path": "/s/p000114.jpg"}]
+    logs = []
+    n = pu.apply_system_card_overrides(
+        panels, items, weights_path="/no/such/weights.pt", log=logs.append)
+    assert n == 0
+    assert panels[0]["panel_kind"] == "caption"      # untouched
+    assert any("DISABLED" in m or "missing" in m for m in logs)

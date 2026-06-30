@@ -243,6 +243,23 @@ def test_caption_solo_beat_folds_into_previous_same_segment_beat():
     assert [s["shot_id"] for s in merged] == [1, 2]      # renumbered contiguous
 
 
+def test_system_panel_is_kept_and_never_folded_as_caption():
+    # A panel panel_understand promoted to 'system' (a trained system_box
+    # detection — Nano ch1 p000114) must be kept + SHOWN: it is not a caption, so
+    # caption_files excludes it and merge_caption_solos never folds it away. The
+    # adjacent caption instead folds INTO the system beat (its words ride that
+    # shown art) — the system card is never dropped.
+    panels = [{"scene_file": "sys", "panel_kind": "system"},
+              {"scene_file": "c1", "panel_kind": "caption"}]
+    caps = sg.caption_files(panels)
+    assert caps == {"c1"} and "sys" not in caps         # system is NOT a caption
+    shots = [
+        {"shot_id": 1, "scene_files": ["sys"], "segment": "present", "arc_label": "s"},
+        {"shot_id": 2, "scene_files": ["c1"], "segment": "present", "arc_label": "c"}]
+    merged = sg.merge_caption_solos(shots, caps)
+    assert [s["scene_files"] for s in merged] == [["sys", "c1"]]   # sys shown, kept
+
+
 def test_title_card_rescues_system_card_mislabeled_chrome():
     # an in-world SYSTEM card the LLM mislabeled 'chrome' MUST be rescued, else it
     # silently drops from the video (it carries system vocab + is a flat card).

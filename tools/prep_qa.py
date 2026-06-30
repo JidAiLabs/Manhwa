@@ -1229,13 +1229,13 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                            "video starts with the branding intro — no story "
                            "cold-open hook before it",
                            segment_id=str(timeline[0].get("segment_id"))))
-    brandings = {str(i.get("branding")) for i in timeline if i.get("branding")}
-    # channel design: NO intro on any video, outro only — so the ONLY branding
-    # expectation is the outro. Warn only when the outro is missing.
-    if "outro" not in brandings:
-        flags.append(_flag("missing_branding", WARN,
-                           f"branding items present: "
-                           f"{sorted(brandings) or 'none'} — expected an outro"))
+    # Channel design (commit 3ea4271): per chapter there is NO intro and NO outro
+    # — a chapter ENDS on its last story panel, the channel watermark is a
+    # separate always-on overlay (not a timeline item), and the arc intro is
+    # bundle-level (prepended at concat, reviewed separately). So a normal chapter
+    # is EXPECTED to carry no branding item; the absence of an outro is BY DESIGN
+    # and must never raise a flag. (no_cold_open above still warns IF an intro
+    # ever leads a chapter timeline.)
 
     seen_parent_segments: Dict[str, set] = {}
     for item in timeline:

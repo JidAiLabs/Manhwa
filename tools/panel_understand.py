@@ -439,6 +439,120 @@ def apply_inworld_screen_overrides(
     return n
 
 
+# --- system-card override (deterministic, trained-detector backed) ----------
+# An in-world SYSTEM / NOTIFICATION / STAT card (Nano ch1 p000114 "7TH
+# GENERATION NANO MACHINE, STARTING ACTIVATION.") is text on a flat field the
+# CHARACTER perceives as a UI element — its words ARE the on-screen story beat,
+# so it must be kept + shown (panel_kind 'system'). gemma classifies it
+# NON-deterministically: an earlier roll got it right, a fresh roll called it
+# 'caption' (text-on-plain) -> the grouper folded it and it was never shown. The
+# trained webtoon YOLO has a dedicated `system_box` class (class 1, mAP .843)
+# that fires reliably on these cards, so we use it as a DETERMINISTIC override:
+# the verdict no longer depends on gemma's roll. AGNOSTIC — no series/word list.
+#
+# The detector is NOT a clean signal on its own (measured on Nano ch1): it ALSO
+# fires class-1 on a tall multi-frame STORY strip (p000005, a falling character,
+# cover 0.93) and on a plain SPEECH-BUBBLE husk (p000020 "PEASANT BLOOD...",
+# cover 0.92). So the override is GUARDED three ways:
+#   * only rescue panels the grouper would FOLD/DROP (caption/empty) — a 'story'
+#     panel with real subjects is trusted and never demoted by a detector FP;
+#   * never a panel the understanding describes as a speech/dialogue/thought
+#     bubble (character speech, not a system message) — excludes the husk;
+#   * require the system_box to DOMINATE the panel (a system card IS the panel),
+#     so a spurious small box can't promote a real narration caption.
+# This runs LAST (after the husk demotion + the in-world rescue) so a trained
+# detection has the final word. Mirrors render_prep's `_sys_boxes` loader/predict.
+_SPEECH_BUBBLE_RE = re.compile(
+    r"\b(?:speech|dialogue|thought|talk|word)\s*(?:bubble|balloon)s?\b"
+    r"|\b(?:bubbles?|balloons?)\b", re.IGNORECASE)
+_SYS_BOX_MIN_COVER = 0.20
+_DEFAULT_PANEL_WEIGHTS = os.path.join(
+    os.path.dirname(_TD), "assets", "models", "webtoon_panels.pt")
+
+
+def _describes_speech_bubble(description: Any) -> bool:
+    """True when the understanding describes the panel as a speech / dialogue /
+    thought bubble or balloon — character speech, NOT a system message. A real
+    in-world system / notification / stat card is a box / window / text-field,
+    never a balloon, so this guards the bubble husk out of the override."""
+    return bool(_SPEECH_BUBBLE_RE.search(str(description or "")))
+
+
+def apply_system_card_overrides(
+        panels: List[Dict[str, Any]],
+        items: List[Dict[str, Any]],
+        *, weights_path: Optional[str] = None, device: str = "mps",
+        detect_fn: Optional[Callable[[str], Optional[float]]] = None,
+        log: Callable[[str], None] = print) -> int:
+    """Force panel_kind='system' on a folded caption/empty panel that the trained
+    system_box detector fires on (the in-world notification / stat card the
+    grouper would otherwise drop). Returns the count promoted. Fail-SOFT: a
+    missing weights file or an unavailable detector logs loudly and leaves every
+    classification untouched — it never crashes the stage.
+
+    `detect_fn(scene_path) -> system_box_coverage | None` is an injectable seam
+    (defaults to the real cv2 + trained YOLO, mirroring render_prep's `_sys_boxes`:
+    YOLO(weights), predict(conf=0.30), keep class==1). It returns the fraction of
+    the panel covered by system_box detections, or None if the image is missing."""
+    path_by_file = {it.get("scene_file"): it.get("scene_path") for it in items}
+    cand = [p for p in panels
+            if str(p.get("panel_kind") or "").strip().lower() in ("caption", "empty")
+            and not _describes_speech_bubble(p.get("description"))]
+    if not cand:
+        return 0
+    if detect_fn is None:
+        wp = weights_path or _DEFAULT_PANEL_WEIGHTS
+        if not os.path.exists(wp):
+            log(f"[system-card] panel weights missing ({wp}) — "
+                "system-card override DISABLED")
+            return 0
+        try:
+            import cv2
+            import numpy as np
+            from ultralytics import YOLO
+            model = YOLO(wp)
+        except Exception as e:                                       # pragma: no cover
+            log(f"[system-card] detector unavailable ({e}) — override skipped")
+            return 0
+
+        def detect_fn(sp: str):                                      # noqa: F811
+            img = cv2.imread(sp) if sp else None
+            if img is None:
+                return None
+            try:
+                r = model.predict(img, conf=0.30, device=device,
+                                  verbose=False)[0]
+            except Exception:                                        # pragma: no cover
+                return None
+            boxes = []
+            if r.boxes is not None:
+                for (x1, y1, x2, y2), c in zip(
+                        r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy()):
+                    if int(c) == 1:                                  # system_box
+                        boxes.append((int(x1), int(y1), int(x2), int(y2)))
+            h, w = img.shape[:2]
+            if h <= 0 or w <= 0 or not boxes:
+                return 0.0
+            # union coverage on a downscaled grid (mirrors render_prep.bubble_coverage)
+            s = 4
+            grid = np.zeros((max(1, h // s), max(1, w // s)), np.uint8)
+            for (x1, y1, x2, y2) in boxes:
+                grid[max(0, y1 // s): max(0, y2 // s),
+                     max(0, x1 // s): max(0, x2 // s)] = 1
+            return float(grid.mean())
+    n = 0
+    for p in cand:
+        sp = path_by_file.get(p.get("scene_file"))
+        cov = detect_fn(sp) if sp else None
+        if cov is not None and cov >= _SYS_BOX_MIN_COVER:
+            prev = p.get("panel_kind")
+            p["panel_kind"] = "system"
+            n += 1
+            log(f"[system-card] {p.get('scene_file')}: {prev}->system "
+                f"(system_box cover {cov:.2f})")
+    return n
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vision-manifest", required=True)
@@ -456,6 +570,13 @@ def main() -> int:
                     default=int(os.environ.get("STUDIO_UNDERSTAND_CONCURRENCY", "3")),
                     help="panels understood per batch (needs ollama "
                          "OLLAMA_NUM_PARALLEL>=this to actually parallelize)")
+    ap.add_argument("--panel-weights", default=_DEFAULT_PANEL_WEIGHTS,
+                    help="trained webtoon YOLO — its system_box class (class 1) "
+                         "deterministically forces an in-world system / "
+                         "notification card the model folded as a caption to "
+                         "panel_kind 'system' (kept + shown)")
+    ap.add_argument("--device", default="mps",
+                    help="torch device for the system_box detector")
     args = ap.parse_args()
 
     vision = load_json(args.vision_manifest)
@@ -501,6 +622,14 @@ def main() -> int:
         panels, items, log=lambda m: print(m, flush=True))
     if promoted:
         print(f"[ok] in-world screen rescue: {promoted} chrome->story")
+    # Deterministic system-card override (trained system_box detector) — runs
+    # LAST so a real in-world notification/stat card the model folded as a
+    # caption is reliably kept + shown as 'system'. Fail-soft if weights missing.
+    sysn = apply_system_card_overrides(
+        panels, items, weights_path=args.panel_weights, device=args.device,
+        log=lambda m: print(m, flush=True))
+    if sysn:
+        print(f"[ok] system-card override: {sysn} caption/empty->system")
     dump_json(args.out, {
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
         "model": model, "count": len(panels), "panels": panels})

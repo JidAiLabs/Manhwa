@@ -384,6 +384,19 @@ def test_plan_flags_empty_item_and_clean_plan_passes():
     assert not [f for f in fl if f["severity"] == "ERROR"]
 
 
+def test_plan_no_branding_items_yields_no_missing_branding():
+    # Channel design (commit 3ea4271): a chapter ENDS on its last story panel and
+    # carries NO outro (and no intro) — the channel watermark is a separate
+    # always-on overlay (not a timeline item) and the arc intro is bundle-level,
+    # prepended at concat. So a normal chapter has NO branding item, and the
+    # absence of an outro must NOT raise the stale 'expected an outro' warn.
+    plan = _plan([_item("g0001_p00", ["p000001.jpg"])])
+    plan["scene_dims"] = {"p000001.jpg": {"w": 100, "h": 100, "doc": False}}
+    fl = pq.plan_flags(plan, clean_files={"p000001.jpg"},
+                       audio_exists=lambda p: True)
+    assert not any(f["code"] == "missing_branding" for f in fl)
+
+
 # ---- report assembly --------------------------------------------------------------
 
 def test_build_report_counts_and_html_smoke():
