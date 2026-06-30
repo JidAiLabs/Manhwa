@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_selection import normalize_scene_selection  # noqa: E402
 from usage_cost import UsageAccumulator  # noqa: E402
 from narration_safe_rules import SAFE_NARRATION_RULES  # noqa: E402
+from niche_modules import register_block  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     dedupe_consecutive_panel_lines,
@@ -898,6 +899,12 @@ def align_panel_narration(scene_files, model_panels, understand_by_file=None):
     return out
 
 
+def _append_niche(system, niche="", niche_secondary=""):
+    """Append the per-series niche TEMPERATURE block; no-op when no niche is set."""
+    blk = register_block(niche, niche_secondary)
+    return system + ("\n\n" + blk if blk else "")
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Return the ArgumentParser for gemini_narrative_pass."""
     ap = argparse.ArgumentParser()
@@ -929,6 +936,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
     ap.add_argument("--understood", default="",
                     help="manifest.panels.understood.json for per-panel pad grounding")
+    ap.add_argument("--niche", default="")
+    ap.add_argument("--niche-secondary", default="")
     return ap
 
 
@@ -1113,6 +1122,18 @@ def main() -> int:
     # downstream regardless.
     system = (system + "\n\n" + SAFE_NARRATION_RULES + "\n\n"
               + _DIALOGUE_RULE + "\n\n" + RECAP_STYLE_RULES)
+    # resolve niche: explicit CLI args win; else read the episode manifest next to --out
+    niche_p, niche_s = args.niche, args.niche_secondary
+    if not niche_p:
+        try:
+            with open(os.path.join(os.path.dirname(args.out), "manifest.series.json"),
+                      encoding="utf-8") as _f:
+                _d = json.load(_f)
+            niche_p = str(_d.get("niche_primary") or "")
+            niche_s = str(_d.get("niche_secondary") or "")
+        except Exception:
+            niche_p, niche_s = "", ""
+    system = _append_niche(system, niche_p, niche_s)
     corrections: Dict[int, str] = {}
     if args.corrections and os.path.exists(args.corrections):
         try:
