@@ -39,7 +39,7 @@ _SEGMENTS = ("present", "flashback", "dream")
 # panels lets the model emit valid JSON per beat. Each panel still gets its own
 # content-scaled narration downstream — this only bounds how many panels share
 # one context span/shot. Operators can pass --max-beat-len 0 to disable.
-DEFAULT_MAX_BEAT_LEN = 15
+DEFAULT_MAX_BEAT_LEN = 8
 
 GROUP_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
