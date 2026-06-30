@@ -946,8 +946,10 @@ def compute_image_min(width: float, height: float, intensity: str,
     visual_weight blends normalized area (vs a ~1200x1600 reference panel) with a
     tallness term (a tall full-width strip reads as a splash). image_min =
     clamp(floor + (cap-floor)*visual_weight + intensity_bump, floor, cap).
-    Returns `floor` when geometry AND intensity are both unknown -> a no-op upstream
-    (compute_duration_sec image_min default), preserving old-manifest behavior.
+    Returns `floor` (= `PANEL_FLOOR_SEC`, the C4 minimum) when geometry AND
+    intensity are both unknown -- NOT zero/no-op: every narrated segment still gets
+    at least that floor. Since `floor` sits below the `--base-min-sec` default 2.5,
+    it only bites visually-heavy / high-intensity panels; preserves old-manifest behavior.
     """
     w = float(width or 0.0)
     h = float(height or 0.0)

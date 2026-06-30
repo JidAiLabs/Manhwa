@@ -137,6 +137,8 @@ git commit -m "fix(script): gate short-line TTS merge OFF — strict per-panel 1
 
 ### Task 1.2: Remove `inject_missing_protected` + `pick_protected_inject_segment`; repurpose 5 tests
 
+> **CORRECTION (as-built): the injector was NOT removed — merge-off (Task 1.1) is what restores 1:1 and kills the flash; `inject_missing_protected` is retained to show narration-less system/title cards (avoids `system_card_unshown`), backstopped by `PANEL_FLOOR_SEC=2.0`. The 5 unit tests stay; the converted regression test `test_one_to_one_segments_show_every_story_panel` was added.**
+
 The injector appends a still-missing protected file to ONE existing segment's pick list — that pile-up is the flash. Under 1:1 every shown story panel is born with its own segment + clip and is kept through `choose_kept_scenes` by the `protected` set, so nothing is ever missing and the injector has no work. Remove it and its helper, and replace the 5 tests that pinned it with 2 tests of the new invariant.
 
 **Files:**

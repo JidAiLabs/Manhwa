@@ -71,14 +71,7 @@ Trace of one chapter, marking where each of the 4 changes lands:
 - `choose_kept_scenes`/`redundant` must never drop a **`story`** panel. **C1-part-2 (implementation constraint):** neutralize the redundant-drop by passing every SHOWN story panel through the existing `protected` set at the **`build_cuts` call site (`timeline_planner.py:986`)** — story panels arrive pre-protected, so they are effectively always "keep". Do **NOT** change `choose_kept_scenes`'s core redundant logic: `tests/test_scene_selection.py:95-147` pins that `redundant` panels drop and `protected` overrides, so editing the function would break those tests and is unnecessary (it already force-keeps `protected` cards via the `protected` set, `:89-92`/`:107`; just widen what enters that set at the call site). Also note: for a true single-file (1:1) segment, `build_cuts` early-returns at `:963-964` before selection runs, so once `merge_short_panel_items` is gated off the redundant-drop is already moot for 1:1 segments and only matters for any rare multi-panel residual. Near-duplicate *merging* is an explicit NON-GOAL, §7.
 - `inject_missing_protected` becomes a no-op and is removed once (1)+(2) hold.
 
-**Test impact of removing the injector (MUST handle for acceptance #7):** removing `inject_missing_protected` **and its helper `pick_protected_inject_segment`** breaks **5 tests** in `tests/test_timeline_selection.py:218-263`:
-- `test_inject_missing_protected_adds_card_to_a_segment` (`:218`)
-- `..._noop_when_already_shown` (`:231`)
-- `..._ignores_non_protected_drops` (`:238`)
-- `..._only_injects_files_in_group_scene_files` (`:250`)
-- `test_pick_protected_inject_segment_prefers_smallest_then_latest` (`:259`)
-
-When the injector is removed, **DELETE these 5 tests**, OR repurpose them into a single regression test of the NEW invariant ("no shown story panel is ever missing from all segments under 1:1"). Acceptance #7 (full pytest green) depends on this.
+**KEEP `inject_missing_protected` + `pick_protected_inject_segment`; under merge-off they only inject NARRATION-LESS protected/system/title cards (story panels keep their own per-panel segments → never dropped → never injected), so they no longer cause the flash and remain REQUIRED to show system/title cards (else `system_card_unshown`). The 5 unit tests at `tests/test_timeline_selection.py:218-263` STAY.**
 
 **Safety constraint (critical):** The fix must be **UPSTREAM** — preserve each story panel's segment so its `segment_id` + clip survive into the timeline. You must **NOT** mint new `segment_id`s in `timeline_planner`. The mint lives at `script_expander.py:2168` (`f"g{gid:04d}_p{i:02d}"`, indexed by paragraph `i`); a timeline-minted segment has no matching `clips/{segment_id}.wav`, so it is silent and trips `missing_audio` ERROR (`prep_qa.py:1301`). The clip key is `it["segment_id"]` → `clips/{seg_id}.wav` (`local_tts_from_manifest.py:814`,`:822`). Keep the mint where it is; just stop collapsing the inputs to it.
 
