@@ -356,6 +356,30 @@ def test_compute_duration_image_min_default_is_noop():
     assert abs(d - 2.5) < 1e-6
 
 
+def test_image_min_unknown_geometry_and_intensity_is_floor():
+    assert tp.compute_image_min(0, 0, "") == tp.PANEL_FLOOR_SEC
+
+
+def test_image_min_large_tall_panel_exceeds_small_crop():
+    small = tp.compute_image_min(400, 300, "calm")
+    big = tp.compute_image_min(1200, 2000, "calm")
+    assert big > small >= tp.PANEL_FLOOR_SEC
+
+
+def test_image_min_intensity_adds_bump():
+    calm = tp.compute_image_min(800, 800, "calm")
+    explosive = tp.compute_image_min(800, 800, "explosive")
+    assert explosive > calm
+
+
+def test_image_min_is_bounded_by_cap():
+    assert tp.compute_image_min(99999, 99999, "explosive") <= tp.IMAGE_DWELL_CAP
+
+
+def test_image_min_is_deterministic():
+    assert tp.compute_image_min(1200, 1600, "intense") == tp.compute_image_min(1200, 1600, "intense")
+
+
 def test_panel_floor_is_two_seconds():
     # C4: the per-panel cut floor backstop is 2.0s (coupled to prep_qa flash_cut).
     assert tp.PANEL_FLOOR_SEC == 2.0

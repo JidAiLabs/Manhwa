@@ -930,6 +930,38 @@ def filter_scene_files(
 PANEL_FLOOR_SEC = 2.0   # keep == prep_qa flash_cut threshold
 
 
+# C2: image-aware dwell. A visually heavy panel earns more on-screen time than a
+# small reaction crop, and a high-intensity reveal/peak earns a small bump.
+# Deterministic (no RNG, no model): same manifest in -> same seconds out.
+IMAGE_DWELL_CAP = 4.0   # a quiet splash never stalls the recap past this
+
+_INTENSITY_DWELL_BUMP = {"calm": 0.0, "tense": 0.4, "intense": 0.8, "explosive": 1.2}
+
+
+def compute_image_min(width: float, height: float, intensity: str,
+                      *, floor: float = PANEL_FLOOR_SEC,
+                      cap: float = IMAGE_DWELL_CAP) -> float:
+    """Per-panel image dwell FLOOR in seconds, in [floor, cap].
+
+    visual_weight blends normalized area (vs a ~1200x1600 reference panel) with a
+    tallness term (a tall full-width strip reads as a splash). image_min =
+    clamp(floor + (cap-floor)*visual_weight + intensity_bump, floor, cap).
+    Returns `floor` when geometry AND intensity are both unknown -> a no-op upstream
+    (compute_duration_sec image_min default), preserving old-manifest behavior.
+    """
+    w = float(width or 0.0)
+    h = float(height or 0.0)
+    if w > 0.0 and h > 0.0:
+        area_term = min(1.0, (w * h) / (1200.0 * 1600.0))
+        aspect_tall = max(0.0, min(1.0, (h / w) - 1.0))
+        visual_weight = 0.65 * area_term + 0.35 * aspect_tall   # in [0, 1]
+    else:
+        visual_weight = 0.0
+    inten_bump = _INTENSITY_DWELL_BUMP.get(str(intensity or "").strip().lower(), 0.0)
+    raw = float(floor) + (float(cap) - float(floor)) * visual_weight + inten_bump
+    return float(max(float(floor), min(float(cap), raw)))
+
+
 def _floor_shot_dur(n_kept: int, shot_dur: float, floor: float) -> float:
     """Extend a segment so each of n_kept panels gets >= floor seconds; never shrink."""
     if n_kept and floor and shot_dur / n_kept < floor:
