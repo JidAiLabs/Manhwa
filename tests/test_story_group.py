@@ -66,7 +66,7 @@ def test_default_max_beat_len_caps_group_size():
     consecutive run is split into gemma-sized beats (a 29/35-panel group overflows
     gemma4:26b and parse-fails). The cap limits PANELS PER BEAT only — it never
     caps a panel's narration length."""
-    assert sg.DEFAULT_MAX_BEAT_LEN == 8
+    assert sg.DEFAULT_MAX_BEAT_LEN == 6
     order = [f"p{i}" for i in range(40)]
     shots = sg.repair_to_shots(order, [
         {"scene_files": order, "segment": "present", "arc_label": "one long battle"}],
@@ -381,4 +381,4 @@ def test_oversized_beat_splits_at_cap():
 
 
 def test_default_cap_is_tighter():
-    assert sg.DEFAULT_MAX_BEAT_LEN == 8
+    assert sg.DEFAULT_MAX_BEAT_LEN == 6
