@@ -20,6 +20,10 @@ class Series:
     added_at: str
     last_checked: str | None = None
     poll_priority: int = 100
+    niche_primary: str | None = None
+    niche_secondary: str | None = None
+    genres: str | None = None
+    synopsis: str | None = None
 
 @dataclass
 class Chapter:

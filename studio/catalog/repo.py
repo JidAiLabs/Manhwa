@@ -10,14 +10,25 @@ def upsert_series(
     title: str,
     *,
     added_at: str,
+    niche_primary: str | None = None,
+    niche_secondary: str | None = None,
+    genres: str | None = None,
+    synopsis: str | None = None,
 ) -> int:
     con.execute(
         """
-        INSERT INTO series(source, series_url, slug, title, added_at)
-        VALUES(?, ?, ?, ?, ?)
-        ON CONFLICT(source, series_url) DO UPDATE SET title=excluded.title
+        INSERT INTO series(source, series_url, slug, title, added_at,
+                           niche_primary, niche_secondary, genres, synopsis)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, series_url) DO UPDATE SET
+          title=excluded.title,
+          niche_primary=COALESCE(excluded.niche_primary, series.niche_primary),
+          niche_secondary=COALESCE(excluded.niche_secondary, series.niche_secondary),
+          genres=COALESCE(excluded.genres, series.genres),
+          synopsis=COALESCE(excluded.synopsis, series.synopsis)
         """,
-        (source, series_url, slug, title, added_at),
+        (source, series_url, slug, title, added_at,
+         niche_primary, niche_secondary, genres, synopsis),
     )
     con.commit()
     row = con.execute(
@@ -96,7 +107,8 @@ def get_chapter(con: sqlite3.Connection, cid: int) -> Chapter:
 
 def get_series(con: sqlite3.Connection, sid: int) -> Series:
     row = con.execute(
-        "SELECT id, source, series_url, slug, title, added_at, last_checked, poll_priority FROM series WHERE id=?",
+        "SELECT id, source, series_url, slug, title, added_at, last_checked, poll_priority, "
+        "niche_primary, niche_secondary, genres, synopsis FROM series WHERE id=?",
         (sid,),
     ).fetchone()
     return Series(
@@ -108,17 +120,23 @@ def get_series(con: sqlite3.Connection, sid: int) -> Series:
         added_at=row[5],
         last_checked=row[6],
         poll_priority=row[7],
+        niche_primary=row[8],
+        niche_secondary=row[9],
+        genres=row[10],
+        synopsis=row[11],
     )
 
 
 def list_series(con: sqlite3.Connection) -> list[Series]:
     rows = con.execute(
-        "SELECT id, source, series_url, slug, title, added_at, last_checked, poll_priority FROM series"
+        "SELECT id, source, series_url, slug, title, added_at, last_checked, poll_priority, "
+        "niche_primary, niche_secondary, genres, synopsis FROM series"
     ).fetchall()
     return [
         Series(
             id=r[0], source=r[1], series_url=r[2], slug=r[3], title=r[4],
             added_at=r[5], last_checked=r[6], poll_priority=r[7],
+            niche_primary=r[8], niche_secondary=r[9], genres=r[10], synopsis=r[11],
         )
         for r in rows
     ]

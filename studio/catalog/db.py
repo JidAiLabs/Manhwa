@@ -109,6 +109,12 @@ def connect(path: Path | str) -> sqlite3.Connection:
         # series (cleared when you bulk-run it or dismiss it)
         con.execute("ALTER TABLE series ADD COLUMN new_pending INTEGER "
                     "NOT NULL DEFAULT 0")
+    # niche classification (additive, nullable): primary/secondary niche codes +
+    # source genres + synopsis, used to register the narration persona per series
+    for _col, _typ in (("niche_primary", "TEXT"), ("niche_secondary", "TEXT"),
+                       ("genres", "TEXT"), ("synopsis", "TEXT")):
+        if _col not in scols:
+            con.execute(f"ALTER TABLE series ADD COLUMN {_col} {_typ}")
     bcols = {r[1] for r in con.execute("PRAGMA table_info(bundle)")}
     if "teaser_state" not in bcols:
         # arc-teaser sequencing: none|planned|approved|declined
