@@ -744,16 +744,16 @@ def _intensity_rank_for_beat(beat: Dict[str, Any]) -> int:
 
 
 def _escalate_tag_for_intensity(tag: str, rank: int) -> str:
-    """Bump a neutral mood tag when the panels (or shout-caps dialogue) say the
-    moment is hotter than the keyword-inferred mood — caps map to intensity."""
+    """Bump a neutral mood tag only when the panels say the moment is a genuine
+    explosive PEAK. A lone 'intense' panel (rank 2) no longer escalates —
+    routine events kept the keyword-inferred mood instead of sounding like
+    climaxes."""
     t = (tag or "serious").strip().lower()
     if t not in _ESCALATABLE_TAGS:
         return t
-    if rank >= 3:
+    if rank >= 3:            # only a genuine explosive peak nudges a neutral tag up
         return "excited"
-    if rank == 2:
-        return "tense"
-    return t
+    return t                 # rank<=2 (incl. 'intense'): keep the keyword-inferred mood
 
 
 # series-intro / title-card chrome scrub lives in the shared narration module so

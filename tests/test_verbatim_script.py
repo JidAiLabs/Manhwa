@@ -93,7 +93,7 @@ def test_intensity_rank_zero_when_missing():
 
 def test_escalate_neutral_tags_only():
     assert se._escalate_tag_for_intensity("serious", 3) == "excited"
-    assert se._escalate_tag_for_intensity("calm", 2) == "tense"
+    assert se._escalate_tag_for_intensity("calm", 2) == "calm"
     assert se._escalate_tag_for_intensity("serious", 1) == "serious"
     # deliberate moods are never overridden by intensity
     assert se._escalate_tag_for_intensity("sad", 3) == "sad"
