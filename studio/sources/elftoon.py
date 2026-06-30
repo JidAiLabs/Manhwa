@@ -154,6 +154,26 @@ def _parse_series(tree: HTMLParser) -> tuple[str, list[ChapterRef]]:
     return title, chapters
 
 
+def _parse_genres(html: str) -> tuple[str, ...]:
+    """Genre tags from the span.mgen anchors. Fail-soft: markup churn must NEVER
+    break discovery, so any parse error yields ()."""
+    try:
+        tree = HTMLParser(html)
+        out = [a.text(strip=True) for a in tree.css("span.mgen a")]
+        return tuple(g for g in out if g)
+    except Exception:
+        return ()
+
+
+def _parse_synopsis(html: str) -> str:
+    """Synopsis from the [itemprop="description"] block. Fail-soft → ''."""
+    try:
+        node = HTMLParser(html).css_first('[itemprop="description"]')
+        return node.text(strip=True) if node else ""
+    except Exception:
+        return ""
+
+
 def _extract_image_urls(page_html: str) -> list[str]:
     """
     Extract ordered image URLs from an Elftoon chapter page.
@@ -236,11 +256,14 @@ class ElftoonAdapter(SourceAdapter):
     def series_meta(self, series_url: str) -> SeriesMeta:
         tree = self._fetch_series_page(series_url)
         title, _ = _parse_series(tree)
+        html = tree.html or ""          # reuse the fetched page — no second GET
         return SeriesMeta(
             source=self.id,
             series_url=series_url,
             title=title,
             slug=slugify(title),
+            genres=_parse_genres(html),
+            synopsis=_parse_synopsis(html),
         )
 
     def download(self, chapter: ChapterRef, dest_dir: Path) -> list[Path]:

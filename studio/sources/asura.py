@@ -161,6 +161,26 @@ def _parse_series(tree: HTMLParser, series_url: str) -> tuple[str, list[ChapterR
     return title, chapters
 
 
+def _parse_genres(html: str) -> tuple[str, ...]:
+    """Genre tags from the /browse?genres=<g> anchors. Fail-soft: markup churn
+    must NEVER break discovery, so any parse error yields ()."""
+    try:
+        tree = HTMLParser(html)
+        out = [a.text(strip=True) for a in tree.css('a[href*="genres="]')]
+        return tuple(g for g in out if g)
+    except Exception:
+        return ()
+
+
+def _parse_synopsis(html: str) -> str:
+    """Synopsis from the og:description meta tag. Fail-soft → ''."""
+    try:
+        node = HTMLParser(html).css_first('meta[property="og:description"]')
+        return (node.attributes.get("content") or "").strip() if node else ""
+    except Exception:
+        return ""
+
+
 def _extract_image_urls(page_html: str) -> list[str]:
     """Ordered chapter image URLs. Matches EVERY image on the chapter's CDN path
     (any filename) so no page is silently dropped, then orders them:
@@ -224,11 +244,14 @@ class AsuraAdapter(SourceAdapter):
     def series_meta(self, series_url: str) -> SeriesMeta:
         tree = self._fetch_series_page(series_url)
         title, _ = _parse_series(tree, series_url)
+        html = tree.html or ""          # reuse the fetched page — no second GET
         return SeriesMeta(
             source=self.id,
             series_url=series_url,
             title=title,
             slug=slugify(title),
+            genres=_parse_genres(html),
+            synopsis=_parse_synopsis(html),
         )
 
     def search(self, title: str) -> list[tuple[str, str]]:

@@ -44,6 +44,8 @@ class SeriesMeta:
     series_url: str
     title: str
     slug: str
+    genres: tuple[str, ...] = ()
+    synopsis: str = ""
 
 
 # ---------------------------------------------------------------------------

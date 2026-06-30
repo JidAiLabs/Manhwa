@@ -64,6 +64,21 @@ def _comic_slug_to_title(slug: str) -> str:
     return slug.replace("-", " ").title()
 
 
+def _genres_from_meta(meta: dict) -> tuple[str, ...]:
+    """Best-effort genres from a gallery-dl episode meta dict. gallery-dl gives a
+    single `genre` string (e.g. "action"); accept a `genres`/`tags` list too if a
+    future extractor exposes one. Fail-soft → () so discovery never breaks."""
+    try:
+        raw = meta.get("genres") or meta.get("tags") or meta.get("genre")
+        if not raw:
+            return ()
+        if isinstance(raw, str):
+            raw = [raw]
+        return tuple(str(g).strip() for g in raw if str(g).strip())
+    except Exception:
+        return ()
+
+
 def _parse_chapters(entries: list) -> list[ChapterRef]:
     """
     Parse gallery-dl -j entries into ordered ChapterRefs.
@@ -140,21 +155,29 @@ class WebtoonAdapter(SourceAdapter):
         entries = self._fetch_entries(series_url)
         chapters = _parse_chapters(entries)
 
-        # Derive title from the 'comic' field in the first entry's metadata
+        # Derive title (+ best-effort genres/synopsis) from the first entry's
+        # metadata. gallery-dl exposes a single `genre` string per episode; no
+        # description key is exposed, so synopsis falls back to '' (base voice).
         comic_slug: str = "unknown"
+        meta: dict = {}
         for entry in entries:
             if isinstance(entry, list) and len(entry) >= 3 and entry[0] == 6:
-                comic_slug = entry[2].get("comic", "unknown")
+                meta = entry[2] if isinstance(entry[2], dict) else {}
+                comic_slug = meta.get("comic", "unknown")
                 break
 
         title = _comic_slug_to_title(comic_slug)
         slug = slugify(title)
+        genres = _genres_from_meta(meta)
+        synopsis = str(meta.get("description") or meta.get("summary") or "").strip()
 
         return SeriesMeta(
             source=self.id,
             series_url=series_url,
             title=title,
             slug=slug,
+            genres=genres,
+            synopsis=synopsis,
         )
 
     def download(self, chapter: ChapterRef, dest_dir: Path) -> list[Path]:
