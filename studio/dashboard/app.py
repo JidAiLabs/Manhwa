@@ -322,14 +322,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def queue_page(request: Request):
         c = con()
         return page("queue.html", request, jobs=jobs.queue_view(c),
-                    chapters=jobs.chapter_history(c),
                     series=_series_rows(c))
 
     @app.get("/partials/queue", response_class=HTMLResponse)
     def queue_partial(request: Request):
         c = con()
         return page("partials/queue_table.html", request,
-                    jobs=jobs.queue_view(c), chapters=jobs.chapter_history(c))
+                    jobs=jobs.queue_view(c))
 
     @app.get("/partials/log/{job_id}", response_class=PlainTextResponse)
     def log_partial(job_id: int):

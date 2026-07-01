@@ -13,18 +13,6 @@
 {% else %}<tr><td colspan="6" class="kv">nothing running</td></tr>{% endfor %}
 </table>
 
-{% if chapters %}
-<div class="kv" style="margin:14px 0 4px"><b>recent chapters</b> — one row per chapter · stage breakdown · total</div>
-<table>
-<tr><th>chapter</th><th>stage breakdown</th><th>total</th></tr>
-{% for c in chapters %}
-<tr><td class="kv"><a href="/chapter/{{ c.chapter_id }}" style="color:var(--acc)">{{ c.scope_name }}</a></td>
-<td class="kv">{% for s in c.breakdown %}{{ s.label }} {{ fmt_eta(s.sec) }}{% if not s.ok %} <span class="b err">!</span>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</td>
-<td>{{ fmt_eta(c.total_sec) }}</td></tr>
-{% endfor %}
-</table>
-{% endif %}
-
 {% if queued %}
 <div class="kv" style="margin:14px 0 4px"><b>queued</b> — {{ queued|length }} job{{ 's' if queued|length != 1 }} waiting</div>
 <table>
