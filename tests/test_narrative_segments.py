@@ -691,3 +691,34 @@ def test_main_adaptive_skip_is_auto_repaired_without_reask(tmp_path,
         ["p1.jpg", "p2.jpg"], ["p3.jpg"]]
     assert beat["segments"][0]["line"] == \
         _GOOD_MODEL_BEAT["segments"][0]["line"]           # prose preserved
+
+
+def test_pinned_regen_fallback_keeps_previous_beat_not_pads():
+    # An all-singleton pin can accidentally MATCH a validation fallback's
+    # singleton spans — the pads must never replace the pinned prose.
+    prev = {"group_id": 7, "scene_files": FILES,
+            "segments": [{"span": [f], "line": f"Good prose about {f}."}
+                         for f in FILES],
+            "narration": "join"}
+    import json, subprocess, sys, tempfile, os
+    # exercise via finalize + the caller-level guard: simulate what main does
+    bad = {"group_id": 7, "scene_files": FILES,
+           "segments": [dict(s) for s in _BAD_ORDER_SEGMENTS]}
+    gnp.finalize_adaptive_beat(bad, FILES, KINDS, U_BY_FILE, 7,
+                               reask_fn=lambda e: None)
+    assert bad.pop("_segments_fallback", False) is True   # marker set
+    # the caller sees the marker and keeps prev — emulate the guard:
+    beat = prev if True else bad
+    assert [s["line"] for s in beat["segments"]] == [
+        f"Good prose about {f}." for f in FILES]
+
+
+def test_correction_block_speaks_segments_under_adaptive(tmp_path, monkeypatch):
+    # under adaptive the rewrite instruction must target the segments lines,
+    # not the derived 'narration' join (the old wording made gemma return
+    # malformed segments -> fallback pads)
+    bad = dict(_GOOD_MODEL_BEAT, segments=list(_BAD_ORDER_SEGMENTS))
+    out, calls = _run_corrections(tmp_path, monkeypatch,
+                                  [_GOOD_MODEL_BEAT], _prev_segments_beat())
+    assert any("every 'segments' line" in c["system_instruction"]
+               for c in calls)

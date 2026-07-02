@@ -1180,6 +1180,11 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                          "line": s.get("line")} for s in segs]
         aligned = align_panel_narration(surviving, model_panels, u_by_file)
         segs = [{"span": [p["scene_file"]], "line": p["line"]} for p in aligned]
+        # Marker for the corrections caller: a pad-heavy fallback must NEVER
+        # replace pinned prose — when the pin was itself all-singleton the
+        # span comparison alone can't tell fallback pads from a real rewrite
+        # (this poisoned 6 healed ch1 beats with "The moment holds.").
+        beat["_segments_fallback"] = True
     beat.pop("panel_narration", None)
     beat["segments"] = segs
     covered = [f for s in segs for f in s["span"]]
@@ -1553,12 +1558,19 @@ def main() -> int:
             if (prev is not None and has_native_segments(prev)
                     and beat_segments(prev)):
                 pin_prev = prev
+            # The rewrite instruction must speak the ACTIVE schema: under
+            # adaptive the model returns segments[].line — telling it to fix
+            # 'narration' (the derived join) yields malformed segments →
+            # validation fallback → pads (poisoned 6 healed ch1 beats).
+            _fix_target = ("every 'segments' line"
+                           if args.segmentation == "adaptive"
+                           else "the 'narration'")
             sys_g = sys_g + (
                 "\n\nCORRECTION FOR THIS GROUP — the previous narration had this problem:\n  "
                 + corrections[gid] + "\n"
-                "Rewrite the 'narration' to FIX it: stay strictly to what is visible here plus the "
+                f"Rewrite {_fix_target} to FIX it: stay strictly to what is visible here plus the "
                 "panel's actual dialogue, COVER every on-panel caption in full, keep the cast names, "
-                "assert nothing not shown, and never leave the narration empty.\n"
+                "assert nothing not shown, and never leave a line empty.\n"
             )
             if pin_prev is not None:
                 sys_g += _pinned_span_block(beat_segments(pin_prev))
@@ -1657,9 +1669,18 @@ def main() -> int:
                 allow_flow_nudge=pin_prev is None)
 
         # Corrections regen of a native-segments beat: adopt the rewrite ONLY
-        # if it kept the pinned spans; any re-split keeps the previous beat.
+        # if it kept the pinned spans AND is a real rewrite; a validation
+        # fallback (pad-heavy singletons) can accidentally MATCH an
+        # all-singleton pin, so it must explicitly keep the previous beat.
         if pin_prev is not None:
-            beat = enforce_pinned_spans(beat, pin_prev, gid)
+            if beat.pop("_segments_fallback", False):
+                print(f"[segments] span-pin g{gid:04d}: regen fell back to "
+                      "pads — kept previous lines")
+                beat = pin_prev
+            else:
+                beat = enforce_pinned_spans(beat, pin_prev, gid)
+        else:
+            beat.pop("_segments_fallback", None)
 
         # The per-panel backfill above gives even a parse-failed beat valid lines;
         # demote the silencing `error` flag so those lines actually reach render.
