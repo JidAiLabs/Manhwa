@@ -29,10 +29,11 @@ from studio.dashboard import bundles, discovery, eta, gates, jobs
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 
-# manifest_freshness lives in tools/ — add to path once at import time
+# manifest_freshness / beats_segments live in tools/ — add to path once at import time
 _TOOLS = str(REPO / "tools")
 if _TOOLS not in __import__("sys").path:
     __import__("sys").path.insert(0, _TOOLS)
+from beats_segments import beat_segments  # noqa: E402
 from manifest_freshness import verify_chapter as _verify_chapter_freshness  # noqa: E402
 
 # stages shown on the chapter timeline, in pipeline order
@@ -108,11 +109,26 @@ def _gallery(ep_dir: Optional[str]) -> List[Dict[str, Any]]:
         beats = json.loads(b.read_text()).get("beats") or []
     except Exception:
         return []
-    return [{"segment_id": f"g{int(bt.get('group_id') or 0):04d}",
-             "narration": bt.get("narration") or "",
-             "files": [str(f) for f in (bt.get("scene_files") or [])[:4]],
-             "src_dir": "scenes", "duration": 0}
-            for bt in beats]
+    # one row per narration SEGMENT with its span's panels grouped under the
+    # line that voices them (a flow span = several panels, one clip; legacy
+    # panel_narration = singleton spans). Beats with neither shape (old
+    # per-beat manifests) keep the old one-row-per-beat fallback.
+    out = []
+    for bt in beats:
+        gid = int(bt.get("group_id") or 0)
+        segs = beat_segments(bt)
+        if not segs:
+            out.append({"segment_id": f"g{gid:04d}",
+                        "narration": bt.get("narration") or "",
+                        "files": [str(f) for f in (bt.get("scene_files") or [])[:4]],
+                        "src_dir": "scenes", "duration": 0})
+            continue
+        for i, seg in enumerate(segs):
+            out.append({"segment_id": f"g{gid:04d} · {i + 1}/{len(segs)}",
+                        "narration": seg["line"],
+                        "files": list(seg["span"]),
+                        "src_dir": "scenes", "duration": 0})
+    return out
 
 
 def _teaser_card(bid: int) -> Optional[Dict[str, Any]]:
@@ -129,8 +145,10 @@ def _teaser_card(bid: int) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     ongoing = (REPO / "ongoing").resolve()
-    lines = {p.get("scene_file"): (p.get("line") or "")
-             for p in (t.get("panel_narration") or [])}
+    lines: Dict[str, str] = {}
+    for seg in beat_segments(t):        # legacy teaser shape adapts to segments
+        for sf in seg["span"]:
+            lines.setdefault(sf, seg["line"])
     panels = []
     for sf in (t.get("scene_files") or []):
         img = None

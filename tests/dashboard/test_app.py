@@ -324,3 +324,66 @@ def test_drop_panel_button_bans_file_and_requeues(client, tmp_path):
         ["p000031.jpg"]
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='prepare'"
                        ).fetchone()[0] == 2
+
+
+def test_chapter_page_gallery_shows_flow_span_grouped(client, tmp_path,
+                                                      monkeypatch):
+    """Adaptive flow narration: the chapter page's narration gallery renders
+    ONE row per SEGMENT — a flow span's panels grouped under its single line,
+    a solo on its own row — not one merged row per beat."""
+    import json
+    c, con = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    ep = tmp_path / "ongoing" / "nano" / "ch1"
+    ep.mkdir(parents=True)
+    flow = "He drops through the canopy and lands hard."
+    solo = "The system window blinks awake."
+    (ep / "manifest.beats.json").write_text(json.dumps({"beats": [{
+        "group_id": 4,
+        "scene_files": ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg"],
+        "narration": flow + " " + solo,
+        "segments": [
+            {"span": ["p1.jpg", "p2.jpg", "p3.jpg"], "line": flow},
+            {"span": ["p4.jpg"], "line": solo},
+        ]}]}))
+    con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
+    con.commit()
+
+    html = c.get("/chapter/1").text
+    assert flow in html and solo in html
+    # NOT one merged per-beat row: the joined narration never renders as one blob
+    assert (flow + " " + solo) not in html
+
+    rows = _app._gallery(str(ep))
+    assert [r["files"] for r in rows] == [
+        ["p1.jpg", "p2.jpg", "p3.jpg"], ["p4.jpg"]]
+    assert [r["narration"] for r in rows] == [flow, solo]
+
+
+def test_chapter_page_gallery_legacy_manifest_one_row_per_panel(client,
+                                                                tmp_path,
+                                                                monkeypatch):
+    """Legacy panel_narration manifests render one row per panel (singleton
+    spans) — same reader, no dual path."""
+    import json
+    c, con = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    ep = tmp_path / "ongoing" / "nano" / "ch1"
+    ep.mkdir(parents=True)
+    (ep / "manifest.beats.json").write_text(json.dumps({"beats": [{
+        "group_id": 2,
+        "scene_files": ["a.jpg", "b.jpg"],
+        "narration": "First. Second.",
+        "panel_narration": [
+            {"scene_file": "a.jpg", "line": "First."},
+            {"scene_file": "b.jpg", "line": "Second."},
+        ]}]}))
+    con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
+    con.commit()
+
+    assert c.get("/chapter/1").status_code == 200
+    rows = _app._gallery(str(ep))
+    assert [r["files"] for r in rows] == [["a.jpg"], ["b.jpg"]]
+    assert [r["narration"] for r in rows] == ["First.", "Second."]

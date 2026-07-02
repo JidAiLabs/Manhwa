@@ -47,6 +47,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 import recap_style  # noqa: E402
+from beats_segments import beat_segments  # noqa: E402
 
 # Panel kinds that can carry the story forward (chrome/empty/etc. are dropped).
 _ELIGIBLE_KINDS = {"story", "caption", "system"}
@@ -589,13 +590,17 @@ def materialize_teaser_dir(
         scene_entries.append(entry)
 
     kept_set = set(kept)
+    # synthetic-beat construction: the manifest DELIBERATELY keeps the legacy
+    # panel_narration shape (incl. narration-less panels, which the render's
+    # protection machinery still shows); the narration JOIN is read through
+    # the shared segments reader (skips empty-line entries).
     panel_narration = [
         p for p in (teaser.get("panel_narration") or [])
         if str(p.get("scene_file") or "") in kept_set
     ]
     narration = " ".join(
-        str(p.get("line") or "").strip() for p in panel_narration
-        if str(p.get("line") or "").strip())
+        seg["line"]
+        for seg in beat_segments({"panel_narration": panel_narration}))
 
     _write_json(out_dir / "manifest.beats.json", {"beats": [{
         "group_id": 1,

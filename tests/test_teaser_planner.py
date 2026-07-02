@@ -341,3 +341,35 @@ def test_load_bundle_panels_tags_chapter_and_abspath(tmp_path):
     panels = tp.load_bundle_panels([str(ch)])
     assert panels[0]["chapter_number"]  # derived from dir name or order
     assert panels[0]["scene_file"].endswith("ch5/scenes/scene_0001.jpg")
+
+
+# ------------------------------------------------ segments reader for the join
+
+
+def test_materialize_narration_join_reads_lines_via_segments(tmp_path):
+    """The synthetic beat stays LEGACY-shaped (panel_narration), but the
+    narration JOIN is read through the shared segments reader: empty-line
+    panels stay LISTED in panel_narration/scene_files (so the render still
+    shows them) yet never leak into the joined narration."""
+    src = tmp_path / "ch5"
+    (src / "scenes").mkdir(parents=True)
+    for f in ("scene_0007.jpg", "scene_0008.jpg"):
+        (src / "scenes" / f).write_bytes(b"\xff\xd8\xff")
+    (src / "manifest.scenes.json").write_text(json.dumps(
+        {"scenes": [{"out_file": "scene_0007.jpg"},
+                    {"out_file": "scene_0008.jpg"}]}))
+    ns7, ns8 = "ch5__scene_0007.jpg", "ch5__scene_0008.jpg"
+    teaser = {"source_chapters": [5], "scene_files": [ns7, ns8],
+              "panel_sources": {ns7: str(src / "scenes" / "scene_0007.jpg"),
+                                ns8: str(src / "scenes" / "scene_0008.jpg")},
+              "panel_narration": [
+                  {"scene_file": ns7, "line": "The exam begins."},
+                  {"scene_file": ns8, "line": ""}],
+              "rewind_line": "...", "reason": "...",
+              "spoiler_boundary": "..."}
+    out_dir = tmp_path / "teaser"
+    tp.materialize_teaser_dir(teaser, out_dir, cast={"cast": []})
+    beat = json.loads((out_dir / "manifest.beats.json").read_text())["beats"][0]
+    assert beat["narration"] == "The exam begins."
+    assert [p["scene_file"] for p in beat["panel_narration"]] == [ns7, ns8]
+    assert beat["scene_files"] == [ns7, ns8]
