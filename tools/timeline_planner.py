@@ -1843,8 +1843,15 @@ def main() -> int:
             motion = _motion_params_for_mode(motion_mode, dur, mood_words)
             camera = _camera_compat_from_motion(motion, avoid_text_zoom=avoid_text_zoom)
 
-            # display strategy
-            if args.default_display == "single_hold":
+            # display strategy — a flow-SPAN shot (several scene_files) MUST
+            # pace ALL its panels under the one clip: span>1 always routes
+            # through multi_cut/build_cuts ("pace the panels UNDER the voice");
+            # a single_hold would show only the span head and silently drop
+            # narrated panels (panel_uncovered). 1-file shots keep the
+            # operator's choice exactly as before.
+            if len(segment_scene_files) > 1:
+                display_strategy = "multi_cut"
+            elif args.default_display == "single_hold":
                 display_strategy = "single_hold"
             elif args.default_display == "multi_cut":
                 display_strategy = "multi_cut"
