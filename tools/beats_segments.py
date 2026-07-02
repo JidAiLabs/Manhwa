@@ -43,6 +43,19 @@ def _legacy_ok(item: Any) -> bool:
             and bool(str(item.get("line") or "").strip()))
 
 
+def has_native_segments(beat: Any) -> bool:
+    """True when the beat carries native adaptive `segments` (the new shape).
+
+    Consumers use this to retire per-panel-era post-processing that flow spans
+    supersede (e.g. the script packer's short-line merger, consecutive-dup
+    panel removal) WITHOUT changing behavior for legacy `panel_narration`
+    manifests — shape detection, not a flag."""
+    if not isinstance(beat, dict):
+        return False
+    native = beat.get("segments")
+    return isinstance(native, list) and bool(native)
+
+
 def beat_segments(beat: Any) -> List[Dict[str, Any]]:
     """Return the beat's narration segments: [{"span": [basenames...], "line": str}].
 

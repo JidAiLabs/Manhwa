@@ -777,6 +777,7 @@ if _TD not in _sys.path:
     _sys.path.insert(0, _TD)
 from narration_consistency import strip_chrome_opener  # noqa: E402,F401
 from sfx_scrub import scrub_sfx_quotes  # noqa: E402
+from beats_segments import beat_segments, has_native_segments  # noqa: E402
 
 _CHAPTER_HEADING_RE = re.compile(r"\b(?:chapter|episode)\s+\d+\b", re.I)
 _TITLE_CARD_RE = re.compile(r"\b(?:chapter|episode|title)\s+card\b", re.I)
@@ -905,36 +906,40 @@ def _build_verbatim_section(
         if payload_beat is None:
             pbeats = payload.get("beats") or []
             payload_beat = pbeats[idx] if idx < len(pbeats) and isinstance(pbeats[idx], dict) else {}
-        # HONOR per-panel lines regardless of the group-level `error` flag: a
-        # failed GROUP-level JSON parse still backfills VALID per-panel narration
-        # (one line per scene_file, see gemini_narrative_pass). Discarding them on
-        # `error` collapsed a 29/35-panel group to ONE "The scene continues." shot
-        # showing only allowed[:1] — the panel-collapse regression. A genuinely
+        # HONOR per-segment lines regardless of the group-level `error` flag: a
+        # failed GROUP-level JSON parse still backfills VALID narration (see
+        # gemini_narrative_pass). Discarding them on `error` collapsed a
+        # 29/35-panel group to ONE "The scene continues." shot showing only
+        # allowed[:1] — the panel-collapse regression. A genuinely
         # empty/placeholder beat still folds to one fallback shot below.
-        panel_lines = b.get("panel_narration") or []
-        if panel_lines:
-            # Per-panel path (Chunk 5): each panel's line → its own paragraph +
-            # shot, aligned by construction (no positional guessing). Keep a line
-            # ONLY when it has real text and is not the parse-failure placeholder.
+        # beat_segments is the ONE reader: native `segments` (adaptive flow
+        # spans) or legacy `panel_narration` (singleton spans).
+        segs = beat_segments(b)
+        if segs:
+            # One paragraph + one shot per SEGMENT: a flow span's panels all
+            # ride its shot's scene_files (span order kept), so the planner
+            # paces them under the one clip. Keep a line ONLY when it has real
+            # text and is not the parse-failure placeholder.
             items = [
-                (ln, [sf])
-                for p in panel_lines
-                for ln in [str(p.get("line") or "").strip()]
-                for sf in [str(p.get("scene_file") or "").strip()]
+                (ln, list(seg.get("span") or []))
+                for seg in segs
+                for ln in [str(seg.get("line") or "").strip()]
                 if ln and ln.lower() != "the scene continues."
             ]
             if not items:
                 # base is un-normalized here; the inner loop normalizes each line
                 items = [(base, [])]
-            elif tts_merge_short:
+            elif tts_merge_short and not has_native_segments(b):
                 # Merge very-short adjacent lines into one clip: fewer/longer
                 # clips → steadier voice prosody across panels.  Every input
                 # scene_file is preserved (invariant); the timeline still cuts
                 # per-panel because each shot carries all its scene_files.
+                # RETIRED for native-segments beats: flow spans supersede the
+                # merger — running both would double-merge.
                 items = merge_short_panel_items(items)
         else:
-            # No panel_narration (error beats / legacy manifests without per-panel
-            # lines): one paragraph for the whole beat. The shot builder assigns
+            # No segments/panel_narration (error beats / old per-beat manifests):
+            # one paragraph for the whole beat. The shot builder assigns
             # the scene file from the beat's allowed list.
             text, _ = normalize_caps_for_tts(base, proper_case)
             items = [(text, [])]
@@ -953,9 +958,12 @@ def _build_verbatim_section(
     for i, tp in enumerate(tagged):
         tag, _rest = _split_leading_bracket_tag(str(tp))
         beat_for_para = para_beats[i] if i < len(para_beats) else (chunk[i] if i < len(chunk) and isinstance(chunk[i], dict) else {})
-        sf_for_para = (shots[i].get("scene_files") or [None])[0] if i < len(shots) else None
-        rank = (_intensity_rank_for_panel(beat_for_para, sf_for_para)
-                if sf_for_para else _intensity_rank_for_beat(beat_for_para))
+        # Span mood = MAX panel intensity across the shot's span (peaks
+        # preserved); a 1-file shot degenerates to the panel's own intensity
+        # (the pre-span behavior, byte-identical).
+        sfs_for_para = (shots[i].get("scene_files") or []) if i < len(shots) else []
+        rank = (max(_intensity_rank_for_panel(beat_for_para, sf) for sf in sfs_for_para)
+                if sfs_for_para else _intensity_rank_for_beat(beat_for_para))
         if shout_flags[i]:
             rank = max(rank, 2)
         tag = _escalate_tag_for_intensity(tag or "serious", rank)
@@ -963,8 +971,8 @@ def _build_verbatim_section(
 
     # shots is now always built in the loop via _build_microbeat_shot; fall back
     # to payload-derived shots only for old manifests where NO beat in the chunk
-    # has panel_narration (the old one-shot-per-beat default path that predates
-    # Chunk 5).
+    # has segments/panel_narration (the old one-shot-per-beat default path that
+    # predates Chunk 5).
     if shots:
         shots = _normalize_shots(shots)
     else:

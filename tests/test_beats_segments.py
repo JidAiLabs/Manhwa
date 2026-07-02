@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from tools.beats_segments import beat_segments, write_segment_lines
+from tools.beats_segments import (
+    beat_segments,
+    has_native_segments,
+    write_segment_lines,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -140,3 +144,17 @@ def test_write_empty_line_rejected():
 def test_write_returns_the_beat():
     beat = {"segments": [{"span": ["a.jpg"], "line": "One."}]}
     assert write_segment_lines(beat, ["Two words here."]) is beat
+
+
+# ---------------------------------------------------------------------------
+# has_native_segments — shape detection (retires per-panel-era post-processing)
+# ---------------------------------------------------------------------------
+
+def test_has_native_segments_true_only_for_segments_shape():
+    assert has_native_segments(
+        {"segments": [{"span": ["a.jpg"], "line": "One."}]}) is True
+    assert has_native_segments(
+        {"panel_narration": [{"scene_file": "a.jpg", "line": "One."}]}) is False
+    assert has_native_segments({"segments": []}) is False
+    assert has_native_segments({}) is False
+    assert has_native_segments(None) is False
