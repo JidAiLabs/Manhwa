@@ -1,0 +1,89 @@
+"""
+tests/test_reconcile_seam_panels.py
+
+TDD for tools/reconcile_seam_panels.py — cross-chunk seam detection + reassembly.
+The detector operates purely on scenes[] records (no image I/O). The reassembler
+is unit-tested with small synthetic PIL images in tmp_path.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+
+from PIL import Image
+
+_SPEC = importlib.util.spec_from_file_location(
+    "reconcile_seam_panels",
+    Path(__file__).resolve().parent.parent / "tools" / "reconcile_seam_panels.py",
+)
+rsp = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(rsp)  # type: ignore[union-attr]
+
+
+# ---- fixture builder --------------------------------------------------------
+
+def _scene(panel_id, chunk_file, chunk_h, gy0, box, *, dhash=0, w=1200, h=None):
+    """Minimal scene record carrying only the fields the detector reads."""
+    x0, y0, x1, y1 = box
+    return {
+        "panel_id": panel_id,
+        "chunk_file": chunk_file,
+        "chunk_path": f"/fake/{chunk_file}",
+        "chunk_h": chunk_h,
+        "chunk_w": w,
+        "chunk_global_y0": gy0,
+        "box_px_xyxy": [x0, y0, x1, y1],
+        "w": (x1 - x0) if w is None else w,
+        "h": (y1 - y0) if h is None else h,
+        "dhash64": dhash,
+        "out_file": f"{panel_id}.jpg",
+    }
+
+
+def _ch1_like_scenes():
+    """Real tutorial-tower ch1 geometry: chunk_0003→chunk_0004 is a true seam;
+    chunk_0001→0002 and chunk_0002→0003 are clean gutter cuts (negatives)."""
+    return [
+        _scene("p01", "chunk_0001.jpg", 14457, 0,     [0, 12644, 1072, 13883]),  # gap 574
+        _scene("p02", "chunk_0002.jpg", 15349, 14457, [0, 0, 1200, 1007]),
+        _scene("p03", "chunk_0002.jpg", 15349, 14457, [309, 13352, 1134, 15120]),  # gap 229
+        _scene("p04", "chunk_0003.jpg", 13398, 29806, [339, 10, 1159, 471]),
+        _scene("p05", "chunk_0003.jpg", 13398, 29806, [0, 2115, 1200, 13398]),  # A: y1==chunk_h
+        _scene("p06", "chunk_0004.jpg", 16026, 43204, [0, 0, 1200, 825]),        # B: y0==0
+    ]
+
+
+# ---- detector ---------------------------------------------------------------
+
+def test_detects_the_true_seam_pair():
+    chains = rsp.find_seam_chains(_ch1_like_scenes())
+    # exactly one chain, the p05/p06 seam, in stitch order
+    assert chains == [["p05", "p06"]]
+
+
+def test_gutter_cut_pairs_are_not_merged():
+    # remove the true seam so only the two gutter-cut adjacencies remain
+    scenes = [s for s in _ch1_like_scenes() if s["panel_id"] not in ("p05", "p06")]
+    assert rsp.find_seam_chains(scenes) == []
+
+
+def test_high_dhash_pair_is_vetoed():
+    scenes = _ch1_like_scenes()
+    for s in scenes:
+        if s["panel_id"] == "p05":
+            s["dhash64"] = 0
+        if s["panel_id"] == "p06":
+            s["dhash64"] = (1 << 40) - 1  # popcount 40 > DHASH_VETO(20)
+    assert rsp.find_seam_chains(scenes) == []
+
+
+def test_three_chunk_chain_is_one_component():
+    # a very tall panel across 3 chunks: the middle chunk's SOLE panel touches
+    # BOTH edges (y0~0 AND y1~chunk_h) -> connected component of size 3.
+    scenes = [
+        _scene("a", "c1.jpg", 10000, 0,     [0, 3000, 1200, 10000]),  # bottom touches
+        _scene("m", "c2.jpg", 10000, 10000, [0, 0, 1200, 10000]),     # touches BOTH
+        _scene("b", "c3.jpg", 10000, 20000, [0, 0, 1200, 4000]),      # top touches
+    ]
+    assert rsp.find_seam_chains(scenes) == [["a", "m", "b"]]
