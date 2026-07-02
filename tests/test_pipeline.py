@@ -654,7 +654,8 @@ def test_run_chapter_until_stops_at_target(tmp_path, monkeypatch):
     assert repo.get_chapter(con, ch.id).status == "scened"
 
 
-def _beated_fixture(tmp_path, monkeypatch, *, marker: bool):
+def _beated_fixture(tmp_path, monkeypatch, *, marker: bool,
+                    segmentation: str = "adaptive"):
     """ep dir with existing manifests (+ optional keep-base marker) + a fake gcp
     key so _stage_beated reads project without a cred check; returns the call stub."""
     import json
@@ -672,7 +673,8 @@ def _beated_fixture(tmp_path, monkeypatch, *, marker: bool):
     stub = _tool_stub([ep])
     monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
     cfg = Config(sites={}, yolo_weights=tmp_path / "f.pt", detect_backend="yolo",
-                 gallerydl_sleep=0.0, punchup="cinematic", beats_backend="ollama")
+                 gallerydl_sleep=0.0, punchup="cinematic", beats_backend="ollama",
+                 segmentation=segmentation)
     pipeline_mod._stage_beated(ep, cfg)
     return stub
 
@@ -689,5 +691,21 @@ def test_beated_keep_base_skips_regeneration_but_keeps_punchup(tmp_path, monkeyp
 def test_beated_without_marker_regenerates(tmp_path, monkeypatch):
     stub = _beated_fixture(tmp_path, monkeypatch, marker=False)
     assert "gemini_narrative_pass.py" in stub.calls       # normal regeneration
+
+
+def test_beated_passes_segmentation_from_config(tmp_path, monkeypatch):
+    # cfg.segmentation flows to the beats stage argv EXPLICITLY (default
+    # adaptive), so the tool-level env default never shadows the config.
+    stub = _beated_fixture(tmp_path, monkeypatch, marker=False)
+    args = next(a for n, a in stub.call_args if n == "gemini_narrative_pass.py")
+    assert args[args.index("--segmentation") + 1] == "adaptive"
+
+
+def test_beated_passes_per_panel_segmentation(tmp_path, monkeypatch):
+    # the escape hatch: [narration] segmentation = "per_panel" reaches the tool
+    stub = _beated_fixture(tmp_path, monkeypatch, marker=False,
+                           segmentation="per_panel")
+    args = next(a for n, a in stub.call_args if n == "gemini_narrative_pass.py")
+    assert args[args.index("--segmentation") + 1] == "per_panel"
 
 

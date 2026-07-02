@@ -276,7 +276,10 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                       # chapter spine (logline + arc) from story_group -> beats
                       # connect into one story instead of isolated panel captions
                       "--story", str(ep_dir / "manifest.story.json"),
-                      "--understood", str(p["understood"])]
+                      "--understood", str(p["understood"]),
+                      # adaptive flow segments vs legacy per_panel — passed
+                      # explicitly so config (not the tool's env default) rules
+                      "--segmentation", cfg.segmentation or "adaptive"]
         if cfg.beats_backend == "ollama":
             beats_args += ["--backend", "ollama",
                            "--ollama-model", cfg.beats_model]
