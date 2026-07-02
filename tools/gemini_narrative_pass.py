@@ -53,8 +53,14 @@ from beats_segments import beat_segments, has_native_segments  # noqa: E402
 # LLM in validate_segments(); constants are code, not config.
 SPAN_CAP = 4        # max panels one segment may span (4 x 6.0s = 24s max clip)
 WPM = 135           # word-budget arithmetic; matches script_expander's default
-_SEG_MIN_SEC_PER_PANEL = 2.0   # planner's per-panel on-screen floor
-_SEG_MAX_SEC_PER_PANEL = 6.0   # one clip must never drag a panel past this
+_SEG_MIN_SEC_PER_PANEL = 2.0   # planner's per-panel on-screen floor (anti-flash)
+# Ceiling guards only ABSURD bloat (a monologue parked on one image). It was
+# 6.0 — the planner's DEFAULT pacing — and hard-failed gemma's natural rhythm:
+# 18/21 real Nano ch1 beats fell back to caption padding over lines like
+# "19 words (~8.4s) over 1 panel", which are perfectly good money-shot holds
+# (the per-panel era ran panels to 18s). Keep the gate lenient; pacing taste
+# lives in the PROMPT's word guidance, not the validator.
+_SEG_MAX_SEC_PER_PANEL = 10.0
 _MOOD_PREFIX_RE = re.compile(r"^\s*\[[^\]]+\]")
 
 # --- meta-garbage narration guard --------------------------------------------

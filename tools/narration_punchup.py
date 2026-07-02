@@ -339,10 +339,11 @@ _MOOD_RE = re.compile(r"^\s*(\[[a-z _-]+\])", re.I)
 # Tiny arithmetic duplicated from gemini_narrative_pass.validate_segments —
 # importing that module would pull google-genai into this ollama-first tool.
 # A span of N panels must carry enough words that its ONE clip holds every
-# panel >= 2.0s at 135 wpm, and never drags one past 6.0s.
+# panel >= 2.0s at 135 wpm; the ceiling only guards absurd bloat (see the
+# writer validator's rationale — 6.0 hard-failed gemma's natural rhythm).
 _SPAN_WPM = 135.0                 # == gemini_narrative_pass.WPM / script default
 _SPAN_MIN_SEC_PER_PANEL = 2.0     # planner's per-panel on-screen floor
-_SPAN_MAX_SEC_PER_PANEL = 6.0     # one clip must never drag a panel past this
+_SPAN_MAX_SEC_PER_PANEL = 10.0    # parity-pinned to the writer validator
 
 
 def span_budget_ok(n_panels: int, text: str) -> bool:

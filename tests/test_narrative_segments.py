@@ -89,7 +89,9 @@ def test_system_panel_must_be_solo():
 
 
 def test_word_budget_rejects_thin_and_fat():
-    # WPM=135 -> 2.25 words/s; budget = N*2.0s .. N*6.0s per segment
+    # WPM=135 -> 2.25 words/s; budget = N*2.0s .. N*10.0s per segment (the
+    # ceiling is a lenient bloat guard — 6.0s hard-failed gemma's natural
+    # money-shot rhythm on real ch1 and 18/21 beats fell back)
     assert gnp.WPM == 135
     thin = [{"span": ["p1.jpg"], "line": _words(3)},          # 1.33s < 2.0s
             {"span": ["p2.jpg"], "line": _words(8)},
@@ -97,7 +99,12 @@ def test_word_budget_rejects_thin_and_fat():
     errs = gnp.validate_segments(thin, FILES, KINDS)
     assert any("thin" in e for e in errs)
 
-    fat = [{"span": ["p1.jpg"], "line": _words(20)},          # 8.9s > 6.0s
+    ok_hold = [{"span": ["p1.jpg"], "line": _words(20)},      # 8.9s: a money-
+               {"span": ["p2.jpg"], "line": _words(8)},       # shot hold, VALID
+               {"span": ["p3.jpg"], "line": _words(8)}]
+    assert gnp.validate_segments(ok_hold, FILES, KINDS) == []
+
+    fat = [{"span": ["p1.jpg"], "line": _words(25)},          # 11.1s > 10.0s
            {"span": ["p2.jpg"], "line": _words(8)},
            {"span": ["p3.jpg"], "line": _words(8)}]
     errs = gnp.validate_segments(fat, FILES, KINDS)
