@@ -66,14 +66,36 @@ context) emits, per beat, an ordered list of **segments** instead of the strict 
 - Prose rule in the prompt: a flow line is ONE connected passage (clauses may lean across
   panel boundaries); solo lines stay independently speakable (spoken_fragment QA unchanged,
   applied per segment).
+- **`beat["narration"]` stays the ordered join of segment lines** — it is load-bearing:
+  `caption_unvoiced` matches against it, `narration_stale`/`alignment_flags` compare the plan
+  text to it, and punchup rebuilds it. Segments are the unit; the join is the derived view.
+- **Constants:** span cap = 4 and budget wpm = 135 (matching script_expander's default) are
+  code constants in the validator, not config. 4 panels × 6.0s = 24s max clip — inside
+  qwen-mlx's comfortable range.
+- **The budget survives punchup:** `narration_punchup` runs AFTER the writer and rewrites
+  lines — it must re-validate the span word budget and REJECT a violating rewrite (fall back
+  to the original line, exactly like its existing caption-preservation guard). Otherwise the
+  arithmetic guarantee evaporates one stage later. The planner's ≥2.0s floor extension
+  remains the last-resort backstop.
 
 ### 3.2 segment_id and downstream contracts
 
-`segment_id = g{group:04d}_p{first_panel_index:02d}` — keyed on the span's FIRST panel. The
-`g####_p##` byte-identity contract through script → TTS → timeline → render is unchanged;
-ids stay unique and ordered (spans are disjoint + ordered). `manifest.script.json` /
+`segment_id = g{group:04d}_p{paragraph_index:02d}` — VERIFIED: today's ids are already the
+paragraph's position within its section (script_expander.py:2180), not a panel index. Fewer,
+longer segments therefore renumber naturally and the `g####_p##` byte-identity contract
+through script → TTS → timeline → render is unchanged. `manifest.script.json` /
 `tts_index.json` / `clips/{segment_id}.wav` shapes are untouched — there are simply fewer,
-longer segments (ch1: ~112 → est. 55–70).
+longer segments (ch1: ~112 → est. 55–70). Each script shot row carries the span as its
+`scene_files` (the planner already reads per-shot scene_files — timeline_planner.py:1617).
+
+**Beats schema:** `beats[].segments[] = [{"span": [scene_files…], "line": "…"}]` REPLACES
+`panel_narration` as the one shape all consumers read; `per_panel` mode simply emits all-
+singleton spans (same schema, no dual-path). A tiny shared helper
+(`beat_segments(beat)`) adapts legacy manifests (derives singleton spans from
+`panel_narration`) so old beats files still load. Consumers to migrate (verified by grep):
+script_expander, narration_punchup, recap_style, prep_qa, teaser_planner, narration_heal,
+studio/dashboard/app.py. Span intensity for TTS mood/exaggeration = MAX intensity across
+the span's panels (peaks preserved).
 
 ### 3.3 TTS
 
@@ -98,9 +120,15 @@ without stretching a clip.
   shown panels (no panel uncovered, none double-covered).
 - Grounding: a segment is judged against its span's panels together (grounding cache key =
   text_sha + span file list). caption_unvoiced looks in the span's OCR, not one panel's.
-- Heal: `narration_heal` corrections address a segment; regen rewrites that segment from its
-  span panels (same resume mechanics). Visual drops inside a span shrink the span's cut
-  list — narration untouched (the hold/substitute machinery just shipped handles display).
+- Heal: corrections stay group-scoped (`{group_id: note}`, today's interface), but regen is
+  **span-pinned** — the re-ask rewrites LINES within the beat's existing spans and may never
+  re-split them (a re-split would renumber sibling segment_ids → clip-cache churn and
+  audio_stale). Only a full beats re-run may change spans. Visual drops inside a span shrink
+  the span's cut list — narration untouched (the hold/substitute machinery handles display).
+- Exact 1:1-shaped sites that become cover/segment checks (verified): the beats-side
+  one-line-per-panel assert (gemini_narrative_pass.py:1260), the `alignment_flags`/
+  `beats_incomplete` joins (prep_qa.py:423-499 — keep working via the narration join), and
+  `shot_description_flags`' per-panel iteration (prep_qa.py:743) → per-segment.
 - held_repeat pressure drops structurally: caption runs become flow spans instead of
   repeat-cap holds of one panel.
 
@@ -113,15 +141,20 @@ the escape hatch to today's behavior for A/B listening). No other knobs.
 
 | component | change |
 |---|---|
-| `tools/gemini_narrative_pass.py` | prompt + output schema: `segments[]` with spans; validator + one auto-repair re-ask |
-| `tools/narration_punchup.py` | operates per segment line (mechanically unchanged; prompt example refresh) |
-| script/verbatim packer | pack segments (not panels) into `manifest.script.json` paragraphs |
-| `tools/local_tts_from_manifest.py` | none (per-segment already) |
-| `tools/timeline_planner.py` | route span>1 segments to the existing `multi_cut` path; floor/flash logic unchanged |
-| `tools/prep_qa.py` | 1:1 checks → span-cover checks; grounding + caption checks span-aware |
-| `tools/narration_heal.py` | corrections carry span (regen scope) |
-| `studio/worker.py` | none expected (heal loop untouched) |
-| tests | schema/validator/word-budget units; planner span pacing; QA cover checks; e2e fixture |
+| `tools/gemini_narrative_pass.py` | prompt + output schema: `segments[]` with spans; validator + one auto-repair re-ask; narration join preserved; 1:1 count assert → cover assert |
+| `tools/beats_segments.py` (new) | shared `beat_segments(beat)` reader — native `segments` or legacy `panel_narration` (singleton spans) so old manifests + the teaser's synthetic beat keep working |
+| `tools/narration_punchup.py` | iterate segments; re-validate span word budget, reject violating rewrites (fallback-to-original) |
+| `tools/recap_style.py` | 6-rules enforcement + sauce_density + spoken_fragment repair iterate segments (it READS AND WRITES the old shape in ~6 places — silent no-op risk if missed) |
+| `tools/script_expander.py` (verbatim packer) | one paragraph + one shot per segment, `shots[].scene_files` = span; span mood/intensity = MAX over span; `merge_short_panel_items`/`tts_merge_short` retired in adaptive mode (flow spans supersede it; re-enabling would double-merge) |
+| `tools/local_tts_from_manifest.py` | none (per-segment already; per-clip text_sha cache intact) |
+| `tools/timeline_planner.py` | route span>1 shots to the existing `multi_cut` path; floor/flash logic unchanged |
+| `tools/prep_qa.py` | 1:1 checks → span-cover checks (`panel_uncovered`/`panel_double_covered`); grounding + caption checks span-aware; shot_description per segment |
+| `tools/narration_heal.py` | span-pinned regen (see §3.5); corrections interface unchanged |
+| `tools/teaser_planner.py` | keeps emitting its synthetic beat; adapted via `beat_segments` (no behavior change) |
+| `studio/config.py` + `studio/pipeline.py` | new `[narration] segmentation` key (default `adaptive`) + argv plumb to the beats stage |
+| `studio/dashboard/app.py` | chapter page shows one row per segment with its span (dashboard daemon restart at deploy) |
+| `studio/worker.py` | none (heal loop untouched) |
+| tests | schema/validator/word-budget units; punchup budget guard; planner span pacing; QA cover checks; e2e fixture |
 
 ## 5. Rollout
 
