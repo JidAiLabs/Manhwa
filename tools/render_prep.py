@@ -2395,13 +2395,16 @@ def main() -> int:
         # Junk OUTRANKS the keep-worthy exemptions the bubble pass granted rich
         # art panels (that is the point of an explicit drop — same semantics as
         # _drop_junk_cuts' multi-cut path and the cross-seg-dup discard above),
-        # EXCEPT for system cards: holding one away would only trade a
-        # cosmetic flag for a CRITICAL system_card_unshown downstream.
-        sys_files = {f for f, d in scene_dims.items() if d.get("sys")}
+        # EXCEPT for genuine system cards: holding one away would only trade a
+        # cosmetic flag for a CRITICAL system_card_unshown downstream. Keyed on
+        # system_files (the stamped panel_kind system_card_unshown itself gates
+        # on) — NOT scene_dims' pixel-level "sys" flag, which the system-box
+        # YOLO trips on mere SFX/bubble text (Nano ch1: all three cross_dup
+        # STORY panels carried sys:True and stayed exempt).
         cuts_by_segment, junk_subs = substitute_garbage_sole_cuts(
             cuts_by_segment, {f: 1.0 for f in junk},
             durations=durations,
-            exempt=exempt_all - (set(junk) - sys_files), order=order)
+            exempt=exempt_all - (set(junk) - system_files), order=order)
         for seg, old, new in junk_subs:
             all_dropped.append(old)
             print(f"[ok] {seg}: junk sole cut {old} -> HOLDING {new}")
