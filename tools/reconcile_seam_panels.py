@@ -160,9 +160,96 @@ def reassemble_slices(slices: List[Image.Image], top_trims: List[int]) -> Image.
     return out
 
 
-def main() -> int:  # pragma: no cover  (filled in Task 1.3)
-    raise SystemExit("main() implemented in Task 1.3")
+def _load(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-if __name__ == "__main__":  # pragma: no cover
+def reconcile_episode(scenes_manifest: str, stitch_manifest: str,
+                      scenes_dir: str) -> int:
+    """Detect + merge seam chains in place. Returns the number of chains merged."""
+    manifest = _load(scenes_manifest)
+    scenes: List[Dict[str, Any]] = manifest.get("scenes") or []
+    if not scenes:
+        return 0
+    overlap_px = int(((_load(stitch_manifest).get("adaptive") or {})
+                      .get("overlap_px")) or 700)
+
+    chains = find_seam_chains(scenes)
+    if not chains:
+        return 0
+
+    by_id = {s["panel_id"]: s for s in scenes}
+    meta = _chunk_meta(scenes)
+    drop_ids: set = set()
+
+    for chain in chains:
+        members = [by_id[pid] for pid in chain]
+        head = members[0]                       # survivor = top slice (chunk N)
+        x0 = min(int(m["box_px_xyxy"][0]) for m in members)
+        x1 = max(int(m["box_px_xyxy"][2]) for m in members)
+
+        slices: List[Image.Image] = []
+        top_trims: List[int] = []
+        for i, m in enumerate(members):
+            with Image.open(m["chunk_path"]) as im:
+                im = im.convert("RGB")
+                if i == len(members) - 1:
+                    y_lo, y_hi = int(m["box_px_xyxy"][1]), int(m["box_px_xyxy"][3])
+                else:
+                    # interior/head slices run down to the forced cut edge
+                    y_lo, y_hi = int(m["box_px_xyxy"][1]), int(m["chunk_h"])
+                slices.append(im.crop((x0, y_lo, x1, y_hi)))
+            top_trims.append(0 if i == 0 else max(0, overlap_px - int(m["box_px_xyxy"][1])))
+
+        merged = reassemble_slices(slices, top_trims)
+        out_path = os.path.join(scenes_dir, head["out_file"])
+        merged.save(out_path, "JPEG", quality=92, optimize=True)
+
+        head["w"] = merged.width
+        head["h"] = merged.height
+        head["box_px_xyxy"] = [x0, int(head["box_px_xyxy"][1]),
+                               x1, int(head["box_px_xyxy"][1]) + merged.height]
+        head["box_norm"] = [
+            head["box_px_xyxy"][1] / max(1, int(head["chunk_h"])),
+            x0 / max(1, int(head["chunk_w"])),
+            head["box_px_xyxy"][3] / max(1, int(head["chunk_h"])),
+            x1 / max(1, int(head["chunk_w"])),
+        ]
+        head["dhash64"] = int(dhash64(merged))
+        head["reconciled_seam"] = True
+        head["merged_from"] = list(chain)
+        if isinstance(head.get("split"), dict):
+            head["split"]["enabled"] = False
+
+        for m in members[1:]:
+            drop_ids.add(m["panel_id"])
+            slice_path = os.path.join(scenes_dir, m["out_file"])
+            if os.path.exists(slice_path):
+                os.remove(slice_path)
+
+    manifest["scenes"] = [s for s in scenes if s["panel_id"] not in drop_ids]
+    manifest["count_scenes"] = len(manifest["scenes"])
+    stats = manifest.setdefault("stats", {})
+    stats["reconciled_seams"] = int(stats.get("reconciled_seams", 0)) + len(chains)
+    with open(scenes_manifest, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return len(chains)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--scenes-manifest", required=True)
+    ap.add_argument("--stitch-manifest", required=True)
+    ap.add_argument("--scenes-dir", required=True)
+    args = ap.parse_args()
+    if not os.path.exists(args.scenes_manifest):
+        print(f"[reconcile] no scenes manifest at {args.scenes_manifest} — skip")
+        return 0
+    n = reconcile_episode(args.scenes_manifest, args.stitch_manifest, args.scenes_dir)
+    print(f"[ok] reconcile_seam_panels: merged {n} seam chain(s)")
+    return 0
+
+
+if __name__ == "__main__":
     raise SystemExit(main())
