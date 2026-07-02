@@ -535,3 +535,103 @@ def test_corrections_legacy_prev_beat_keeps_todays_behavior(tmp_path,
     assert [s["span"] for s in beat["segments"]] == [
         ["p1.jpg", "p2.jpg"], ["p3.jpg"]]                  # fresh spans OK
     assert "FIXED SEGMENTATION" not in calls[0]["system_instruction"]
+
+
+# ---- flow-nudge: a VALID all-singleton answer on a big beat gets ONE nudge ---
+
+FILES5 = ["q1.jpg", "q2.jpg", "q3.jpg", "q4.jpg", "q5.jpg"]
+KINDS5 = {f: "story" for f in FILES5}
+U5 = {f: {"description": f"what panel {f} shows"} for f in FILES5}
+
+
+def _five_solos():
+    return [{"span": [f], "line": f"Panel {i} keeps the story moving forward."}
+            for i, f in enumerate(FILES5)]
+
+
+_MIXED5 = [
+    {"span": ["q1.jpg", "q2.jpg", "q3.jpg"],
+     "line": ("He tears through the underbrush, blade out, and the whole "
+              "hunt turns on him in one breath of moving steel.")},
+    {"span": ["q4.jpg"], "line": "The masked hunter finally shows himself."},
+    {"span": ["q5.jpg"], "line": "And our guy realizes nobody is leaving."},
+]
+
+
+def test_all_singleton_big_beat_gets_flow_nudge_adopted(capsys):
+    calls = []
+
+    def reask(errors):
+        calls.append(list(errors))
+        return {"group_id": 9, "scene_files": FILES5,
+                "segments": [dict(s) for s in _MIXED5]}
+
+    beat = {"group_id": 9, "scene_files": FILES5, "segments": _five_solos()}
+    gnp.finalize_adaptive_beat(beat, FILES5, KINDS5, U5, 9, reask_fn=reask)
+    assert len(calls) == 1
+    assert any("single-panel captions" in e for e in calls[0])
+    assert [len(s["span"]) for s in beat["segments"]] == [3, 1, 1]
+    assert "flow-nudge beat g0009 adopted" in capsys.readouterr().out
+
+
+def test_flow_nudge_model_insists_all_solo_keeps_original():
+    calls = []
+
+    def reask(errors):
+        calls.append(1)
+        return {"group_id": 9, "scene_files": FILES5,
+                "segments": _five_solos()}     # valid but still all-solo
+
+    original = _five_solos()
+    beat = {"group_id": 9, "scene_files": FILES5,
+            "segments": [dict(s) for s in original]}
+    gnp.finalize_adaptive_beat(beat, FILES5, KINDS5, U5, 9, reask_fn=reask)
+    assert calls == [1]                        # nudged once, not looped
+    assert beat["segments"] == original        # the model insisted; accepted
+
+
+def test_flow_nudge_invalid_answer_keeps_original():
+    def reask(errors):
+        return {"group_id": 9, "scene_files": FILES5,
+                "segments": [{"span": FILES5, "line": "too big a span"}]}
+
+    original = _five_solos()
+    beat = {"group_id": 9, "scene_files": FILES5,
+            "segments": [dict(s) for s in original]}
+    gnp.finalize_adaptive_beat(beat, FILES5, KINDS5, U5, 9, reask_fn=reask)
+    assert beat["segments"] == original
+
+
+def test_no_flow_nudge_below_min_panels():
+    calls = []
+
+    def reask(errors):
+        calls.append(1)
+        return None
+
+    beat = {"group_id": 7, "scene_files": FILES,
+            "segments": [dict(s) for s in GOOD_SEGMENTS]}
+    gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 7, reask_fn=reask)
+    assert calls == []                         # 3-panel beat: no nudge
+
+
+def test_no_flow_nudge_on_pinned_regen():
+    calls = []
+
+    def reask(errors):
+        calls.append(1)
+        return None
+
+    beat = {"group_id": 9, "scene_files": FILES5, "segments": _five_solos()}
+    gnp.finalize_adaptive_beat(beat, FILES5, KINDS5, U5, 9, reask_fn=reask,
+                               allow_flow_nudge=False)
+    assert calls == []
+
+
+def test_adaptive_prompt_pins_anti_parrot_and_flow_default():
+    text = gnp._ADAPTIVE_NARRATION_INSTRUCTION
+    assert "RAW MATERIAL" in text
+    assert "DEFAULT TO FLOW" in text
+    assert "The character" in text             # named as a banned opener
+    assert "FLOW" in text and "SOLO" in text   # original pins still hold
+    assert "in the next panel" in text

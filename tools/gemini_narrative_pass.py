@@ -1064,11 +1064,17 @@ def enforce_pinned_spans(beat, prev_beat, gid):
 
 
 def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
-                           reask_fn=None):
+                           reask_fn=None, allow_flow_nudge=True):
     """Adaptive mode: normalize + validate the model's segments; on failure do
     ONE repair re-ask (reask_fn(errors) -> repaired beat or None); still failing
     -> fall back to align_panel_narration singleton spans (never block the
     chapter; log `[segments] fallback beat gNNNN`).
+
+    A VALID all-singleton answer on a >=4-panel beat gets ONE flow-nudge
+    re-ask (the observed gemma failure: caption slideshow, zero spans); the
+    nudged answer is adopted only when it validates AND actually flows.
+    Disabled on span-pinned regens (allow_flow_nudge=False) — a nudge re-split
+    would only be rejected by the pin.
 
     Writes beat['segments'] (spans partition `surviving` — the adaptive-mode
     cover assert), drops panel_narration (segments replaces it), and rebuilds
@@ -1083,6 +1089,17 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
             segs2 = beat_segments(repaired)
             if not validate_segments(segs2, surviving, kinds):
                 segs, errors = segs2, []
+    elif (not errors and allow_flow_nudge and reask_fn is not None
+          and len(surviving) >= _FLOW_NUDGE_MIN_PANELS
+          and all(len(s["span"]) == 1 for s in segs)):
+        nudged = reask_fn([_flow_nudge_note(len(surviving))])
+        if isinstance(nudged, dict):
+            segs3 = beat_segments(nudged)
+            if (not validate_segments(segs3, surviving, kinds)
+                    and any(len(s["span"]) > 1 for s in segs3)):
+                print(f"[segments] flow-nudge beat g{gid:04d} adopted "
+                      f"({len(segs3)} segments)")
+                segs = segs3
     if errors:
         print(f"[segments] fallback beat g{gid:04d} -> singleton spans "
               f"({errors[0]})")
@@ -1123,18 +1140,25 @@ _PER_PANEL_NARRATION_INSTRUCTION = (
 )
 
 _ADAPTIVE_NARRATION_INSTRUCTION = (
+    "You are the NARRATOR telling this story aloud — not a caption writer. The "
+    "per-panel descriptions you were given are RAW MATERIAL, never lines: "
+    "echoing or lightly rephrasing a description is FORBIDDEN. Never write "
+    "'The character…' / 'A character is shown…' / 'The scene shows…' — name "
+    "people (use the cast) or the persona's handles, and narrate what it MEANS "
+    "in the story: stakes, momentum, consequence.\n"
     "Write this group's narration as 'segments': an ORDERED list of {span, line} "
     "passages. A span lists 1-4 CONSECUTIVE scene_files (in the given order); its "
     "line is voiced as ONE clip while those panels play. Every scene_file must "
     "appear in EXACTLY ONE span, in order — never skip, repeat, or reorder a panel.\n"
-    "CHOOSE flow vs solo from what the panels themselves tell you:\n"
-    "  - FLOW (ONE connected passage over a 2-4 panel span): continuous action, "
-    "a traversal or chase, a montage-like progression, a run of caption-only "
-    "panels — write ONE flowing passage across that span; clauses may lean "
-    "across panel boundaries; end mid-momentum, not mid-word.\n"
-    "  - SOLO (a single-panel span): an emotional close-up, a reveal, a "
-    "punchline, a dialogue-heavy panel, a system/status card — let that moment "
-    "land on its own line.\n"
+    "DEFAULT TO FLOW. Most beats read as motion: group consecutive panels that "
+    "carry one action, traversal, chase, montage-like progression, or "
+    "caption-only run into ONE 2-4 panel span with ONE flowing passage; clauses "
+    "may lean across panel boundaries; end mid-momentum, not mid-word. A "
+    "typical 5-8 panel beat yields 2-4 segments MIXING span sizes.\n"
+    "SOLO (a single-panel span) is the EXCEPTION you must earn: an emotional "
+    "close-up, a reveal, a punchline, a dialogue-heavy panel, a system/status "
+    "card — a moment that lands harder alone. A beat of NOTHING BUT solo lines "
+    "is almost always wrong — that is a slideshow, not narration.\n"
     "NEVER enumerate panels inside a passage — 'in the next panel', 'the "
     "following panel' and the like are BANNED; narrate the STORY as one moment "
     "flowing into the next, not the page.\n"
@@ -1146,6 +1170,20 @@ _ADAPTIVE_NARRATION_INSTRUCTION = (
     "previous_narration), not isolated captions. Then set 'narration' to all "
     "the segment lines joined with a space.\n"
 )
+
+# A structurally-VALID all-singleton answer on a big beat is the observed
+# gemma failure mode (it mirrors the per-panel input listing and parrots the
+# descriptions — "valid garbage", zero flow). One targeted nudge re-ask; the
+# model may insist (some beats ARE legitimately all-solo), then we accept.
+_FLOW_NUDGE_MIN_PANELS = 4
+
+
+def _flow_nudge_note(n_panels: int) -> str:
+    return (f"All {n_panels} panels came back as isolated single-panel captions "
+            "— that reads as a slideshow, not narration. Combine the panels "
+            "that carry one continuous action/progression into 2-4 panel FLOW "
+            "spans with ONE flowing passage each (per the FLOW criteria); keep "
+            "solo only for moments that land harder alone.")
 
 
 def _default_segmentation() -> str:
@@ -1549,7 +1587,10 @@ def main() -> int:
 
             finalize_adaptive_beat(
                 beat, surviving, kinds, u_by_file, gid,
-                reask_fn=None if beat.get("error") else _reask)
+                reask_fn=None if beat.get("error") else _reask,
+                # a nudge re-split on a pinned regen would only be rejected by
+                # enforce_pinned_spans below — don't waste the model call
+                allow_flow_nudge=pin_prev is None)
 
         # Corrections regen of a native-segments beat: adopt the rewrite ONLY
         # if it kept the pinned spans; any re-split keeps the previous beat.
