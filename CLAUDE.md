@@ -75,6 +75,12 @@ Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), 
   Config in `studio.toml [teaser]`. Plan: `docs/plans/2026-06-28-teaser-planner.md`. NOTE: this
   touched `studio/worker.py` + `studio/dashboard/**`, so deploying it needs a daemon restart
   (`launchctl kickstart -k`); `tools/teaser_planner.py` is a subprocess → fresh on pull.
+- **Adaptive flow narration (2026-07-02):** beats carry `segments[] = [{span, line}]` — one
+  line spans 1–4 consecutive panels, voiced as ONE clip (consumers read/write via
+  `tools/beats_segments.py`; `narration` stays the join). One paragraph+shot per segment
+  (`scene_files` = span); the planner paces spans via multi_cut (≥2.0s floor); prep_qa gates
+  span cover (`panel_uncovered`/`panel_double_covered`); heal regen is span-pinned (lines may
+  change, spans may not). Escape hatch: `[narration].segmentation = "per_panel"`.
 - **NEXT (see `.continue-here.md`):** clean slate (clear logs + DB job/stage history), reset
   the 4 first chapters to `visioned`, run "prepare → QA" per chapter on the dashboard to
   exercise the new pipeline end-to-end, review, then voice (Qwen) + render only once it looks
