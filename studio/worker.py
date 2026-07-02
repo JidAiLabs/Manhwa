@@ -180,10 +180,11 @@ STALE_CODES = {"beats_incomplete", "narration_stale", "fragment_dangle",
                "caption_unvoiced"}
 
 # QA ERRORs that mean a BROKEN video — these (and only these) block a chapter
-# after auto-heal. Everything else (cross_dup, fragment_dangle, visible_text,
-# caption_unvoiced, chrome_leak, …) is a cosmetic/quality nit: the heal tries to
-# fix it, but if it can't, the chapter still SHIPS with a WARN for review rather
-# than hard-failing a whole recap + hours of work over a repeated panel.
+# after auto-heal. Everything else (fragment_dangle, caption_unvoiced,
+# chrome_leak, …) is a cosmetic/quality nit: the heal tries to fix it
+# (re-narration for prose codes, a panel drop for _VISUAL_DROPPABLE ones like
+# cross_dup), but if it can't, the chapter still SHIPS with a WARN for review
+# rather than hard-failing a whole recap + hours of work over a quality nit.
 _CRITICAL_QA_CODES = {
     "audio_index_missing", "audio_missing", "audio_stale", "missing_audio",
     "missing_file", "missing_dims", "stale_dims",
@@ -278,7 +279,7 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
     codes = _qa_error_codes(ep)
     critical = codes & _CRITICAL_QA_CODES
     # qa_scan 'ok' gates the render — it's ok when no BLOCKING error remains;
-    # cosmetic ERRORs (cross_dup, fragment_dangle, visible_text, …) don't fail it.
+    # cosmetic ERRORs (fragment_dangle, caption_unvoiced, …) don't fail it.
     con.execute(
         "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
         "meta_json) VALUES (?,?,?,?, json_object('series_id', ?))",
@@ -479,7 +480,12 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
 _VISUAL_DROPPABLE = {"blank_crop", "dead_box_leak", "visible_text", "ghost_text",
                      # a husk (art inpainted away to near-nothing) can't be fixed
                      # by re-narration — drop the panel + hold a real neighbour.
-                     "husk"}
+                     "husk",
+                     # a near-duplicate of the previous cut: drop the LATER copy
+                     # (the flag's scene names it) — its narration line still
+                     # plays while the kept near-identical panel holds, so the
+                     # viewer sees one panel carrying both lines, no story lost.
+                     "cross_dup"}
 
 
 def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,

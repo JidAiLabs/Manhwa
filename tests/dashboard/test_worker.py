@@ -507,6 +507,26 @@ def test_heal_visual_drops_blocks_on_noop_drop(tmp_path, monkeypatch):
     assert stuck == {"blank_crop"}        # drop was a no-op (sole cut) -> block
 
 
+def test_heal_visual_drops_drops_cross_dup_later_copy(tmp_path, monkeypatch):
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    # cross_dup flags the LATER near-duplicate; the drop keeps the earlier good
+    # panel, whose hold plays under the dropped panel's narration line.
+    (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 10, "flags": [
+        {"code": "cross_dup", "severity": "ERROR", "scene": "p000044.jpg",
+         "detail": "near-duplicate of the previous cut (p000043.jpg in g0009_p16)"}]}))
+
+    def fake_reprep(c, ch, log, **kw):    # the re-prep removes the dropped panel
+        (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 9, "flags": []}))
+        return set()
+    monkeypatch.setattr(worker, "_run_prep_and_qa", fake_reprep)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
+    assert stuck == set()
+    assert json.loads((ep / "manual_drops.json").read_text()) == ["p000044.jpg"]
+
+
 def test_heal_visual_drops_stays_green_when_drop_succeeds(tmp_path, monkeypatch):
     import json
     con = _con(tmp_path)
