@@ -168,6 +168,7 @@ def image_flags(
     segment_id: str = "",
     min_art_score: float = 0.012,
     vitem: Optional[Dict[str, Any]] = None,
+    reconciled: bool = False,
 ) -> List[Dict[str, Any]]:
     """All image-level checks for one shown scenes_clean/ file.
 
@@ -184,7 +185,10 @@ def image_flags(
             f"{w}x{h} — scenes_clean/ and plan are out of sync",
             scene=name, segment_id=segment_id))
 
-    if h > 8000:
+    # A reconciled_seam panel is tall BY DESIGN (spec §5.1) — the seam-merge
+    # re-assembled two chunk slices into one contiguous panel — so it is exempt;
+    # every non-reconciled panel is still gated.
+    if h > 8000 and not reconciled:
         # a "panel" taller than ~8k px is really a whole stitch chunk that the
         # detector failed to segment — a column of panels rendered as one thin
         # strip (ch28/ch38). No legit single panel is this tall (clean-corpus max
@@ -1556,14 +1560,17 @@ def main() -> int:
                     # false chrome_leak on a 'story' panel whose OCR is just '1')
                     "panel_kind": it.get("panel_kind"),
                 }
+    reconciled_files: set = set()
     sp_ = os.path.join(ep, "manifest.scenes.json")
     if os.path.exists(sp_):
         try:
             with open(sp_, "r", encoding="utf-8") as f:
                 for sc in json.load(f).get("scenes") or []:
+                    of = str(sc.get("out_file") or "")
                     if sc.get("recovered"):
-                        vitems.setdefault(str(sc.get("out_file") or ""),
-                                          {})["recovered"] = True
+                        vitems.setdefault(of, {})["recovered"] = True
+                    if sc.get("reconciled_seam"):
+                        reconciled_files.add(of)
         except Exception:
             pass
 
@@ -1673,7 +1680,9 @@ def main() -> int:
         flags.extend(image_flags(
             fname, img, boxes, doc=doc, dims_entry=d if d else None,
             sys=sys_panel, segment_id=seg_by_file[fname],
-            vitem=vitems.get(parent_scene(fname)) or vitems.get(fname)))
+            vitem=vitems.get(parent_scene(fname)) or vitems.get(fname),
+            reconciled=(parent_scene(fname) in reconciled_files
+                        or fname in reconciled_files)))
 
     # consecutive on-screen near-duplicates (zoom pairs included)
     _imc: Dict[str, Any] = {}

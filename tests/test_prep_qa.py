@@ -203,6 +203,22 @@ def test_tall_legit_panel_is_not_chunk_as_panel():
     assert not any(f["code"] == "chunk_as_panel" for f in flags)
 
 
+def test_reconciled_tall_panel_is_exempt_from_chunk_as_panel():
+    # a correctly reassembled seam panel is tall BY DESIGN (spec §5.1) -> the
+    # reconciled marker exempts it from the h>8000 chunk_as_panel gate.
+    flags = pq.image_flags("p000007.jpg", _art(9000, 800), [], doc=True,
+                           reconciled=True, dims_entry={"w": 800, "h": 9000})
+    assert not any(f["code"] == "chunk_as_panel" for f in flags)
+
+
+def test_non_reconciled_tall_panel_still_blocks():
+    # negative control: same tall crop with NO marker is still a BLOCKING ERROR.
+    flags = pq.image_flags("p000008.jpg", _art(9000, 800), [], doc=True,
+                           dims_entry={"w": 800, "h": 9000})
+    assert any(f["code"] == "chunk_as_panel" and f["severity"] == "ERROR"
+               for f in flags)
+
+
 def test_valid_image_is_not_blank_crop():
     flags = pq.image_flags("p000005.jpg", _art(400, 600), [], doc=False,
                            dims_entry={"w": 600, "h": 400})
