@@ -77,6 +77,7 @@ def _tool_stub(ep_dir_ref: list[Path]):
         "chunk_stitch_adaptive.py":   "manifest.stitch.json",
         "expand_boxes_to_gutters.py": "manifest.panels.expanded.json",
         "panels_to_scenes.py":        "manifest.scenes.json",
+        "reconcile_seam_panels.py":   "manifest.scenes.json",
         "vision_extract.py":          "manifest.vision.json",
         "scene_group_builder.py":     "manifest.groups.json",   # legacy grouper
         "panel_understand.py":        "manifest.panels.understood.json",  # Pass 1
@@ -239,6 +240,30 @@ class TestRunChapterFullProgress:
 
         # SP1 stages succeed, then beated_failed stops the pipeline
         assert statuses_set == ["stitched", "detected", "scened", "visioned", "grouped", "beated_failed"]
+
+    def test_reconcile_runs_between_scened_and_visioned(self, tmp_path, monkeypatch):
+        """reconcile_seam_panels.py is invoked AFTER panels_to_scenes.py and BEFORE
+        vision_extract.py (scene-level seam merge, upstream of vision)."""
+        import studio.pipeline as pipeline_mod
+
+        ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+        ep_dir_ref = [ep_dir]
+        tool_stub = _tool_stub(ep_dir_ref)
+        detect_stub = _detect_stub(ep_dir_ref)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", tool_stub)
+        monkeypatch.setattr("studio.detect.yolo_panels.detect_panels", detect_stub)
+        _block_cred_gated_stages(monkeypatch, pipeline_mod)
+
+        con = connect(tmp_path / "test.db")
+        chapter = _make_chapter(con, ep_dir, status="downloaded")
+        pipeline_mod.run_chapter(con, chapter, _make_cfg(tmp_path), now_fn=_now)
+
+        calls = tool_stub.calls
+        assert "reconcile_seam_panels.py" in calls
+        assert (calls.index("panels_to_scenes.py")
+                < calls.index("reconcile_seam_panels.py")
+                < calls.index("vision_extract.py"))
 
 
 class TestIdempotency:

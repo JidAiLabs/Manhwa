@@ -164,6 +164,13 @@ def _stage_scened(ep_dir: Path, cfg: Config) -> None:
                # --dedupe-overlap additionally removes overlapping sub-region
                # crops of the same tall panel that perceptual-hash dedupe misses.
                "--dedupe", "--skip-blank", "--trim-margins", "--dedupe-overlap"])
+    # SEAM RECONCILE (scene-level, upstream of vision): merge panels a chunk cut
+    # bisected into two near-duplicate slices, so the same drawing is never shown
+    # twice. In-place rewrite of manifest.scenes.json + scenes/. No new status.
+    _run_tool("reconcile_seam_panels.py",
+              ["--scenes-manifest", str(p["scenes_manifest"]),
+               "--stitch-manifest", str(p["stitch"]),
+               "--scenes-dir", str(p["scenes"])])
 
 
 def _stage_visioned(ep_dir: Path, cfg: Config) -> None:
