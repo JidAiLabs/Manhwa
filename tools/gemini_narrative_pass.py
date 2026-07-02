@@ -53,14 +53,16 @@ from beats_segments import beat_segments, has_native_segments  # noqa: E402
 # LLM in validate_segments(); constants are code, not config.
 SPAN_CAP = 4        # max panels one segment may span (4 x 6.0s = 24s max clip)
 WPM = 135           # word-budget arithmetic; matches script_expander's default
-_SEG_MIN_SEC_PER_PANEL = 2.0   # planner's per-panel on-screen floor (anti-flash)
-# Ceiling guards only ABSURD bloat (a monologue parked on one image). It was
-# 6.0 — the planner's DEFAULT pacing — and hard-failed gemma's natural rhythm:
-# 18/21 real Nano ch1 beats fell back to caption padding over lines like
-# "19 words (~8.4s) over 1 panel", which are perfectly good money-shot holds
-# (the per-panel era ran panels to 18s). Keep the gate lenient; pacing taste
-# lives in the PROMPT's word guidance, not the validator.
-_SEG_MAX_SEC_PER_PANEL = 10.0
+# HARD gates only — the budget's job is to reject the UNSHIPPABLE, not to
+# teach taste (that lives in the prompt's word guidance). History: 6.0s max
+# hard-failed gemma's money-shot holds (18/21 ch1 beats fell back); 10.0 still
+# rejected 8/21 marginal cases the pipeline handles fine — a thin clip is
+# floor-EXTENDED by the planner (each panel still gets >=2.0s on screen; short
+# hold tail), and a 12s/panel hold was routine in the per-panel era (ran to
+# 18s). Egregious bounds only: sub-1s/panel is unspeakable coverage; >15s is
+# a parked monologue.
+_SEG_MIN_SEC_PER_PANEL = 1.0
+_SEG_MAX_SEC_PER_PANEL = 15.0
 _MOOD_PREFIX_RE = re.compile(r"^\s*\[[^\]]+\]")
 
 # --- meta-garbage narration guard --------------------------------------------
@@ -895,6 +897,78 @@ def build_beat_schema(segmentation: str = "adaptive") -> dict:
     return schema
 
 
+def _grounded_pad_line(f, understand_by_file):
+    """A grounded stand-in line for a panel the model left uncovered.
+    D4: the understanding `description` is often camera/shot framing
+    ("A close-up shot shows..."). NEVER copy that verbatim. Prefer the
+    concrete action, then a NON-camera description, then the named subjects;
+    if everything usable is camera prose or empty, leave a short
+    heal-flaggable bridge instead of reading the picture."""
+    u = (understand_by_file or {}).get(f) or {}
+    action = str(u.get("action") or "").strip()
+    desc = str(u.get("description") or "").strip()
+    subj = ", ".join(str(s) for s in (u.get("subjects") or []) if s).strip()
+    return next((c for c in (action, desc, subj)
+                 if c and not is_shot_description(c)),
+                "The moment holds.")
+
+
+def auto_repair_segments(segs, surviving, kinds, understand_by_file=None):
+    """Deterministic STRUCTURAL repair before validation — the model's prose
+    is never rewritten, only spans are adjusted (real ch1: wholesale singleton
+    fallback threw away whole beats of good narration over one bad span):
+      - a system panel inside a multi-panel span is EXTRACTED as its own solo
+        (the first story run keeps the line; extracted/split parts get a
+        grounded pad),
+      - panels the model SKIPPED are inserted as grounded-pad singletons at
+        their reading-order position (unambiguous positions only — a skip
+        INSIDE a span's range still fails validation and goes to the model
+        repair re-ask).
+    Anything else (unknown/duplicate/out-of-order/cap/budget) is left for
+    validate_segments. Returns a new list; the input is not mutated."""
+    surviving = [f for f in (surviving or []) if f]
+    order = {f: i for i, f in enumerate(surviving)}
+    out = []
+    for s in segs or []:
+        span = list(s.get("span") or [])
+        line = s.get("line")
+        is_sys = [str(kinds.get(f) or "").lower() == "system" for f in span]
+        if len(span) > 1 and any(is_sys):
+            runs, cur = [], []
+            for f, sysf in zip(span, is_sys):
+                if sysf:
+                    if cur:
+                        runs.append(cur)
+                        cur = []
+                    runs.append([f])
+                else:
+                    cur.append(f)
+            if cur:
+                runs.append(cur)
+            line_used = False
+            for run in runs:
+                keep = (not line_used
+                        and str(kinds.get(run[0]) or "").lower() != "system")
+                out.append({"span": run,
+                            "line": line if keep else
+                            _grounded_pad_line(run[0], understand_by_file)})
+                line_used = line_used or keep
+        else:
+            out.append({"span": span, "line": line})
+    covered = {f for s in out for f in (s.get("span") or [])}
+    for f in [f for f in surviving if f not in covered]:
+        pos = order[f]
+        idx = len(out)
+        for i, s in enumerate(out):
+            sp = s.get("span") or []
+            if sp and order.get(sp[0], 10 ** 9) > pos:
+                idx = i
+                break
+        out.insert(idx, {"span": [f],
+                         "line": _grounded_pad_line(f, understand_by_file)})
+    return out
+
+
 def align_panel_narration(scene_files, model_panels, understand_by_file=None):
     """Return exactly one {scene_file, line} per surviving scene_file, in order.
 
@@ -925,19 +999,7 @@ def align_panel_narration(scene_files, model_panels, understand_by_file=None):
             keyed[f] = leftover.pop(0)
     for f in files:                       # grounded pad — never empty, never camera prose
         if f not in keyed:
-            u = understand_by_file.get(f) or {}
-            action = str(u.get("action") or "").strip()
-            desc = str(u.get("description") or "").strip()
-            subj = ", ".join(str(s) for s in (u.get("subjects") or []) if s).strip()
-            # D4: the understanding `description` is often camera/shot framing
-            # ("A close-up shot shows..."). NEVER copy that verbatim. Prefer the
-            # concrete action, then a NON-camera description, then the named
-            # subjects; if everything usable is camera prose or empty, leave a
-            # short heal-flaggable bridge instead of reading the picture.
-            keyed[f] = next(
-                (c for c in (action, desc, subj)
-                 if c and not is_shot_description(c)),
-                "The moment holds.")
+            keyed[f] = _grounded_pad_line(f, understand_by_file)
     out = [{"scene_file": f, "line": keyed[f]} for f in files]
     if leftover and out:                  # fold any remaining overflow into the last panel
         out[-1]["line"] = (out[-1]["line"] + " " + " ".join(leftover)).strip()
@@ -1087,12 +1149,14 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
     beat['narration'] as the ordered join of segment lines — LOAD-BEARING:
     caption_unvoiced / narration_stale / alignment QA and punchup key on it.
     """
-    segs = beat_segments(beat)
+    segs = auto_repair_segments(beat_segments(beat), surviving, kinds,
+                                u_by_file)
     errors = validate_segments(segs, surviving, kinds)
     if errors and reask_fn is not None:
         repaired = reask_fn(errors)
         if isinstance(repaired, dict):
-            segs2 = beat_segments(repaired)
+            segs2 = auto_repair_segments(beat_segments(repaired), surviving,
+                                         kinds, u_by_file)
             if not validate_segments(segs2, surviving, kinds):
                 segs, errors = segs2, []
     elif (not errors and allow_flow_nudge and reask_fn is not None
@@ -1100,7 +1164,8 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
           and all(len(s["span"]) == 1 for s in segs)):
         nudged = reask_fn([_flow_nudge_note(len(surviving))])
         if isinstance(nudged, dict):
-            segs3 = beat_segments(nudged)
+            segs3 = auto_repair_segments(beat_segments(nudged), surviving,
+                                         kinds, u_by_file)
             if (not validate_segments(segs3, surviving, kinds)
                     and any(len(s["span"]) > 1 for s in segs3)):
                 print(f"[segments] flow-nudge beat g{gid:04d} adopted "

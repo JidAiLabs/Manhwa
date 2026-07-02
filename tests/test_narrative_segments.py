@@ -89,11 +89,11 @@ def test_system_panel_must_be_solo():
 
 
 def test_word_budget_rejects_thin_and_fat():
-    # WPM=135 -> 2.25 words/s; budget = N*2.0s .. N*10.0s per segment (the
+    # WPM=135 -> 2.25 words/s; budget = N*1.0s .. N*15.0s per segment (the
     # ceiling is a lenient bloat guard — 6.0s hard-failed gemma's natural
     # money-shot rhythm on real ch1 and 18/21 beats fell back)
     assert gnp.WPM == 135
-    thin = [{"span": ["p1.jpg"], "line": _words(3)},          # 1.33s < 2.0s
+    thin = [{"span": ["p1.jpg"], "line": _words(2)},          # 0.89s < 1.0s
             {"span": ["p2.jpg"], "line": _words(8)},
             {"span": ["p3.jpg"], "line": _words(8)}]
     errs = gnp.validate_segments(thin, FILES, KINDS)
@@ -104,14 +104,14 @@ def test_word_budget_rejects_thin_and_fat():
                {"span": ["p3.jpg"], "line": _words(8)}]
     assert gnp.validate_segments(ok_hold, FILES, KINDS) == []
 
-    fat = [{"span": ["p1.jpg"], "line": _words(25)},          # 11.1s > 10.0s
+    fat = [{"span": ["p1.jpg"], "line": _words(35)},          # 15.6s > 15.0s
            {"span": ["p2.jpg"], "line": _words(8)},
            {"span": ["p3.jpg"], "line": _words(8)}]
     errs = gnp.validate_segments(fat, FILES, KINDS)
     assert any("fat" in e for e in errs)
 
-    # a flow span too thin for its panel count (10 words over 3 panels = 4.4s < 6s)
-    thin_flow = [{"span": FILES, "line": _words(10)}]
+    # a flow span too thin for its panel count (6 words over 3 panels = 2.7s < 3s)
+    thin_flow = [{"span": FILES, "line": _words(6)}]
     errs = gnp.validate_segments(thin_flow, FILES, KINDS)
     assert any("thin" in e for e in errs)
 
@@ -133,7 +133,7 @@ def test_empty_line_and_mood_prefix_flagged():
 
 
 def test_validator_reports_multiple_errors():
-    segs = [{"span": ["p1.jpg"], "line": _words(3)},
+    segs = [{"span": ["p1.jpg"], "line": _words(2)},
             {"span": ["p3.jpg"], "line": _words(8)}]          # thin + skips p2
     errs = gnp.validate_segments(segs, FILES, KINDS)
     assert len(errs) >= 2
@@ -147,7 +147,10 @@ U_BY_FILE = {f: {"action": f"He crosses toward {f}."} for f in FILES}
 
 GOOD_SEGMENTS = [{"span": ["p1.jpg", "p2.jpg"], "line": _words(18)},
                  {"span": ["p3.jpg"], "line": _words(8)}]
-BAD_SEGMENTS = [{"span": ["p1.jpg", "p2.jpg"], "line": _words(18)}]   # skips p3
+# out-of-order span — auto_repair_segments never reorders, so this still
+# reaches the model repair re-ask / singleton fallback paths
+BAD_SEGMENTS = [{"span": ["p2.jpg", "p1.jpg"], "line": _words(18)},
+                {"span": ["p3.jpg"], "line": _words(8)}]
 
 
 def test_valid_segments_kept_without_reask():
@@ -180,7 +183,7 @@ def test_bad_then_good_repair_reask_adopts_fixed_segments():
             "segments": [dict(s) for s in BAD_SEGMENTS]}
     gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 7, reask_fn=reask)
     assert len(calls) == 1                               # exactly ONE re-ask
-    assert any("p3.jpg" in e for e in calls[0])          # errors passed through
+    assert any("order" in e for e in calls[0])           # errors passed through
     assert beat["segments"] == GOOD_SEGMENTS
 
 
@@ -338,21 +341,25 @@ def test_main_adaptive_emits_segments_and_join(tmp_path, monkeypatch):
         s["line"] for s in beat["segments"])             # load-bearing join
 
 
+_BAD_ORDER_SEGMENTS = [
+    {"span": ["p2.jpg", "p1.jpg"], "line": _GOOD_MODEL_BEAT["segments"][0]["line"]},
+    {"span": ["p3.jpg"], "line": "The stranger watches from the ridge."},
+]
+
+
 def test_main_adaptive_repair_reask_then_adopts(tmp_path, monkeypatch):
-    bad = dict(_GOOD_MODEL_BEAT,
-               segments=[_GOOD_MODEL_BEAT["segments"][0]])    # skips p3.jpg
+    bad = dict(_GOOD_MODEL_BEAT, segments=list(_BAD_ORDER_SEGMENTS))
     out, calls = _run_main(tmp_path, monkeypatch, [bad, _GOOD_MODEL_BEAT])
     assert len(calls) == 2                               # ONE repair re-ask
     assert "SEGMENT REPAIR" in calls[1]["system_instruction"]
-    assert "p3.jpg" in calls[1]["system_instruction"]    # exact errors appended
+    assert "order" in calls[1]["system_instruction"]     # exact errors appended
     beat = out["beats"][0]
     assert [s["span"] for s in beat["segments"]] == [
         ["p1.jpg", "p2.jpg"], ["p3.jpg"]]
 
 
 def test_main_adaptive_bad_bad_singleton_fallback(tmp_path, monkeypatch):
-    bad = dict(_GOOD_MODEL_BEAT,
-               segments=[_GOOD_MODEL_BEAT["segments"][0]])    # skips p3.jpg
+    bad = dict(_GOOD_MODEL_BEAT, segments=list(_BAD_ORDER_SEGMENTS))
     out, calls = _run_main(tmp_path, monkeypatch, [bad, bad])
     assert len(calls) == 2                               # asked once, re-asked once
     beat = out["beats"][0]
@@ -482,11 +489,10 @@ def test_corrections_resplit_keeps_previous_lines(tmp_path, monkeypatch,
 
 def test_corrections_singleton_fallback_cannot_resplit_pinned_beat(
         tmp_path, monkeypatch):
-    # model answers stay INVALID (skip p3) -> repair re-ask, then the
-    # singleton fallback — which is itself a re-split of the pinned flow
-    # span, so the previous lines must win.
-    bad = dict(_GOOD_MODEL_BEAT,
-               segments=[_GOOD_MODEL_BEAT["segments"][0]])   # skips p3.jpg
+    # model answers stay INVALID (out-of-order span; auto-repair never
+    # reorders) -> repair re-ask, then the singleton fallback — which is
+    # itself a re-split of the pinned flow span, so the previous lines win.
+    bad = dict(_GOOD_MODEL_BEAT, segments=list(_BAD_ORDER_SEGMENTS))
     out, calls = _run_corrections(tmp_path, monkeypatch, [bad, bad],
                                   _prev_segments_beat())
     assert len(calls) == 2                    # asked once, re-asked once
@@ -642,3 +648,46 @@ def test_adaptive_prompt_pins_anti_parrot_and_flow_default():
     assert "The character" in text             # named as a banned opener
     assert "FLOW" in text and "SOLO" in text   # original pins still hold
     assert "in the next panel" in text
+
+
+# ---- auto_repair_segments: structural repair keeps the model's prose --------
+
+def test_auto_repair_inserts_skipped_panel_as_grounded_pad():
+    segs = [{"span": ["p1.jpg", "p2.jpg"], "line": _words(18)}]   # skips p3
+    out = gnp.auto_repair_segments(segs, FILES, KINDS, U_BY_FILE)
+    assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg"], ["p3.jpg"]]
+    assert out[0]["line"] == _words(18)                  # prose untouched
+    assert out[1]["line"] == "He crosses toward p3.jpg."  # grounded pad
+    assert gnp.validate_segments(out, FILES, KINDS) == []
+
+
+def test_auto_repair_extracts_system_panel_from_span():
+    kinds = dict(KINDS, **{"p2.jpg": "system"})
+    segs = [{"span": ["p1.jpg", "p2.jpg", "p3.jpg"], "line": _words(18)}]
+    out = gnp.auto_repair_segments(segs, FILES, kinds, U_BY_FILE)
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
+    assert out[0]["line"] == _words(18)                  # line stays on story head
+    assert out[1]["line"] == "He crosses toward p2.jpg."  # card gets the pad
+    assert gnp.validate_segments(out, FILES, kinds) == []
+
+
+def test_auto_repair_never_reorders_a_bad_span():
+    out = gnp.auto_repair_segments(list(_BAD_ORDER_SEGMENTS), FILES, KINDS,
+                                   U_BY_FILE)
+    errs = gnp.validate_segments(out, FILES, KINDS)
+    assert any("order" in e for e in errs)               # still model-repair turf
+
+
+def test_main_adaptive_skip_is_auto_repaired_without_reask(tmp_path,
+                                                           monkeypatch):
+    # the OLD wholesale-fallback case: a skipped panel now costs one padded
+    # singleton, not the whole beat's prose — and no model re-ask at all
+    bad = dict(_GOOD_MODEL_BEAT,
+               segments=[_GOOD_MODEL_BEAT["segments"][0]])    # skips p3.jpg
+    out, calls = _run_main(tmp_path, monkeypatch, [bad])
+    assert len(calls) == 1                                # no re-ask needed
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg", "p2.jpg"], ["p3.jpg"]]
+    assert beat["segments"][0]["line"] == \
+        _GOOD_MODEL_BEAT["segments"][0]["line"]           # prose preserved
