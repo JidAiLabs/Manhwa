@@ -465,3 +465,99 @@ def test_apply_punchup_rejects_chrome_and_keeps_plain():
     # joined narration reflects the (unchanged) lines
     assert beat["narration"] == "Prince Cheon flees through the fog. He survives."
     assert accepted == 0   # both rewrites rejected
+
+
+# ---- adaptive flow segments (Chunk 2): punchup operates on segments ---------
+
+FLOW_ORIG = ("He drops through the canopy, bounces off two branches, and "
+             "lands in the one spot the assassins forgot to watch.")
+
+
+def test_punchup_payload_flattens_segments():
+    """build_panel_payload enumerates SEGMENTS (a 1-4 panel flow span is one
+    entry), keyed by segment index — same contract the rewrite lookup uses."""
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["a.jpg", "b.jpg"],
+         "line": "He runs the rooftops and drops into the alley."},
+        {"span": ["c.jpg"], "line": "The system pings."}]}]}
+    payload = npu.build_panel_payload(beats)
+    assert payload == [
+        {"group_id": 1, "panel_index": 0,
+         "narration": "He runs the rooftops and drops into the alley."},
+        {"group_id": 1, "panel_index": 1, "narration": "The system pings."}]
+
+
+def test_classify_panel_lines_span_uses_max_intensity():
+    """A flow span takes the MAX intensity across its panels (peaks preserved):
+    one intense panel inside the span makes the whole segment DRAMATIC."""
+    beats = {"beats": [{
+        "group_id": 1,
+        "scene_selection": [
+            {"scene_file": "a.jpg", "intensity": "calm"},
+            {"scene_file": "b.jpg", "intensity": "intense"},
+            {"scene_file": "c.jpg", "intensity": "calm"},
+        ],
+        "segments": [
+            {"span": ["a.jpg", "b.jpg"],
+             "line": "He crosses the ridge as the horde closes in."},
+            {"span": ["c.jpg"], "line": "The dust settles over the pass."},
+        ]}]}
+    assert npu.classify_panel_lines(beats) == {
+        (1, 0): "DRAMATIC", (1, 1): "CONNECTIVE"}
+
+
+def test_apply_punchup_segments_accept_and_plain():
+    """An accepted rewrite lands in segments[].line; the grounded original is
+    stamped as line_plain; spans stay untouched; the narration join rebuilds."""
+    beat = {"group_id": 1, "segments": [
+        {"span": ["a.jpg", "b.jpg", "c.jpg"], "line": FLOW_ORIG},
+        {"span": ["d.jpg"], "line": "The system window blinks awake."}]}
+    rewrites = {
+        (1, 0): ("Our guy faceplants through the canopy, bounces off two "
+                 "branches, and sticks the landing in the assassins' only "
+                 "blind spot."),
+        (1, 1): "The system window blinks awake, unimpressed."}
+    accepted = npu.apply_panel_punchup(beat, rewrites)
+    segs = beat["segments"]
+    assert segs[0]["line"].startswith("Our guy faceplants")
+    assert segs[0]["line_plain"] == FLOW_ORIG
+    assert segs[0]["span"] == ["a.jpg", "b.jpg", "c.jpg"]   # spans never change
+    assert beat["narration"] == segs[0]["line"] + " " + segs[1]["line"]
+    assert beat["narration_plain"].startswith("He drops through")
+    assert accepted == 2
+
+
+def test_apply_punchup_rejects_span_budget_violation():
+    """spec 3.1: the span word budget survives punchup. A 5-word rewrite for a
+    3-panel span (~2.2s of voice for 3 panels needing >=6s) is REJECTED — the
+    grounded original survives, exactly like the caption-preservation
+    fallback."""
+    beat = {"group_id": 3, "segments": [
+        {"span": ["a.jpg", "b.jpg", "c.jpg"], "line": FLOW_ORIG}]}
+    accepted = npu.apply_panel_punchup(beat, {(3, 0): "He drops and lands."})
+    assert accepted == 0
+    assert beat["segments"][0]["line"] == FLOW_ORIG
+    assert beat["narration"] == FLOW_ORIG
+
+
+def test_apply_punchup_rejects_over_fat_span_rewrite():
+    """The budget gate rejects TOO-FAT rewrites as well: one solo panel must
+    never carry ~27s of voice."""
+    beat = {"group_id": 3, "segments": [
+        {"span": ["a.jpg"], "line": "The system window blinks awake."}]}
+    fat = " ".join(["The window keeps talking and talking"] * 10) + "."
+    accepted = npu.apply_panel_punchup(beat, {(3, 0): fat})
+    assert accepted == 0
+    assert beat["segments"][0]["line"] == "The system window blinks awake."
+
+
+def test_apply_punchup_legacy_lines_keep_aggressive_compression():
+    """Legacy panel_narration manifests keep today's behavior: NO span budget
+    gate (pace belongs to the panel), so an aggressive 3-word compression of a
+    singleton line is still accepted."""
+    beat = {"group_id": 4, "panel_narration": [
+        {"scene_file": "a.jpg",
+         "line": "He rises to his feet slowly, breath ragged from the fall."}]}
+    accepted = npu.apply_panel_punchup(beat, {(4, 0): "He gets up."})
+    assert accepted == 1
+    assert beat["panel_narration"][0]["line"] == "He gets up."

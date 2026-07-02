@@ -14,6 +14,7 @@ import pytest
 from tools.beats_segments import (
     beat_segments,
     has_native_segments,
+    segment_entries,
     write_segment_lines,
 )
 
@@ -144,6 +145,35 @@ def test_write_empty_line_rejected():
 def test_write_returns_the_beat():
     beat = {"segments": [{"span": ["a.jpg"], "line": "One."}]}
     assert write_segment_lines(beat, ["Two words here."]) is beat
+
+
+# ---------------------------------------------------------------------------
+# segment_entries — the ACTUAL mutable entries behind beat_segments
+# ---------------------------------------------------------------------------
+
+def test_segment_entries_returns_actual_mutable_entries():
+    """Mutators that stamp EXTRA per-segment fields (punchup's line_plain) get
+    the real entry dicts — same selection/order as beat_segments, malformed
+    entries skipped. Line writes still go through write_segment_lines."""
+    native = {"segments": [
+        {"span": ["a.jpg"], "line": "One."},
+        {"span": [], "line": "Malformed."},
+        {"span": ["b.jpg", "c.jpg"], "line": "Two."}]}
+    entries = segment_entries(native)
+    assert len(entries) == 2 == len(beat_segments(native))
+    entries[0]["line_plain"] = "stamped"
+    assert native["segments"][0]["line_plain"] == "stamped"
+
+    legacy = {"panel_narration": [
+        {"scene_file": "a.jpg", "line": "One."},
+        {"scene_file": "", "line": "Malformed."}]}
+    entries = segment_entries(legacy)
+    assert len(entries) == 1 == len(beat_segments(legacy))
+    entries[0]["line_plain"] = "stamped"
+    assert legacy["panel_narration"][0]["line_plain"] == "stamped"
+
+    assert segment_entries({}) == []
+    assert segment_entries(None) == []
 
 
 # ---------------------------------------------------------------------------

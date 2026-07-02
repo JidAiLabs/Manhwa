@@ -78,6 +78,23 @@ def beat_segments(beat: Any) -> List[Dict[str, Any]]:
             if _legacy_ok(item)]
 
 
+def segment_entries(beat: Any) -> List[Dict[str, Any]]:
+    """The ACTUAL mutable entry dicts behind `beat_segments()` — native
+    `segments` if present, else legacy `panel_narration` entries, with the
+    SAME well-formedness selection and order the reader/writer use.
+
+    For mutators that must read or stamp EXTRA per-segment fields (punchup's
+    `line_plain`). Line writes still go through `write_segment_lines()` —
+    entries returned here must never be re-split or deleted.
+    """
+    if not isinstance(beat, dict):
+        return []
+    native = beat.get("segments")
+    if isinstance(native, list) and native:
+        return [s for s in native if _native_ok(s)]
+    return [p for p in (beat.get("panel_narration") or []) if _legacy_ok(p)]
+
+
 def write_segment_lines(beat: Dict[str, Any], lines: List[str]) -> Dict[str, Any]:
     """Write repaired narration lines back into whichever shape the beat carries.
 
@@ -91,11 +108,7 @@ def write_segment_lines(beat: Dict[str, Any], lines: List[str]) -> Dict[str, Any
     if any(not x for x in lines):
         raise ValueError("write_segment_lines: empty line (would delete a segment)")
 
-    native = beat.get("segments")
-    if isinstance(native, list) and native:
-        targets: List[Dict[str, Any]] = [s for s in native if _native_ok(s)]
-    else:
-        targets = [p for p in (beat.get("panel_narration") or []) if _legacy_ok(p)]
+    targets = segment_entries(beat)
     if len(targets) != len(lines):
         raise ValueError(
             f"write_segment_lines: {len(lines)} line(s) for {len(targets)} "

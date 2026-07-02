@@ -33,6 +33,12 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
+from beats_segments import (  # noqa: E402
+    beat_segments,
+    has_native_segments,
+    segment_entries,
+    write_segment_lines,
+)
 from narration_consistency import strip_chrome_opener  # noqa: E402
 from niche_modules import register_block  # noqa: E402
 from recap_style import (  # noqa: E402
@@ -178,7 +184,10 @@ def classify_beats(beats_obj: Dict[str, Any]) -> Dict[int, str]:
 
 
 def classify_panel_lines(beats_obj: Dict[str, Any]) -> Dict[tuple, str]:
-    """Per-panel style guard so one explosive frame does not mute a whole group."""
+    """Per-segment style guard so one explosive frame does not mute a whole
+    group. A segment is one panel on legacy manifests, a 1-4 panel flow span
+    on adaptive beats — a span takes the MAX intensity across its panels
+    (peaks preserved)."""
     out: Dict[tuple, str] = {}
     for beat in (beats_obj or {}).get("beats") or []:
         try:
@@ -190,14 +199,17 @@ def classify_panel_lines(beats_obj: Dict[str, Any]) -> Dict[tuple, str]:
             for item in beat.get("scene_selection") or []
             if isinstance(item, dict)
         }
-        for i, panel in enumerate(beat.get("panel_narration") or []):
-            line = str(panel.get("line_plain") or panel.get("line") or "")
+        for i, (seg, entry) in enumerate(
+                zip(beat_segments(beat), segment_entries(beat))):
+            line = str(entry.get("line_plain") or seg["line"])
             if _COMIC_CUE_RE.search(line):
                 out[(gid, i)] = "COMIC"
                 continue
-            item = selection.get(str(panel.get("scene_file") or "")) or {}
-            rank = _INTENSITY_RANK.get(
-                str(item.get("intensity") or "").lower(), 0)
+            rank = max(
+                (_INTENSITY_RANK.get(
+                    str((selection.get(f) or {}).get("intensity") or "").lower(), 0)
+                 for f in seg["span"]),
+                default=0)
             out[(gid, i)] = "DRAMATIC" if rank >= 2 else "CONNECTIVE"
     return out
 
@@ -322,6 +334,24 @@ def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
 
 
 _MOOD_RE = re.compile(r"^\s*(\[[a-z _-]+\])", re.I)
+
+# Span word budget (spec 2026-07-02 §3.1: "the budget survives punchup").
+# Tiny arithmetic duplicated from gemini_narrative_pass.validate_segments —
+# importing that module would pull google-genai into this ollama-first tool.
+# A span of N panels must carry enough words that its ONE clip holds every
+# panel >= 2.0s at 135 wpm, and never drags one past 6.0s.
+_SPAN_WPM = 135.0                 # == gemini_narrative_pass.WPM / script default
+_SPAN_MIN_SEC_PER_PANEL = 2.0     # planner's per-panel on-screen floor
+_SPAN_MAX_SEC_PER_PANEL = 6.0     # one clip must never drag a panel past this
+
+
+def span_budget_ok(n_panels: int, text: str) -> bool:
+    """True when `text` fits its span's duration-aware word budget
+    (N*2.0s <= words/(wpm/60) <= N*6.0s). Leading mood tags don't count."""
+    n = max(1, int(n_panels or 0))
+    body = _MOOD_RE.sub("", str(text or "")).strip()
+    sec = len(body.split()) / (_SPAN_WPM / 60.0)
+    return (n * _SPAN_MIN_SEC_PER_PANEL) <= sec <= (n * _SPAN_MAX_SEC_PER_PANEL)
 
 
 def _word_count(s: str) -> int:
@@ -593,17 +623,22 @@ def infer_genre_from_content(beats_obj: Dict[str, Any], ep_dir: str = "") -> str
 
 
 def build_panel_payload(beats_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Flatten every beat's panel_narration into a per-panel list for the LLM.
+    """Flatten every beat's narration segments into a per-segment list for the
+    LLM (a segment = one panel on legacy manifests, a 1-4 panel flow span on
+    adaptive beats).
 
     Each entry is ``{group_id, panel_index, narration}`` where ``narration``
-    is ``panel["line_plain"] or panel["line"]`` — idempotent, always punches
-    from the grounded original even on a re-run.
+    is the grounded original (``line_plain`` when a previous punch stamped
+    one) — idempotent, always punches from the grounded original even on a
+    re-run. ``panel_index`` is the SEGMENT index, matching the enumeration
+    classify_panel_lines and apply_panel_punchup use.
     """
     out: List[Dict[str, Any]] = []
     for b in beats_obj.get("beats") or []:
         gid = int(b.get("group_id") or 0)
-        for i, panel in enumerate(b.get("panel_narration") or []):
-            narration = str(panel.get("line_plain") or panel.get("line") or "")
+        for i, (seg, entry) in enumerate(
+                zip(beat_segments(b), segment_entries(b))):
+            narration = str(entry.get("line_plain") or seg["line"])
             out.append({"group_id": gid, "panel_index": i, "narration": narration})
     return out
 
@@ -615,13 +650,19 @@ def apply_panel_punchup(
     caption_words: Optional[Dict[int, Any]] = None,
     classes: Optional[Dict[Any, str]] = None,
 ) -> int:
-    """Apply validated per-panel rewrites in-place; set line_plain; rejoin narration.
+    """Apply validated per-segment rewrites in-place; set line_plain; rejoin
+    narration. A segment is one panel on legacy manifests, a 1-4 panel flow
+    span on adaptive beats.
 
-    *rewrites* maps ``(group_id, panel_index) -> candidate string``.
-    Per-line grounding gate (validate_line) mirrors the per-beat merge() logic.
-    The joined beat["narration"] and beat["narration_plain"] are always updated.
-    Returns the count of panels whose rewrite was accepted (candidate passed the
-    gate and differs from the grounded original).
+    *rewrites* maps ``(group_id, segment_index) -> candidate string`` (the
+    index enumerates beat_segments(beat), same as build_panel_payload).
+    Per-line grounding gate (validate_line) mirrors the per-beat merge()
+    logic. On native-segments beats a rewrite must ALSO keep the span word
+    budget (spec §3.1 — the duration arithmetic survives punchup) or the
+    grounded original is kept, exactly like the caption-preservation
+    fallback. Legacy manifests keep today's no-budget behavior.
+    The joined beat["narration"] and beat["narration_plain"] are always
+    updated. Returns the count of segments whose rewrite was accepted.
     """
     gid = int(beat.get("group_id") or 0)
     cast_names = cast_names or []
@@ -630,25 +671,37 @@ def apply_panel_punchup(
 
     required = caption_words.get(gid)
 
-    panel_narration = beat.get("panel_narration") or []
+    segs = beat_segments(beat)
+    entries = segment_entries(beat)   # the actual mutable entry dicts
+    if not entries:
+        return 0
+    budget_gated = has_native_segments(beat)
     accepted = 0
-    for i, panel in enumerate(panel_narration):
-        original = str(panel.get("line_plain") or panel.get("line") or "")
-        panel["line_plain"] = original
+    lines: List[str] = []
+    plains: List[str] = []
+    for i, (seg, entry) in enumerate(zip(segs, entries)):
+        original = str(entry.get("line_plain") or seg["line"])
         cand = str(rewrites.get((gid, i), "") or "").replace("*", "")
         if cand and validate_line(original, cand, cast_names,
                                   required=required,
                                   forbid_quotes=True,
-                                  forbid_fragments=True):
+                                  forbid_fragments=True) \
+                and (not budget_gated
+                     or span_budget_ok(len(seg["span"]), cand)):
             line = cand
             accepted += 1
         else:
             line = original
-        panel["line"] = strip_chrome_opener(line)
-        panel["line_plain"] = strip_chrome_opener(original)
+        # strip_chrome_opener can empty a chrome-only line; keep the original
+        # then (an empty line would delete the segment and orphan its span —
+        # write_segment_lines refuses it).
+        lines.append(strip_chrome_opener(line) or line)
+        plains.append(strip_chrome_opener(original) or original)
 
-    beat["narration"] = " ".join(p["line"] for p in panel_narration)
-    beat["narration_plain"] = " ".join(p["line_plain"] for p in panel_narration)
+    write_segment_lines(beat, lines)   # entry lines + the narration join
+    for entry, plain in zip(entries, plains):
+        entry["line_plain"] = plain
+    beat["narration_plain"] = " ".join(plains)
     return accepted
 
 
@@ -775,9 +828,10 @@ def main() -> int:
     cap_words = (_caption_words_by_group(args.episode_dir, beats_obj)
                  if args.episode_dir else {})
 
-    # Per-panel path: any beat that carries panel_narration activates this mode.
-    # Fall back to the legacy per-beat path for old manifests without panel_narration.
-    use_per_panel = any(b.get("panel_narration")
+    # Per-segment path: any beat with narration segments (native adaptive
+    # `segments` OR legacy per-panel lines) activates this mode. Fall back to
+    # the legacy per-beat path for old manifests without either shape.
+    use_per_panel = any(beat_segments(b)
                         for b in beats_obj.get("beats") or [])
     if args.humor == "cinematic":
         classes = (classify_panel_lines(beats_obj)

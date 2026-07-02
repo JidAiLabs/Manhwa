@@ -4,8 +4,19 @@
 from __future__ import annotations
 
 import math
+import os
 import re
-from typing import Any, Dict, List, Mapping, Sequence
+import sys
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
+
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from beats_segments import (  # noqa: E402
+    beat_segments,
+    has_native_segments,
+    write_segment_lines,
+)
 
 
 RECAP_STYLE_RULES = """RECAP-CHANNEL WRITING RULES — apply these while preserving
@@ -230,22 +241,26 @@ def repair_spoken_line(text: str) -> str:
 
 
 def repair_spoken_fragments(beats_obj: Dict[str, Any]) -> int:
-    """Repair fragment fallbacks in-place and keep joined narration in sync."""
+    """Repair fragment fallbacks in-place and keep joined narration in sync.
+
+    Reads via beat_segments (native flow segments OR legacy panel_narration)
+    and writes back via the shape-aware write_segment_lines, so the teaser's
+    legacy-shaped synthetic beat round-trips unchanged."""
     changed = 0
     for beat in beats_obj.get("beats") or []:
-        panels = beat.get("panel_narration") or []
-        for panel in panels:
-            line = str(panel.get("line") or "")
-            if not is_spoken_fragment(line):
-                continue
-            fixed = repair_spoken_line(line)
-            if fixed and fixed != line:
-                panel["line"] = fixed
-                changed += 1
-        if panels:
-            beat["narration"] = " ".join(
-                str(p.get("line") or "").strip() for p in panels
-                if str(p.get("line") or "").strip())
+        segs = beat_segments(beat)
+        if not segs:
+            continue
+        lines: List[str] = []
+        for seg in segs:
+            line = seg["line"]
+            if is_spoken_fragment(line):
+                fixed = repair_spoken_line(line)
+                if fixed and fixed != line:
+                    line = fixed
+                    changed += 1
+            lines.append(line)
+        write_segment_lines(beat, lines)
     return changed
 
 
@@ -264,10 +279,29 @@ def dedupe_consecutive_panel_lines(beats_obj: Dict[str, Any]) -> int:
     panel + its scene_file + its scene_selection entry are dropped, so the two cuts
     collapse to ONE and the line is voiced once. Never empties a beat (a beat whose
     only panel is the duplicate keeps it; the render-side hold then covers it).
-    Returns the number of panels merged out. Agnostic + deterministic."""
+    Returns the number of panels merged out. Agnostic + deterministic.
+
+    LEGACY-ONLY: on native-segments beats this is a no-op (a dropped segment
+    would orphan its span; downstream merge_consecutive_duplicate_narration
+    handles the display side)."""
     removed = 0
     prev_norm: str | None = None
     for beat in beats_obj.get("beats") or []:
+        if has_native_segments(beat):
+            # NATIVE-SEGMENTS beats are a deliberate NO-OP: dropping a segment
+            # would orphan its span (those panels would lose their narration
+            # cover and fail the QA cover check), and the planner/render_prep
+            # already merge consecutive same-text segments downstream
+            # (merge_consecutive_duplicate_narration). Only track the last
+            # line so cross-beat dedup for a following legacy beat stays sane.
+            for seg in beat_segments(beat):
+                norm = _norm_line(seg["line"])
+                if norm:
+                    prev_norm = norm
+            continue
+        # LEGACY panel_narration: structural drop of the duplicate panel — the
+        # one shape-specific mutation the line-writer cannot express (it may
+        # never delete a segment); stays a direct legacy-shape access.
         panels = beat.get("panel_narration") or []
         if not panels:
             continue
@@ -318,17 +352,18 @@ def script_lines(script_obj: Mapping[str, Any]) -> List[str]:
 
 
 def panel_rows(beats_obj: Mapping[str, Any]) -> List[Dict[str, str]]:
+    """One row per narration SEGMENT ({scene_file, line}); scene_file is the
+    span head (== the whole panel for legacy singleton spans). Beats with no
+    segments fall back to one row for the joined narration."""
     out: List[Dict[str, str]] = []
     for beat in beats_obj.get("beats") or []:
-        panels = beat.get("panel_narration") or []
-        if panels:
-            for panel in panels:
-                line = str(panel.get("line") or "").strip()
-                if line:
-                    out.append({
-                        "scene_file": str(panel.get("scene_file") or ""),
-                        "line": line,
-                    })
+        segs = beat_segments(beat)
+        if segs:
+            for seg in segs:
+                out.append({
+                    "scene_file": str(seg["span"][0] if seg["span"] else ""),
+                    "line": seg["line"],
+                })
         else:
             line = str(beat.get("narration") or "").strip()
             if line:
@@ -470,10 +505,12 @@ def neutralize_identity_reveal_leaks(
     vision_by_file: Mapping[str, Mapping[str, Any]],
     understood_by_file: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> int:
-    """PER-PANEL, SUBJECT-AWARE neutralization: replace a protagonist NAME or
-    generic HANDLE ("our guy") with "the stranger" ONLY on a panel that actually
-    shows the still-unresolved concealed figure — NEVER as a blanket carry-across
-    that nukes the established protagonist too.
+    """PER-SEGMENT, SUBJECT-AWARE neutralization: replace a protagonist NAME or
+    generic HANDLE ("our guy") with "the stranger" ONLY on a segment whose span
+    actually shows the still-unresolved concealed figure — NEVER as a blanket
+    carry-across that nukes the established protagonist too. A flow segment is
+    judged against ALL its span panels together; legacy singleton spans behave
+    exactly like the old per-panel pass.
 
     Agnostic by construction: concealment/power/gear cues and the familiar handles
     are generic; identity comes only from the cast (``cast_obj`` names +
@@ -499,14 +536,22 @@ def neutralize_identity_reveal_leaks(
     protag_desc = _protagonist_desc_tokens(cast_obj)
     understood_by_file = understood_by_file or {}
 
+    # One ref per narration SEGMENT (a flow span is judged against ALL its
+    # panels together — a cue anywhere in the span refers the segment to that
+    # figure; legacy singleton spans are byte-identical to the old per-panel
+    # lookups). `lines` is shared per beat so the write-back below can land
+    # every repaired line through the shape-aware writer in one pass.
+    beat_rows: List[Tuple[Dict[str, Any], List[str]]] = []
     refs: List[Dict[str, Any]] = []
     for beat in beats_obj.get("beats") or []:
-        for panel in beat.get("panel_narration") or []:
-            refs.append({
-                "beat": beat,
-                "panel": panel,
-                "scene_file": str(panel.get("scene_file") or ""),
-            })
+        segs = beat_segments(beat)
+        if not segs:
+            continue
+        lines = [s["line"] for s in segs]
+        beat_rows.append((beat, lines))
+        for i, seg in enumerate(segs):
+            refs.append({"beat": beat, "lines": lines, "idx": i,
+                         "span": seg["span"]})
 
     changed = 0
     changed_beats: set = set()
@@ -515,16 +560,16 @@ def neutralize_identity_reveal_leaks(
     panels_since_cue = 0
 
     for ref in refs:
-        panel = ref["panel"]
-        sf = ref["scene_file"]
-        line = str(panel.get("line") or "")
-        understood = understood_by_file.get(sf) or {}
-        vis = vision_by_file.get(sf) or {}
-        ocr = str(vis.get("ocr_clean") or vis.get("text") or "")
-        blob = _concealment_blob(line, understood, vis)
+        line = ref["lines"][ref["idx"]]
+        span = ref["span"]
+        understoods = [understood_by_file.get(sf) or {} for sf in span]
+        visions = [vision_by_file.get(sf) or {} for sf in span]
+        ocr = " ".join(str(v.get("ocr_clean") or v.get("text") or "")
+                       for v in visions).strip()
+        blob = _concealment_blob(line, *understoods, *visions)
 
         # RESOLUTION: the story's own text names the protagonist -> identity is
-        # established; stop neutralizing (this panel included).
+        # established; stop neutralizing (this segment included).
         if unresolved and names and any(
                 re.search(rf"(?<!\w){re.escape(n)}(?!\w)", ocr, re.I)
                 for n in names):
@@ -532,27 +577,27 @@ def neutralize_identity_reveal_leaks(
             panels_since_cue = 0
             cue_subjects = set()
 
-        # NEUTRALIZE: only a carried window AND only when THIS panel's own
+        # NEUTRALIZE: only a carried window AND only when THIS segment's own
         # understanding refers to the unresolved figure (concealment/power/gear)
         # AND does not clearly match the established protagonist.
         if unresolved and _has_protagonist_ref(line, names):
             refers_to_unresolved = bool(_CONCEALED_RE.search(blob)
                                         or _POWER_GEAR_RE.search(blob))
-            panel_tokens = _panel_understanding_tokens(understood, vis)
+            panel_tokens = _panel_understanding_tokens(*understoods, *visions)
             matches_protagonist = (len(protag_desc) >= 2
                                    and len(protag_desc & panel_tokens) >= 2)
             if refers_to_unresolved and not matches_protagonist:
                 rewritten = _neutralize_protagonist_refs(line, names)
                 if rewritten != line:
-                    panel["line"] = rewritten
+                    ref["lines"][ref["idx"]] = rewritten
                     changed += 1
                     changed_beats.add(id(ref["beat"]))
 
-        # UPDATE STATE from THIS panel's cues (governs the panels that follow).
+        # UPDATE STATE from THIS segment's cues (governs the segments that follow).
         has_cue = bool(_CONCEALED_RE.search(blob))
         if not has_cue and _IDENTITY_QUESTION_RE.search(ocr):
             has_cue = True  # optional extra trigger
-        cur_subjects = _subject_tokens(understood, vis)
+        cur_subjects = _subject_tokens(*understoods, *visions)
         if has_cue:
             unresolved = True
             panels_since_cue = 0
@@ -567,12 +612,9 @@ def neutralize_identity_reveal_leaks(
                 cue_subjects = set()
 
     if changed:
-        for beat in beats_obj.get("beats") or []:
+        for beat, lines in beat_rows:
             if id(beat) in changed_beats:
-                beat["narration"] = " ".join(
-                    str(p.get("line") or "").strip()
-                    for p in beat.get("panel_narration") or []
-                    if str(p.get("line") or "").strip())
+                write_segment_lines(beat, lines)
     return changed
 
 
@@ -610,14 +652,17 @@ def analyze_recap_style(
             for item in beat.get("scene_selection") or []
             if isinstance(item, dict)
         }
-        panels = beat.get("panel_narration") or []
-        if not panels:
+        segs = beat_segments(beat)
+        if not segs:
             eligible_count += 1
             continue
-        for panel in panels:
-            item = selection.get(str(panel.get("scene_file") or "")) or {}
-            intensity = str(item.get("intensity") or "").lower()
-            if intensity not in {"intense", "explosive"}:
+        # one eligibility slot per SEGMENT (a flow span = one line); a span is
+        # dramatic when ANY of its panels runs intense/explosive (peaks win).
+        for seg in segs:
+            intensities = {
+                str((selection.get(f) or {}).get("intensity") or "").lower()
+                for f in seg["span"]}
+            if not (intensities & {"intense", "explosive"}):
                 eligible_count += 1
     sauce_density = sauce_count / max(1, eligible_count)
     if len(lines) >= 12 and sauce_density < 0.18:

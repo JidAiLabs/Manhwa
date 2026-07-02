@@ -425,3 +425,148 @@ def test_story_naming_the_figure_resolves_and_allows_name():
     panels = beats["beats"][0]["panel_narration"]
     assert panels[2]["line"] == "Prince Cheon steps into the light."
     assert panels[3]["line"] == "Prince Cheon raises his blade."
+
+
+# ---- adaptive flow segments (Chunk 2): style pass operates on segments ------
+
+def _seg_beats(segments, gid=1):
+    """Native-segments beat: segments = [(span_tuple, line), ...]."""
+    return {"beats": [{"group_id": gid, "segments": [
+        {"span": list(span), "line": line} for span, line in segments
+    ]}]}
+
+
+def test_repair_spoken_fragments_on_native_segments():
+    beats = _seg_beats([
+        (("p001.jpg", "p002.jpg"), "A heavy impact tears through the clearing,"),
+        (("p003.jpg",), "leaving him frozen in place."),
+    ])
+    assert rs.repair_spoken_fragments(beats) == 2
+    segs = beats["beats"][0]["segments"]
+    assert all(not rs.is_spoken_fragment(s["line"]) for s in segs)
+    assert segs[0]["span"] == ["p001.jpg", "p002.jpg"]     # spans untouched
+    assert beats["beats"][0]["narration"].endswith("frozen in place.")
+
+
+def test_dedupe_is_noop_for_native_segments():
+    """Dropping a segment would orphan its span (panels lose their narration
+    cover) — for native-segments beats the consecutive-dup pass is a NO-OP;
+    the planner/render_prep merge consecutive same-text segments downstream."""
+    beats = _seg_beats([
+        (("p001.jpg",), "Ancestor...?"),
+        (("p002.jpg", "p003.jpg"), "Ancestor...?"),
+    ])
+    removed = rs.dedupe_consecutive_panel_lines(beats)
+    assert removed == 0
+    segs = beats["beats"][0]["segments"]
+    assert len(segs) == 2
+    assert [s["line"] for s in segs] == ["Ancestor...?", "Ancestor...?"]
+
+
+def test_panel_rows_one_row_per_segment_with_span_head():
+    beats = _seg_beats([
+        (("p001.jpg", "p002.jpg", "p003.jpg"), "He falls the whole way down."),
+        (("p004.jpg",), "The bottom catches him."),
+    ])
+    rows = rs.panel_rows(beats)
+    assert len(rows) == 2
+    assert rows[0] == {"scene_file": "p001.jpg",
+                       "line": "He falls the whole way down."}
+    assert rows[1]["scene_file"] == "p004.jpg"
+
+
+def test_sauce_density_counts_flow_span_lines():
+    """Eligibility is counted per SEGMENT (a flow span = one line), and a span
+    is dramatic when ANY of its panels is intense/explosive."""
+    span_line = "Our guy picks the worst possible time for a stealth build."
+    solo_line = "The blade lands with devastating force."
+    beats = _seg_beats([
+        (("p001.jpg", "p002.jpg", "p003.jpg"), span_line),
+        (("p004.jpg",), solo_line),
+    ])
+    beats["beats"][0]["scene_selection"] = [
+        {"scene_file": "p001.jpg", "intensity": "calm"},
+        {"scene_file": "p002.jpg", "intensity": "calm"},
+        {"scene_file": "p003.jpg", "intensity": "calm"},
+        {"scene_file": "p004.jpg", "intensity": "explosive"},
+    ]
+    report = rs.analyze_recap_style(
+        _script([span_line, solo_line]), beats, {}, _cast(), {})
+    # 2 segments, not 4 panels: the calm flow span is the ONE eligible line
+    assert report["metrics"]["sauce_eligible_lines"] == 1
+    assert report["metrics"]["panel_lines"] == 2
+    assert report["metrics"]["sauce_density"] == 1.0
+
+
+def test_sauce_density_span_dramatic_when_any_panel_intense():
+    line = "He crosses the ridge as the horde closes in behind him."
+    beats = _seg_beats([(("p001.jpg", "p002.jpg"), line)])
+    beats["beats"][0]["scene_selection"] = [
+        {"scene_file": "p001.jpg", "intensity": "calm"},
+        {"scene_file": "p002.jpg", "intensity": "explosive"},
+    ]
+    report = rs.analyze_recap_style(_script([line]), beats, {}, _cast(), {})
+    assert report["metrics"]["sauce_eligible_lines"] == 0
+
+
+def test_neutralize_identity_on_flow_span_line():
+    """A flow segment is judged against ALL its span panels: the power/gear cue
+    lives on the span's SECOND panel's understanding, yet the segment's 'Our
+    guy' is still neutralized while the window is open."""
+    beats = _seg_beats([
+        (("p001.jpg",), "A glowing silhouette appears between the assassins."),
+        (("p002.jpg", "p003.jpg"),
+         "Our guy tears through them without breaking stride."),
+    ])
+    understood = {
+        "p003.jpg": {"subjects": ["figure wreathed in lightning"]},
+    }
+    changed = rs.neutralize_identity_reveal_leaks(
+        beats, _cast(), {}, understood)
+    assert changed == 1
+    segs = beats["beats"][0]["segments"]
+    assert "Our guy" not in segs[1]["line"]
+    assert "stranger" in segs[1]["line"].lower()
+    assert segs[1]["span"] == ["p002.jpg", "p003.jpg"]     # spans untouched
+    assert "Our guy" not in beats["beats"][0]["narration"]
+
+
+def test_neutralize_legacy_singletons_unchanged_behavior():
+    """The pre-span behavior survives byte-for-byte on legacy manifests
+    (singleton spans): same fixture as the carry test, same outcome."""
+    beats = _beats([
+        "A glowing silhouette appears between the assassins.",
+        "Prince Cheon stands there in unfamiliar clothes.",
+        "The killers hesitate.",
+    ])
+    changed = rs.neutralize_identity_reveal_leaks(beats, _cast(), {})
+    assert changed == 1
+    assert beats["beats"][0]["panel_narration"][1]["line"] == (
+        "The stranger stands there in unfamiliar clothes.")
+
+
+# ---- teaser round-trip: legacy-shaped synthetic beat keeps working ----------
+
+def test_teaser_legacy_roundtrip_repairs_land_in_panel_narration():
+    """teaser_planner wraps its narration as {"beats":[{"panel_narration":
+    [...]}]}, runs the shared mutators IN PLACE, then reads panel_narration
+    back. The shape-aware writer must land repairs in the LEGACY shape."""
+    panel_narration = [
+        {"scene_file": "ch1__p000012.jpg",
+         "line": "A glowing silhouette appears between the assassins."},
+        {"scene_file": "ch1__p000013.jpg",
+         "line": "Prince Cheon stands there in unfamiliar clothes."},
+        {"scene_file": "ch2__p000044.jpg",
+         "line": "leaving the killers frozen in place,"},
+    ]
+    beats_obj = {"beats": [{"panel_narration": panel_narration}]}
+    rs.neutralize_identity_reveal_leaks(beats_obj, _cast(), {})
+    rs.repair_spoken_fragments(beats_obj)
+    got = beats_obj["beats"][0].get("panel_narration") or []
+    lines = [p["line"] for p in got]
+    assert lines[1] == "The stranger stands there in unfamiliar clothes."
+    assert not rs.is_spoken_fragment(lines[2])
+    # the repairs mutated the SAME list object the teaser holds
+    assert panel_narration[1]["line"] == lines[1]
+    assert [p["scene_file"] for p in got] == [
+        "ch1__p000012.jpg", "ch1__p000013.jpg", "ch2__p000044.jpg"]
