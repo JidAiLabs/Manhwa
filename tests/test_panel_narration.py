@@ -134,11 +134,12 @@ def test_align_invariant_length_matches_scene_files():
 
 
 # ---------------------------------------------------------------------------
-# Task 3b: build_beat_schema + panel_narration field
+# Task 3b: build_beat_schema + panel_narration field (legacy per_panel path;
+# the adaptive default emits `segments` — see test_narrative_segments.py)
 # ---------------------------------------------------------------------------
 
 def test_beat_schema_requires_panel_narration():
-    schema = gnp.build_beat_schema()
+    schema = gnp.build_beat_schema("per_panel")
     props = schema["properties"]
     assert "panel_narration" in props
     assert props["panel_narration"]["type"] == "ARRAY"

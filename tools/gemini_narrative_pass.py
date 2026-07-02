@@ -44,6 +44,18 @@ from recap_style import (  # noqa: E402
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
+from beats_segments import beat_segments  # noqa: E402
+
+# --- adaptive flow segments (spec 2026-07-02) ---------------------------------
+# The writer emits beats[].segments[] = [{"span": [scene_files...], "line": ...}]
+# — a flow passage spans 2-4 consecutive panels voiced as ONE clip; solo lines
+# stay for money shots / system cards. Deterministic guardrails live OUTSIDE the
+# LLM in validate_segments(); constants are code, not config.
+SPAN_CAP = 4        # max panels one segment may span (4 x 6.0s = 24s max clip)
+WPM = 135           # word-budget arithmetic; matches script_expander's default
+_SEG_MIN_SEC_PER_PANEL = 2.0   # planner's per-panel on-screen floor
+_SEG_MAX_SEC_PER_PANEL = 6.0   # one clip must never drag a panel past this
+_MOOD_PREFIX_RE = re.compile(r"^\s*\[[^\]]+\]")
 
 # --- meta-garbage narration guard --------------------------------------------
 # Ch20 g0014: a panel's OCR was a long run of underscores (a garbage SFX scan).
@@ -137,14 +149,15 @@ def _clean_fallback_narration(beat_title: str, what_happens: str) -> str:
 
 
 def demote_backfilled_error(beat: Dict[str, Any]) -> Dict[str, Any]:
-    """A GROUP-level JSON parse failure sets `error`, but the per-panel narration
-    is still backfilled (one valid line per surviving scene_file). Once those
+    """A GROUP-level JSON parse failure sets `error`, but the narration is still
+    backfilled (one valid line per surviving scene_file — `panel_narration` in
+    per_panel mode, singleton-span `segments` in adaptive mode). Once those
     lines exist the beat carries REAL narration — rename the parse-failure flag to
     `group_parse_error` so no downstream stage (script_expander, prep QA, resume)
     silences a beat that has valid lines, while keeping the telemetry. No-op on a
-    healthy beat, and on an error beat with no usable panel_narration the flag
-    stays so it is still regenerated/handled as a failure."""
-    if beat.get("error") and beat.get("panel_narration"):
+    healthy beat, and on an error beat with no usable lines the flag stays so it
+    is still regenerated/handled as a failure."""
+    if beat.get("error") and (beat.get("panel_narration") or beat.get("segments")):
         beat["group_parse_error"] = beat.pop("error")
     return beat
 
@@ -784,9 +797,14 @@ def _select_images_for_group(
     return img_paths[:max_images]
 
 
-def build_beat_schema() -> dict:
-    """Return the Gemini response schema for a narrative beat."""
-    return {
+def build_beat_schema(segmentation: str = "adaptive") -> dict:
+    """Return the Gemini response schema for a narrative beat.
+
+    adaptive (tool default): narration comes back as `segments` — ordered
+    {span, line} passages whose spans partition the group's scene_files.
+    per_panel: the legacy 1-line-per-panel `panel_narration` schema,
+    byte-identical to the pre-segments tool."""
+    schema = {
         "type": "OBJECT",
         "properties": {
             "group_id": {"type": "INTEGER"},
@@ -850,6 +868,25 @@ def build_beat_schema() -> dict:
             "scene_selection",
         ],
     }
+    if segmentation != "per_panel":
+        # segments REPLACES panel_narration as the one narration shape the
+        # model returns (per_panel keeps the legacy schema byte-identical).
+        props = schema["properties"]
+        del props["panel_narration"]
+        props["segments"] = {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "span": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "line": {"type": "STRING"},
+                },
+                "required": ["span", "line"],
+            },
+        }
+        schema["required"] = ["segments" if k == "panel_narration" else k
+                              for k in schema["required"]]
+    return schema
 
 
 def align_panel_narration(scene_files, model_panels, understand_by_file=None):
@@ -901,10 +938,183 @@ def align_panel_narration(scene_files, model_panels, understand_by_file=None):
     return out
 
 
+def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[str]:
+    """Deterministic guardrails for adaptive flow segments — pure, no LLM.
+
+    Returns human-readable errors ([] = valid) so a failing beat can be
+    re-asked with the exact problems appended to the prompt:
+      1. spans partition scene_files EXACTLY, in reading order (no skip,
+         overlap, or unknown file — the panel-collapse regression stays
+         impossible);
+      2. len(span) <= SPAN_CAP;
+      3. a panel_kind == "system" file is always a SOLO span (cards keep their
+         own clip; `kinds` maps scene_file -> panel_kind);
+      4. duration-aware word budget: N*2.0s <= words/(wpm/60) <= N*6.0s per
+         segment (N = span size) — reject too-thin AND too-fat lines;
+      5. every line non-empty, no bracket-mood prefix (the packer adds moods).
+    """
+    errors: List[str] = []
+    segs = segments if isinstance(segments, list) else []
+    files = [f for f in (scene_files or []) if f]
+    kinds = kinds or {}
+    words_per_sec = float(wpm) / 60.0
+
+    covered: List[str] = []
+    for i, seg in enumerate(segs):
+        span = ([str(f) for f in (seg.get("span") or []) if f]
+                if isinstance(seg, dict) else [])
+        line = (str(seg.get("line") or "").strip()
+                if isinstance(seg, dict) else "")
+        if not span:
+            errors.append(f"segment {i}: empty span")
+            continue
+        covered.extend(span)
+        n = len(span)
+        if n > SPAN_CAP:
+            errors.append(f"segment {i}: span of {n} panels exceeds the "
+                          f"cap of {SPAN_CAP}")
+        for f in span:
+            if str(kinds.get(f) or "") == "system" and n > 1:
+                errors.append(f"segment {i}: system panel {f} must be a "
+                              "solo span")
+        if not line:
+            errors.append(f"segment {i}: empty line")
+            continue
+        if _MOOD_PREFIX_RE.match(line):
+            errors.append(f"segment {i}: line must not start with a bracket "
+                          "mood tag")
+        n_words = len(line.split())
+        sec = n_words / words_per_sec
+        if sec < n * _SEG_MIN_SEC_PER_PANEL:
+            errors.append(
+                f"segment {i}: too thin — {n_words} words (~{sec:.1f}s) cannot "
+                f"hold {n} panel(s) on screen (needs >= "
+                f"{n * _SEG_MIN_SEC_PER_PANEL:.0f}s of voice; add words or "
+                "shrink the span)")
+        elif sec > n * _SEG_MAX_SEC_PER_PANEL:
+            errors.append(
+                f"segment {i}: too fat — {n_words} words (~{sec:.1f}s) over "
+                f"{n} panel(s) (max {n * _SEG_MAX_SEC_PER_PANEL:.0f}s; trim "
+                "words or widen the span)")
+
+    if covered != files:
+        cov_set, file_set = set(covered), set(files)
+        missing = [f for f in files if f not in cov_set]
+        unknown = [f for f in covered if f not in file_set]
+        dups = sorted({f for f in covered if covered.count(f) > 1})
+        if missing:
+            errors.append("spans skip panel(s): " + ", ".join(missing))
+        if unknown:
+            errors.append("spans name unknown panel(s): " + ", ".join(unknown))
+        if dups:
+            errors.append("spans repeat panel(s): " + ", ".join(dups))
+        if not (missing or unknown or dups):
+            errors.append("spans are out of reading order: "
+                          + " -> ".join(covered) + " != " + " -> ".join(files))
+    return errors
+
+
+def _segment_repair_block(errors: List[str]) -> str:
+    """The ONE repair re-ask: the exact validator errors appended to the prompt."""
+    return (
+        "\n\nSEGMENT REPAIR — your previous answer's segments were INVALID:\n  - "
+        + "\n  - ".join(errors)
+        + "\nRe-write the beat fixing EXACTLY these problems. The spans must "
+          "cover every scene_file exactly once, in reading order, each span at "
+          f"most {SPAN_CAP} panels, system cards solo, and each line sized to "
+          "its span's word budget.\n")
+
+
+def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
+                           reask_fn=None):
+    """Adaptive mode: normalize + validate the model's segments; on failure do
+    ONE repair re-ask (reask_fn(errors) -> repaired beat or None); still failing
+    -> fall back to align_panel_narration singleton spans (never block the
+    chapter; log `[segments] fallback beat gNNNN`).
+
+    Writes beat['segments'] (spans partition `surviving` — the adaptive-mode
+    cover assert), drops panel_narration (segments replaces it), and rebuilds
+    beat['narration'] as the ordered join of segment lines — LOAD-BEARING:
+    caption_unvoiced / narration_stale / alignment QA and punchup key on it.
+    """
+    segs = beat_segments(beat)
+    errors = validate_segments(segs, surviving, kinds)
+    if errors and reask_fn is not None:
+        repaired = reask_fn(errors)
+        if isinstance(repaired, dict):
+            segs2 = beat_segments(repaired)
+            if not validate_segments(segs2, surviving, kinds):
+                segs, errors = segs2, []
+    if errors:
+        print(f"[segments] fallback beat g{gid:04d} -> singleton spans "
+              f"({errors[0]})")
+        # Reuse whatever lines the model DID give as positional material;
+        # align_panel_narration keys/fills/pads to exactly one line per panel.
+        model_panels = [{"scene_file": (s.get("span") or [""])[0],
+                         "line": s.get("line")} for s in segs]
+        aligned = align_panel_narration(surviving, model_panels, u_by_file)
+        segs = [{"span": [p["scene_file"]], "line": p["line"]} for p in aligned]
+    beat.pop("panel_narration", None)
+    beat["segments"] = segs
+    covered = [f for s in segs for f in s["span"]]
+    assert covered == list(surviving), (
+        f"segments/scene_files cover mismatch in group {gid}")
+    beat["narration"] = (" ".join(s["line"] for s in segs).strip()
+                         or beat.get("narration", ""))
+    return beat
+
+
 def _append_niche(system, niche="", niche_secondary=""):
     """Append the per-series niche TEMPERATURE block; no-op when no niche is set."""
     blk = register_block(niche, niche_secondary)
     return system + ("\n\n" + blk if blk else "")
+
+
+# The narration-shape instruction is the ONLY part of the system prompt that
+# differs between segmentation modes; every persona/grounding/caption rule
+# below it is shared. _PER_PANEL_NARRATION_INSTRUCTION is byte-identical to the
+# pre-segments prompt so per_panel mode stays a true escape hatch.
+_PER_PANEL_NARRATION_INSTRUCTION = (
+    "For EACH file in scene_files, in order, WRITE ONE narration line in "
+    "'panel_narration' as {scene_file, line}. Give EVERY panel its own line — "
+    "a quick action panel gets a punchy phrase, a pivotal/quiet panel gets a "
+    "fuller cinematic sentence; match length to what the panel shows. The lines "
+    "must FLOW as one continuous story (continue from previous_narration), not "
+    "isolated captions. Then set 'narration' to all the lines joined with a space.\n"
+)
+
+_ADAPTIVE_NARRATION_INSTRUCTION = (
+    "Write this group's narration as 'segments': an ORDERED list of {span, line} "
+    "passages. A span lists 1-4 CONSECUTIVE scene_files (in the given order); its "
+    "line is voiced as ONE clip while those panels play. Every scene_file must "
+    "appear in EXACTLY ONE span, in order — never skip, repeat, or reorder a panel.\n"
+    "CHOOSE flow vs solo from what the panels themselves tell you:\n"
+    "  - FLOW (ONE connected passage over a 2-4 panel span): continuous action, "
+    "a traversal or chase, a montage-like progression, a run of caption-only "
+    "panels — write ONE flowing passage across that span; clauses may lean "
+    "across panel boundaries; end mid-momentum, not mid-word.\n"
+    "  - SOLO (a single-panel span): an emotional close-up, a reveal, a "
+    "punchline, a dialogue-heavy panel, a system/status card — let that moment "
+    "land on its own line.\n"
+    "NEVER enumerate panels inside a passage — 'in the next panel', 'the "
+    "following panel' and the like are BANNED; narrate the STORY as one moment "
+    "flowing into the next, not the page.\n"
+    "WORD BUDGET — the voice must carry its span's screen time: a solo line "
+    "≈5-13 words; a 2-panel flow ≈10-26 words; a 3-panel flow "
+    "≈25-40 words; a 4-panel flow ≈30-50 words. Never a thin line "
+    "stretched over many panels, never a bloated line parked on one panel.\n"
+    "The lines must FLOW as one continuous story (continue from "
+    "previous_narration), not isolated captions. Then set 'narration' to all "
+    "the segment lines joined with a space.\n"
+)
+
+
+def _default_segmentation() -> str:
+    """Tool default for --segmentation: env STUDIO_NARR_SEGMENTATION wins when
+    valid, else 'adaptive'. argparse validates `choices` only for CLI-provided
+    values, so a garbage env var must be normalized here."""
+    v = (os.environ.get("STUDIO_NARR_SEGMENTATION") or "").strip().lower()
+    return v if v in ("adaptive", "per_panel") else "adaptive"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -940,6 +1150,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="manifest.panels.understood.json for per-panel pad grounding")
     ap.add_argument("--niche", default="")
     ap.add_argument("--niche-secondary", default="")
+    ap.add_argument("--segmentation", choices=["adaptive", "per_panel"],
+                    default=_default_segmentation(),
+                    help="adaptive = flow segments spanning 1-4 panels voiced "
+                         "as one clip each (spec 2026-07-02); per_panel = the "
+                         "legacy 1-line-per-panel path, byte-compatible")
     return ap
 
 
@@ -966,6 +1181,9 @@ def main() -> int:
         client = genai.Client(vertexai=True, project=args.project,
                               location=args.location)
 
+    narration_instruction = (_PER_PANEL_NARRATION_INSTRUCTION
+                             if args.segmentation == "per_panel"
+                             else _ADAPTIVE_NARRATION_INSTRUCTION)
     system = (
         "You are a YouTube manhwa recap story editor.\n"
         "Given consecutive scene images + OCR, produce ONE structured beat for that group.\n"
@@ -974,12 +1192,7 @@ def main() -> int:
         "End with a strong hook line.\n"
         "Rendering hints: avoid zooming into text bubbles; focus faces/hands/key objects/wide.\n"
         "\n"
-        "For EACH file in scene_files, in order, WRITE ONE narration line in "
-        "'panel_narration' as {scene_file, line}. Give EVERY panel its own line — "
-        "a quick action panel gets a punchy phrase, a pivotal/quiet panel gets a "
-        "fuller cinematic sentence; match length to what the panel shows. The lines "
-        "must FLOW as one continuous story (continue from previous_narration), not "
-        "isolated captions. Then set 'narration' to all the lines joined with a space.\n"
+        + narration_instruction +
         "    - PACE = INPUT_JSON.intensity (the beat's energy) AND how many panels this beat\n"
         "      spans. A MULTI-PANEL action or shock beat (a fight, a reveal, a power awakening\n"
         "      shown across SEVERAL panels) is a CINEMATIC SET-PIECE — give it the FULLEST\n"
@@ -1143,7 +1356,7 @@ def main() -> int:
         except Exception:
             corrections = {}
 
-    beat_schema = build_beat_schema()
+    beat_schema = build_beat_schema(args.segmentation)
 
     existing_by_id: Dict[int, Dict[str, Any]] = {}
     if args.resume and os.path.exists(args.out):
@@ -1248,18 +1461,42 @@ def main() -> int:
         if beat.get("narration"):
             beat["narration"] = _resolve_cast_tokens(beat["narration"], cast_list)
 
-        # Normalize panel_narration: exactly one line per surviving scene_file.
-        # Runs on BOTH normal and fallback beats (the fallback has no panel_narration
-        # so align_panel_narration will pad every panel from u_by_file / defaults).
-        # We derive narration from the panel lines here, overwriting what the model
-        # joined so the joined string stays in sync with the per-panel lines.
-        # narration_plain (owned by the punchup stage) is NOT set.
         surviving = [f for f in (beat.get("scene_files") or payload["scene_files"]) if f]
-        beat["panel_narration"] = align_panel_narration(
-            surviving, beat.get("panel_narration"), u_by_file)
-        assert len(beat["panel_narration"]) == len(surviving), (
-            f"panel_narration/scene_files mismatch in group {gid}")
-        beat["narration"] = " ".join(p["line"] for p in beat["panel_narration"]).strip() or beat.get("narration", "")
+        if args.segmentation == "per_panel":
+            # Normalize panel_narration: exactly one line per surviving scene_file.
+            # Runs on BOTH normal and fallback beats (the fallback has no panel_narration
+            # so align_panel_narration will pad every panel from u_by_file / defaults).
+            # We derive narration from the panel lines here, overwriting what the model
+            # joined so the joined string stays in sync with the per-panel lines.
+            # narration_plain (owned by the punchup stage) is NOT set.
+            beat.pop("segments", None)
+            beat["panel_narration"] = align_panel_narration(
+                surviving, beat.get("panel_narration"), u_by_file)
+            assert len(beat["panel_narration"]) == len(surviving), (
+                f"panel_narration/scene_files mismatch in group {gid}")
+            beat["narration"] = " ".join(p["line"] for p in beat["panel_narration"]).strip() or beat.get("narration", "")
+        else:
+            # Adaptive flow segments: validate the model's spans; ONE repair
+            # re-ask with the exact errors; still failing -> singleton fallback
+            # (mirrors the per_panel backfill — the chapter never blocks). A
+            # parse-failed beat skips the re-ask: the model already exhausted
+            # its retries, so go straight to the grounded singleton fallback.
+            kinds = {f: str(((u_by_file.get(f) or {}).get("panel_kind")) or "")
+                     for f in surviving}
+
+            def _reask(errors: List[str]) -> Optional[Dict[str, Any]]:
+                return _generate_beat_for_group(
+                    client=client, model=args.model,
+                    system_instruction=sys_g + _segment_repair_block(errors),
+                    payload=payload, image_paths=img_paths,
+                    beat_schema=beat_schema, gid=gid, retries=0,
+                    max_output_tokens=args.max_output_tokens,
+                    backoff_max=args.backoff_max, backend=args.backend,
+                    usage=usage)
+
+            finalize_adaptive_beat(
+                beat, surviving, kinds, u_by_file, gid,
+                reask_fn=None if beat.get("error") else _reask)
 
         # The per-panel backfill above gives even a parse-failed beat valid lines;
         # demote the silencing `error` flag so those lines actually reach render.
