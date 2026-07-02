@@ -44,7 +44,7 @@ from recap_style import (  # noqa: E402
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
-from beats_segments import beat_segments  # noqa: E402
+from beats_segments import beat_segments, has_native_segments  # noqa: E402
 
 # --- adaptive flow segments (spec 2026-07-02) ---------------------------------
 # The writer emits beats[].segments[] = [{"span": [scene_files...], "line": ...}]
@@ -1025,6 +1025,44 @@ def _segment_repair_block(errors: List[str]) -> str:
           "its span's word budget.\n")
 
 
+def _pinned_span_block(segments: List[Dict[str, Any]]) -> str:
+    """Correction-regen prompt block when the existing beat carries native
+    segments (spec 3.5): the spans are FIXED — a re-split would renumber the
+    sibling segment_ids (g####_p##) and churn the per-clip TTS cache
+    (audio_stale). The writer rewrites LINES within the locked spans; only a
+    full beats re-run (no --resume) may change spans."""
+    rows = [f"  segment {i + 1} covers: {', '.join(s['span'])}"
+            for i, s in enumerate(segments)]
+    return (
+        "\n\nFIXED SEGMENTATION FOR THIS REWRITE — this beat's segments are "
+        "LOCKED (each segment is already voiced as its own cached clip):\n"
+        + "\n".join(rows) + "\n"
+        f"Return EXACTLY {len(segments)} segments with EXACTLY these spans, "
+        "in this order — rewrite only each segment's line. Never merge, "
+        "split, reorder, or drop a span.\n")
+
+
+def enforce_pinned_spans(beat, prev_beat, gid):
+    """Span-pin gate for a corrections regen (spec 3.5): when the previous
+    beat carries native segments, the regenerated beat must carry EXACTLY the
+    same spans (same partition, same order). A compliant rewrite (same spans,
+    new lines) is adopted — returns the fresh beat. ANY re-split — including
+    the singleton fallback — is rejected: returns the PREVIOUS beat unchanged
+    (logged), so the whole manifest stays self-consistent and no segment_id is
+    ever renumbered by a heal. Lines may change; spans may not."""
+    pinned = (beat_segments(prev_beat)
+              if has_native_segments(prev_beat) else [])
+    if not pinned:
+        return beat
+    new_spans = [s["span"] for s in beat_segments(beat)]
+    if new_spans == [s["span"] for s in pinned]:
+        return beat
+    print(f"[segments] span-pin g{gid:04d}: regen re-split "
+          f"({len(new_spans)} vs {len(pinned)} segments) — kept previous "
+          "lines (spans are locked under --corrections)")
+    return prev_beat
+
+
 def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                            reask_fn=None):
     """Adaptive mode: normalize + validate the model's segments; on failure do
@@ -1057,8 +1095,9 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
     beat.pop("panel_narration", None)
     beat["segments"] = segs
     covered = [f for s in segs for f in s["span"]]
-    assert covered == list(surviving), (
-        f"segments/scene_files cover mismatch in group {gid}")
+    if covered != list(surviving):     # postcondition — must survive -O
+        raise RuntimeError(
+            f"segments/scene_files cover mismatch in group {gid}")
     beat["narration"] = (" ".join(s["line"] for s in segs).strip()
                          or beat.get("narration", ""))
     return beat
@@ -1399,7 +1438,19 @@ def main() -> int:
             continue
 
         sys_g = system
+        pin_prev: Optional[Dict[str, Any]] = None
         if gid in corrections:
+            # Span-pinned heal (spec 3.5): when the beat being corrected
+            # already carries native segments, its spans are FIXED — the
+            # rewrite may only change LINES (a re-split would renumber the
+            # sibling segment_ids -> per-clip TTS cache churn + audio_stale).
+            # Pinning derives from the EXISTING beat's shape, never from
+            # --segmentation; without --resume there is no existing beat, so
+            # a full beats re-run keeps the freedom to re-split.
+            prev = existing_by_id.get(gid)
+            if (prev is not None and has_native_segments(prev)
+                    and beat_segments(prev)):
+                pin_prev = prev
             sys_g = sys_g + (
                 "\n\nCORRECTION FOR THIS GROUP — the previous narration had this problem:\n  "
                 + corrections[gid] + "\n"
@@ -1407,6 +1458,8 @@ def main() -> int:
                 "panel's actual dialogue, COVER every on-panel caption in full, keep the cast names, "
                 "assert nothing not shown, and never leave the narration empty.\n"
             )
+            if pin_prev is not None:
+                sys_g += _pinned_span_block(beat_segments(pin_prev))
             regenerated += 1
 
         payload = _pack_group_payload(g, vision_by_file, u_by_file)
@@ -1497,6 +1550,11 @@ def main() -> int:
             finalize_adaptive_beat(
                 beat, surviving, kinds, u_by_file, gid,
                 reask_fn=None if beat.get("error") else _reask)
+
+        # Corrections regen of a native-segments beat: adopt the rewrite ONLY
+        # if it kept the pinned spans; any re-split keeps the previous beat.
+        if pin_prev is not None:
+            beat = enforce_pinned_spans(beat, pin_prev, gid)
 
         # The per-panel backfill above gives even a parse-failed beat valid lines;
         # demote the silencing `error` flag so those lines actually reach render.

@@ -373,3 +373,165 @@ def test_main_per_panel_stays_legacy_shape(tmp_path, monkeypatch):
     assert [p["scene_file"] for p in beat["panel_narration"]] == FILES
     assert beat["narration"] == " ".join(
         p["line"] for p in beat["panel_narration"])
+
+
+# ---------------------------------------------------------------------------
+# span-pinned heal regen (Chunk 3, spec 3.5): a corrected group whose EXISTING
+# beat carries native segments must keep its spans — the writer rewrites LINES
+# only. A re-split would renumber sibling segment_ids -> per-clip TTS cache
+# churn + audio_stale. Violations fall back to the previous lines (logged);
+# only a full beats re-run (no --resume) may change spans.
+# ---------------------------------------------------------------------------
+
+PREV_FLOW = ("He drops through the canopy, bounces off two branches, and "
+             "lands where nobody thought to watch.")
+PREV_SOLO = "The stranger's eyes snap open in the dark."
+
+
+def _prev_segments_beat():
+    return {
+        "group_id": 7, "scene_files": list(FILES),
+        "beat_title": "Opening", "what_happens": "He crosses the hall.",
+        "segments": [
+            {"span": ["p1.jpg", "p2.jpg"], "line": PREV_FLOW},
+            {"span": ["p3.jpg"], "line": PREV_SOLO},
+        ],
+        "narration": PREV_FLOW + " " + PREV_SOLO,
+        "scene_selection": [],
+    }
+
+
+def _run_corrections(tmp_path, monkeypatch, responses, prev_beat,
+                     extra_argv=()):
+    """Drive main() over an EXISTING beats.json with a correction queued for
+    group 7 (--resume --corrections) and a stubbed model."""
+    g, v, u = _write_manifests(tmp_path)
+    out = tmp_path / "beats.json"
+    out.write_text(json.dumps({"count_beats": 1, "beats": [prev_beat]}))
+    corr = tmp_path / "corr.json"
+    corr.write_text(json.dumps({"7": "Weave the caption into the narration."}))
+    calls = []
+
+    def stub(**kw):
+        calls.append(kw)
+        obj = responses[min(len(calls) - 1, len(responses) - 1)]
+        return dict(obj), "raw", {"input": 1, "output": 1, "cached": 0}
+
+    monkeypatch.setattr(gnp, "_call_model_with_backoff", stub)
+    monkeypatch.delenv("STUDIO_NARR_SEGMENTATION", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "gemini_narrative_pass.py", "--groups-manifest", str(g),
+        "--vision-manifest", str(v), "--out", str(out),
+        "--understood", str(u), "--backend", "ollama",
+        "--min-sleep", "0", "--resume", "--corrections", str(corr),
+        *extra_argv])
+    assert gnp.main() == 0
+    return json.loads(out.read_text()), calls
+
+
+def test_corrections_prompt_pins_the_existing_spans(tmp_path, monkeypatch):
+    rewrite = dict(_GOOD_MODEL_BEAT)          # same spans, new lines
+    _, calls = _run_corrections(tmp_path, monkeypatch, [rewrite],
+                                _prev_segments_beat())
+    sysi = calls[0]["system_instruction"]
+    assert "CORRECTION FOR THIS GROUP" in sysi
+    assert "FIXED SEGMENTATION" in sysi                    # spans are locked
+    assert "p1.jpg, p2.jpg" in sysi and "p3.jpg" in sysi   # exact spans listed
+
+
+def test_corrections_compliant_rewrite_same_spans_adopted(tmp_path,
+                                                          monkeypatch):
+    rewrite = dict(_GOOD_MODEL_BEAT)          # spans [p1,p2],[p3]; fresh lines
+    out, calls = _run_corrections(tmp_path, monkeypatch, [rewrite],
+                                  _prev_segments_beat())
+    assert len(calls) == 1
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg", "p2.jpg"], ["p3.jpg"]]                  # spans preserved
+    lines = [s["line"] for s in beat["segments"]]
+    assert lines == [s["line"] for s in _GOOD_MODEL_BEAT["segments"]]
+    assert lines[0] != PREV_FLOW                           # rewrite adopted
+    assert beat["narration"] == " ".join(lines)            # join rebuilt
+
+
+def test_corrections_resplit_keeps_previous_lines(tmp_path, monkeypatch,
+                                                  capsys):
+    # a VALID partition that differs from the pinned spans — must NOT be
+    # adopted (it would renumber sibling segment_ids -> clip-cache churn)
+    resplit = dict(_GOOD_MODEL_BEAT, segments=[
+        {"span": ["p1.jpg"], "line": _words(8)},
+        {"span": ["p2.jpg", "p3.jpg"], "line": _words(18)},
+    ])
+    out, calls = _run_corrections(tmp_path, monkeypatch, [resplit],
+                                  _prev_segments_beat())
+    assert len(calls) == 1                    # validator-valid: no re-ask
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg", "p2.jpg"], ["p3.jpg"]]                  # spans identical
+    assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
+    assert beat["narration"] == PREV_FLOW + " " + PREV_SOLO
+    assert "span-pin" in capsys.readouterr().out           # fallback logged
+
+
+def test_corrections_singleton_fallback_cannot_resplit_pinned_beat(
+        tmp_path, monkeypatch):
+    # model answers stay INVALID (skip p3) -> repair re-ask, then the
+    # singleton fallback — which is itself a re-split of the pinned flow
+    # span, so the previous lines must win.
+    bad = dict(_GOOD_MODEL_BEAT,
+               segments=[_GOOD_MODEL_BEAT["segments"][0]])   # skips p3.jpg
+    out, calls = _run_corrections(tmp_path, monkeypatch, [bad, bad],
+                                  _prev_segments_beat())
+    assert len(calls) == 2                    # asked once, re-asked once
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg", "p2.jpg"], ["p3.jpg"]]
+    assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
+
+
+def test_corrections_pin_holds_even_under_per_panel_flag(tmp_path,
+                                                         monkeypatch):
+    # pinning derives from the EXISTING beat's shape, not --segmentation:
+    # a per_panel-mode regen of a native-segments beat may not singletonize it
+    legacy = {
+        "beat_title": "Opening", "what_happens": "He crosses the hall.",
+        "narration": "join placeholder.",
+        "panel_narration": [
+            {"scene_file": "p1.jpg", "line": "He steps into the hall."},
+            {"scene_file": "p2.jpg", "line": "The doors slam shut behind."},
+            {"scene_file": "p3.jpg", "line": "A blade glints in the dark."},
+        ],
+        "scene_selection": [],
+    }
+    out, _ = _run_corrections(tmp_path, monkeypatch, [legacy],
+                              _prev_segments_beat(),
+                              extra_argv=("--segmentation", "per_panel"))
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat.get("segments") or []] == [
+        ["p1.jpg", "p2.jpg"], ["p3.jpg"]]                  # spans preserved
+    assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
+
+
+def test_corrections_legacy_prev_beat_keeps_todays_behavior(tmp_path,
+                                                            monkeypatch):
+    # the pin only exists for native-segments beats: a legacy per-panel beat
+    # under corrections regenerates exactly as today (adaptive re-write,
+    # fresh spans allowed — the pre-flow manifests never had spans to keep)
+    prev = {
+        "group_id": 7, "scene_files": list(FILES),
+        "beat_title": "Opening", "what_happens": "He crosses the hall.",
+        "panel_narration": [
+            {"scene_file": "p1.jpg", "line": "Old line one for panel one."},
+            {"scene_file": "p2.jpg", "line": "Old line two for panel two."},
+            {"scene_file": "p3.jpg", "line": "Old line three for panel three."},
+        ],
+        "narration": "Old line one. Old line two. Old line three.",
+        "scene_selection": [],
+    }
+    out, calls = _run_corrections(tmp_path, monkeypatch, [_GOOD_MODEL_BEAT],
+                                  prev)
+    assert len(calls) == 1
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg", "p2.jpg"], ["p3.jpg"]]                  # fresh spans OK
+    assert "FIXED SEGMENTATION" not in calls[0]["system_instruction"]
