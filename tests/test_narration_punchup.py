@@ -561,3 +561,20 @@ def test_apply_punchup_legacy_lines_keep_aggressive_compression():
     accepted = npu.apply_panel_punchup(beat, {(4, 0): "He gets up."})
     assert accepted == 1
     assert beat["panel_narration"][0]["line"] == "He gets up."
+
+
+def test_span_budget_constants_match_the_writer_validator():
+    # punchup deliberately DUPLICATES the budget constants (importing
+    # gemini_narrative_pass would pull google-genai into the ollama-first
+    # tool) — this parity pin makes a silent divergence impossible: tune the
+    # writer's budget and this fails until punchup's gate follows.
+    import importlib.util as _ilu
+    _s = _ilu.spec_from_file_location(
+        "gemini_narrative_pass",
+        Path(__file__).resolve().parent.parent / "tools" / "gemini_narrative_pass.py",
+    )
+    gnp = _ilu.module_from_spec(_s)
+    _s.loader.exec_module(gnp)
+    assert npu._SPAN_WPM == gnp.WPM
+    assert npu._SPAN_MIN_SEC_PER_PANEL == gnp._SEG_MIN_SEC_PER_PANEL
+    assert npu._SPAN_MAX_SEC_PER_PANEL == gnp._SEG_MAX_SEC_PER_PANEL
