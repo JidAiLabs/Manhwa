@@ -34,8 +34,14 @@
   (b) legacy beat with only `panel_narration: [{scene_file, line}]` → singleton spans in order;
   (c) beat with neither → `[]`;
   (d) malformed entries (missing line/span) skipped.
-- [ ] **Step 2: implement** (pure function, no I/O; basenames via `os.path.basename`).
-- [ ] **Step 3: config** — `segmentation: str = "adaptive"` on the Config object, parsed from `studio.toml` `[narration]` table; invalid value falls back to `"adaptive"` with a warning. Unit test in the existing config test file.
+  AND `write_segment_lines(beat, lines)` — the shape-aware WRITER (mutators must round-trip
+  whichever shape the beat carries, or the teaser's `{"beats":[{"panel_narration": …}]}`
+  round-trip silently loses repairs):
+  (e) native-segments beat → `segments[].line` updated in order, `narration` join rebuilt;
+  (f) legacy beat → `panel_narration[].line` updated in place, join rebuilt;
+  (g) length mismatch → ValueError (a mutator may edit lines, never re-split).
+- [ ] **Step 2: implement** (pure functions, no I/O; basenames via `os.path.basename`).
+- [ ] **Step 3: config** — `segmentation: str = "adaptive"` on the Config object, parsed from `studio.toml` `[narration]` table; invalid value falls back to `"adaptive"` with a warning. Unit test: create `tests/test_config_narration.py` (mirror `tests/test_config_teaser.py`).
 - [ ] **Step 4: run** `.eval_venv/bin/python -m pytest -q tests/test_beats_segments.py` → green; commit `feat(beats): beat_segments helper + narration.segmentation config`.
 
 ### Task 1.2: writer emits segments (schema + prompt + validator + one repair re-ask)
@@ -75,7 +81,7 @@ Prompt changes (keep the existing persona/grounding/caption rules intact):
 - forbid enumerating panels inside a passage (“in the next panel” banned — narrate the story).
 
 - [ ] **Step 1: failing tests** — validator units (cover/overlap/cap/system-solo/budget cases + repair-fallback path with a stubbed model that returns bad-then-good, and bad-bad → singleton fallback). Writer output shape test with model stubbed.
-- [ ] **Step 2: implement** schema + `--segmentation` CLI flag (default from env `STUDIO_NARR_SEGMENTATION`, pipeline passes it; `per_panel` short-circuits to today’s path).
+- [ ] **Step 2: implement** schema + `--segmentation` CLI flag (tool default `adaptive`; env `STUDIO_NARR_SEGMENTATION` overrides; pipeline passes it explicitly; `per_panel` short-circuits to today’s path). **Existing narrative-pass tests whose model stubs return `panel_narration`-shaped output: pass `--segmentation per_panel` (or set the env) in those tests — they cover the legacy path; adaptive gets its own stubs.** New adaptive tests use segments-shaped stubs.
 - [ ] **Step 3:** `.eval_venv/bin/python -m pytest -q tests/test_narrative_segments.py tests/test_beats_segments.py` green.
 - [ ] **Step 4:** full suite → no regressions (existing narrative-pass tests keep passing: per_panel path must remain byte-compatible). Commit `feat(beats): adaptive flow segments — spans, validator, repair re-ask`.
 
@@ -105,11 +111,20 @@ Prompt changes (keep the existing persona/grounding/caption rules intact):
 - Modify: `tools/narration_punchup.py`, `tools/recap_style.py` (swap `panel_narration` iteration for `beat_segments`; write back into `segments[].line`; punchup rebuilds `beat["narration"]` as the join, as it does today at narration_punchup.py:650-651)
 - Test: extend the existing punchup/style tests with a flow-span fixture
 
-**CAUTION (spec reviewer, verified):** `recap_style` READS AND WRITES the old shape in ~6
-places — `repair_spoken_fragments` (:232), the dedupe writing `beat["panel_narration"] = kept`
-(:290), sauce-density measurement (:613-625), style flags (:663). All guard with
-`.get("panel_narration") or []`, so a missed site SILENTLY NO-OPS the 6-rules enforcement —
-migrate every site and add a test that sauce_density counts flow-span lines.
+**CAUTION (spec reviewer, verified):** `recap_style` READS AND WRITES the old shape in ~7
+places (re-grep `panel_narration` at implementation time — line anchors drift; last grep:
+:236, :271, :290, :323, :504, :574, :613). All guard with `.get("panel_narration") or []`,
+so a missed site SILENTLY NO-OPS the 6-rules enforcement — migrate every READ to
+`beat_segments` and every WRITE-BACK to `write_segment_lines` (the Task 1.1 shape-aware
+writer), and add a test that sauce_density counts flow-span lines.
+
+**Teaser round-trip (plan reviewer, verified):** `teaser_planner.py:510-514` wraps its
+narration as `{"beats":[{"panel_narration": …}]}`, has recap_style repair it IN PLACE, then
+reads `panel_narration` back. Because the mutators now write via `write_segment_lines`
+(shape-aware), that round-trip keeps working unchanged — add a test HERE (not 2.4): a
+legacy-shaped teaser beat goes through `repair_spoken_fragments` +
+`neutralize_identity_reveal_leaks` and the repaired lines are readable back from
+`panel_narration`.
 
 **Punchup budget guard (spec §3.1):** after a rewrite, re-check the span word budget
 (`N*2.0s <= words/(135/60) <= N*6.0s`); a violating rewrite is REJECTED → keep the original
@@ -124,7 +139,7 @@ returns a 5-word rewrite for a 3-panel span → original kept.
 - Modify: `tools/timeline_planner.py`
 - Test: `tests/test_timeline_planner_spans.py` (new)
 
-- [ ] **Step 1: failing tests** — a shot with 3 scene_files + a 10.5s clip → `display_strategy == "multi_cut"`, 3 cuts in order, each ≥ 2.0s floor, sum == clip duration; a 1-file shot → today’s single path unchanged; protected/system files in-span still honored by `ensure_protected_shown`.
+- [ ] **Step 1: failing tests** — a shot with 3 scene_files + a 10.5s clip → `display_strategy == "multi_cut"`, 3 cuts in order, each ≥ 2.0s floor, sum == clip duration; a 1-file shot → today’s single path unchanged; protected/system files in-span still honored by `ensure_protected_shown`; **a 3-file span where 1 file was visually dropped upstream (filter_scene_files/clean-dir filtering) → 2 cuts, the full clip duration reallocated across survivors, no gap, no sub-2.0s cut** (spec §3.5 “visual drops inside a span shrink the cut list — narration untouched”; day-one scenario, `_heal_visual_drops` fires routinely).
 - [ ] **Step 2: implement** — the routing condition (span>1 → multi_cut over the span) reusing `build_cuts`; do NOT touch floor/flash logic.
 - [ ] **Step 3:** full suite green (planner tests are extensive — zero tolerance for behavior drift on single-file shots). Commit `feat(planner): pace flow-span panels under the voice via multi_cut`.
 
@@ -132,7 +147,7 @@ returns a 5-word rewrite for a 3-panel span → original kept.
 
 **Files:**
 - Modify: `tools/teaser_planner.py`, `studio/dashboard/app.py` (iterate `beat_segments`; dashboard shows one row per segment with its span thumbnails/count)
-- Test: extend existing tests minimally (teaser scoring over lines; a dashboard route test if one exists)
+- Test: extend existing tests minimally (teaser scoring over lines; a dashboard route test in `tests/dashboard/` — the harness exists, e.g. `test_videos_teaser.py`)
 
 - [ ] Failing → implement → green. Commit `feat(consumers): teaser + dashboard read narration segments`.
   **Deploy note:** `studio/dashboard/app.py` ⇒ dashboard daemon restart on Mini at rollout.
@@ -149,7 +164,8 @@ returns a 5-word rewrite for a 3-panel span → original kept.
   (a) `estimate_plan`/1:1 count assertions become COVER assertions: every shown story panel belongs to exactly one segment span (uncovered → ERROR `panel_uncovered`; double-covered → ERROR `panel_double_covered`); segment-count==panel-count checks removed;
   (b) grounding judges a segment against ALL its span panels (cache key = text_sha + sorted span);
   (c) `caption_unvoiced` searches the span’s combined OCR;
-  (d) `spoken_fragment` unchanged per segment line.
+  (d) `spoken_fragment` unchanged per segment line;
+  (e) `shot_description_flags` iterates `beat_segments` (prep_qa.py:743-763 currently iterates `panel_narration` — silently no-ops on segments-only beats; test: a flow-span line with camera language still flags).
 - [ ] **Step 2: implement**; full suite green. Commit `feat(qa): span-aware cover, grounding, caption checks`.
 
 ### Task 3.2: heal regen is SPAN-PINNED
@@ -182,6 +198,6 @@ regen result: same spans in, same spans out (else fall back to the previous line
 
 1. FF-merge worktree branch → main; full suite on main; push.
 2. Mini: `git pull` (tools+pipeline = subprocess-fresh) + **dashboard daemon restart** (`launchctl kickstart -k gui/$(id -u)/com.originpower.dashboard`) for Task 2.4. Worker restart NOT needed (worker.py untouched).
-3. Reset ch1 (310) beats-onward ONLY (keep understanding/groups/vision caches): status → `grouped`; delete `manifest.beats.json manifest.cast.json manifest.script.json heal_corrections.json render.plan*.json prep_qa.{json,html}` + `tts/ render/ scenes_clean/` + clear `manual_drops.json` (panel set unchanged, drops re-derive) + `DELETE FROM approval WHERE chapter_id=310`.
+3. Reset ch1 (310) beats-onward ONLY (keep understanding/groups/vision caches): status → `grouped`; delete `manifest.beats.json manifest.cast.json manifest.script.json heal_corrections.json render.plan*.json prep_qa.{json,html} .narration_keepbase` + `tts/ render/ scenes_clean/` + clear `manual_drops.json` (panel set unchanged, drops re-derive) + `DELETE FROM approval WHERE chapter_id=310`.
 4. Enqueue prepare (priority 1); verify: segments span mix present (not all singletons), QA green (cover checks pass, no flash_cut), fewer segments (~55–70 vs 112).
 5. Enqueue voiceover + render explicitly (autopilot is OFF) → fresh `segment_both.mp4` + `voice_preview` for the user's listen. **Renders remain user-gated after this review copy.**
