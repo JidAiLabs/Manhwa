@@ -68,14 +68,18 @@ def test_gutter_cut_pairs_are_not_merged():
     assert rsp.find_seam_chains(scenes) == []
 
 
-def test_high_dhash_pair_is_vetoed():
+def test_high_dhash_pair_still_merges():
+    # Two slices of ONE tall panel share only the stitch overlap band, so their
+    # whole-crop dhashes legitimately differ (real Nano ch1 seam measured
+    # Hamming 29). Geometry alone must decide — a dhash veto here blocked the
+    # one true bisection on real data.
     scenes = _ch1_like_scenes()
     for s in scenes:
         if s["panel_id"] == "p05":
             s["dhash64"] = 0
         if s["panel_id"] == "p06":
-            s["dhash64"] = (1 << 40) - 1  # popcount 40 > DHASH_VETO(20)
-    assert rsp.find_seam_chains(scenes) == []
+            s["dhash64"] = (1 << 40) - 1  # popcount 40 — far apart
+    assert rsp.find_seam_chains(scenes) == [["p05", "p06"]]
 
 
 def test_three_chunk_chain_is_one_component():

@@ -28,20 +28,22 @@ from typing import Any, Dict, List
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-# Reuse the EXACT dhash/hamming the scene records were hashed with.
+# Reuse the EXACT dhash the scene records were hashed with.
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_TOOLS_DIR)
 for _p in (_TOOLS_DIR, _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
-from panels_to_scenes import dhash64, hamming64  # noqa: E402
+from panels_to_scenes import dhash64  # noqa: E402
 
 # Tolerances — small ABSOLUTE pixel values (loose fractions re-introduce false
 # merges; see spec §3.2, §8). Chunk pixels.
+# NOTE: geometry alone decides. A dhash veto was tried and REMOVED: two slices
+# of ONE tall panel share only the stitch overlap band (~14% of the crop), so
+# their whole-crop hashes legitimately differ (real ch1 seam measured
+# Hamming 29). Do not re-add a similarity gate here.
 EDGE_TOL_PX = 24    # A.y1 within this of chunk_h[N]; B.y0 within this of 0
 SEAM_TOL_PX = 48    # EDGE_TOL_PX * 2; contiguity slack in stacked global-y
-DHASH_VETO = 20     # VETO-ONLY: reject a match whose slice dhashes are FARTHER
-                    # apart than this. Never triggers a merge.
 
 
 def _chunk_meta(scenes: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
@@ -68,7 +70,6 @@ def find_seam_chains(
     *,
     edge_tol: int = EDGE_TOL_PX,
     seam_tol: int = SEAM_TOL_PX,
-    dhash_veto: int = DHASH_VETO,
 ) -> List[List[str]]:
     """Return seam-bisected panel CHAINS as lists of panel_id in stitch order.
 
@@ -79,7 +80,6 @@ def find_seam_chains(
       1. A touches the forced bottom edge:  chunk_h[N] - A.y1 <= edge_tol
       2. B touches the top edge:            B.y0 <= edge_tol
       3. contiguous stacked global-y:       |(A.gy0+A.y1) - (B.gy0+B.y0)| <= seam_tol
-      4. NOT vetoed by a HIGH dhash distance: hamming(A,B) <= dhash_veto
     """
     meta = _chunk_meta(scenes)
     # chunks in stitch order = by naive global-y offset
@@ -118,8 +118,6 @@ def find_seam_chains(
         ga = meta[cf_n]["gy0"] + _y1(a)
         gb = meta[cf_m]["gy0"] + _y0(b)
         if abs(ga - gb) > seam_tol:                           # cond 3
-            continue
-        if hamming64(int(a["dhash64"]), int(b["dhash64"])) > dhash_veto:  # cond 4 veto
             continue
         union(a["panel_id"], b["panel_id"])
         linked.add(a["panel_id"])
