@@ -1,4 +1,5 @@
 import os
+import sys
 import tomllib
 from pathlib import Path
 from dataclasses import dataclass
@@ -65,6 +66,16 @@ class Config:
                                              # Gemini / ollama Gemma) — NOT an
                                              # OpenAI id; the model call reuses
                                              # _call_model_with_backoff.
+    segmentation: str = "adaptive"          # [narration] segmentation: beats
+                                             # writer mode. "adaptive" = flow
+                                             # segments spanning 1-4 panels,
+                                             # voiced as one clip each (spec
+                                             # 2026-07-02); "per_panel" = the
+                                             # legacy 1-line-per-panel escape
+                                             # hatch for A/B listening. Env
+                                             # STUDIO_NARR_SEGMENTATION wins;
+                                             # invalid values fall back to
+                                             # "adaptive" with a warning.
     narration_sanitize: bool = True         # advertiser-safety pass over the
                                              # FINAL narration before TTS: the
                                              # scripted stage runs
@@ -87,6 +98,18 @@ def _env_bool(name: str, default: bool) -> bool:
     if v is None or v == "":
         return default
     return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _valid_segmentation(val: str) -> str:
+    """Normalize [narration].segmentation; an invalid value falls back to
+    'adaptive' with a warning (never fails the load — the beats writer must
+    always get a mode it understands)."""
+    v = str(val or "").strip().lower() or "adaptive"
+    if v not in ("adaptive", "per_panel"):
+        print(f"[config] invalid narration.segmentation={v!r} — "
+              "falling back to 'adaptive'", file=sys.stderr)
+        return "adaptive"
+    return v
 
 
 def _resolve_tts_python(val: str) -> str:
@@ -134,6 +157,7 @@ def load(path: Path | None = None) -> Config:
     m = data.get("models", {})
     t = data.get("tts", {})
     tr = data.get("teaser", {})
+    n = data.get("narration", {})
     return Config(
         sites=sites,
         yolo_weights=(lambda _w: _w if _w.is_absolute()
@@ -155,6 +179,9 @@ def load(path: Path | None = None) -> Config:
         semantic_heal=(os.environ.get("STUDIO_SEMANTIC_HEAL", "").lower()
                        in ("1", "true", "yes")
                        or bool(m.get("semantic_heal", False))),
+        segmentation=_valid_segmentation(
+            os.environ.get("STUDIO_NARR_SEGMENTATION")
+            or n.get("segmentation", "adaptive")),
         narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
                                      bool(m.get("narration_sanitize", True))),
         teaser_enabled=_env_bool("STUDIO_TEASER_ENABLED",
