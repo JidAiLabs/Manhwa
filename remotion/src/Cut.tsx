@@ -31,8 +31,17 @@ export const CutView: React.FC<{
   const strength = motion?.strength ?? 0.75;
   const panCapPx = PAN_CAP_FRAC * Math.min(width, height);
 
+  // Honor the plan's per-cut easing. A same-image run is sliced into ONE
+  // continuous move across consecutive cuts (render_prep._kenburns_slice):
+  // interior slices MUST run linear — re-easing every slice makes the pan
+  // stop and restart at each segment boundary (visible pulse on held runs).
+  const easing =
+    motion?.ease === 'linear' ? Easing.linear :
+    motion?.ease === 'ease_in' ? Easing.in(Easing.ease) :
+    motion?.ease === 'ease_out' ? Easing.out(Easing.ease) :
+    Easing.inOut(Easing.ease);
   const t = interpolate(frame, [0, Math.max(1, durationInFrames - 1)], [0, 1], {
-    easing: Easing.inOut(Easing.ease),
+    easing,
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });

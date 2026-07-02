@@ -1519,15 +1519,22 @@ def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
 
-def _kenburns_slice(f0: float, f1: float) -> Dict[str, Any]:
+def _kenburns_slice(f0: float, f1: float,
+                    ease: str = "ease_in_out") -> Dict[str, Any]:
     """Motion for the slice [f0, f1] (fractions of a same-image run's total
     duration) of ONE continuous slow Ken Burns. Slicing keeps zoom + pan
     CONTINUOUS across the run's cuts (each slice starts where the previous ended),
-    so the repeated image reads as a single slow move, never a restart."""
+    so the repeated image reads as a single slow move, never a restart.
+
+    `ease` must vary by position in the run: the renderer applies the easing
+    over EACH cut's own duration, so a mid-run "ease_in_out" slice decelerates
+    to a stop and re-accelerates at every segment boundary — a visible
+    stop-start pulse on the held image. Head slice eases in, interior slices
+    run linear, tail slice eases out; only a sole slice keeps ease_in_out."""
     return {
         "mode": "kenburns",
         "strength": _MERGE_STRENGTH,
-        "ease": "ease_in_out",
+        "ease": ease,
         "start_bias": {"x": round(_lerp(_MERGE_BIAS_START["x"], _MERGE_BIAS_END["x"], f0), 4),
                        "y": round(_lerp(_MERGE_BIAS_START["y"], _MERGE_BIAS_END["y"], f0), 4)},
         "end_bias": {"x": round(_lerp(_MERGE_BIAS_START["x"], _MERGE_BIAS_END["x"], f1), 4),
@@ -1645,12 +1652,14 @@ def merge_consecutive_same_image_cuts(plan: Dict[str, Any]) -> Dict[str, Any]:
                                    or it.get("duration_sec") or 0.0)) for it in run]
             total = sum(durs) or float(len(run))
             acc = 0.0
-            for it, d in zip(run, durs):
+            for k, (it, d) in enumerate(zip(run, durs)):
                 f0 = acc / total
                 acc += d
                 cut = (it.get("cuts") or [None])[0]
                 if cut is not None:
-                    cut["motion"] = _kenburns_slice(f0, acc / total)
+                    ease = ("ease_in" if k == 0 else
+                            "ease_out" if k == len(run) - 1 else "linear")
+                    cut["motion"] = _kenburns_slice(f0, acc / total, ease=ease)
         i = j
     return plan
 

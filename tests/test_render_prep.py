@@ -1250,8 +1250,26 @@ def test_merge_same_image_one_continuous_slow_kenburns_across_segments():
     assert run[0]["motion"]["zoom"]["start"] != run[2]["motion"]["zoom"]["end"]
     assert run[0]["motion"]["zoom"]["end"] == run[1]["motion"]["zoom"]["start"]
     assert run[1]["motion"]["zoom"]["end"] == run[2]["motion"]["zoom"]["start"]
+    # easing reads as ONE move: ease IN on the head slice, LINEAR through the
+    # middle, ease OUT on the tail — per-slice ease_in_out made the pan
+    # decelerate + re-accelerate at every segment boundary (the "restarting
+    # pan" pulse the user saw on held runs).
+    assert [c["motion"]["ease"] for c in run] == \
+        ["ease_in", "linear", "ease_out"]
     # the distinct image after the run is untouched
     assert tl[3]["cuts"][0]["motion"] == {"mode": "pan"}
+
+
+def test_merge_same_image_two_item_run_eases_in_then_out():
+    plan = {"timeline": [
+        {"segment_id": "g1", "duration_sec": 4.0, "tts_audio": "a.wav",
+         "cuts": [{"file": "x.jpg", "start": 0.0, "dur": 4.0, "motion": {"mode": "s"}}]},
+        {"segment_id": "g2", "duration_sec": 4.0, "tts_audio": "b.wav",
+         "cuts": [{"file": "x.jpg", "start": 0.0, "dur": 4.0, "motion": {"mode": "s"}}]},
+    ]}
+    tl = rp.merge_consecutive_same_image_cuts(plan)["timeline"]
+    assert [it["cuts"][0]["motion"]["ease"] for it in tl] == \
+        ["ease_in", "ease_out"]
 
 
 def test_merge_same_image_distinct_images_untouched():
