@@ -16,6 +16,8 @@ BEFORE any render is started:
               ocr_echo (narration repeats on-page text)
   plan:       missing_file / missing_dims / missing_audio, empty_item,
               flash_cut, repeat_cut, cut_gap, no_cold_open, branding
+  cover:      panel_uncovered / panel_double_covered (segment spans must
+              partition the shown story panels — adaptive flow narration)
 
 Emits a console summary + JSON + self-contained HTML report (base64
 thumbnails for every flagged scene). Exit code 1 when any ERROR-severity
@@ -48,6 +50,7 @@ for _p in (_TOOLS_DIR, _REPO_ROOT):
         sys.path.insert(0, _p)
 
 import render_prep as rp                      # art/bubble metrics, detector
+from beats_segments import beat_segments
 from render_prep import multi_scale_contained
 from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
@@ -741,25 +744,104 @@ def raw_caps_voiced_flags(script_obj: Any) -> List[Dict[str, Any]]:
 
 
 def shot_description_flags(beats_obj: Any) -> List[Dict[str, Any]]:
-    """A panel line that NAMES the shot/camera/panel/frame instead of narrating
-    the story ('A close-up shot shows...', 'The panel focuses on...'). This is the
-    align_panel_narration pad copying a panel's camera-prose understanding
-    `description` verbatim — it must be re-narrated as story. ERROR + healable
-    per group (segment_id g####)."""
+    """A narration line that NAMES the shot/camera/panel/frame instead of
+    narrating the story ('A close-up shot shows...', 'The panel focuses on...').
+    This is camera-prose understanding `description` leaking verbatim into the
+    voiced line — it must be re-narrated as story. Iterates `beat_segments`
+    (native flow spans AND legacy panel_narration, adapted to singleton spans)
+    so a flow-span line is screened too. ERROR + healable per group
+    (segment_id g####); the span head carries the thumb."""
     flags: List[Dict[str, Any]] = []
     if not isinstance(beats_obj, dict):
         return flags
     for b in beats_obj.get("beats") or []:
         seg = f"g{int(b.get('group_id') or 0):04d}"
-        for p in b.get("panel_narration") or []:
-            line = str(p.get("line") or "").strip()
+        for s in beat_segments(b):
+            line = s["line"]
             if line and is_shot_description(line):
                 flags.append(_flag(
                     "shot_description", ERROR,
                     f"narration names the shot/camera, not the story: {line[:80]!r} "
                     "— re-narrate what HAPPENS in the panel",
-                    scene=str(p.get("scene_file") or ""),
+                    scene=str((s["span"] or [""])[0]),
                     segment_id=seg))
+    return flags
+
+
+def span_cover_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
+                     vitems: Optional[Dict[str, Dict[str, Any]]] = None
+                     ) -> List[Dict[str, Any]]:
+    """Adaptive-flow COVER check — the replacement for every 1:1
+    panel-count-shaped invariant: the beats' segment spans must PARTITION the
+    shown story panels. A shown panel in NO span (`panel_uncovered`) has no
+    narration carrying it on screen — the class the old per-panel count assert
+    caught; a panel claimed by 2+ spans (`panel_double_covered`) would be paced
+    under two different clips. Both ERROR (blocks autopilot spotless-advance).
+
+    Judged on SHOWN panels only: a span panel visually dropped upstream is by
+    design (spec 3.5 — drops shrink the cut list, narration untouched).
+    Exempt: branding + held cuts (display machinery, not narration coverage)
+    and protected system/doc cards (scene_dims sys/doc or stamped
+    panel_kind=='system') — inject_missing_protected shows those narration-less
+    BY DESIGN. Silent when no beat carries segments/panel_narration at all
+    (pre-per-panel manifests have no spans to assert against)."""
+    cover: Dict[str, List[str]] = {}
+    any_segments = False
+    for b in (beats_obj or {}).get("beats") or []:
+        segs = beat_segments(b)
+        if not segs:
+            continue
+        any_segments = True
+        gid_tag = f"g{int(b.get('group_id') or 0):04d}"
+        for s in segs:
+            for f in s["span"]:
+                cover.setdefault(_base_scene(f), []).append(gid_tag)
+    if not any_segments:
+        return []
+
+    dims = (plan or {}).get("scene_dims") or {}
+    vit = vitems or {}
+
+    def _protected(fname: str, base: str) -> bool:
+        for name in (fname, base):
+            d = dims.get(name) or {}
+            if d.get("sys") or d.get("doc"):
+                return True
+        kind = ((vit.get(base) or vit.get(fname)) or {}).get("panel_kind")
+        return str(kind or "").lower() == "system"
+
+    flags: List[Dict[str, Any]] = []
+    seen: set = set()
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        seg = str(item.get("segment_id") or "")
+        for c in item.get("cuts") or []:
+            if c.get("held"):
+                continue
+            for f in (c.get("file"), c.get("file2")):
+                if not f:
+                    continue
+                f = str(f)
+                base = _base_scene(f)
+                if base in seen:
+                    continue
+                seen.add(base)
+                owners = cover.get(base) or []
+                if len(owners) > 1:
+                    flags.append(_flag(
+                        "panel_double_covered", ERROR,
+                        f"panel is claimed by {len(owners)} narration segment "
+                        f"spans ({', '.join(owners)}) — spans must partition "
+                        "the panels; re-run the beated stage",
+                        scene=base, segment_id=owners[0]))
+                elif not owners and not _protected(f, base):
+                    flags.append(_flag(
+                        "panel_uncovered", ERROR,
+                        "shown panel belongs to NO narration segment span — "
+                        "no voiced line carries it on screen; re-run the "
+                        "beated/scripted stages",
+                        scene=base, segment_id=seg))
     return flags
 
 
@@ -1613,6 +1695,7 @@ def main() -> int:
     flags.extend(shot_description_flags(beats_obj))
     flags.extend(story_flags(plan, beats_obj, vitems))
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
+    flags.extend(span_cover_flags(plan, beats_obj, vitems))
 
     recap_style = analyze_recap_style(
         script_obj, beats_obj, story_obj, cast_obj, vitems)
