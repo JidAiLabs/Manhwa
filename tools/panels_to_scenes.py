@@ -239,6 +239,25 @@ def dedupe_overlapping_boxes(
     return [k for k in range(n) if not dropped[k]]
 
 
+def same_strip_overlap(prev: Dict[str, Any], cur: Dict[str, Any],
+                       overlap_px: int) -> bool:
+    """True iff two crops from ADJACENT chunks cover the same TRUE-global strip.
+
+    Consecutive stitch chunks share `overlap_px` rows, so a panel inside that
+    band is captured by BOTH chunks. In true global coords (chunk-local y +
+    naive offset - seq*overlap_px) the two copies cover the same rows. Entries
+    carry `seq` (chunk stitch index) and `ty0`/`ty1` (true global y-range).
+    """
+    if overlap_px <= 0 or abs(int(cur["seq"]) - int(prev["seq"])) != 1:
+        return False
+    lo = max(prev["ty0"], cur["ty0"])
+    hi = min(prev["ty1"], cur["ty1"])
+    if hi <= lo:
+        return False
+    min_h = min(prev["ty1"] - prev["ty0"], cur["ty1"] - cur["ty0"])
+    return (hi - lo) >= 0.5 * max(1, min_h)
+
+
 # -----------------------------
 # DHash for dedupe
 # -----------------------------
@@ -791,6 +810,16 @@ def main() -> int:
         chunk_global_y0[cf] = global_y
         global_y += h
 
+    # Cross-chunk overlap dedupe context: consecutive chunks share
+    # adaptive.overlap_px rows, so a panel inside that band is captured by BOTH
+    # chunks. The dhash match identifies the pair, but each chunk trims its
+    # copy slightly differently, skewing aspect ratio past the ratio guard
+    # (real ch1: ratio diffs 0.094/0.108 vs tol 0.08) — so for provably
+    # same-strip pairs the hamming gate alone decides (see same_strip_overlap).
+    overlap_px = int((stitch.get("adaptive") or {}).get("overlap_px") or 0)
+    chunk_seq = {cf: i for i, cf in
+                 enumerate(sorted(chunk_global_y0, key=chunk_global_y0.get))}
+
     # splitting parameters
     gp = GutterParams(
         blank_thr=float(args.blank_threshold),
@@ -965,6 +994,11 @@ def main() -> int:
 
                     # dedupe
                     dh = dhash64(part_im)
+                    seq = int(chunk_seq.get(cf, cidx))
+                    ty_base = int(chunk_global_y0.get(cf, 0)) - seq * overlap_px
+                    strip = {"seq": seq,
+                             "ty0": ty_base + int(part_box[1]),
+                             "ty1": ty_base + int(part_box[3])}
                     if args.dedupe and recent:
                         r_w, r_h = part_im.size
                         r_ratio = r_w / max(1, r_h)
@@ -974,6 +1008,11 @@ def main() -> int:
                             ham = hamming64(dh, prev["dhash64"])
                             if ham > int(args.dedupe_threshold):
                                 continue
+                            if same_strip_overlap(prev, strip, overlap_px):
+                                # same physical rows captured by both chunks —
+                                # the hash match is proof; skip ratio/area.
+                                dup = True
+                                break
                             pw, ph = prev["w"], prev["h"]
                             pr = pw / max(1, ph)
                             pa = pw * ph
@@ -1033,7 +1072,8 @@ def main() -> int:
                             },
                         }
                     )
-                    recent.append({"dhash64": dh, "w": part_im.width, "h": part_im.height})
+                    recent.append({"dhash64": dh, "w": part_im.width, "h": part_im.height,
+                                   "seq": strip["seq"], "ty0": strip["ty0"], "ty1": strip["ty1"]})
                     written += 1
 
                     if args.progress_every > 0 and (written % int(args.progress_every) == 0):

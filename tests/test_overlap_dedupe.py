@@ -10,6 +10,7 @@ from tools.panels_to_scenes import (
     box_iou,
     box_containment,
     dedupe_overlapping_boxes,
+    same_strip_overlap,
 )
 
 
@@ -130,3 +131,62 @@ def test_dedupe_preserves_order_of_kept_indices():
     ]
     kept = dedupe_overlapping_boxes(boxes, iou_thr=0.6, contain_thr=0.8)
     assert kept == [0, 1]
+
+
+# -----------------------------
+# same_strip_overlap (cross-chunk overlap-band dedupe)
+# -----------------------------
+def _strip(seq, gy0, y0, y1, overlap=700):
+    """Build a dedupe-memory entry from REAL manifest fields: chunk stitch
+    index, naive global offset, and the crop's chunk-local y-range."""
+    base = gy0 - seq * overlap
+    return {"seq": seq, "ty0": base + y0, "ty1": base + y1}
+
+
+def test_same_strip_real_ch1_overlap_dup():
+    # Nano ch1 p000063/p000064: the SAME panel captured by chunks 7 and 8 via
+    # the 700px stitch overlap (dhash Hamming 5). It survived dedupe because
+    # per-chunk trim variance broke the ratio guard (2.025 vs 2.133, tol 0.08).
+    # True-global ranges nearly coincide: 73975-74370 vs 74001-74370.
+    a = _strip(6, 68786, 9389, 9784)   # chunk_0007
+    b = _strip(7, 78889, 12, 381)      # chunk_0008
+    assert same_strip_overlap(a, b, 700)
+
+
+def test_same_strip_real_ch1_second_dup():
+    # p000084/p000085 (chunks 9->10, dhash Hamming 7)
+    a = _strip(8, 90817, 11135, 11495)
+    b = _strip(9, 102614, 20, 398)
+    assert same_strip_overlap(a, b, 700)
+
+
+def test_same_strip_rejects_same_chunk():
+    a = _strip(6, 68786, 1000, 1400)
+    b = _strip(6, 68786, 5000, 5400)
+    assert not same_strip_overlap(a, b, 700)
+
+
+def test_same_strip_rejects_non_adjacent_chunks():
+    a = _strip(4, 43983, 9389, 9784)
+    b = _strip(7, 78889, 12, 381)
+    assert not same_strip_overlap(a, b, 700)
+
+
+def test_same_strip_rejects_disjoint_ranges():
+    # adjacent chunks but panels nowhere near the shared band
+    a = _strip(6, 68786, 1000, 1400)   # far above chunk_0007's bottom
+    b = _strip(7, 78889, 5000, 5400)   # far below chunk_0008's top
+    assert not same_strip_overlap(a, b, 700)
+
+
+def test_same_strip_rejects_thin_partial_overlap():
+    # adjacent + touching ranges, but shared rows < 50% of the smaller crop
+    a = _strip(6, 68786, 9389, 9784)   # true 73975-74370 (h=395)
+    b = _strip(7, 78889, 200, 900)     # true 74189-74889 -> 181px shared
+    assert not same_strip_overlap(a, b, 700)
+
+
+def test_same_strip_disabled_without_overlap_px():
+    a = _strip(6, 68786, 9389, 9784, overlap=0)
+    b = _strip(7, 78889, 12, 381, overlap=0)
+    assert not same_strip_overlap(a, b, 0)
