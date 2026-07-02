@@ -2385,6 +2385,22 @@ def main() -> int:
         cuts_by_segment = {seg: _drop_junk_cuts(cs)
                            for seg, cs in cuts_by_segment.items()}
 
+        # a sole-cut junk segment has no survivor to redistribute to — and under
+        # per-panel 1:1 EVERY segment is sole-cut, so without this an operator/
+        # heal drop (manual_drops.json) never actually left the screen: the
+        # coverage-based substitute pass upstream knows nothing about junk.
+        # Give junk files coverage 1.0 and reuse the SAME story-adjacent hold
+        # logic; the later same-image merge collapses "good panel + held copy"
+        # into one slow pan spanning both narration lines. Protected/system
+        # files stay exempt (holding one away would only trip
+        # system_card_unshown downstream).
+        cuts_by_segment, junk_subs = substitute_garbage_sole_cuts(
+            cuts_by_segment, {f: 1.0 for f in junk},
+            durations=durations, exempt=exempt_all, order=order)
+        for seg, old, new in junk_subs:
+            all_dropped.append(old)
+            print(f"[ok] {seg}: junk sole cut {old} -> HOLDING {new}")
+
     # repeat cap + holds (also covers segments emptied by the judge — their
     # neighbor's panel holds while the narration continues)
     cuts_by_segment, holds = cap_repeats_with_holds(

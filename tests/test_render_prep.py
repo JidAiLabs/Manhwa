@@ -790,6 +790,27 @@ def test_substitute_garbage_sole_cut_with_neighbor():
         ("g0001_p00", "p000000.jpg", "p000003.jpg")]
 
 
+def test_junk_sole_cut_substituted_via_coverage_map():
+    # the manual_drops/heal drop path: junk files get coverage 1.0 so the SAME
+    # substitute pass that covers chrome/husk garbage also replaces operator-
+    # dropped sole cuts (per-panel 1:1 makes every segment sole-cut). The
+    # dropped panel's narration keeps playing while the story-adjacent good
+    # panel holds; exempt (system/protected) files are never held away.
+    cbs = {"g1_p00": [{"file": "good.jpg", "start": 0.0, "dur": 4.0}],
+           "g1_p01": [{"file": "dup.jpg", "start": 0.0, "dur": 3.0}],
+           "g1_p02": [{"file": "sys.jpg", "start": 0.0, "dur": 2.0}]}
+    junk = {"dup.jpg", "sys.jpg"}
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cbs, {f: 1.0 for f in junk},
+        durations={"g1_p00": 4.0, "g1_p01": 3.0, "g1_p02": 2.0},
+        exempt={"sys.jpg"}, order=["g1_p00", "g1_p01", "g1_p02"])
+    assert out["g1_p01"] == [{"file": "good.jpg", "start": 0.0, "dur": 3.0,
+                              "held": True}]
+    assert out["g1_p02"] == cbs["g1_p02"]      # exempt card never held away
+    assert [(s[0], s[1], s[2]) for s in subs] == [
+        ("g1_p01", "dup.jpg", "good.jpg")]
+
+
 def test_caption_run_alternates_holds_to_avoid_freeze():
     # A run of narration-only caption boxes between scene A and scene D must
     # not all freeze on A (IE ch1: 3 captions held p93 -> 4-in-a-row, 33s).
