@@ -2391,12 +2391,17 @@ def main() -> int:
         # coverage-based substitute pass upstream knows nothing about junk.
         # Give junk files coverage 1.0 and reuse the SAME story-adjacent hold
         # logic; the later same-image merge collapses "good panel + held copy"
-        # into one slow pan spanning both narration lines. Protected/system
-        # files stay exempt (holding one away would only trip
-        # system_card_unshown downstream).
+        # into one slow pan spanning both narration lines.
+        # Junk OUTRANKS the keep-worthy exemptions the bubble pass granted rich
+        # art panels (that is the point of an explicit drop — same semantics as
+        # _drop_junk_cuts' multi-cut path and the cross-seg-dup discard above),
+        # EXCEPT for system cards: holding one away would only trade a
+        # cosmetic flag for a CRITICAL system_card_unshown downstream.
+        sys_files = {f for f, d in scene_dims.items() if d.get("sys")}
         cuts_by_segment, junk_subs = substitute_garbage_sole_cuts(
             cuts_by_segment, {f: 1.0 for f in junk},
-            durations=durations, exempt=exempt_all, order=order)
+            durations=durations,
+            exempt=exempt_all - (set(junk) - sys_files), order=order)
         for seg, old, new in junk_subs:
             all_dropped.append(old)
             print(f"[ok] {seg}: junk sole cut {old} -> HOLDING {new}")
