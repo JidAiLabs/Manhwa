@@ -87,3 +87,35 @@ def test_three_chunk_chain_is_one_component():
         _scene("b", "c3.jpg", 10000, 20000, [0, 0, 1200, 4000]),      # top touches
     ]
     assert rsp.find_seam_chains(scenes) == [["a", "m", "b"]]
+
+
+# ---- reassembly -------------------------------------------------------------
+
+def test_reassemble_trims_overlap_band_and_sums_height():
+    OVERLAP = 30
+    # A = 100px solid red. B = [30px green overlap band == A's tail] + 80px blue.
+    a = Image.new("RGB", (40, 100), (255, 0, 0))
+    b = Image.new("RGB", (40, 110), (0, 0, 255))
+    for y in range(OVERLAP):                       # paint B's top band green
+        for x in range(40):
+            b.putpixel((x, y), (0, 255, 0))
+    # B.y0 == 0 -> top_trim = OVERLAP - 0 = OVERLAP; A's top_trim = 0
+    merged = rsp.reassemble_slices([a, b], [0, OVERLAP])
+    assert merged.size == (40, 100 + 110 - OVERLAP)   # 180: A.h + B.h - overlap
+    # the green overlap band must be gone (appears zero times)
+    px = list(merged.getdata())
+    assert (0, 255, 0) not in px
+    # red on top, blue on the bottom row
+    assert merged.getpixel((0, 0)) == (255, 0, 0)
+    assert merged.getpixel((0, merged.height - 1)) == (0, 0, 255)
+
+
+def test_reassemble_partial_edge_offset():
+    # B.y0 = 5 (topmost box began 5px below the top edge, within EDGE_TOL) ->
+    # top_trim = OVERLAP - B.y0 leaves NO sliver of the repeated band.
+    OVERLAP = 30
+    a = Image.new("RGB", (10, 50), (10, 10, 10))
+    b = Image.new("RGB", (10, 60), (20, 20, 20))
+    top_trim = OVERLAP - 5
+    merged = rsp.reassemble_slices([a, b], [0, top_trim])
+    assert merged.height == 50 + (60 - top_trim)

@@ -138,6 +138,28 @@ def find_seam_chains(
     return [ch for ch in chains if len(ch) >= 2]
 
 
+def reassemble_slices(slices: List[Image.Image], top_trims: List[int]) -> Image.Image:
+    """Vertically stack *slices*, trimming top_trims[k] px off slice k's top.
+
+    Slices share a source column (same width), aligned by construction. The trim
+    on each interior seam removes the duplicated overlap band at the TRUE seam
+    (top_trims[k] = OVERLAP_PX - B.y0 for the k-th slice; 0 for the first).
+    """
+    assert len(slices) == len(top_trims) and slices, "slices/top_trims mismatch"
+    parts: List[Image.Image] = []
+    for im, trim in zip(slices, top_trims):
+        t = max(0, min(int(trim), im.height))
+        parts.append(im.crop((0, t, im.width, im.height)) if t else im)
+    width = max(p.width for p in parts)
+    height = sum(p.height for p in parts)
+    out = Image.new("RGB", (width, height), (255, 255, 255))
+    y = 0
+    for p in parts:
+        out.paste(p.convert("RGB"), (0, y))
+        y += p.height
+    return out
+
+
 def main() -> int:  # pragma: no cover  (filled in Task 1.3)
     raise SystemExit("main() implemented in Task 1.3")
 
