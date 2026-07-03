@@ -44,7 +44,11 @@ from recap_style import (  # noqa: E402
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
-from beats_segments import beat_segments, has_native_segments  # noqa: E402
+from beats_segments import (  # noqa: E402
+    beat_segments,
+    has_native_segments,
+    write_segment_lines,
+)
 
 # --- adaptive flow segments (spec 2026-07-02) ---------------------------------
 # The writer emits beats[].segments[] = [{"span": [scene_files...], "line": ...}]
@@ -808,8 +812,13 @@ def _select_images_for_group(
 def build_beat_schema(segmentation: str = "adaptive") -> dict:
     """Return the Gemini response schema for a narrative beat.
 
-    adaptive (tool default): narration comes back as `segments` — ordered
-    {span, line} passages whose spans partition the group's scene_files.
+    adaptive: narration comes back as `segments` — ordered {span, line}
+    passages whose spans partition the group's scene_files (the shape a
+    span-PINNED correction regen must keep speaking).
+    prose (the free-generation shape when the tool runs adaptive):
+    `narration` is ONE connected passage and `sentences` [{text, panels}]
+    is that same passage split and panel-tagged — the spans are derived in
+    code by segments_from_sentences(), never by the model.
     per_panel: the legacy 1-line-per-panel `panel_narration` schema,
     byte-identical to the pre-segments tool."""
     schema = {
@@ -876,7 +885,28 @@ def build_beat_schema(segmentation: str = "adaptive") -> dict:
             "scene_selection",
         ],
     }
-    if segmentation != "per_panel":
+    if segmentation == "prose":
+        # prose-first free generation: the passage rides the existing
+        # `narration` field (generated EARLY — before the split, so the
+        # model authors flowing prose with zero bookkeeping interleaved);
+        # `sentences` lands LAST in property order, a mechanical re-split of
+        # the passage it already wrote.
+        props = schema["properties"]
+        del props["panel_narration"]
+        props["sentences"] = {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "text": {"type": "STRING"},
+                    "panels": {"type": "ARRAY", "items": {"type": "STRING"}},
+                },
+                "required": ["text", "panels"],
+            },
+        }
+        schema["required"] = ["sentences" if k == "panel_narration" else k
+                              for k in schema["required"]]
+    elif segmentation != "per_panel":
         # segments REPLACES panel_narration as the one narration shape the
         # model returns (per_panel keeps the legacy schema byte-identical).
         props = schema["properties"]
@@ -967,6 +997,161 @@ def auto_repair_segments(segs, surviving, kinds, understand_by_file=None):
         out.insert(idx, {"span": [f],
                          "line": _grounded_pad_line(f, understand_by_file)})
     return out
+
+
+def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
+    """Prose-first (2026-07-03): derive adaptive segments from a beat written
+    as ONE connected passage plus panel-tagged sentences. The model authors
+    prose — the grouped-era deliverable — and ALL span structure is computed
+    here, deterministically:
+      - the earliest sentence to tag a story panel owns it; a tag that would
+        move ownership backwards is absorbed into the running span (owners
+        never regress, so spans stay in reading order);
+      - untagged story panels ride the previous sentence's span (leading
+        ones ride the first) — the voice keeps speaking while the art
+        advances, exactly the grouped-era pacing;
+      - an untagged sentence rides the previous tagged sentence's segment
+        (its text joins that line; leading untagged text joins the first);
+      - system panels are always solo: a sentence tagging EXACTLY that card
+        (and nothing else) supplies its line, otherwise a grounded pad;
+      - a run over SPAN_CAP keeps its line on the first SPAN_CAP panels and
+        the overflow rides the NEXT sentence's span (pads only at the tail).
+    Returns None when nothing usable came back — no story-panel tags, or one
+    lone sentence claiming more story panels than a span may hold — so the
+    caller re-asks, then falls back. Pure; never mutates its inputs."""
+    files = [f for f in (surviving or []) if f]
+    if not files:
+        return None
+    kinds = kinds or {}
+    idx = {f: i for i, f in enumerate(files)}
+    is_sys = [str(kinds.get(f) or "").lower() == "system" for f in files]
+    n_story = sum(1 for s in is_sys if not s)
+
+    sents: List[Dict[str, Any]] = []
+    for s in (sentences or []):
+        if not isinstance(s, dict):
+            continue
+        text = str(s.get("text") or "").strip()
+        if not text:
+            continue
+        story_tags, sys_tags = set(), set()
+        for p in (s.get("panels") or []):
+            j = idx.get(os.path.basename(str(p or "").strip()))
+            if j is None:
+                continue
+            (sys_tags if is_sys[j] else story_tags).add(j)
+        sents.append({"text": text, "tags": sorted(story_tags),
+                      "sys": sorted(sys_tags)})
+    if not sents:
+        return None
+
+    # a sentence tagging EXACTLY one system card (and no story panel) IS that
+    # card's line; it takes no further part in the prose folding
+    sys_line: Dict[int, str] = {}
+    body: List[Dict[str, Any]] = []
+    for s in sents:
+        if not s["tags"] and len(s["sys"]) == 1 and s["sys"][0] not in sys_line:
+            sys_line[s["sys"][0]] = s["text"]
+        else:
+            body.append(s)
+
+    tagged = [s for s in body if s["tags"]]
+    if n_story and not tagged:
+        return None
+    if not n_story and not sys_line:
+        return None
+    if len(tagged) == 1 and n_story > SPAN_CAP:
+        # one lone sentence would own EVERY story panel — beyond what a span
+        # may hold, and pads would eat the beat. Re-ask for a real split.
+        return None
+
+    # ownership: earliest tagger wins; then owners never regress
+    owner: List[Optional[int]] = [None] * len(files)
+    for si, s in enumerate(body):
+        for j in s["tags"]:
+            if owner[j] is None:
+                owner[j] = si
+    run = -1
+    for j in range(len(files)):
+        if is_sys[j] or owner[j] is None:
+            continue
+        owner[j] = max(owner[j], run)
+        run = owner[j]
+    prev: Optional[int] = None                    # untagged panels ride left…
+    for j in range(len(files)):
+        if is_sys[j]:
+            continue
+        if owner[j] is None:
+            owner[j] = prev
+        else:
+            prev = owner[j]
+    nxt: Optional[int] = None                     # …leading ones ride right
+    for j in range(len(files) - 1, -1, -1):
+        if is_sys[j]:
+            continue
+        if owner[j] is None:
+            owner[j] = nxt
+        else:
+            nxt = owner[j]
+
+    # each owning sentence's segment text: its own sentence plus every
+    # following non-owning sentence up to the next owner, in passage order
+    owners_used = {o for o in owner if o is not None}
+    line_parts: Dict[int, List[str]] = {o: [] for o in owners_used}
+    pending: List[str] = []
+    cur: Optional[int] = None
+    for si, s in enumerate(body):
+        if si in line_parts:
+            cur = si
+            if pending:
+                line_parts[cur].extend(pending)
+                pending = []
+            line_parts[cur].append(s["text"])
+        elif cur is not None:
+            line_parts[cur].append(s["text"])
+        else:
+            pending.append(s["text"])
+
+    def _pad(j: int) -> str:
+        return _grounded_pad_line(files[j], u_by_file)
+
+    segs: List[Dict[str, Any]] = []
+    used: set = set()                             # a line is voiced ONCE
+    carry: List[int] = []                         # cap overflow -> next span
+    j = 0
+    while j < len(files):
+        if is_sys[j]:
+            for c in carry:                       # overflow never crosses a card
+                segs.append({"span": [files[c]], "line": _pad(c)})
+            carry = []
+            segs.append({"span": [files[j]],
+                         "line": sys_line.get(j) or _pad(j)})
+            j += 1
+            continue
+        o = owner[j]
+        k = j
+        while k < len(files) and not is_sys[k] and owner[k] == o:
+            k += 1
+        run_idx = carry + list(range(j, k))
+        carry = []
+        text = ("" if o is None or o in used
+                else " ".join(line_parts.get(o) or []).strip())
+        if text:
+            used.add(o)
+        if len(run_idx) > SPAN_CAP:
+            head, rest = run_idx[:SPAN_CAP], run_idx[SPAN_CAP:]
+            segs.append({"span": [files[x] for x in head],
+                         "line": text or _pad(head[0])})
+            if k < len(files) and not is_sys[k]:
+                carry = rest                      # ride the next sentence's span
+            else:
+                for x in rest:
+                    segs.append({"span": [files[x]], "line": _pad(x)})
+        elif run_idx:
+            segs.append({"span": [files[x] for x in run_idx],
+                         "line": text or _pad(run_idx[0])})
+        j = k
+    return segs
 
 
 def align_panel_narration(scene_files, model_panels, understand_by_file=None):
@@ -1093,6 +1278,20 @@ def _segment_repair_block(errors: List[str]) -> str:
           "its span's word budget.\n")
 
 
+def _prose_repair_block(errors: List[str]) -> str:
+    """Repair re-ask for the prose-first shape: the derived segments (or the
+    tagging itself) failed — ask for a fresh passage + tagged sentences."""
+    return (
+        "\n\nNARRATION REPAIR — your previous answer could not be used:\n  - "
+        + "\n  - ".join(errors)
+        + "\nRe-write the beat fixing EXACTLY these problems: one connected "
+          "'narration' passage, then the SAME passage split into 'sentences' "
+          "in order, each tagged with the 1-4 CONSECUTIVE scene_file(s) it "
+          "speaks over. Tag every scene_file under some sentence; give a "
+          "system/notification card its own short sentence; size each "
+          "sentence to the screen time its panels deserve.\n")
+
+
 def _pinned_span_block(segments: List[Dict[str, Any]]) -> str:
     """Correction-regen prompt block when the existing beat carries native
     segments (spec 3.5): the spans are FIXED — a re-split would renumber the
@@ -1132,41 +1331,59 @@ def enforce_pinned_spans(beat, prev_beat, gid):
 
 
 def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
-                           reask_fn=None, allow_flow_nudge=True):
+                           reask_fn=None, allow_flow_nudge=True,
+                           derive_fn=None):
     """Adaptive mode: normalize + validate the model's segments; on failure do
     ONE repair re-ask (reask_fn(errors) -> repaired beat or None); still failing
     -> fall back to align_panel_narration singleton spans (never block the
     chapter; log `[segments] fallback beat gNNNN`).
 
+    derive_fn(beat) -> raw segments list, or None/[] when the answer carries
+    nothing usable. Default reads the beat's native segments; prose-first
+    passes a segments_from_sentences closure. An unusable answer goes to the
+    repair re-ask and then the FALLBACK path — never to a silent all-pad
+    auto-repair (an all-pad "valid" beat could slip past a span pin whose
+    spans are all-singleton, the exact d953fe4 poisoning).
+
     A VALID all-singleton answer on a >=4-panel beat gets ONE flow-nudge
     re-ask (the observed gemma failure: caption slideshow, zero spans); the
     nudged answer is adopted only when it validates AND actually flows.
     Disabled on span-pinned regens (allow_flow_nudge=False) — a nudge re-split
-    would only be rejected by the pin.
+    would only be rejected by the pin — and in prose mode (the passage is
+    flow-authored; span sizes are derived bookkeeping there).
 
     Writes beat['segments'] (spans partition `surviving` — the adaptive-mode
-    cover assert), drops panel_narration (segments replaces it), and rebuilds
-    beat['narration'] as the ordered join of segment lines — LOAD-BEARING:
-    caption_unvoiced / narration_stale / alignment QA and punchup key on it.
+    cover assert), drops panel_narration + prose scaffolding (`sentences`),
+    and rebuilds beat['narration'] as the ordered join of segment lines —
+    LOAD-BEARING: caption_unvoiced / narration_stale / alignment QA and
+    punchup key on it.
     """
-    segs = auto_repair_segments(beat_segments(beat), surviving, kinds,
-                                u_by_file)
-    errors = validate_segments(segs, surviving, kinds)
+    _derive = derive_fn or beat_segments
+    raw = _derive(beat)
+    if raw:
+        segs = auto_repair_segments(raw, surviving, kinds, u_by_file)
+        errors = validate_segments(segs, surviving, kinds)
+    else:
+        segs = []
+        errors = ["the answer carried no usable narration shape (no valid "
+                  "segments / panel-tagged sentences)"]
     if errors and reask_fn is not None:
         repaired = reask_fn(errors)
         if isinstance(repaired, dict):
-            segs2 = auto_repair_segments(beat_segments(repaired), surviving,
-                                         kinds, u_by_file)
-            if not validate_segments(segs2, surviving, kinds):
-                segs, errors = segs2, []
+            raw2 = _derive(repaired)
+            if raw2:
+                segs2 = auto_repair_segments(raw2, surviving, kinds, u_by_file)
+                if not validate_segments(segs2, surviving, kinds):
+                    segs, errors = segs2, []
     elif (not errors and allow_flow_nudge and reask_fn is not None
           and len(surviving) >= _FLOW_NUDGE_MIN_PANELS
           and all(len(s["span"]) == 1 for s in segs)):
         nudged = reask_fn([_flow_nudge_note(len(surviving))])
         if isinstance(nudged, dict):
-            segs3 = auto_repair_segments(beat_segments(nudged), surviving,
-                                         kinds, u_by_file)
-            if (not validate_segments(segs3, surviving, kinds)
+            raw3 = _derive(nudged)
+            segs3 = (auto_repair_segments(raw3, surviving, kinds, u_by_file)
+                     if raw3 else [])
+            if (segs3 and not validate_segments(segs3, surviving, kinds)
                     and any(len(s["span"]) > 1 for s in segs3)):
                 print(f"[segments] flow-nudge beat g{gid:04d} adopted "
                       f"({len(segs3)} segments)")
@@ -1178,6 +1395,11 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         # align_panel_narration keys/fills/pads to exactly one line per panel.
         model_panels = [{"scene_file": (s.get("span") or [""])[0],
                          "line": s.get("line")} for s in segs]
+        if not model_panels:
+            # prose answers keep their sentence texts as positional material
+            model_panels = [
+                {"scene_file": "", "line": str((x or {}).get("text") or "")}
+                for x in (beat.get("sentences") or []) if isinstance(x, dict)]
         aligned = align_panel_narration(surviving, model_panels, u_by_file)
         segs = [{"span": [p["scene_file"]], "line": p["line"]} for p in aligned]
         # Marker for the corrections caller: a pad-heavy fallback must NEVER
@@ -1186,6 +1408,7 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         # (this poisoned 6 healed ch1 beats with "The moment holds.").
         beat["_segments_fallback"] = True
     beat.pop("panel_narration", None)
+    beat.pop("sentences", None)   # authoring scaffolding — segments are the contract
     beat["segments"] = segs
     covered = [f for s in segs for f in s["span"]]
     if covered != list(surviving):     # postcondition — must survive -O
@@ -1238,6 +1461,40 @@ _ADAPTIVE_NARRATION_INSTRUCTION = (
     "line stretched over panels, never a bloated line parked on one.\n"
     "Lines FLOW as one continuous story (continue from previous_narration). "
     "Set 'narration' to the segment lines joined with a space.\n"
+)
+
+# Prose-first free generation (2026-07-03) — restores the grouped-era voice
+# the user approved on 2026-06-16: the writer authors ONE connected passage
+# per beat (narration flows, panels pace underneath) and tags each sentence
+# with the panel(s) it rides over; segments_from_sentences() then derives the
+# span partition DETERMINISTICALLY. Asking gemma to invent {span, line}
+# partitions while writing prose produced caption slideshows (ch1 2026-07-03:
+# 67% singletons, "He's definitely not happy about that.") across three
+# prompt-level fixes — segmentation is bookkeeping, so it lives in code now.
+# _ADAPTIVE_NARRATION_INSTRUCTION stays for span-PINNED correction regens,
+# where the model must think in segments (locked spans, lines rewritten).
+_PROSE_NARRATION_INSTRUCTION = (
+    "You are the NARRATOR telling this story aloud — never a caption writer. "
+    "The per-panel descriptions are RAW MATERIAL, not lines: echoing or "
+    "rephrasing one is FORBIDDEN, and openers like 'The character…' / 'The "
+    "scene shows…' are BANNED — name people (cast or persona handles) and "
+    "narrate stakes, momentum, consequence.\n"
+    "Write 'narration' FIRST: ONE connected passage — the exact sentences a "
+    "narrator SPEAKS over these panels, walking the beat's moments IN ORDER "
+    "as one continuous story. Let each moment's CONTENT set its share: when "
+    "several CONSECUTIVE panels show one continuous action, traversal, or "
+    "progression (a fall, a chase, a charge, a caption run), write ONE "
+    "fuller sentence that carries the WHOLE run — never slice it into one "
+    "thin sentence per panel; a moment that lands alone (a close-up, a "
+    "reveal, a punchline) earns its own tight sentence — never a list of "
+    "captions, never 'in the next panel'. Cover every panel's moment inside "
+    "the passage, weaving captions and dialogue in as you go.\n"
+    "THEN split that same passage into 'sentences': one entry per sentence, "
+    "in order, text EXACTLY as written in the passage. Tag each entry with "
+    "'panels': ALL the scene_file(s) that sentence speaks over, in reading "
+    "order — a run-carrying sentence tags EACH of its 2-4 files; a "
+    "solo-moment sentence tags one. Tag every scene_file under some "
+    "sentence; give a system/notification card its own short sentence.\n"
 )
 
 # A structurally-VALID all-singleton answer on a big beat is the observed
@@ -1327,10 +1584,7 @@ def main() -> int:
         client = genai.Client(vertexai=True, project=args.project,
                               location=args.location)
 
-    narration_instruction = (_PER_PANEL_NARRATION_INSTRUCTION
-                             if args.segmentation == "per_panel"
-                             else _ADAPTIVE_NARRATION_INSTRUCTION)
-    system = (
+    system_body = (
         "You are a YouTube manhwa recap story editor.\n"
         "Given consecutive scene images + OCR, produce ONE structured beat for that group.\n"
         "Be faithful to visible content.\n"
@@ -1338,7 +1592,7 @@ def main() -> int:
         "End with a strong hook line.\n"
         "Rendering hints: avoid zooming into text bubbles; focus faces/hands/key objects/wide.\n"
         "\n"
-        + narration_instruction +
+        "{NARR_INSTRUCTION}"
         "    - PACE = INPUT_JSON.intensity (the beat's energy) AND how many panels this beat\n"
         "      spans. A MULTI-PANEL action or shock beat (a fight, a reveal, a power awakening\n"
         "      shown across SEVERAL panels) is a CINEMATIC SET-PIECE — give it the FULLEST\n"
@@ -1476,13 +1730,13 @@ def main() -> int:
     # any bracketed cast token the model copied into the final narration.
     cast_list = _load_cast_list(args.cast)
     story_block = _build_story_block(args.story)
-    system = system.replace("{CAST_BLOCK}", cast_block)
-    system = system.replace("{STORY_SPINE}", story_block)
+    system_body = system_body.replace("{CAST_BLOCK}", cast_block)
+    system_body = system_body.replace("{STORY_SPINE}", story_block)
     # Generator-side advertiser-safety rules ride the narration prompt so the
     # narration is brand-safe at the source; the sanitize-pass NET still runs
     # downstream regardless.
-    system = (system + "\n\n" + SAFE_NARRATION_RULES + "\n\n"
-              + _DIALOGUE_RULE + "\n\n" + RECAP_STYLE_RULES)
+    system_body = (system_body + "\n\n" + SAFE_NARRATION_RULES + "\n\n"
+                   + _DIALOGUE_RULE + "\n\n" + RECAP_STYLE_RULES)
     # resolve niche: explicit CLI args win; else read the episode manifest next to --out
     niche_p, niche_s = args.niche, args.niche_secondary
     if not niche_p:
@@ -1494,15 +1748,30 @@ def main() -> int:
             niche_s = str(_d.get("niche_secondary") or "")
         except Exception:
             niche_p, niche_s = "", ""
-    system = _append_niche(system, niche_p, niche_s)
+    system_body = _append_niche(system_body, niche_p, niche_s)
+
+    # Free generation writes PROSE-FIRST under adaptive (one connected passage
+    # + panel-tagged sentences; spans derived in code) or the legacy per-panel
+    # shape; a span-PINNED correction regen keeps the direct-segments schema +
+    # instruction (locked spans, lines rewritten) — the verified heal path.
+    if args.segmentation == "per_panel":
+        system_free = system_body.replace(
+            "{NARR_INSTRUCTION}", _PER_PANEL_NARRATION_INSTRUCTION)
+        schema_free = build_beat_schema("per_panel")
+    else:
+        system_free = system_body.replace(
+            "{NARR_INSTRUCTION}", _PROSE_NARRATION_INSTRUCTION)
+        schema_free = build_beat_schema("prose")
+    system_pinned = system_body.replace(
+        "{NARR_INSTRUCTION}", _ADAPTIVE_NARRATION_INSTRUCTION)
+    schema_pinned = build_beat_schema("adaptive")
+
     corrections: Dict[int, str] = {}
     if args.corrections and os.path.exists(args.corrections):
         try:
             corrections = {int(k): str(v) for k, v in json.load(open(args.corrections)).items()}
         except Exception:
             corrections = {}
-
-    beat_schema = build_beat_schema(args.segmentation)
 
     existing_by_id: Dict[int, Dict[str, Any]] = {}
     if args.resume and os.path.exists(args.out):
@@ -1544,7 +1813,6 @@ def main() -> int:
             beats_out.append(existing_by_id[gid])
             continue
 
-        sys_g = system
         pin_prev: Optional[Dict[str, Any]] = None
         if gid in corrections:
             # Span-pinned heal (spec 3.5): when the beat being corrected
@@ -1558,13 +1826,20 @@ def main() -> int:
             if (prev is not None and has_native_segments(prev)
                     and beat_segments(prev)):
                 pin_prev = prev
-            # The rewrite instruction must speak the ACTIVE schema: under
-            # adaptive the model returns segments[].line — telling it to fix
-            # 'narration' (the derived join) yields malformed segments →
-            # validation fallback → pads (poisoned 6 healed ch1 beats).
-            _fix_target = ("every 'segments' line"
-                           if args.segmentation == "adaptive"
-                           else "the 'narration'")
+        sys_g = system_pinned if pin_prev is not None else system_free
+        schema_g = schema_pinned if pin_prev is not None else schema_free
+        if gid in corrections:
+            # The rewrite instruction must speak the ACTIVE schema: a pinned
+            # regen returns segments[].line; free adaptive returns the prose
+            # passage + tagged sentences — telling it to fix a field it does
+            # not emit yields malformed answers → validation fallback → pads
+            # (poisoned 6 healed ch1 beats).
+            if pin_prev is not None:
+                _fix_target = "every 'segments' line"
+            elif args.segmentation == "per_panel":
+                _fix_target = "the 'narration'"
+            else:
+                _fix_target = "the 'narration' passage and its tagged 'sentences'"
             sys_g = sys_g + (
                 "\n\nCORRECTION FOR THIS GROUP — the previous narration had this problem:\n  "
                 + corrections[gid] + "\n"
@@ -1592,7 +1867,7 @@ def main() -> int:
             system_instruction=sys_g,
             payload=payload,
             image_paths=img_paths,
-            beat_schema=beat_schema,
+            beat_schema=schema_g,
             gid=gid,
             retries=args.retries,
             max_output_tokens=args.max_output_tokens,
@@ -1652,21 +1927,32 @@ def main() -> int:
                      for f in surviving}
 
             def _reask(errors: List[str]) -> Optional[Dict[str, Any]]:
+                block = (_segment_repair_block(errors) if pin_prev is not None
+                         else _prose_repair_block(errors))
                 return _generate_beat_for_group(
                     client=client, model=args.model,
-                    system_instruction=sys_g + _segment_repair_block(errors),
+                    system_instruction=sys_g + block,
                     payload=payload, image_paths=img_paths,
-                    beat_schema=beat_schema, gid=gid, retries=0,
+                    beat_schema=schema_g, gid=gid, retries=0,
                     max_output_tokens=args.max_output_tokens,
                     backoff_max=args.backoff_max, backend=args.backend,
                     usage=usage)
 
+            def _derive(b: Dict[str, Any]):
+                # prose tags win when present; a pinned regen's answer (or a
+                # legacy manifest) still counts via its native segments
+                segs = segments_from_sentences(
+                    b.get("sentences"), surviving, kinds, u_by_file)
+                return segs if segs is not None else beat_segments(b)
+
             finalize_adaptive_beat(
                 beat, surviving, kinds, u_by_file, gid,
                 reask_fn=None if beat.get("error") else _reask,
-                # a nudge re-split on a pinned regen would only be rejected by
-                # enforce_pinned_spans below — don't waste the model call
-                allow_flow_nudge=pin_prev is None)
+                # the span-size nudge is direct-segments machinery: prose
+                # authors flow in the passage itself, and a pinned nudge
+                # re-split would only be rejected by enforce_pinned_spans
+                allow_flow_nudge=False,
+                derive_fn=_derive)
 
         # Corrections regen of a native-segments beat: adopt the rewrite ONLY
         # if it kept the pinned spans AND is a real rewrite; a validation
@@ -1685,6 +1971,15 @@ def main() -> int:
         # The per-panel backfill above gives even a parse-failed beat valid lines;
         # demote the silencing `error` flag so those lines actually reach render.
         demote_backfilled_error(beat)
+
+        # Resolve bracketed cast tokens PER LINE — the narration-string resolve
+        # above is rebuilt away when the finalizers re-join the lines, so a
+        # '[protagonist]' inside a segment line would otherwise reach the TTS.
+        if cast_list:
+            seg_lines = [s["line"] for s in beat_segments(beat)]
+            fixed = [_resolve_cast_tokens(x, cast_list) for x in seg_lines]
+            if fixed != seg_lines and all(x.strip() for x in fixed):
+                write_segment_lines(beat, fixed)
 
         # Guarantee exactly one sanitized selection entry per scene (defaults to
         # 'keep' so a parse gap never silently drops a panel).

@@ -351,7 +351,9 @@ def test_main_adaptive_repair_reask_then_adopts(tmp_path, monkeypatch):
     bad = dict(_GOOD_MODEL_BEAT, segments=list(_BAD_ORDER_SEGMENTS))
     out, calls = _run_main(tmp_path, monkeypatch, [bad, _GOOD_MODEL_BEAT])
     assert len(calls) == 2                               # ONE repair re-ask
-    assert "SEGMENT REPAIR" in calls[1]["system_instruction"]
+    # free generation re-asks in prose-first terms (pinned regens keep the
+    # SEGMENT REPAIR wording — covered by the corrections tests below)
+    assert "NARRATION REPAIR" in calls[1]["system_instruction"]
     assert "order" in calls[1]["system_instruction"]     # exact errors appended
     beat = out["beats"][0]
     assert [s["span"] for s in beat["segments"]] == [
@@ -722,3 +724,279 @@ def test_correction_block_speaks_segments_under_adaptive(tmp_path, monkeypatch):
                                   [_GOOD_MODEL_BEAT], _prev_segments_beat())
     assert any("every 'segments' line" in c["system_instruction"]
                for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# PROSE-FIRST free generation (2026-07-03): the writer authors ONE connected
+# passage ('narration') + the same passage split into panel-tagged
+# 'sentences'; segments_from_sentences derives the span partition in code.
+# Grouped-era prose (user-approved 2026-06-16), 1:1-era guarantees.
+# ---------------------------------------------------------------------------
+
+def _sfs(sentences, files=FILES, kinds=None, u=None):
+    return gnp.segments_from_sentences(
+        sentences, files, kinds or {f: "story" for f in files},
+        u if u is not None else U_BY_FILE)
+
+
+def test_sfs_one_sentence_per_panel_is_singletons():
+    out = _sfs([{"text": "He wakes.", "panels": ["p1.jpg"]},
+                {"text": "He stands slowly.", "panels": ["p2.jpg"]},
+                {"text": "He walks into the dark.", "panels": ["p3.jpg"]}])
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
+    assert [s["line"] for s in out] == [
+        "He wakes.", "He stands slowly.", "He walks into the dark."]
+
+
+def test_sfs_same_panel_sentences_fold_into_one_segment():
+    # the screenshot case: a reaction clause re-tags the splash panel — it
+    # must ride the SAME segment, not become its own 2.5s caption
+    out = _sfs([{"text": "Something wet splashes across his skin.",
+                 "panels": ["p1.jpg"]},
+                {"text": "He's definitely not happy about that.",
+                 "panels": ["p1.jpg"]},
+                {"text": "Then the ground gives way.",
+                 "panels": ["p2.jpg", "p3.jpg"]}])
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg", "p3.jpg"]]
+    assert out[0]["line"] == ("Something wet splashes across his skin. "
+                              "He's definitely not happy about that.")
+
+
+def test_sfs_untagged_sentence_rides_previous_segment():
+    out = _sfs([{"text": "The blade comes down.", "panels": ["p1.jpg"]},
+                {"text": "No hesitation at all.", "panels": []},
+                {"text": "He rolls clear.", "panels": ["p2.jpg", "p3.jpg"]}])
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg", "p3.jpg"]]
+    assert out[0]["line"] == "The blade comes down. No hesitation at all."
+
+
+def test_sfs_untagged_panels_ride_the_previous_span():
+    # the model narrated p1 and p3; p2 (a build-up frame) keeps showing while
+    # the p1 sentence finishes — the grouped-era pacing
+    out = _sfs([{"text": "He tears through the underbrush at full sprint.",
+                 "panels": ["p1.jpg"]},
+                {"text": "The cliff edge ends the chase.", "panels": ["p3.jpg"]}])
+    assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg"], ["p3.jpg"]]
+
+
+def test_sfs_leading_untagged_panels_ride_the_first_span():
+    out = _sfs([{"text": "The hall finally opens up ahead.", "panels": ["p2.jpg"]},
+                {"text": "And the doors slam shut.", "panels": ["p3.jpg"]}])
+    assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg"], ["p3.jpg"]]
+
+
+def test_sfs_out_of_order_tags_absorb_forward_and_keep_text_order():
+    # s0 tags p2, s1 tags p1 — ownership may never regress, so everything
+    # folds into ONE span with both texts in passage order
+    out = _sfs([{"text": "First sentence of the passage.", "panels": ["p2.jpg"]},
+                {"text": "Second sentence of the passage.", "panels": ["p1.jpg"]}])
+    assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg", "p3.jpg"]]
+    assert out[0]["line"] == ("First sentence of the passage. "
+                              "Second sentence of the passage.")
+
+
+def test_sfs_system_card_solo_with_its_own_sentence():
+    kinds = {"p1.jpg": "story", "p2.jpg": "system", "p3.jpg": "story"}
+    out = _sfs([{"text": "He staggers upright.", "panels": ["p1.jpg"]},
+                {"text": "A cold blue window declares the Nano Machine active.",
+                 "panels": ["p2.jpg"]},
+                {"text": "And the pain starts.", "panels": ["p3.jpg"]}],
+               kinds=kinds)
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
+    assert out[1]["line"] == \
+        "A cold blue window declares the Nano Machine active."
+    assert gnp.validate_segments(out, FILES, kinds) == []
+
+
+def test_sfs_system_card_without_sentence_gets_grounded_pad_and_split():
+    kinds = {"p1.jpg": "story", "p2.jpg": "system", "p3.jpg": "story"}
+    out = _sfs([{"text": "He crawls toward the ridge, then past it.",
+                 "panels": ["p1.jpg", "p3.jpg"]}], kinds=kinds)
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
+    assert out[0]["line"] == "He crawls toward the ridge, then past it."
+    assert out[1]["line"] == "He crosses toward p2.jpg."   # grounded pad
+    assert out[2]["line"] == "He crosses toward p3.jpg."   # line voiced once
+    assert gnp.validate_segments(out, FILES, kinds) == []
+
+
+def test_sfs_cap_overflow_rides_the_next_sentence_span():
+    files6 = [f"r{i}.jpg" for i in range(1, 7)]
+    kinds6 = {f: "story" for f in files6}
+    u6 = {f: {"action": f"He crosses toward {f}."} for f in files6}
+    out = gnp.segments_from_sentences(
+        [{"text": "The fall takes everything from him on the way down.",
+          "panels": files6[:5]},                       # 5 > SPAN_CAP
+         {"text": "The floor finally holds him, and the dark closes in "
+                  "overhead.", "panels": [files6[5]]}],
+        files6, kinds6, u6)
+    assert [s["span"] for s in out] == [files6[:4], files6[4:]]
+    assert out[0]["line"] == \
+        "The fall takes everything from him on the way down."
+    assert out[1]["line"] == ("The floor finally holds him, and the dark "
+                              "closes in overhead.")
+    assert gnp.validate_segments(out, files6, kinds6) == []
+
+
+def test_sfs_lone_mega_sentence_returns_none():
+    files5 = [f"q{i}.jpg" for i in range(1, 6)]
+    assert gnp.segments_from_sentences(
+        [{"text": "Everything happens at once.", "panels": files5}],
+        files5, {f: "story" for f in files5}, {}) is None
+
+
+def test_sfs_no_usable_tags_returns_none():
+    assert _sfs([{"text": "Words with no tags.", "panels": []}]) is None
+    assert _sfs([{"text": "Tags nobody knows.", "panels": ["zzz.jpg"]}]) is None
+    assert _sfs([]) is None
+    assert _sfs(None) is None
+
+
+def test_sfs_unknown_files_and_empty_texts_are_ignored():
+    out = _sfs([{"text": "", "panels": ["p1.jpg"]},
+                {"text": "He runs the length of the bridge.",
+                 "panels": ["zzz.jpg", "p1.jpg", "p2.jpg", "p1.jpg"]},
+                {"text": "The far side greets him with steel.",
+                 "panels": ["p3.jpg"]}])
+    assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg"], ["p3.jpg"]]
+
+
+def test_sfs_all_system_group_uses_card_sentences():
+    kinds = {f: "system" for f in FILES}
+    out = _sfs([{"text": "Quest window one.", "panels": ["p1.jpg"]},
+                {"text": "Quest window two.", "panels": ["p2.jpg"]}],
+               kinds=kinds)
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
+    assert out[0]["line"] == "Quest window one."
+    assert out[1]["line"] == "Quest window two."
+    assert out[2]["line"] == "He crosses toward p3.jpg."   # pad for untagged card
+
+
+def test_sfs_basenames_accepted_from_full_paths():
+    out = _sfs([{"text": "He wakes at the bottom of the ravine.",
+                 "panels": ["/abs/dir/p1.jpg", "scenes/p2.jpg"]},
+                {"text": "Nothing about the climb looks kind.",
+                 "panels": ["p3.jpg"]}])
+    assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg"], ["p3.jpg"]]
+
+
+# ---- prose-first schema + prompt --------------------------------------------
+
+def test_beat_schema_prose_has_narration_and_sentences():
+    schema = gnp.build_beat_schema("prose")
+    props = schema["properties"]
+    assert "sentences" in props and "panel_narration" not in props
+    assert "segments" not in props                     # spans are code's job
+    item = props["sentences"]["items"]["properties"]
+    assert set(item) >= {"text", "panels"}
+    assert "sentences" in schema["required"]
+    assert "narration" in props                        # the passage field
+    # the passage must be authored BEFORE the split (property order drives
+    # the constrained-decoding generation order on the ollama backend)
+    keys = list(props)
+    assert keys.index("narration") < keys.index("sentences")
+
+
+def test_prose_prompt_demands_passage_then_tagged_split():
+    text = gnp._PROSE_NARRATION_INSTRUCTION
+    assert "'narration' FIRST" in text
+    assert "ONE connected passage" in text
+    assert "'sentences'" in text and "panels" in text
+    assert "RAW MATERIAL" in text                      # anti-parrot pins hold
+    assert "in the next panel" in text
+    assert "CONSECUTIVE" in text
+    # the direct-segments instruction survives for span-pinned regens
+    assert "segments" in gnp._ADAPTIVE_NARRATION_INSTRUCTION
+
+
+# ---- prose-first main() e2e (stubbed model) ---------------------------------
+
+_PROSE_MODEL_BEAT = {
+    "beat_title": "The Fall", "what_happens": "He falls into the ravine.",
+    "narration": ("Something wet splashes across his skin, and he is not "
+                  "happy about it. Then the ground gives way and the ravine "
+                  "swallows him whole."),
+    "sentences": [
+        {"text": "Something wet splashes across his skin, and he is not "
+                 "happy about it.", "panels": ["p1.jpg"]},
+        {"text": "Then the ground gives way and the ravine swallows him "
+                 "whole.", "panels": ["p2.jpg", "p3.jpg"]},
+    ],
+    "scene_selection": [],
+}
+
+
+def test_main_prose_derives_segments_and_drops_scaffolding(tmp_path,
+                                                           monkeypatch):
+    out, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT])
+    assert len(calls) == 1
+    # free generation asks in the prose shape…
+    props = calls[0]["response_schema"]["properties"]
+    assert "sentences" in props and "segments" not in props
+    assert "'narration' FIRST" in calls[0]["system_instruction"]
+    beat = out["beats"][0]
+    # …and lands in the SAME segments contract every consumer reads
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg"], ["p2.jpg", "p3.jpg"]]
+    assert "sentences" not in beat                     # scaffolding dropped
+    assert "panel_narration" not in beat
+    assert beat["narration"] == " ".join(
+        s["line"] for s in beat["segments"])           # load-bearing join
+
+
+def test_main_prose_unusable_tags_reasks_then_falls_back(tmp_path,
+                                                         monkeypatch):
+    no_tags = dict(_PROSE_MODEL_BEAT, sentences=[
+        {"text": "A fine passage with no tags at all.", "panels": []}])
+    out, calls = _run_main(tmp_path, monkeypatch, [no_tags, no_tags])
+    assert len(calls) == 2                             # ONE prose repair re-ask
+    assert "NARRATION REPAIR" in calls[1]["system_instruction"]
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]            # singleton fallback
+    # the passage's sentence text is reused as positional material
+    assert beat["segments"][0]["line"] == \
+        "A fine passage with no tags at all."
+    assert all(s["line"] for s in beat["segments"])
+
+
+def test_main_prose_repair_reask_adopts_good_answer(tmp_path, monkeypatch):
+    no_tags = dict(_PROSE_MODEL_BEAT, sentences=[
+        {"text": "A fine passage with no tags at all.", "panels": []}])
+    out, calls = _run_main(tmp_path, monkeypatch,
+                           [no_tags, _PROSE_MODEL_BEAT])
+    assert len(calls) == 2
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg"], ["p2.jpg", "p3.jpg"]]              # repaired answer adopted
+
+
+def test_main_prose_resolves_cast_tokens_in_segment_lines(tmp_path,
+                                                          monkeypatch):
+    cast = tmp_path / "cast.json"
+    cast.write_text(json.dumps({"cast": [
+        {"id": "mc", "canonical_name": "Prince Cheon", "role": "protagonist",
+         "aliases": ["Prince Cheon"], "visual_description": "ragged robes"}]}))
+    tokened = dict(_PROSE_MODEL_BEAT, sentences=[
+        {"text": "Something wet splashes across [protagonist]'s skin.",
+         "panels": ["p1.jpg"]},
+        {"text": "Then the ground gives way and the ravine swallows him "
+                 "whole.", "panels": ["p2.jpg", "p3.jpg"]},
+    ])
+    out, _ = _run_main(tmp_path, monkeypatch, [tokened],
+                       extra_argv=("--cast", str(cast)))
+    beat = out["beats"][0]
+    assert beat["segments"][0]["line"] == \
+        "Something wet splashes across Prince Cheon's skin."
+    assert "[protagonist]" not in beat["narration"]
+
+
+def test_corrections_pinned_regen_still_speaks_segments_schema(tmp_path,
+                                                               monkeypatch):
+    # the heal path is untouched by prose-first: a pinned regen asks with the
+    # direct-segments schema + instruction (locked spans, lines rewritten)
+    rewrite = dict(_GOOD_MODEL_BEAT)
+    _, calls = _run_corrections(tmp_path, monkeypatch, [rewrite],
+                                _prev_segments_beat())
+    props = calls[0]["response_schema"]["properties"]
+    assert "segments" in props and "sentences" not in props
+    assert "FIXED SEGMENTATION" in calls[0]["system_instruction"]
