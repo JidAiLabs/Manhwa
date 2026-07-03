@@ -191,6 +191,19 @@ def is_shot_description(text: str) -> bool:
     return bool(_SHOT_DESC_RE.search(clean) or _EFFECT_DESC_RE.search(clean))
 
 
+# The prose-first writer receives scene_file names as sentence TAGS — which
+# opened a leak channel: gemma wrote "It progresses through the series to
+# conclude at p000032.jpg." as a 4-panel run's VOICED line (ch1 2026-07-03).
+# A file name in narration is pipeline bookkeeping read aloud — categorically
+# unshippable, and a deterministic check, not judge territory.
+_IMAGE_FILE_RE = re.compile(r"\S+\.(?:jpe?g|png|webp)\b", re.I)
+
+
+def mentions_image_file(text: str) -> bool:
+    """True when a narration line names an image file ('p000032.jpg')."""
+    return bool(_IMAGE_FILE_RE.search(str(text or "")))
+
+
 def _words(text: str) -> List[str]:
     return _WORD_RE.findall(_TAG_RE.sub("", str(text or "")))
 

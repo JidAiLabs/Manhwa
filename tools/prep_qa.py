@@ -56,7 +56,11 @@ from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 from narration_consistency import audio_consistency, strip_chrome_opener
 from manifest_freshness import verify_chapter as _verify_chapter_freshness
-from recap_style import analyze_recap_style, is_shot_description
+from recap_style import (
+    analyze_recap_style,
+    is_shot_description,
+    mentions_image_file,
+)
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
@@ -763,6 +767,33 @@ def shot_description_flags(beats_obj: Any) -> List[Dict[str, Any]]:
                     "shot_description", ERROR,
                     f"narration names the shot/camera, not the story: {line[:80]!r} "
                     "— re-narrate what HAPPENS in the panel",
+                    scene=str((s["span"] or [""])[0]),
+                    segment_id=seg))
+    return flags
+
+
+def filename_in_narration_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """A VOICED line that names an image file ("It progresses through the
+    series to conclude at p000032.jpg.") is pipeline bookkeeping read aloud —
+    the prose-first writer receives scene_file names as sentence tags, so a
+    tag can leak into the passage. Writer-side gates (meta-garbage retry +
+    validate_segments re-ask) stop it at source; this flag is the QA NET so a
+    leak that ever reaches a manifest is an ERROR the auto-heal re-narrates
+    (span-pinned). Deterministic — the semantic grounding judge scored the
+    real ch1 leak only WARN 'vague filler', which deliberately does not heal."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            if line and mentions_image_file(line):
+                flags.append(_flag(
+                    "filename_in_narration", ERROR,
+                    f"narration names an image file: {line[:80]!r} — file "
+                    "names are pipeline bookkeeping, never story; re-narrate "
+                    "what happens across these panels",
                     scene=str((s["span"] or [""])[0]),
                     segment_id=seg))
     return flags
@@ -1693,6 +1724,7 @@ def main() -> int:
     flags.extend(sfx_voiced_flags(script_obj))
     flags.extend(raw_caps_voiced_flags(script_obj))
     flags.extend(shot_description_flags(beats_obj))
+    flags.extend(filename_in_narration_flags(beats_obj))
     flags.extend(story_flags(plan, beats_obj, vitems))
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))

@@ -30,7 +30,7 @@ HEALABLE = {
     "caption_unvoiced", "chrome_narration", "fragment_dangle",
     "filler_narration", "beats_incomplete",
     "empty_item", "silent_group", "grounding_weak",
-    "shot_description",
+    "shot_description", "filename_in_narration",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -61,6 +61,12 @@ def _note_for(code: str, detail: str) -> str:
                 "speed lines, 'is depicted') instead of the story — re-narrate the "
                 "ACTION and its impact dramatically; never name an effect, blur, "
                 "the panel, image, or camera.")
+    if code == "filename_in_narration":
+        return ("This line reads an image FILE NAME aloud (e.g. 'p000032.jpg') — "
+                "that is pipeline bookkeeping, never story. Re-narrate what "
+                "actually HAPPENS across these panels: who does what, the force, "
+                "the outcome. Never mention a file, an image name, or 'the series "
+                "of images'.")
     if code in ("beats_incomplete", "empty_item", "silent_group"):
         return ("The narration is empty — describe what actually happens in this "
                 "panel (and cover any on-panel caption).")

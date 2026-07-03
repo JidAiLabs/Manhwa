@@ -570,3 +570,15 @@ def test_teaser_legacy_roundtrip_repairs_land_in_panel_narration():
     assert panel_narration[1]["line"] == lines[1]
     assert [p["scene_file"] for p in got] == [
         "ch1__p000012.jpg", "ch1__p000013.jpg", "ch2__p000044.jpg"]
+
+
+def test_mentions_image_file_catches_filename_leaks():
+    # prose-first hands the writer scene_file names as tags — a tag leaking
+    # into a voiced line ("…to conclude at p000032.jpg") must be detectable
+    assert rs.mentions_image_file(
+        "It progresses through the series to conclude at p000032.jpg.")
+    assert rs.mentions_image_file("He stares at chunk_003.PNG in silence.")
+    assert not rs.mentions_image_file(
+        "He tears through the underbrush, blade out, and the hunt turns.")
+    assert not rs.mentions_image_file("")
+    assert not rs.mentions_image_file(None)

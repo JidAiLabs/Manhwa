@@ -41,6 +41,7 @@ from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     dedupe_consecutive_panel_lines,
     is_shot_description,
+    mentions_image_file,
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
@@ -86,6 +87,10 @@ _META_STRONG_SIGNALS = (
     r"\bjson\b",
     r"\bschema\b",
     r"\bunderscores?\b",
+    # prose-first hands the model scene_file names as sentence tags — a file
+    # name leaking into the narration ("…to conclude at p000032.jpg") is the
+    # model narrating its bookkeeping, the same meta family
+    r"\S+\.(?:jpe?g|png|webp)\b",
 )
 _META_WEAK_SIGNALS = (
     r"data\s+structure",
@@ -1236,6 +1241,10 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
         if _MOOD_PREFIX_RE.match(line):
             errors.append(f"segment {i}: line must not start with a bracket "
                           "mood tag")
+        if mentions_image_file(line):
+            errors.append(f"segment {i}: line names an image file — file "
+                          "names are tags, never narration; narrate what "
+                          "HAPPENS across these panels instead")
         n_words = len(line.split())
         sec = n_words / words_per_sec
         if sec < n * _SEG_MIN_SEC_PER_PANEL:
@@ -1494,7 +1503,9 @@ _PROSE_NARRATION_INSTRUCTION = (
     "'panels': ALL the scene_file(s) that sentence speaks over, in reading "
     "order — a run-carrying sentence tags EACH of its 2-4 files; a "
     "solo-moment sentence tags one. Tag every scene_file under some "
-    "sentence; give a system/notification card its own short sentence.\n"
+    "sentence; give a system/notification card its own short sentence. File "
+    "names belong ONLY in 'panels' — NEVER in the narration or a sentence's "
+    "text.\n"
 )
 
 # A structurally-VALID all-singleton answer on a big beat is the observed

@@ -123,6 +123,17 @@ def test_word_budget_boundaries_inclusive():
     assert gnp.validate_segments(segs, FILES, KINDS) == []
 
 
+def test_filename_leak_in_line_flagged():
+    # the writer receives scene_file names as sentence tags under prose-first;
+    # a tag leaking into a voiced line must fail validation -> repair re-ask
+    segs = [{"span": ["p1.jpg", "p2.jpg"],
+             "line": "It progresses through the series to conclude at "
+                     "p2.jpg today."},
+            {"span": ["p3.jpg"], "line": _words(8)}]
+    errs = gnp.validate_segments(segs, FILES, KINDS)
+    assert any("image file" in e for e in errs)
+
+
 def test_empty_line_and_mood_prefix_flagged():
     segs = [{"span": ["p1.jpg"], "line": ""},
             {"span": ["p2.jpg"], "line": "[tense] " + _words(8)},
@@ -143,7 +154,8 @@ def test_validator_reports_multiple_errors():
 # finalize_adaptive_beat — validate, ONE repair re-ask, singleton fallback
 # ---------------------------------------------------------------------------
 
-U_BY_FILE = {f: {"action": f"He crosses toward {f}."} for f in FILES}
+U_BY_FILE = {f: {"action": f"He crosses toward {f.split(chr(46))[0]}."}
+             for f in FILES}
 
 GOOD_SEGMENTS = [{"span": ["p1.jpg", "p2.jpg"], "line": _words(18)},
                  {"span": ["p3.jpg"], "line": _words(8)}]
@@ -281,7 +293,7 @@ def _write_manifests(tmp_path, files=tuple(FILES), system_files=()):
     understood = {"panels": [
         {"scene_file": f,
          "description": f"A figure moves near {f}.",
-         "action": f"He crosses toward {f}.",
+         "action": f"He crosses toward {f.split(chr(46))[0]}.",
          "panel_kind": "system" if f in system_files else "story",
          "intensity": "tense", "subjects": ["the prince"]} for f in files]}
     g = tmp_path / "groups.json"
@@ -659,7 +671,7 @@ def test_auto_repair_inserts_skipped_panel_as_grounded_pad():
     out = gnp.auto_repair_segments(segs, FILES, KINDS, U_BY_FILE)
     assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg"], ["p3.jpg"]]
     assert out[0]["line"] == _words(18)                  # prose untouched
-    assert out[1]["line"] == "He crosses toward p3.jpg."  # grounded pad
+    assert out[1]["line"] == "He crosses toward p3."  # grounded pad
     assert gnp.validate_segments(out, FILES, KINDS) == []
 
 
@@ -669,7 +681,7 @@ def test_auto_repair_extracts_system_panel_from_span():
     out = gnp.auto_repair_segments(segs, FILES, kinds, U_BY_FILE)
     assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
     assert out[0]["line"] == _words(18)                  # line stays on story head
-    assert out[1]["line"] == "He crosses toward p2.jpg."  # card gets the pad
+    assert out[1]["line"] == "He crosses toward p2."  # card gets the pad
     assert gnp.validate_segments(out, FILES, kinds) == []
 
 
@@ -814,15 +826,15 @@ def test_sfs_system_card_without_sentence_gets_grounded_pad_and_split():
                  "panels": ["p1.jpg", "p3.jpg"]}], kinds=kinds)
     assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
     assert out[0]["line"] == "He crawls toward the ridge, then past it."
-    assert out[1]["line"] == "He crosses toward p2.jpg."   # grounded pad
-    assert out[2]["line"] == "He crosses toward p3.jpg."   # line voiced once
+    assert out[1]["line"] == "He crosses toward p2."   # grounded pad
+    assert out[2]["line"] == "He crosses toward p3."   # line voiced once
     assert gnp.validate_segments(out, FILES, kinds) == []
 
 
 def test_sfs_cap_overflow_rides_the_next_sentence_span():
     files6 = [f"r{i}.jpg" for i in range(1, 7)]
     kinds6 = {f: "story" for f in files6}
-    u6 = {f: {"action": f"He crosses toward {f}."} for f in files6}
+    u6 = {f: {"action": f"He crosses toward {f.split(chr(46))[0]}."} for f in files6}
     out = gnp.segments_from_sentences(
         [{"text": "The fall takes everything from him on the way down.",
           "panels": files6[:5]},                       # 5 > SPAN_CAP
@@ -868,7 +880,7 @@ def test_sfs_all_system_group_uses_card_sentences():
     assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
     assert out[0]["line"] == "Quest window one."
     assert out[1]["line"] == "Quest window two."
-    assert out[2]["line"] == "He crosses toward p3.jpg."   # pad for untagged card
+    assert out[2]["line"] == "He crosses toward p3."   # pad for untagged card
 
 
 def test_sfs_basenames_accepted_from_full_paths():

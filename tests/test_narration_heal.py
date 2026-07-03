@@ -59,6 +59,20 @@ def test_chrome_narration_heals_even_as_a_warning():
     assert "interface" in corr[3].lower() or "view count" in corr[3]
 
 
+def test_filename_in_narration_is_healable_error():
+    # a voiced line reading an image file name aloud ("…to conclude at
+    # p000032.jpg") is bookkeeping, never story — heal re-narrates the group.
+    assert "filename_in_narration" in nh.HEALABLE
+    rep = {"flags": [_flag("filename_in_narration", "ERROR",
+                           "narration names an image file: 'It progresses "
+                           "through the series to conclude at p000032.jpg.'",
+                           "g0007")]}
+    corr = nh.corrections_from_qa(rep)
+    assert set(corr) == {7}
+    note = corr[7].lower()
+    assert "file" in note and "happens" in note
+
+
 def test_shot_description_is_healable_error():
     # D4: a line that names the camera/shot OR the artwork's rendering / a visual
     # effect (motion blur, speed lines, "is depicted") must heal (re-narrate the

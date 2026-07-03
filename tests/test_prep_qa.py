@@ -1339,6 +1339,37 @@ def test_shot_description_flags_clean_when_story_lines():
     assert pq.shot_description_flags(beats) == []
 
 
+def test_filename_in_narration_flags_leak_as_healable_error():
+    # the prose-first writer receives scene_file names as sentence tags — the
+    # real ch1 leak: a 4-panel run voiced as "It progresses through the series
+    # to conclude at p000032.jpg." The grounding judge only said WARN; this
+    # deterministic net makes it an ERROR the heal loop re-narrates.
+    beats = {"beats": [{
+        "group_id": 7,
+        "segments": [
+            {"span": ["p000027.jpg"],
+             "line": "The killers close in from every side."},
+            {"span": ["p000028.jpg", "p000030.jpg", "p000031.jpg",
+                      "p000032.jpg"],
+             "line": "It progresses through the series to conclude at "
+                     "p000032.jpg."},
+        ],
+    }]}
+    fl = pq.filename_in_narration_flags(beats)
+    assert [f["code"] for f in fl] == ["filename_in_narration"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0007"
+    assert fl[0]["scene"] == "p000028.jpg"
+
+
+def test_filename_in_narration_flags_clean_on_story_lines():
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["a.jpg"], "line": "He draws the blade and lunges."},
+        {"span": ["b.jpg"], "line": "Steel meets steel in the dark."},
+    ]}]}
+    assert pq.filename_in_narration_flags(beats) == []
+
+
 def test_cut_gap_is_error_not_warn():
     # D1-backstop: a residual render-plan time-hole (black screen) must BLOCK
     # autopilot, not ship silently as a WARN.
