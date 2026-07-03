@@ -82,6 +82,19 @@ def test_high_dhash_pair_still_merges():
     assert rsp.find_seam_chains(scenes) == [["p05", "p06"]]
 
 
+def test_seam_with_trimmed_bottom_slice_merges():
+    # Real Nano ch1 flash seam (p073/p074): scene-extraction trimmed ~36px of
+    # blank BELOW the panel before the chunk's forced cut, so A.y1 sits 36px above
+    # chunk_h — inside the widened EDGE_TOL(48) but outside the old 24. Contiguity
+    # in stacked global-y (|delta|=36 <= 48) still identifies it as one bisected
+    # panel; without the widening the flash renders as two near-identical cuts.
+    scenes = [
+        _scene("p073", "chunk_0008.jpg", 11928, 78889, [0, 10918, 800, 11892]),
+        _scene("p074", "chunk_0009.jpg", 11797, 90817, [0, 0, 800, 628]),
+    ]
+    assert rsp.find_seam_chains(scenes) == [["p073", "p074"]]
+
+
 def test_three_chunk_chain_is_one_component():
     # a very tall panel across 3 chunks: the middle chunk's SOLE panel touches
     # BOTH edges (y0~0 AND y1~chunk_h) -> connected component of size 3.

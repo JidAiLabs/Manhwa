@@ -42,8 +42,14 @@ from panels_to_scenes import dhash64  # noqa: E402
 # of ONE tall panel share only the stitch overlap band (~14% of the crop), so
 # their whole-crop hashes legitimately differ (real ch1 seam measured
 # Hamming 29). Do not re-add a similarity gate here.
-EDGE_TOL_PX = 24    # A.y1 within this of chunk_h[N]; B.y0 within this of 0
-SEAM_TOL_PX = 48    # EDGE_TOL_PX * 2; contiguity slack in stacked global-y
+# EDGE_TOL_PX was 24, but scene-extraction can trim a blank band BELOW a panel
+# before the chunk's forced cut, so a genuinely seam-bisected top slice ends a few
+# dozen px above chunk_h (real Nano ch1 flash p073: 36px). 24 missed it -> the
+# panel rendered as two near-identical cuts. Widen to match SEAM_TOL_PX (48): the
+# stacked-global-y contiguity gate (cond 3) is the real guard against false merges
+# — distinct panels across a seam are separated by a gutter far wider than 48px.
+EDGE_TOL_PX = 48    # A.y1 within this of chunk_h[N]; B.y0 within this of 0
+SEAM_TOL_PX = 48    # contiguity slack in stacked global-y
 
 
 def _chunk_meta(scenes: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
