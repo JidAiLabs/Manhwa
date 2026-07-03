@@ -2377,11 +2377,15 @@ def main() -> int:
     # cross-segment NEAR-IDENTICAL: a same-size source-repeat the containment loop
     # can't catch (the p090/p095 eye, drawn again a few beats later). Drops the
     # later twin ONLY when its segment keeps another cut, so a narrated panel goes
-    # without ever emptying a segment (no held-image). System/blank stay exempt;
-    # narrated is intentionally NOT (the retain-a-cut guard is the safety).
+    # without ever emptying a segment (no held-image). Exempt is SYSTEM cards only,
+    # NOT exempt_all: that set holds rich/visual_story STORY panels (the eye is one)
+    # -- exactly the near-dup candidates we must collapse. Sparing system cards
+    # avoids collapsing two DISTINCT notifications that share a UI frame (identical
+    # low-freq dhash, different text); the retain-a-cut guard is the held-image
+    # safety.
     cuts_by_segment, nidrop = drop_cross_segment_near_identical_cuts(
         cuts_by_segment, order, _trimmed_clean,
-        exempt=exempt_all | system_files)
+        exempt=system_files)
     for seg, f in nidrop:
         all_dropped.append(f)
         print(f"[ok] {seg}: cross-segment near-identical {f} dropped")
