@@ -423,6 +423,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             "state IN ('running','queued') ORDER BY id DESC LIMIT 1",
             (cid,)).fetchone()
         active_job = dict(zip(("id", "type", "state"), aj)) if aj else None
+        # full per-phase run history with timings — the stage_run rows always
+        # had this; there was just no per-chapter view exposing it
+        run_history = [dict(zip(("stage", "started_at", "dur", "ok"), r))
+                       for r in c.execute(
+                           "SELECT stage, started_at, duration_sec, ok "
+                           "FROM stage_run WHERE chapter_id=? "
+                           "ORDER BY id DESC LIMIT 60", (cid,))]
         has_preview = bool(ch["ep_dir"] and (
             Path(ch["ep_dir"]) / "render" / "voice_preview.mp3").exists())
         seg = (Path(ch["ep_dir"]) / "render" / "segment_both.mp4"
@@ -449,7 +456,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             (i["detail"] for i in video_stale_issues), "")
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
-                    active_job=active_job,
+                    active_job=active_job, run_history=run_history,
                     qa_ok=gates.latest_qa_ok(c, cid),
                     render_allowed=allowed, render_block_reason=why,
                     voice_allowed=v_allowed, voice_block_reason=v_why,

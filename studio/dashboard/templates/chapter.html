@@ -8,6 +8,16 @@
 </div>{% endfor %}
 </div>
 {% if active_job %}<div class="row"><span class="b ok">⏳ {{ active_job.type }} job #{{ active_job.id }} is {{ active_job.state }} for this chapter — <a href="/" style="color:inherit">watch progress on the queue page</a></span></div>{% endif %}
+{% if run_history %}<details style="margin:.4em 0"><summary style="cursor:pointer;opacity:.7">run history — every phase with timings ({{ run_history|length }} runs)</summary>
+<table style="font-size:.85em;margin:.4em 0;border-collapse:collapse">
+<tr><th style="text-align:left;padding:0 .8em 0 0">phase</th><th style="text-align:left;padding:0 .8em 0 0">started (UTC)</th><th style="text-align:right;padding:0 .8em 0 0">took</th><th></th></tr>
+{% for r in run_history %}<tr>
+<td style="padding:0 .8em 0 0">{{ r.stage }}</td>
+<td style="padding:0 .8em 0 0;opacity:.7">{{ r.started_at }}</td>
+<td style="padding:0 .8em 0 0;text-align:right">{{ fmt_eta(r.dur) if r.dur else '—' }}</td>
+<td>{{ '✓' if r.ok else '✗' }}</td>
+</tr>{% endfor %}
+</table></details>{% endif %}
 
 <h2>Step 1 — story approval <small>(read the QA report + the narration below)</small></h2>
 <div class=”row”>
