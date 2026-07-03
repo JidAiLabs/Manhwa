@@ -1602,21 +1602,28 @@ def protect_narrated_from_junk(junk: Dict[str, str],
 
 
 def narrated_files_from_plan(plan: Dict[str, Any]) -> set:
-    """Every file that OWNS a distinct narration segment in the plan — the
-    primary panel of each per-panel narration item. Such a panel carries its own
-    spoken line and must NEVER be dropped as a 'duplicate' by the seam / visual /
-    near-identical / cross-segment dedup (the panel-collapse regression dropped
-    distinct narrated panels). A TRUE exact same-file consecutive run still folds
-    via merge_consecutive_same_image_cuts; caption / held / fallback panels carry
-    no narration of their own and stay droppable. Basenames, branding skipped."""
+    """Every panel a narrated segment SHOWS — must NEVER be dropped as a
+    'duplicate' by the seam / visual / near-identical / cross-segment dedup (the
+    panel-collapse regression dropped distinct narrated panels). This is EVERY
+    file in a narrated item's span (`scene_files`), not just the primary: a
+    multi-panel flow span (e.g. [smirk, transformation-flash]) shows both, so a
+    later span panel must be protected too — else the seam dedup drops it and the
+    span renders only its head (the flash p074 dropped, smirk p073 held). A TRUE
+    exact same-file consecutive run still folds via merge_consecutive_same_image_cuts;
+    caption / held / fallback panels carry no narration of their own and stay
+    droppable. Basenames, branding skipped."""
     out: set = set()
     for it in (plan or {}).get("timeline") or []:
         if not isinstance(it, dict) or it.get("branding"):
             continue
         if not str(it.get("tts_text") or "").strip():
             continue
+        for f in (it.get("scene_files") or []):
+            b = os.path.basename(str(f or ""))
+            if b:
+                out.add(b)
         pf = os.path.basename(str(it.get("primary_scene_file") or ""))
-        if pf:
+        if pf:                          # legacy items without scene_files
             out.add(pf)
     return out
 

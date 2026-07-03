@@ -202,6 +202,19 @@ def test_narrated_files_from_plan_collects_owning_panels():
     assert got == {"p1.jpg", "p3.jpg"}          # basename; narration-bearing only
 
 
+def test_narrated_files_from_plan_protects_whole_span():
+    # a multi-panel flow span (smirk + transformation-flash) shows BOTH — every
+    # panel in a narrated span is protected, not just the primary, else the seam
+    # dedup drops the later panel (p074 flash) and the span renders only its head
+    plan = {"timeline": [
+        {"segment_id": "g0014_p02", "primary_scene_file": "p073.jpg",
+         "tts_text": "A blinding flash erupts.",
+         "scene_files": ["p073.jpg", "p074.jpg"],
+         "cuts": [{"file": "p073.jpg"}, {"file": "p074.jpg"}]},
+    ]}
+    assert rp.narrated_files_from_plan(plan) == {"p073.jpg", "p074.jpg"}
+
+
 def test_narration_bearing_panel_survives_near_identical_drop():
     """Two near-identical DISTINCT files each own a narration line. Without
     protection the later would be dropped as a dup; once it is in `protect`
