@@ -304,14 +304,28 @@ def image_flags(
 # ---------------------------------------------------------------------------
 
 def cross_dup_flags(seq: Sequence[Dict[str, Any]],
-                    get_img) -> List[Dict[str, Any]]:
+                    get_img,
+                    narrated: Optional[set] = None) -> List[Dict[str, Any]]:
     """Consecutive shown cuts that are near-identical (or zoom pairs) — the
-    on-screen duplicate class the user keeps catching by eye."""
+    on-screen duplicate class the user keeps catching by eye.
+
+    A cut whose panel OWNS its own narration line (`narrated`, basenames) is a
+    DISTINCT story beat the writer chose to describe and is NEVER flagged: the
+    `multi_scale_contained` test over-fires on distinct action/face panels that
+    merely share a composition (real ch1: p043 blade-swing vs p044 debris-strike
+    read as a match though their dhash distance is 37; two face shots, 18), and
+    dropping a narrated panel makes a neighbour HOLD 12-16s while the narrator
+    describes a shot never shown. Truly redundant zoom/near-dups are merged
+    upstream (understanding → story_group), before narration — the same
+    no-drop-distinct guarantee render_prep already enforces on its dedup passes.
+    """
+    narrated = narrated or set()
     flags: List[Dict[str, Any]] = []
     prev: Optional[Dict[str, Any]] = None
     for cur in seq:
         f = str(cur.get("file"))
-        if prev and str(prev.get("file")) != f:
+        if (prev and str(prev.get("file")) != f
+                and f not in narrated and parent_scene(f) not in narrated):
             ia, ib = get_img(str(prev.get("file"))), get_img(f)
             if ia is not None and ib is not None and (
                     multi_scale_contained(ib, ia)
@@ -1807,7 +1821,9 @@ def main() -> int:
             _imc[f] = cv2.imread(os.path.join(clean_dir, f))
         return _imc[f]
 
-    flags.extend(cross_dup_flags(cuts, _clean_img))
+    # a panel owning its own narration line is a distinct beat, never a cross_dup
+    flags.extend(cross_dup_flags(cuts, _clean_img,
+                                 narrated=rp.narrated_files_from_plan(plan)))
 
     # vision-level checks once per shown parent scene
     seen_parents: set = set()

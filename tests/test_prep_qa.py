@@ -484,6 +484,12 @@ def test_cross_dup_flag_for_consecutive_near_identical_cuts():
                and f["scene"] == "b.jpg" for f in fl)
     assert not any(f.get("scene") == "c.jpg" for f in fl)
 
+    # a panel that OWNS its own narration line is a distinct beat — never a
+    # cross_dup (else dropping it holds a neighbour and narrates an unshown
+    # shot; real ch1 p043/p044 dhash 37 falsely matched by multi_scale_contained)
+    fl2 = pq.cross_dup_flags(seq, lambda f: imgs.get(f), narrated={"b.jpg"})
+    assert not any(f.get("scene") == "b.jpg" for f in fl2)
+
 
 def test_missing_audio_is_info_on_estimate_plans():
     # step-1 plans are built WITHOUT voiceover (duration estimates): audio
