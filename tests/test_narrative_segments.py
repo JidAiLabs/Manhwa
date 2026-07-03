@@ -285,7 +285,14 @@ def test_adaptive_prompt_criteria_and_bans():
 # main() e2e with a stubbed model — writer output shape per mode
 # ---------------------------------------------------------------------------
 
-def _write_manifests(tmp_path, files=tuple(FILES), system_files=()):
+def _write_manifests(tmp_path, files=tuple(FILES), system_files=(),
+                     caption_files=()):
+    def _kind(f):
+        if f in system_files:
+            return "system"
+        if f in caption_files:
+            return "caption"
+        return "story"
     groups = {"shots": [{"shot_id": 7, "scene_files": list(files),
                          "arc_label": "opening", "intensity": "tense"}]}
     vision = {"items": [{"scene_file": f, "ocr_clean": "", "vision": {}}
@@ -294,7 +301,7 @@ def _write_manifests(tmp_path, files=tuple(FILES), system_files=()):
         {"scene_file": f,
          "description": f"A figure moves near {f}.",
          "action": f"He crosses toward {f.split(chr(46))[0]}.",
-         "panel_kind": "system" if f in system_files else "story",
+         "panel_kind": _kind(f),
          "intensity": "tense", "subjects": ["the prince"]} for f in files]}
     g = tmp_path / "groups.json"
     v = tmp_path / "vision.json"
@@ -305,10 +312,11 @@ def _write_manifests(tmp_path, files=tuple(FILES), system_files=()):
     return g, v, u
 
 
-def _run_main(tmp_path, monkeypatch, responses, extra_argv=()):
+def _run_main(tmp_path, monkeypatch, responses, extra_argv=(),
+              caption_files=()):
     """Drive gnp.main() with a stubbed model that returns `responses` in order
     (the last response repeats if the tool asks again)."""
-    g, v, u = _write_manifests(tmp_path)
+    g, v, u = _write_manifests(tmp_path, caption_files=caption_files)
     out = tmp_path / "beats.json"
     calls = []
 
@@ -380,6 +388,40 @@ def test_main_adaptive_bad_bad_singleton_fallback(tmp_path, monkeypatch):
     assert [s["span"] for s in beat["segments"]] == [
         ["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]              # never blocks the chapter
     assert all(s["line"] for s in beat["segments"])
+
+
+def test_main_adaptive_excludes_caption_panels_from_spans(tmp_path, monkeypatch):
+    # p2 is a pure speech-bubble (panel_kind=caption): TEXT, not a visual. The
+    # writer sees it (payload) and may tag a sentence to it, but it must NEVER
+    # own a shown span — else it blank-drops at render and holds a neighbour
+    # (the 13.8s held-eye) and inflates solos. Its sentence's words fold into
+    # the adjacent visual segment instead.
+    beat = {
+        "beat_title": "Reflection", "what_happens": "He reflects.",
+        "narration": "join placeholder",
+        "segments": [
+            {"span": ["p1.jpg"], "line": "He staggers upright, blood on his lips."},
+            {"span": ["p2.jpg"],
+             "line": "Peasant blood, they say, as if it changes anything."},
+            {"span": ["p3.jpg"], "line": "His eyes flare with sudden rage."},
+        ],
+        "sentences": [
+            {"text": "He staggers upright, blood on his lips.",
+             "panels": ["p1.jpg"]},
+            {"text": "Peasant blood, they say, as if it changes anything.",
+             "panels": ["p2.jpg"]},
+            {"text": "His eyes flare with sudden rage.", "panels": ["p3.jpg"]},
+        ],
+        "scene_selection": [],
+    }
+    out, _ = _run_main(tmp_path, monkeypatch, [beat], caption_files=("p2.jpg",))
+    b = out["beats"][0]
+    shown = [f for s in b["segments"] for f in s["span"]]
+    assert "p2.jpg" not in shown                     # caption never shown
+    assert shown == ["p1.jpg", "p3.jpg"]             # only visuals partition
+    # the caption's words fold into the adjacent (previous) visual segment
+    assert "peasant blood" in b["narration"].lower()
+    assert "p2.jpg" not in b.get("scene_files", [])
 
 
 def test_main_per_panel_stays_legacy_shape(tmp_path, monkeypatch):

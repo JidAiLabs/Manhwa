@@ -1513,6 +1513,10 @@ _PROSE_NARRATION_INSTRUCTION = (
     "sentence; give a system/notification card its own short sentence. File "
     "names belong ONLY in 'panels' — NEVER in the narration or a sentence's "
     "text.\n"
+    "A panel that is JUST a speech bubble or caption on a plain background "
+    "(panel_kind 'caption') is TEXT, not a picture: WEAVE its words into the "
+    "sentence of the nearest drawn panel — never write a standalone sentence "
+    "about a bubble alone.\n"
 )
 
 # A structurally-VALID all-singleton answer on a big beat is the observed
@@ -1930,8 +1934,10 @@ def main() -> int:
         if beat.get("narration"):
             beat["narration"] = _resolve_cast_tokens(beat["narration"], cast_list)
 
-        surviving = [f for f in (beat.get("scene_files") or payload["scene_files"]) if f]
+        all_files = [f for f in (beat.get("scene_files")
+                                 or payload["scene_files"]) if f]
         if args.segmentation == "per_panel":
+            surviving = all_files          # legacy escape hatch: byte-compatible
             # Normalize panel_narration: exactly one line per surviving scene_file.
             # Runs on BOTH normal and fallback beats (the fallback has no panel_narration
             # so align_panel_narration will pad every panel from u_by_file / defaults).
@@ -1945,6 +1951,22 @@ def main() -> int:
                 f"panel_narration/scene_files mismatch in group {gid}")
             beat["narration"] = " ".join(p["line"] for p in beat["panel_narration"]).strip() or beat.get("narration", "")
         else:
+            # Caption-only panels (pure speech bubbles: panel_kind == 'caption')
+            # are TEXT, not visuals. The writer SEES them in the payload and
+            # weaves their words in, but they must NEVER own a shown slot/clip:
+            # after bubble-cleaning they are blank, so at render they junk-drop
+            # and HOLD a neighbour (the 13.8s held-eye g0017) and each inflates
+            # the solo count. Exclude them from the shown-panel partition; a
+            # sentence that tagged only captions has no surviving tag, so the
+            # splitter's untagged-fold routes its line into the adjacent visual
+            # segment (the caption's words survive; its blank frame does not).
+            # Guard: never empty the beat — a rare all-caption group keeps its
+            # panels so something shows.
+            _vis = [f for f in all_files
+                    if str((u_by_file.get(f) or {}).get("panel_kind")
+                            or "").lower() != "caption"]
+            surviving = _vis if _vis else all_files
+            beat["scene_files"] = surviving
             # Adaptive flow segments: validate the model's spans; ONE repair
             # re-ask with the exact errors; still failing -> singleton fallback
             # (mirrors the per_panel backfill — the chapter never blocks). A
