@@ -189,6 +189,30 @@ def test_synthesize_manifest_revoices_only_changed_segments(tmp_path):
     assert (tmp_path / "clips" / "g0002_p01.wav").exists()
 
 
+def test_synthesize_manifest_revoices_on_mood_only_change(tmp_path):
+    # narration_sha strips bracket tags, so a mood escalation (same words,
+    # hotter tag) changes ONLY the exaggeration — the cache must miss, else
+    # audio synthesized at the old intensity ships under the new mood.
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    escalated = _script()
+    old = escalated["sections"][0]["tts_paragraphs_v3"][1]
+    assert old.startswith("[")                      # fixture carries a tag
+    escalated["sections"][0]["tts_paragraphs_v3"][1] = \
+        "[explosive]" + old.split("]", 1)[1]        # same words, hotter mood
+    calls = []
+    out = lt.synthesize_manifest(
+        escalated, str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    assert len(calls) == 1                          # only the escalated clip
+    assert os.path.basename(calls[0]).startswith("g0002_p01")
+    assert out["clips"][0]["cached"] is True        # untouched clip reused
+
+
 def test_synthesize_manifest_prunes_orphan_clips(tmp_path):
     (tmp_path / "clips").mkdir()
     (tmp_path / "clips" / "g0099_p09.wav").write_bytes(b"orphan")   # not in script

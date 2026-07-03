@@ -1245,6 +1245,13 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
             errors.append(f"segment {i}: line names an image file — file "
                           "names are tags, never narration; narrate what "
                           "HAPPENS across these panels instead")
+        if is_shot_description(line):
+            # same detector prep_qa ERRORs on — enforcing it here turns a
+            # multi-cycle heal burn into one cheap repair re-ask at source
+            errors.append(f"segment {i}: line describes the artwork/camera/"
+                          "a visual effect instead of the story — narrate "
+                          "what happens and its consequence, never how the "
+                          "panel is drawn")
         n_words = len(line.split())
         sec = n_words / words_per_sec
         if sec < n * _SEG_MIN_SEC_PER_PANEL:

@@ -350,6 +350,39 @@ def cmd_qa(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: reset
+# ---------------------------------------------------------------------------
+
+def cmd_reset(args: argparse.Namespace) -> int:
+    """Atomic chapter rewind — derived files + stage_run history + approvals +
+    status move together (studio.catalog.reset). Replaces the ad-hoc SQL
+    resets that kept leaving stale readiness state behind."""
+    from studio.catalog import reset
+
+    con = _open_db()
+    chapters = repo.list_chapters(con, args.series_id)
+    selected = parse_chapter_selector(args.chapters, chapters)
+    if not selected:
+        print("No chapters match the selector.")
+        return 0
+    for ch in selected:
+        summary = reset.rewind_chapter(con, ch.id, args.to,
+                                       keep_base=args.keep_base)
+        print(f"  ch{ch.number} (id {ch.id}) -> {summary['status']}: "
+              f"deleted {len(summary['deleted'])} artifact(s), "
+              f"stage_run -{summary['stage_run_cleared']}, "
+              f"approvals -{summary['approvals_cleared']}"
+              + (f", beats backed up as {summary['backup']}"
+                 if summary["backup"] else ""))
+        if args.enqueue:
+            from studio.dashboard import jobs as _jobs
+            jid = _jobs.enqueue(con, "prepare", series_id=args.series_id,
+                                chapter_id=ch.id, priority=1)
+            print(f"    prepare queued as job {jid}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: status
 # ---------------------------------------------------------------------------
 
@@ -431,6 +464,24 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worker.add_argument("--db", default="studio.db")
 
     # status
+    p_reset = sub.add_parser(
+        "reset", help="Atomically rewind chapters (files + DB) to an earlier "
+                      "status — scripted | grouped | detected | downloaded")
+    p_reset.add_argument("series_id", type=int)
+    p_reset.add_argument("--chapters", required=True,
+                         help="Chapter selector: N, N-M, or 'new'")
+    p_reset.add_argument("--to", required=True,
+                         choices=["scripted", "grouped", "detected",
+                                  "downloaded"],
+                         help="scripted=re-voice; grouped=re-narrate; "
+                              "detected=re-materialize scenes; "
+                              "downloaded=full re-process")
+    p_reset.add_argument("--keep-base", action="store_true",
+                         help="leave .narration_keepbase in place (normally "
+                              "removed so the re-narration actually re-rolls)")
+    p_reset.add_argument("--enqueue", action="store_true",
+                         help="queue a front-priority prepare after the rewind")
+
     p_status = sub.add_parser("status", help="Show chapter status table")
     p_status.add_argument("series_id", type=int, nargs="?", default=None)
 
@@ -468,6 +519,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "list":       cmd_list,
         "fetch":      cmd_fetch,
         "run":        cmd_run,
+        "reset":      cmd_reset,
         "status":     cmd_status,
         "qa":         cmd_qa,
         "refresh":    cmd_refresh,

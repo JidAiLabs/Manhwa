@@ -22,6 +22,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from studio.catalog import reset
 from studio.catalog.db import connect
 from studio.catalog.models import STATUS_ORDER
 from studio.dashboard import bundles, discovery, eta, gates, jobs
@@ -738,32 +739,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     @app.post("/chapter/{cid}/rebuild")
     def post_rebuild(cid: int):
         # force the chapter back through scene materialization so shipped
-        # stage fixes actually apply (resume-by-status never re-runs them)
+        # stage fixes actually apply (resume-by-status never re-runs them).
+        # rewind_chapter is the ONE atomic rewind: gen-1 audio/renders +
+        # narration outputs cleared (beats backed up), voice+render approvals
+        # dropped, and — the class the old inline version missed — the
+        # chapter's stage_run history rewound so readiness counters stop
+        # claiming voiced/rendered for artifacts that no longer exist.
         c = con()
-        # rebuild RE-NARRATES (status rewinds to 'detected' -> full re-narration),
-        # so the gen-1 audio + approvals are now STALE. Clear cached clips/index/
-        # preview so render can't ship gen-1 audio under gen-2 captions, and drop
-        # the voice+render approvals so the operator must re-read the NEW narration
-        # before it voices/renders (the estimate-plan QA skips the text_sha gate).
-        r = c.execute("SELECT ep_dir FROM chapter WHERE id=?", (cid,)).fetchone()
-        if r and r[0]:
-            ep = Path(r[0])
-            for p in (ep / "tts" / "tts_index.json", ep / "render" / "voice_preview.mp3"):
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
-            clips = ep / "tts" / "clips"
-            if clips.exists():
-                for w in clips.glob("*.wav"):
-                    try:
-                        w.unlink()
-                    except OSError:
-                        pass
-        c.execute("DELETE FROM approval WHERE gate IN ('voice','render') "
-                  "AND chapter_id=?", (cid,))
-        c.execute("UPDATE chapter SET status='detected' WHERE id=?", (cid,))
-        c.commit()
+        reset.rewind_chapter(c, cid, "detected")
         jobs.enqueue(c, "prepare", chapter_id=cid, priority=50)
         return RedirectResponse(f"/chapter/{cid}", status_code=303)
 
@@ -771,34 +754,15 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def post_revoice(cid: int):
         # Re-synthesize the voiceover with the latest TTS (seeded + de-robotted)
         # and re-render — KEEPS the approved narration, only the audio + video
-        # are rebuilt. Clearing the cached clips forces a full re-synth (the
-        # text_sha cache would otherwise reuse them); rewinding to 'scripted'
-        # makes the resume-by-status runner actually re-run the voiced stage.
+        # are rebuilt. rewind_chapter('scripted') deletes the clip cache +
+        # renders, drops the render gate, rewinds the voiced/render_segment
+        # stage_run history and sets status='scripted' so the resume-by-status
+        # runner actually re-runs the voiced stage.
         c = con()
-        r = c.execute("SELECT ep_dir FROM chapter WHERE id=?", (cid,)).fetchone()
-        if r and r[0]:
-            tts_dir = Path(r[0]) / "tts"
-            clips = tts_dir / "clips"
-            if clips.exists():
-                for w in clips.glob("*.wav"):
-                    try:
-                        w.unlink()
-                    except OSError:
-                        pass
-            idx = tts_dir / "tts_index.json"
-            if idx.exists():
-                try:
-                    idx.unlink()
-                except OSError:
-                    pass
-        # narration stays approved; clear the render gate so auto_to=video
-        # re-approves + re-renders (it no-ops when render is already approved)
+        reset.rewind_chapter(c, cid, "scripted", clear_approvals=("render",))
+        # narration stays approved; auto_to=video re-approves render after QA
         if not gates._has_approval(c, "voice", chapter_id=cid):
             gates.approve(c, "voice", chapter_id=cid, note="re-voice")
-        c.execute("DELETE FROM approval WHERE gate='render' AND chapter_id=?",
-                  (cid,))
-        c.execute("UPDATE chapter SET status='scripted' WHERE id=?", (cid,))
-        c.commit()
         jobs.enqueue(c, "voiceover", chapter_id=cid,
                      payload={"auto_to": "video"}, priority=50)
         return RedirectResponse(f"/chapter/{cid}", status_code=303)

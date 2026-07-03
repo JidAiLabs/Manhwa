@@ -798,6 +798,7 @@ def synthesize_manifest(
     # changed segments are re-voiced — the deterministic audio↔narration gate.
     # Caching on file existence alone (the old rule) is what let stale audio ship.
     prior_sha: Dict[str, str] = {}
+    prior_exag: Dict[str, float] = {}
     prior_index_path = os.path.join(out_dir, "tts_index.json")
     if os.path.exists(prior_index_path) and not overwrite:
         try:
@@ -808,8 +809,11 @@ def synthesize_manifest(
                     narration_sha(c["sent_text"]) if c.get("sent_text") is not None else None)
                 if sid and sha:
                     prior_sha[str(sid)] = str(sha)
+                    if c.get("exaggeration") is not None:
+                        prior_exag[str(sid)] = float(c["exaggeration"])
         except Exception:
             prior_sha = {}
+            prior_exag = {}
 
     index: Dict[str, Any] = {
         "source_script": os.path.abspath(script_obj.get("_path", "")) if script_obj.get("_path") else "",
@@ -833,9 +837,13 @@ def synthesize_manifest(
         audio_path = os.path.join(clips_dir, f"{seg_id}.wav")
         kept_ids.add(seg_id)
 
-        # reuse only when the audio exists AND the narration is unchanged
+        # reuse only when the audio exists AND the narration is unchanged AND
+        # the delivery is unchanged — narration_sha strips bracket tags, so a
+        # mood escalation (same words, hotter tag) changes ONLY exaggeration;
+        # keying on text alone reused audio synthesized at the old intensity.
         cached = (os.path.exists(audio_path) and not overwrite
-                  and prior_sha.get(seg_id) == text_sha)
+                  and prior_sha.get(seg_id) == text_sha
+                  and prior_exag.get(seg_id) == exaggeration)
         cond: Dict[str, Any] = {}
         tts_failed = False
         if not cached:
