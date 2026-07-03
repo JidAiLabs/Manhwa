@@ -1585,3 +1585,21 @@ def test_cap_repeats_no_reemit_across_groups_global():
     assert counts["P.jpg"] == 1                                  # P emitted ONCE chapter-wide
 
 
+
+
+def test_protect_narrated_from_junk_removes_narrated_keeps_rest():
+    # a narrated panel the auto-judge called junk (an action/flash climax it
+    # read as "abstract glow") must survive — dropping it holds a neighbour
+    # while the narrator describes an unshown shot. Non-narrated junk stays.
+    junk = {"p044.jpg": "abstract glow", "p090.jpg": "blank husk",
+            "p074.jpg": "flat gradient"}
+    narrated = {"p044.jpg", "p074.jpg"}          # these own spoken lines
+    out = rp.protect_narrated_from_junk(junk, narrated)
+    assert set(out) == {"p090.jpg"}              # only non-narrated junk remains
+    assert junk is out                           # mutates in place
+
+
+def test_protect_narrated_from_junk_empty_narrated_is_noop():
+    junk = {"p001.jpg": "sliver"}
+    assert rp.protect_narrated_from_junk(dict(junk), set()) == junk
+    assert rp.protect_narrated_from_junk(dict(junk), None) == junk
