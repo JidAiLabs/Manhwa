@@ -48,7 +48,7 @@ voice_ref = "assets/voice/narrator_ref.wav"   # LOCKED narrator (user-picked cli
                  # kokoro ignores it (uses kokoro_voice).
 python = ".mlx_venv/bin/python"   # repo-relative -> resolves per host (Air/Mini); MLX venv (mlx-audio). qwen fallback = .qwen_venv
 kokoro_voice = "am_puck"   # used only when backend = "kokoro"
-speed = 1.1   # delivery tempo (ffmpeg atempo, pitch-preserved) — 1.1 = 10% snappier; transcript UNCHANGED
+speed = 1.05   # delivery tempo (ffmpeg atempo, pitch-preserved) — 1.05 = 5% snappier; transcript UNCHANGED
 
 [teaser]
 # bundle-level arc teaser: pick a high-stakes window from a bundle's chapters,
