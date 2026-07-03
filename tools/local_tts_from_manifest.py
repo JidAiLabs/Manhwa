@@ -300,6 +300,16 @@ def condition_wav_file(path: str) -> dict:
         return {"condition_error": str(exc)[:120]}
 
 
+def _ffmpeg_bin() -> str:
+    """Resolve ffmpeg — the worker runs the TTS subprocess under a non-interactive
+    PATH that can miss /opt/homebrew/bin (the documented worker-PATH gotcha), so a
+    bare 'ffmpeg' would silently fail and quietly skip the speed-up."""
+    import shutil
+    if os.path.exists("/opt/homebrew/bin/ffmpeg"):
+        return "/opt/homebrew/bin/ffmpeg"
+    return shutil.which("ffmpeg") or "ffmpeg"
+
+
 def apply_atempo(path: str, factor: float) -> None:
     """Speed the clip up (factor > 1) IN PLACE via ffmpeg atempo — tempo only,
     PITCH PRESERVED, transcript unchanged (a 1.1 factor = 10% snappier delivery).
@@ -313,7 +323,7 @@ def apply_atempo(path: str, factor: float) -> None:
         fd, tmp = tempfile.mkstemp(suffix=".wav", dir=os.path.dirname(path) or ".")
         os.close(fd)
         r = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", path,
+            [_ffmpeg_bin(), "-y", "-loglevel", "error", "-i", path,
              "-filter:a", f"atempo={float(factor):.4f}", tmp],
             capture_output=True)
         if r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
