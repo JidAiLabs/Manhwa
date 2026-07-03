@@ -416,6 +416,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             (REPO / "ongoing").resolve()) if ch["ep_dir"] else None)
         allowed, why = gates.render_allowed(c, cid)
         v_allowed, v_why = gates.voice_allowed(c, cid)
+        # the chapter's live job, if any — approving a gate kicks off work the
+        # operator could previously only find on the queue page or in the logs
+        aj = c.execute(
+            "SELECT id, type, state FROM job WHERE chapter_id=? AND "
+            "state IN ('running','queued') ORDER BY id DESC LIMIT 1",
+            (cid,)).fetchone()
+        active_job = dict(zip(("id", "type", "state"), aj)) if aj else None
         has_preview = bool(ch["ep_dir"] and (
             Path(ch["ep_dir"]) / "render" / "voice_preview.mp3").exists())
         seg = (Path(ch["ep_dir"]) / "render" / "segment_both.mp4"
@@ -442,6 +449,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             (i["detail"] for i in video_stale_issues), "")
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
+                    active_job=active_job,
                     qa_ok=gates.latest_qa_ok(c, cid),
                     render_allowed=allowed, render_block_reason=why,
                     voice_allowed=v_allowed, voice_block_reason=v_why,

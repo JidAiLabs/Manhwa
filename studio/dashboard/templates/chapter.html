@@ -7,6 +7,7 @@
 <div class="t">{% if s.done and s.dur %}{{ fmt_eta(s.dur) }}{% elif s.done %}✓{% else %}~{{ fmt_eta(s.eta) }}{% endif %}</div>
 </div>{% endfor %}
 </div>
+{% if active_job %}<div class="row"><span class="b ok">⏳ {{ active_job.type }} job #{{ active_job.id }} is {{ active_job.state }} for this chapter — <a href="/" style="color:inherit">watch progress on the queue page</a></span></div>{% endif %}
 
 <h2>Step 1 — story approval <small>(read the QA report + the narration below)</small></h2>
 <div class=”row”>
