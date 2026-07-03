@@ -2383,8 +2383,23 @@ def main() -> int:
     # avoids collapsing two DISTINCT notifications that share a UI frame (identical
     # low-freq dhash, different text); the retain-a-cut guard is the held-image
     # safety.
+    # hash the image the renderer SHOWS. On --reuse-clean the cached scenes_clean/
+    # crop is what ships (and what the viewer saw as the dup); the fresh re-clean
+    # can differ wildly (ch1 eye p095: cached crop 395px vs re-clean 832px -> dhash
+    # 3 vs 28), so hashing the re-clean missed it. Fall back to the fresh clean
+    # when no cache exists (first full run writes it from the same source).
+    _ni_clean_dir = os.path.join(args.episode_dir, "scenes_clean")
+
+    def _shown_img(f):
+        if args.reuse_clean:
+            p = os.path.join(_ni_clean_dir, os.path.basename(str(f)))
+            if os.path.exists(p):
+                im = cv2.imread(p)
+                if im is not None:
+                    return im
+        return _trimmed_clean(f)
     cuts_by_segment, nidrop = drop_cross_segment_near_identical_cuts(
-        cuts_by_segment, order, _trimmed_clean,
+        cuts_by_segment, order, _shown_img,
         exempt=system_files)
     for seg, f in nidrop:
         all_dropped.append(f)
