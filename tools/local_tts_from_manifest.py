@@ -300,6 +300,35 @@ def condition_wav_file(path: str) -> dict:
         return {"condition_error": str(exc)[:120]}
 
 
+def apply_atempo(path: str, factor: float) -> None:
+    """Speed the clip up (factor > 1) IN PLACE via ffmpeg atempo — tempo only,
+    PITCH PRESERVED, transcript unchanged (a 1.1 factor = 10% snappier delivery).
+    Fail-soft: any error leaves the clip at its original tempo."""
+    if not factor or abs(float(factor) - 1.0) < 1e-3:
+        return
+    import subprocess
+    import tempfile
+    tmp = ""
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".wav", dir=os.path.dirname(path) or ".")
+        os.close(fd)
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", path,
+             "-filter:a", f"atempo={float(factor):.4f}", tmp],
+            capture_output=True)
+        if r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+            os.replace(tmp, path)
+        elif tmp and os.path.exists(tmp):
+            os.remove(tmp)
+    except Exception as exc:
+        print(f"[warn] atempo skipped for {os.path.basename(path)}: {exc}")
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def wav_duration_sec(path: str) -> float:
     """Duration in seconds of a WAV file.
 
@@ -760,6 +789,7 @@ def synthesize_manifest(
     clip_retries: int = CLIP_RETRIES,
     group_mode: Optional[bool] = None,
     align_fn: Optional[Callable] = None,
+    speed: float = 1.0,
 ) -> Dict[str, Any]:
     """Drive TTS over every paragraph and build the tts_index.json dict.
 
@@ -799,6 +829,7 @@ def synthesize_manifest(
     # Caching on file existence alone (the old rule) is what let stale audio ship.
     prior_sha: Dict[str, str] = {}
     prior_exag: Dict[str, float] = {}
+    prior_speed: Dict[str, float] = {}
     prior_index_path = os.path.join(out_dir, "tts_index.json")
     if os.path.exists(prior_index_path) and not overwrite:
         try:
@@ -811,9 +842,11 @@ def synthesize_manifest(
                     prior_sha[str(sid)] = str(sha)
                     if c.get("exaggeration") is not None:
                         prior_exag[str(sid)] = float(c["exaggeration"])
+                    prior_speed[str(sid)] = float(c.get("speed") or 1.0)
         except Exception:
             prior_sha = {}
             prior_exag = {}
+            prior_speed = {}
 
     index: Dict[str, Any] = {
         "source_script": os.path.abspath(script_obj.get("_path", "")) if script_obj.get("_path") else "",
@@ -841,9 +874,12 @@ def synthesize_manifest(
         # the delivery is unchanged — narration_sha strips bracket tags, so a
         # mood escalation (same words, hotter tag) changes ONLY exaggeration;
         # keying on text alone reused audio synthesized at the old intensity.
+        # `speed` (atempo tempo) is part of the delivery: a speed change must
+        # re-render, else old-tempo audio ships under the new setting.
         cached = (os.path.exists(audio_path) and not overwrite
                   and prior_sha.get(seg_id) == text_sha
-                  and prior_exag.get(seg_id) == exaggeration)
+                  and prior_exag.get(seg_id) == exaggeration
+                  and abs(prior_speed.get(seg_id, 1.0) - float(speed)) < 1e-3)
         cond: Dict[str, Any] = {}
         tts_failed = False
         if not cached:
@@ -860,6 +896,8 @@ def synthesize_manifest(
             if not tts_failed:
                 # uniform lead/tail pads + soft-attack lift (first word audible)
                 cond = condition_wav_file(audio_path)
+                # snappier delivery (pitch-preserved tempo), transcript unchanged
+                apply_atempo(audio_path, speed)
         dur = duration_fn(audio_path)
 
         clip_row: Dict[str, Any] = {
@@ -873,6 +911,7 @@ def synthesize_manifest(
             "text_sha": text_sha,
             "mood_tag": tag or "",
             "exaggeration": exaggeration,
+            "speed": float(speed),
             "audio_file": os.path.relpath(audio_path, out_dir),
             "duration_sec": round(dur, 4),
             "cached": cached,
@@ -1474,6 +1513,9 @@ def main() -> int:
     ap.add_argument("--kokoro-voice", default="af_heart")
     ap.add_argument("--text-source", choices=["tts_v3", "script", "tts_ssml"], default="tts_v3")
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="delivery tempo (atempo, pitch-preserved); 1.1 = 10%% "
+                         "snappier, transcript unchanged")
     args = ap.parse_args()
 
     with open(args.script, "r", encoding="utf-8") as f:
@@ -1495,7 +1537,7 @@ def main() -> int:
         script_obj, os.path.abspath(args.out_dir),
         backend=args.backend, synth_fn=synth_fn,
         text_source=args.text_source, overwrite=bool(args.overwrite),
-        voice_ref=args.voice_ref,
+        voice_ref=args.voice_ref, speed=float(args.speed),
     )
 
     out_index = os.path.join(os.path.abspath(args.out_dir), "tts_index.json")

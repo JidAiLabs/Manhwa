@@ -411,6 +411,8 @@ def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
                 "--backend", backend]
         if cfg.tts_voice_ref:
             args += ["--voice-ref", cfg.tts_voice_ref]
+        if float(getattr(cfg, "tts_speed", 1.0) or 1.0) != 1.0:
+            args += ["--speed", str(cfg.tts_speed)]
         if backend == "kokoro" and cfg.tts_kokoro_voice:
             args += ["--kokoro-voice", cfg.tts_kokoro_voice]
         # Local TTS deps (torch 2.6) conflict with YOLO's torch, so run it in its

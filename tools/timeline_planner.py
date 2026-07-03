@@ -979,6 +979,7 @@ def build_cuts(
     selection: Optional[List[Dict[str, Any]]] = None,
     protected: Optional["set"] = None,
     floor: float = 0.0,
+    trim_to_fit: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Create deterministic montage plan across scene_files:
@@ -1025,7 +1026,24 @@ def build_cuts(
     if k == 0:
         return []
 
-    shot_dur = _floor_shot_dur(k, shot_dur, floor)   # extend if too tight; never shrink
+    if trim_to_fit and floor and float(floor) > 0 and k * float(floor) > shot_dur:
+        # VOICED: the REAL clip is too short to give every panel `floor`s within
+        # the clip's own length. The old behaviour STRETCHED the slot to k*floor
+        # to dodge a flash — but past the audio that stretch is a SILENT montage
+        # tail (the g0016 4-panels / 4.0s-audio -> 4.0s of dead air the user
+        # caught at 5:32). Prefer fewer, fuller cuts over dead air: show only as
+        # many panels as fit at the floor and keep the slot == the audio. A short
+        # line simply covers fewer of its span's panels (still >= floor each, so
+        # never a flash); protected cards are shown via inject_missing_protected,
+        # not buried in a story span, so trimming the tail here is safe.
+        keep = max(1, int(shot_dur / float(floor)))
+        if keep < k:
+            prot = protected or set()
+            protected_tail = [f for f in files[keep:] if f in prot]
+            files = files[:keep] + protected_tail
+            k = len(files)
+    else:
+        shot_dur = _floor_shot_dur(k, shot_dur, floor)   # estimate/preview: extend, never shrink
     per = shot_dur / float(k)
     cuts: List[Dict[str, Any]] = []
     t = 0.0
@@ -1877,6 +1895,10 @@ def main() -> int:
                         selection=beat.get("scene_selection"),
                         protected=protected,
                         floor=PANEL_FLOOR_SEC,
+                        # voiced plan only: trim a span to fit the REAL clip
+                        # instead of stretching into a silent montage tail.
+                        trim_to_fit=(args.mode == "narrated"
+                                     and audio_duration > 0.0),
                     )
 
             # PER-CUT motion: each cut is a DIFFERENT panel, so its pan must end on

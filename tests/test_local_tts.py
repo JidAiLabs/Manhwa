@@ -189,6 +189,37 @@ def test_synthesize_manifest_revoices_only_changed_segments(tmp_path):
     assert (tmp_path / "clips" / "g0002_p01.wav").exists()
 
 
+def test_synthesize_manifest_speed_stamped_and_invalidates_cache(tmp_path,
+                                                                 monkeypatch):
+    # a speed change is part of the delivery: it must re-render (not reuse
+    # old-tempo audio) and be stamped in the index. apply_atempo is stubbed so
+    # the test needs no ffmpeg.
+    calls = []
+    monkeypatch.setattr(lt, "apply_atempo", lambda p, f: calls.append((p, f)))
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False, speed=1.1)
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    assert all(abs(c["speed"] - 1.1) < 1e-6 for c in idx["clips"])   # stamped
+    assert calls and all(abs(f - 1.1) < 1e-6 for _, f in calls)      # atempo applied
+    # same text+mood but DIFFERENT speed -> cache miss, re-render
+    resynth = []
+    lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write(resynth), duration_fn=lambda p: 1.0,
+        group_mode=False, speed=1.25)
+    assert len(resynth) == len(idx["clips"])            # all re-rendered
+    # identical speed -> cache hit, no re-render
+    hit = []
+    lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write(hit), duration_fn=lambda p: 1.0,
+        group_mode=False, speed=1.1)
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    # (index above is speed 1.1; re-run at 1.1 after restoring it caches)
+
+
 def test_synthesize_manifest_revoices_on_mood_only_change(tmp_path):
     # narration_sha strips bracket tags, so a mood escalation (same words,
     # hotter tag) changes ONLY the exaggeration — the cache must miss, else

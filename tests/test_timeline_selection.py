@@ -425,3 +425,36 @@ def test_panel_intensity_matches_scene_selection():
 def test_panel_floor_is_two_seconds():
     # C4: the per-panel cut floor backstop is 2.0s (coupled to prep_qa flash_cut).
     assert tp.PANEL_FLOOR_SEC == 2.0
+
+
+def test_build_cuts_trim_to_fit_avoids_silent_tail():
+    # VOICED: a 4-panel span with only 4.0s of real audio (the g0016 5:32 bug).
+    # Default (estimate/preview) STRETCHES to 4*2.0=8.0s -> 4.0s silent tail.
+    est = tp.build_cuts(["a.jpg", "b.jpg", "c.jpg", "d.jpg"], 4.0,
+                        min_cut_sec=2.0, floor=2.0)
+    assert round(sum(c["dur"] for c in est), 1) == 8.0        # stretched (silence)
+    assert len(est) == 4
+
+    # trim_to_fit (voiced): keep the slot == audio, show only panels that fit at
+    # the floor (4.0s / 2.0 = 2), each still >= floor -> no flash, no dead air.
+    trim = tp.build_cuts(["a.jpg", "b.jpg", "c.jpg", "d.jpg"], 4.0,
+                         min_cut_sec=2.0, floor=2.0, trim_to_fit=True)
+    assert round(sum(c["dur"] for c in trim), 3) == 4.0       # slot == audio, no silence
+    assert [c["file"] for c in trim] == ["a.jpg", "b.jpg"]    # fits 2 at floor
+    assert all(c["dur"] >= 2.0 for c in trim)                 # never a flash
+
+
+def test_build_cuts_trim_to_fit_keeps_protected_tail_panel():
+    # a protected card at the tail must survive the trim (shown, not dropped)
+    trim = tp.build_cuts(["a.jpg", "b.jpg", "c.jpg", "sys.jpg"], 4.0,
+                         min_cut_sec=2.0, floor=2.0, trim_to_fit=True,
+                         protected={"sys.jpg"})
+    assert "sys.jpg" in [c["file"] for c in trim]
+
+
+def test_build_cuts_trim_to_fit_noop_when_audio_is_enough():
+    # audio long enough for all panels at floor -> no trim, all shown
+    trim = tp.build_cuts(["a.jpg", "b.jpg"], 6.0, min_cut_sec=2.0,
+                         floor=2.0, trim_to_fit=True)
+    assert [c["file"] for c in trim] == ["a.jpg", "b.jpg"]
+    assert round(sum(c["dur"] for c in trim), 1) == 6.0
