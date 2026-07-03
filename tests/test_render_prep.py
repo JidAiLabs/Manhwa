@@ -182,6 +182,72 @@ def test_near_identical_single_cut_noop():
     assert len(out) == 1
 
 
+# ---- 2c. cross-segment near-identical (the source-repeated eye p090/p095) ----
+# Non-saturating ramps give a guaranteed 8x8-dhash split: two horizontal ramps
+# (any brightness) hash identical (hamming 0 -> near); a vertical ramp hashes to
+# the opposite (hamming 64 -> distinct).
+
+def _hramp(w=300, h=400, base=0):
+    row = np.linspace(0, 200, w).astype(np.uint8)
+    img = np.stack([np.tile(row, (h, 1))] * 3, axis=-1)
+    return np.clip(img.astype(int) + base, 0, 255).astype(np.uint8)
+
+
+def _vramp(w=300, h=400):
+    col = np.linspace(0, 200, h).astype(np.uint8)
+    return np.stack([np.tile(col.reshape(-1, 1), (1, w))] * 3, axis=-1).astype(np.uint8)
+
+
+def test_cross_segment_near_identical_dropped_when_segment_keeps_a_cut():
+    # the eye p090 (g0017 tail) repeats as p095 (g0018 head); g0018 keeps p096/p097
+    imgs = {"eye0.jpg": _hramp(base=0), "eye1.jpg": _hramp(base=20),
+            "other.jpg": _vramp()}
+    cbs = {"g17": [{"file": "eye0.jpg", "start": 0.0, "dur": 6.0}],
+           "g18": [{"file": "eye1.jpg", "start": 0.0, "dur": 3.0},
+                   {"file": "other.jpg", "start": 3.0, "dur": 3.0}]}
+    out, dropped = rp.drop_cross_segment_near_identical_cuts(
+        cbs, ["g17", "g18"], lambda f: imgs.get(f))
+    assert dropped == [("g18", "eye1.jpg")]              # LATER twin dropped
+    assert [c["file"] for c in out["g18"]] == ["other.jpg"]
+    assert [c["file"] for c in out["g17"]] == ["eye0.jpg"]
+    assert abs(out["g18"][0]["dur"] - 6.0) < 1e-6        # freed time redistributed
+
+
+def test_cross_segment_near_identical_sole_cut_NOT_dropped_no_held_image():
+    # if g0018's ONLY cut is the repeat, dropping it would empty the segment and
+    # its narration would hold a neighbour 12-16s (the held-image regression). The
+    # retain-a-cut guard must KEEP it — this is what makes overriding the narrated
+    # protection safe.
+    imgs = {"eye0.jpg": _hramp(base=0), "eye1.jpg": _hramp(base=20)}
+    cbs = {"g17": [{"file": "eye0.jpg", "start": 0.0, "dur": 6.0}],
+           "g18": [{"file": "eye1.jpg", "start": 0.0, "dur": 6.0}]}
+    out, dropped = rp.drop_cross_segment_near_identical_cuts(
+        cbs, ["g17", "g18"], lambda f: imgs.get(f))
+    assert dropped == []
+    assert [c["file"] for c in out["g18"]] == ["eye1.jpg"]
+
+
+def test_cross_segment_distinct_panels_both_kept():
+    imgs = {"a.jpg": _hramp(), "b.jpg": _vramp()}
+    cbs = {"g1": [{"file": "a.jpg", "start": 0.0, "dur": 4.0}],
+           "g2": [{"file": "b.jpg", "start": 0.0, "dur": 4.0}]}
+    out, dropped = rp.drop_cross_segment_near_identical_cuts(
+        cbs, ["g1", "g2"], lambda f: imgs.get(f))
+    assert dropped == []
+
+
+def test_cross_segment_exempt_is_not_a_dedup_reference():
+    # an exempt (system/blank) panel is never dropped AND never a comparison
+    # reference, so a following near-identical panel has no prev to match.
+    imgs = {"sys.jpg": _hramp(base=0), "eye.jpg": _hramp(base=20), "x.jpg": _vramp()}
+    cbs = {"g1": [{"file": "sys.jpg", "start": 0.0, "dur": 4.0}],
+           "g2": [{"file": "eye.jpg", "start": 0.0, "dur": 4.0},
+                  {"file": "x.jpg", "start": 4.0, "dur": 4.0}]}
+    out, dropped = rp.drop_cross_segment_near_identical_cuts(
+        cbs, ["g1", "g2"], lambda f: imgs.get(f), exempt={"sys.jpg"})
+    assert dropped == []
+
+
 # ---- FIX 4: narration-bearing panels are protected from the dedup ------------
 # REGRESSION (panel-collapse): a panel that owns its own narration segment must
 # never be dropped as a "duplicate". Only a TRUE same-file consecutive run folds

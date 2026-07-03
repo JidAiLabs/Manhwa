@@ -341,6 +341,90 @@ def drop_near_identical_cuts(
     return _redistribute(cuts, dropped), dropped
 
 
+def _dhash8_bgr(img: np.ndarray) -> int:
+    """8x8 difference hash of a BGR (cv2) image — the perceptual hash for the
+    cross-segment near-identical drop below. Shift-tolerant where NCC is not: the
+    source-repeated eye p090/p095 (a re-drawn crop, not a pixel copy) measures
+    hamming 3 here but only 0.88 NCC (below the 0.96 near-identical gate), while
+    the pipeline's dhash64 gives 24 (it is tuned for exact chunk-overlap dups).
+    Distinct panels score 38-40 and the flash-bisection halves 23 — both far above
+    the drop threshold, so the pass never touches them."""
+    g = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    g = cv2.resize(g, (9, 8), interpolation=cv2.INTER_AREA)
+    diff = g[:, 1:] > g[:, :-1]
+    out = 0
+    for bit in diff.flatten():
+        out = (out << 1) | int(bit)
+    return out
+
+
+def drop_cross_segment_near_identical_cuts(
+    cuts_by_segment: Dict[str, List[Dict[str, Any]]],
+    order: Sequence[str],
+    get_img,
+    *,
+    ham_max: int = 8,
+    min_area_ratio: float = 0.7,
+    exempt: Optional[set] = None,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]]]:
+    """Drop a SOURCE-REPEATED panel shown again across a segment boundary — the
+    near-identical eye close-up the comic draws twice a few beats apart (p090 at
+    g0017's tail, p095 at g0018's head). The containment pass can't see it (same
+    size, neither contains the other), the per-segment near-identical pass never
+    compares across segments, and NCC underscores the shifted crop (0.88) — so an
+    8x8 perceptual dhash decides (hamming <= *ham_max*; measured 3 for that pair vs
+    23 for the flash bisection and 38+ for distinct art).
+
+    Takes NO narrated `protect` set on purpose: a narrated panel IS droppable here,
+    because the later twin is dropped ONLY when its segment keeps >= 1 other cut.
+    The narration then plays over the panels it still shows, so the held-image
+    regression (a narrated segment emptied -> a neighbour holds 12-16s) cannot
+    happen — that guard is what makes overriding the narrated protection safe.
+    *exempt* files (system cards, blank/chrome) and split cuts are never a duplicate
+    and never a comparison reference. Only CONSECUTIVE shown cuts are compared, so a
+    deliberate flashback callback to a much earlier panel is never `prev` in view
+    and always survives. The EARLIER twin is kept; freed time is redistributed
+    within the affected segment (audio/timing intact)."""
+    ex = exempt or set()
+    out = {k: list(v) for k, v in cuts_by_segment.items()}
+    dropped: List[Tuple[str, str]] = []
+    prev_file: Optional[str] = None
+    prev_hash: Optional[int] = None
+    for seg in order:
+        cuts = out.get(seg) or []
+        kept: List[Dict[str, Any]] = []
+        n = len(cuts)
+        for ci, c in enumerate(cuts):
+            f = str(c.get("file"))
+            if f in ex or c.get("file2") or c.get("layout"):
+                kept.append(c)          # blank/system/split: not a dup or a ref
+                continue
+            img = get_img(f)
+            h = _dhash8_bgr(img) if img is not None else None
+            near = False
+            if (prev_file and prev_file != f and prev_hash is not None
+                    and h is not None):
+                pa = get_img(prev_file)
+                if pa is not None:
+                    aa = pa.shape[0] * pa.shape[1]
+                    ab = img.shape[0] * img.shape[1]
+                    ratio = min(aa, ab) / max(1, max(aa, ab))
+                    if (ratio >= min_area_ratio
+                            and (prev_hash ^ h).bit_count() <= ham_max):
+                        near = True
+            survivors_if_drop = len(kept) + (n - ci - 1)
+            if near and survivors_if_drop >= 1:
+                dropped.append((seg, f))
+                continue                # keep the earlier twin as the reference
+            kept.append(c)
+            if h is not None:
+                prev_file, prev_hash = f, h
+        if len(kept) != len(cuts) and kept:
+            removed = [str(c.get("file")) for c in cuts if c not in kept]
+            out[seg] = _redistribute(cuts, removed)
+    return out, dropped
+
+
 # ---------------------------------------------------------------------------
 # 3. uniform light border trim (pure)
 # ---------------------------------------------------------------------------
@@ -2289,6 +2373,18 @@ def main() -> int:
             print(f"[ok] {seg}: garbage sole cut {old} -> SUBSTITUTED {new}")
         if not xdropped and not subs:
             break
+
+    # cross-segment NEAR-IDENTICAL: a same-size source-repeat the containment loop
+    # can't catch (the p090/p095 eye, drawn again a few beats later). Drops the
+    # later twin ONLY when its segment keeps another cut, so a narrated panel goes
+    # without ever emptying a segment (no held-image). System/blank stay exempt;
+    # narrated is intentionally NOT (the retain-a-cut guard is the safety).
+    cuts_by_segment, nidrop = drop_cross_segment_near_identical_cuts(
+        cuts_by_segment, order, _trimmed_clean,
+        exempt=exempt_all | system_files)
+    for seg, f in nidrop:
+        all_dropped.append(f)
+        print(f"[ok] {seg}: cross-segment near-identical {f} dropped")
 
     shown = sorted({c["file"] for cs in cuts_by_segment.values() for c in cs})
 
