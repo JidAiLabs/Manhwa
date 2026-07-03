@@ -1795,6 +1795,15 @@ def main() -> int:
         except Exception:
             existing_by_id = {}
 
+    # The span pin exists SOLELY to protect the per-clip TTS cache from
+    # segment_id renumbering (spec 3.5). Before anything is voiced there is
+    # nothing to protect — and holding a rewrite to exact span reproduction
+    # made the heal loop 0-for-9 on real ch1 (every good rewrite discarded,
+    # the flagged line kept). Corrections therefore pin only when the episode
+    # carries a TTS index; unvoiced chapters heal through the free prose path.
+    pin_spans = os.path.exists(os.path.join(
+        os.path.dirname(os.path.abspath(args.out)), "tts", "tts_index.json"))
+
     max_groups = args.max_groups if args.max_groups > 0 else len(groups)
 
     beats_out: List[Dict[str, Any]] = []
@@ -1825,14 +1834,14 @@ def main() -> int:
             continue
 
         pin_prev: Optional[Dict[str, Any]] = None
-        if gid in corrections:
+        if gid in corrections and pin_spans:
             # Span-pinned heal (spec 3.5): when the beat being corrected
-            # already carries native segments, its spans are FIXED — the
-            # rewrite may only change LINES (a re-split would renumber the
-            # sibling segment_ids -> per-clip TTS cache churn + audio_stale).
-            # Pinning derives from the EXISTING beat's shape, never from
-            # --segmentation; without --resume there is no existing beat, so
-            # a full beats re-run keeps the freedom to re-split.
+            # already carries native segments AND the episode is voiced, its
+            # spans are FIXED — the rewrite may only change LINES (a re-split
+            # would renumber the sibling segment_ids -> per-clip TTS cache
+            # churn + audio_stale). Pinning derives from the EXISTING beat's
+            # shape, never from --segmentation; without --resume there is no
+            # existing beat, so a full beats re-run keeps freedom to re-split.
             prev = existing_by_id.get(gid)
             if (prev is not None and has_native_segments(prev)
                     and beat_segments(prev)):
@@ -1977,7 +1986,15 @@ def main() -> int:
             else:
                 beat = enforce_pinned_spans(beat, pin_prev, gid)
         else:
-            beat.pop("_segments_fallback", None)
+            fell_back = beat.pop("_segments_fallback", False)
+            prev0 = existing_by_id.get(gid) if gid in corrections else None
+            if fell_back and prev0 is not None:
+                # UNPINNED corrections (unvoiced episode): a re-split rewrite
+                # is welcome, but pads must never replace real lines — the
+                # same poisoning family the pin guards against.
+                print(f"[segments] corrections g{gid:04d}: regen fell back "
+                      "to pads — kept previous lines")
+                beat = prev0
 
         # The per-panel backfill above gives even a parse-failed beat valid lines;
         # demote the silencing `error` flag so those lines actually reach render.

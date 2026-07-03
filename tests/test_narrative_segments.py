@@ -430,12 +430,19 @@ def _prev_segments_beat():
 
 
 def _run_corrections(tmp_path, monkeypatch, responses, prev_beat,
-                     extra_argv=()):
+                     extra_argv=(), voiced=True):
     """Drive main() over an EXISTING beats.json with a correction queued for
-    group 7 (--resume --corrections) and a stubbed model."""
+    group 7 (--resume --corrections) and a stubbed model. voiced=True lays
+    down a tts/tts_index.json next to the beats — the span pin engages ONLY
+    then (there is a per-clip cache to protect); voiced=False exercises the
+    unvoiced heal, which goes through the free prose path."""
     g, v, u = _write_manifests(tmp_path)
     out = tmp_path / "beats.json"
     out.write_text(json.dumps({"count_beats": 1, "beats": [prev_beat]}))
+    if voiced:
+        (tmp_path / "tts").mkdir(exist_ok=True)
+        (tmp_path / "tts" / "tts_index.json").write_text(
+            json.dumps({"clips": []}))
     corr = tmp_path / "corr.json"
     corr.write_text(json.dumps({"7": "Weave the caption into the narration."}))
     calls = []
@@ -1012,3 +1019,54 @@ def test_corrections_pinned_regen_still_speaks_segments_schema(tmp_path,
     props = calls[0]["response_schema"]["properties"]
     assert "segments" in props and "sentences" not in props
     assert "FIXED SEGMENTATION" in calls[0]["system_instruction"]
+
+
+# ---- unvoiced corrections: no clip cache exists -> the pin has nothing to
+# protect, so the heal goes through the free PROSE path (a valid re-split is
+# ADOPTED — holding rewrites to exact span reproduction made the real ch1
+# heal loop 0-for-9, every good rewrite discarded and the flagged line kept).
+
+def test_corrections_unvoiced_uses_prose_path_and_adopts_resplit(
+        tmp_path, monkeypatch):
+    resplit_prose = {
+        "beat_title": "Opening", "what_happens": "He crosses the hall.",
+        "narration": ("The hall swallows him one step at a time. And the "
+                      "doors slam shut with the finality of a verdict."),
+        "sentences": [
+            {"text": "The hall swallows him one step at a time.",
+             "panels": ["p1.jpg"]},
+            {"text": "And the doors slam shut with the finality of a "
+                     "verdict.", "panels": ["p2.jpg", "p3.jpg"]},
+        ],
+        "scene_selection": [],
+    }
+    out, calls = _run_corrections(tmp_path, monkeypatch, [resplit_prose],
+                                  _prev_segments_beat(), voiced=False)
+    sysi = calls[0]["system_instruction"]
+    assert "CORRECTION FOR THIS GROUP" in sysi
+    assert "FIXED SEGMENTATION" not in sysi              # nothing to pin
+    assert "sentences" in calls[0]["response_schema"]["properties"]
+    beat = out["beats"][0]
+    # the re-split is ADOPTED — spans differ from the previous beat
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg"], ["p2.jpg", "p3.jpg"]]
+    assert beat["segments"][0]["line"] == \
+        "The hall swallows him one step at a time."
+
+
+def test_corrections_unvoiced_fallback_still_keeps_previous_lines(
+        tmp_path, monkeypatch):
+    # pads must never replace real lines even without a pin
+    no_tags = {
+        "beat_title": "Opening", "what_happens": "He crosses the hall.",
+        "narration": "A passage with no tags.",
+        "sentences": [{"text": "A passage with no tags.", "panels": []}],
+        "scene_selection": [],
+    }
+    out, calls = _run_corrections(tmp_path, monkeypatch, [no_tags, no_tags],
+                                  _prev_segments_beat(), voiced=False)
+    assert len(calls) == 2                               # ask + repair re-ask
+    beat = out["beats"][0]
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg", "p2.jpg"], ["p3.jpg"]]                # previous beat kept
+    assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
