@@ -454,6 +454,39 @@ def test_autopilot_off_changes_nothing(tmp_path, monkeypatch):
     assert con.execute("SELECT COUNT(*) FROM approval").fetchone()[0] == 0
 
 
+def test_voiceover_rewinds_planned_chapter_so_it_actually_voices(
+        tmp_path, monkeypatch):
+    # `studio run` resumes by status: an explicit voiceover job on a chapter
+    # already at 'planned' silently NO-OPS the voiced stage — narration edited
+    # after voicing then ships with stale audio (ch1 2026-07-03, and the
+    # estimate-mode QA is blind to clip drift by design). The handler must
+    # rewind to 'scripted' BEFORE running so the voiced stage really runs.
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, autopilot=0, flags=[])
+    con.execute("UPDATE chapter SET status='planned' WHERE id=5")
+    con.commit()
+    from studio.dashboard import gates as g
+    g.approve(con, "voice", chapter_id=5, note="fix rotation")
+    status_at_run = {}
+
+    def stream(cmd, log, **kw):
+        if "run" in cmd:
+            status_at_run["v"] = con.execute(
+                "SELECT status FROM chapter WHERE id=5").fetchone()[0]
+        return 0
+
+    monkeypatch.setattr(worker, "_stream", stream)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "voiceover", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='voiceover'").fetchone()
+    assert state == "done", err
+    assert status_at_run["v"] == "scripted"   # rewound, not resume-skipped
+
+
 def test_autopilot_voiceover_advances_to_render(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _autopilot_series(con, tmp_path, flags=[])

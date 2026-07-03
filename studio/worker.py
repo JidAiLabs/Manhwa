@@ -637,6 +637,19 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
     if not allowed:
         raise RuntimeError(f"voiceover blocked: {why}")
     ch = _chapter(con, job["chapter_id"])
+    # An EXPLICIT voiceover job must actually voice: `studio run` resumes by
+    # status, so on a chapter already voiced/planned/rendered it silently
+    # no-ops the voiced stage — narration edited after voicing then ships
+    # with STALE AUDIO (ch1 2026-07-03: the corrected lines reached the plan,
+    # the clips kept the old ones, and estimate-mode QA is blind to clip
+    # drift by design). Rewind to 'scripted' first; the voiced stage is
+    # incremental (text_sha + exaggeration cache), so unchanged clips are
+    # reused and only real drift re-synthesizes.
+    if ch["status"] in ("voiced", "planned", "rendered"):
+        con.execute("UPDATE chapter SET status='scripted', "
+                    "updated_at=datetime('now') WHERE id=?", (ch["id"],))
+        con.commit()
+        ch = _chapter(con, job["chapter_id"])
     with record_stage(con, chapter_id=ch["id"], stage="voiced",
                       series_id=ch["series_id"]):
         rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
