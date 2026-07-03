@@ -444,12 +444,19 @@ def test_build_cuts_trim_to_fit_avoids_silent_tail():
     assert all(c["dur"] >= 2.0 for c in trim)                 # never a flash
 
 
-def test_build_cuts_trim_to_fit_keeps_protected_tail_panel():
-    # a protected card at the tail must survive the trim (shown, not dropped)
+def test_build_cuts_trim_to_fit_keeps_must_show_card_not_story():
+    # a system/title card (must_show) survives the trim; but the BROAD
+    # `protected` set (every story panel) must NOT block the trim, else nothing
+    # drops and the panels flash — the g0016 regression where all span panels
+    # were protected_story, the fit-trim couldn't fire, and 4 flashed at 0.95s.
     trim = tp.build_cuts(["a.jpg", "b.jpg", "c.jpg", "sys.jpg"], 4.0,
                          min_cut_sec=2.0, floor=2.0, trim_to_fit=True,
-                         protected={"sys.jpg"})
-    assert "sys.jpg" in [c["file"] for c in trim]
+                         protected={"a.jpg", "b.jpg", "c.jpg", "sys.jpg"},
+                         must_show={"sys.jpg"})
+    files = [c["file"] for c in trim]
+    assert "sys.jpg" in files                    # card pinned, shown
+    assert all(c["dur"] >= 2.0 for c in trim)    # never a flash despite protection
+    assert len(files) <= 3                        # story panels trimmed to fit
 
 
 def test_build_cuts_trim_to_fit_noop_when_audio_is_enough():

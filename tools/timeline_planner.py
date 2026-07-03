@@ -980,6 +980,7 @@ def build_cuts(
     protected: Optional["set"] = None,
     floor: float = 0.0,
     trim_to_fit: bool = False,
+    must_show: Optional["set"] = None,
 ) -> List[Dict[str, Any]]:
     """
     Create deterministic montage plan across scene_files:
@@ -1038,9 +1039,20 @@ def build_cuts(
         # not buried in a story span, so trimming the tail here is safe.
         keep = max(1, int(shot_dur / float(floor)))
         if keep < k:
-            prot = protected or set()
-            protected_tail = [f for f in files[keep:] if f in prot]
-            files = files[:keep] + protected_tail
+            # `protected` here is the BROAD redundant-drop set (every understood
+            # story panel), which must NOT block a fit-trim or nothing drops and
+            # the panels flash. Only true MUST-SHOW cards (system/title, via
+            # must_show) are guaranteed a slot; the rest of the `keep` slots go to
+            # leading STORY panels, so the total stays == keep (each >= floor, no
+            # flash). Excess story panels are the short line's honest loss. Cards
+            # in a story span are rare (they are forced solo upstream), so this
+            # normally just drops the story tail.
+            ms = must_show or set()
+            pinned = [f for f in files if f in ms]
+            story = [f for f in files if f not in ms]
+            keep_story = max(0, keep - len(pinned))
+            kept = set(story[:keep_story]) | set(pinned)
+            files = [f for f in files if f in kept]   # preserve reading order
             k = len(files)
     else:
         shot_dur = _floor_shot_dur(k, shot_dur, floor)   # estimate/preview: extend, never shrink
@@ -1896,9 +1908,12 @@ def main() -> int:
                         protected=protected,
                         floor=PANEL_FLOOR_SEC,
                         # voiced plan only: trim a span to fit the REAL clip
-                        # instead of stretching into a silent montage tail.
+                        # instead of stretching into a silent montage tail. Only
+                        # system/title cards are pinned against the trim (story
+                        # panels are droppable when the line is short).
                         trim_to_fit=(args.mode == "narrated"
                                      and audio_duration > 0.0),
+                        must_show=protected_cards,
                     )
 
             # PER-CUT motion: each cut is a DIFFERENT panel, so its pan must end on
