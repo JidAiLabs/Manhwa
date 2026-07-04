@@ -173,6 +173,100 @@ def test_group_payload_threads_full_panel_understanding():
     assert scene["subjects"] == ["masked assassin", "unfamiliar stranger"]
 
 
+# ---------------------------------------------------------------------------
+# FIX 2 (narration quality): INPUT sanitization. The writer must never receive
+# a camera/shot description (or a rendering-effect action) as a panel signal —
+# it echoes them back as `shot_description` narration, and the skipped-panel
+# grounded pad reuses the same poisoned text (so the heal never converges).
+# `_non_camera_description` is the ONE non-camera ladder shared by
+# `_pack_group_payload` (writer input) and `_grounded_pad_line` (pad).
+# ---------------------------------------------------------------------------
+
+def test_non_camera_description_prefers_action_over_shot_description():
+    # description is camera prose, a clean action exists -> action wins, and the
+    # returned signal is NOT a shot-description.
+    u = {"description": "A close-up shot shows a man drawing his blade.",
+         "action": "He draws his blade.",
+         "subjects": ["a man", "a blade"]}
+    sig = gnp._non_camera_description(u)
+    assert sig == "He draws his blade."
+    assert not gnp.is_shot_description(sig)
+
+
+def test_non_camera_description_synthesizes_neutral_summary_from_subjects():
+    # action AND description are BOTH camera prose (or empty) -> fall to a
+    # neutral subjects+setting summary: not a shot-description, non-empty, and
+    # returned WHOLE (the helper never truncates).
+    u = {"description": "A wide establishing shot reveals the hall.",
+         "action": "",
+         "subjects": ["a hooded knight", "a shattered throne"],
+         "setting": "the ruined great hall"}
+    sig = gnp._non_camera_description(u)
+    assert sig                                    # non-empty
+    assert not gnp.is_shot_description(sig)
+    assert sig == "a hooded knight, a shattered throne in the ruined great hall"
+
+
+def test_non_camera_description_empty_when_nothing_usable():
+    assert gnp._non_camera_description({}) == ""
+    assert gnp._non_camera_description(None) == ""
+    # everything usable is camera prose -> nothing survives the ladder
+    assert gnp._non_camera_description(
+        {"description": "A dramatic overhead shot captures the courtyard.",
+         "action": "The panel shows a blur of motion."}) == ""
+
+
+def test_pack_group_payload_sanitizes_shot_description_input():
+    # ROOT CAUSE: a shot-description `description` must not reach the writer.
+    group = {"shot_id": 7, "scene_files": ["a.jpg"]}
+    vision = {"a.jpg": {"vision": {"labels": [], "objects": []}}}
+    understood = {"a.jpg": {
+        "description": "A close-up shot shows a man.",   # camera prose
+        "action": "He steps into the light.",
+        "subjects": ["a man"], "panel_kind": "story"}}
+    scene = gnp._pack_group_payload(group, vision, understood)["scenes_signals"][0]
+    assert not gnp.is_shot_description(scene["description"])
+    assert scene["description"] == "He steps into the light."   # prefers action
+
+
+def test_pack_group_payload_keeps_a_clean_description():
+    # a NON-camera description threads through unchanged (no over-sanitizing).
+    group = {"shot_id": 8, "scene_files": ["a.jpg"]}
+    vision = {"a.jpg": {"vision": {"labels": [], "objects": []}}}
+    understood = {"a.jpg": {
+        "description": "The assassin corners the merchant in the alley.",
+        "action": "He raises his blade.", "subjects": ["assassin", "merchant"]}}
+    scene = gnp._pack_group_payload(group, vision, understood)["scenes_signals"][0]
+    assert scene["description"] == "The assassin corners the merchant in the alley."
+
+
+def test_pack_group_payload_sanitizes_a_camera_action():
+    # action can ITSELF be a rendering/camera phrase (real Nano ch1: "A blade
+    # swings through the air ...") -> it must not reach the writer as `action`.
+    group = {"shot_id": 9, "scene_files": ["a.jpg"]}
+    vision = {"a.jpg": {"vision": {"labels": [], "objects": []}}}
+    understood = {"a.jpg": {
+        "description": "The duel reaches its final exchange.",
+        "action": "A blade swings through the air with lethal speed.",
+        "subjects": ["a swordsman"]}}
+    scene = gnp._pack_group_payload(group, vision, understood)["scenes_signals"][0]
+    assert not gnp.is_shot_description(scene["action"])
+    assert scene["action"] == ""                  # camera action dropped
+
+
+def test_grounded_pad_line_uses_shared_non_camera_ladder():
+    # _grounded_pad_line delegates to _non_camera_description (DRY): a skipped
+    # panel with a camera description falls to its clean action, and the
+    # original ultimate-fallback string is preserved when nothing is usable.
+    u_by_file = {"p1.jpg": {
+        "description": "A dramatic overhead shot captures the courtyard.",
+        "action": "He kneels in the snow.", "subjects": ["a knight"]}}
+    line = gnp._grounded_pad_line("p1.jpg", u_by_file)
+    assert line == "He kneels in the snow."
+    assert not gnp.is_shot_description(line)
+    assert gnp._grounded_pad_line("x.jpg", {"x.jpg": {}}) == "The moment holds."
+
+
 def test_bumped_num_ctx_fits_oversized_beats_prompt():
     # the real ollama error from a 9358-token group hitting num_ctx 8192
     err = ('{"error":{"code":400,"message":"request (9358 tokens) exceeds the '

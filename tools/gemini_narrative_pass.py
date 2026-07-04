@@ -390,6 +390,44 @@ def _build_story_block(story_path: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _non_camera_description(understood: Optional[Dict[str, Any]]) -> str:
+    """The panel's cleanest NON-camera factual signal — the ONE ladder shared by
+    the narration writer's input (`_pack_group_payload`) and the grounded-pad
+    stand-in (`_grounded_pad_line`), kept in a single place (DRY).
+
+    D4: an understanding's `description` is often camera/shot framing ("A
+    close-up shot shows...") or rendering-effect prose ("...creating motion
+    blur"); handed to the writer VERBATIM it gets echoed back as a
+    `shot_description` narration line (and the skipped-panel pad reuses it). So
+    prefer the concrete `action`, then a non-camera `description`, then the named
+    `subjects`, then a neutral `subjects`+`setting` summary — NEVER a
+    camera/effect phrase. Returns "" when nothing usable remains (callers supply
+    their own ultimate fallback). The returned string is complete — never
+    truncated (callers apply their own length caps)."""
+    u = understood or {}
+    action = str(u.get("action") or "").strip()
+    desc = str(u.get("description") or "").strip()
+    subjects = [str(s).strip() for s in (u.get("subjects") or []) if str(s).strip()]
+    setting = str(u.get("setting") or "").strip()
+    # 1) the concrete action, then 2) a non-camera description.
+    for c in (action, desc):
+        if c and not is_shot_description(c):
+            return c
+    # 3) the named subjects (dropping any that themselves read as a shot phrase),
+    # 4) enriched with a non-camera setting into a neutral summary.
+    clean_subjects = [s for s in subjects if not is_shot_description(s)]
+    if clean_subjects:
+        summary = ", ".join(clean_subjects)
+        if setting and not is_shot_description(setting):
+            summary = f"{summary} in {setting}"
+        if not is_shot_description(summary):
+            return summary
+    # 4b) no usable subjects — a bare non-camera setting still beats camera prose.
+    if setting and not is_shot_description(setting):
+        return setting
+    return ""
+
+
 def _pack_group_payload(
     group: Dict[str, Any],
     vision_items_by_file: Dict[str, Dict[str, Any]],
@@ -405,6 +443,8 @@ def _pack_group_payload(
         v = it.get("vision") or {}
         labels = [x.get("desc") for x in (v.get("labels") or []) if x.get("desc")]
         objects = [x.get("name") for x in (v.get("objects") or []) if x.get("name")]
+        _desc = str(understood.get("description") or "").strip()
+        _action = str(understood.get("action") or "").strip()
 
         scenes.append(
             {
@@ -418,8 +458,16 @@ def _pack_group_payload(
                 # Full paid understanding, including panels omitted from the
                 # image attachment cap. This is the narration's factual source;
                 # vision OCR/labels are supporting signals, not a substitute.
-                "description": str(understood.get("description") or "")[:500],
-                "action": str(understood.get("action") or "")[:240],
+                # D4 INPUT sanitization: never hand the writer a camera/shot
+                # description or a rendering-effect action — it echoes them back
+                # as `shot_description` narration. Keep a clean description;
+                # otherwise fall through the shared non-camera ladder. A
+                # camera-phrased action is dropped (its content, if any, resurfaces
+                # via the description ladder).
+                "description": (_desc if _desc and not is_shot_description(_desc)
+                                else _non_camera_description(understood))[:500],
+                "action": (_action if _action and not is_shot_description(_action)
+                           else "")[:240],
                 "setting": str(understood.get("setting") or "")[:160],
                 "dialogue": str(understood.get("dialogue") or "")[:320],
                 "panel_kind": str(understood.get("panel_kind")
@@ -935,17 +983,13 @@ def build_beat_schema(segmentation: str = "adaptive") -> dict:
 def _grounded_pad_line(f, understand_by_file):
     """A grounded stand-in line for a panel the model left uncovered.
     D4: the understanding `description` is often camera/shot framing
-    ("A close-up shot shows..."). NEVER copy that verbatim. Prefer the
-    concrete action, then a NON-camera description, then the named subjects;
-    if everything usable is camera prose or empty, leave a short
-    heal-flaggable bridge instead of reading the picture."""
-    u = (understand_by_file or {}).get(f) or {}
-    action = str(u.get("action") or "").strip()
-    desc = str(u.get("description") or "").strip()
-    subj = ", ".join(str(s) for s in (u.get("subjects") or []) if s).strip()
-    return next((c for c in (action, desc, subj)
-                 if c and not is_shot_description(c)),
-                "The moment holds.")
+    ("A close-up shot shows..."). NEVER copy that verbatim. Delegates to the
+    shared `_non_camera_description` ladder (action → non-camera description →
+    subjects → subjects+setting summary); if everything usable is camera prose
+    or empty, leave a short heal-flaggable bridge instead of reading the
+    picture."""
+    return (_non_camera_description((understand_by_file or {}).get(f) or {})
+            or "The moment holds.")
 
 
 def auto_repair_segments(segs, surviving, kinds, understand_by_file=None):
