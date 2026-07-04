@@ -182,13 +182,46 @@ _EFFECT_DESC_RE = re.compile(
 )
 
 
+# MONTAGE / MEDIUM meta-narration: a line that narrates the VIDEO ITSELF — the
+# camera, the shots, the sequence, the montage — instead of the story inside the
+# panels. This is the small-model punt on a dense action run: the writer, handed
+# 6 richly-understood attack panels, collapsed them into "The scene unfolds
+# through a series of connected shots." / "The action continues as the camera
+# follows the subject." (real Nano ch1 group 7, 2026-07-04). It reads as valid
+# prose and slips EVERY other guard: _SHOT_DESC_RE's noun set has no "camera" and
+# its verb set no "unfolds/follows/continues"; the word-budget floor is 1.0s/panel
+# so a 9-word line clears a 3-panel span. Agnostic: it names the MEDIUM
+# (camera/shot/sequence/montage/footage) as the actor of a presentation verb, or a
+# bare "series of connected shots" clause. Precise — a real story line names a
+# place/actor ("The scene shifts to the courtyard.", "He follows the trail."), so
+# the medium-noun + medium-verb pairing never fires on it (note "shifts" and a
+# human subject are deliberately absent from the verb/noun sets).
+# The medium-noun set for the "<noun> <presentation-verb>" arm is deliberately
+# NARROW — only nouns that are unambiguously the video medium (scene/sequence/
+# montage/footage). "panel"/"frame"/"shot"/"action" are excluded here because
+# they carry ordinary story senses ("the panel begins to glow", "the action
+# moves to the rooftop", "he was shot"); the real camera/shots leak is caught by
+# the "the camera" and "(series of )connected shots" arms instead.
+_MONTAGE_META_RE = re.compile(
+    r"\bthe\s+camera\b"
+    r"|\b(?:a\s+)?series\s+of\s+(?:connected\s+)?(?:shots?|panels?|frames?|images?|scenes?)\b"
+    r"|\bconnected\s+(?:shots?|panels?|frames?|images?)\b"
+    r"|\bthe\s+(?:scene|sequence|montage|footage)\s+"
+    r"(?:unfolds?|continues?|proceeds?|progresses?|begins?|plays?\s+out)\b"
+    r"|\bthe\s+(?:sequence|montage)\s+(?:shows?|depicts?|reveals?|captures?)\b",
+    re.I,
+)
+
+
 def is_shot_description(text: str) -> bool:
     """True when a narration line names the shot/camera/panel/frame ('A close-up
-    shot shows...') OR describes the ARTWORK'S RENDERING / a visual effect ('motion
-    blur', 'speed lines', '...is depicted', a weapon 'swings through the air')
-    instead of narrating the story. Series-agnostic."""
+    shot shows...'), narrates the MEDIUM itself ('the camera follows...', 'a
+    series of connected shots'), OR describes the ARTWORK'S RENDERING / a visual
+    effect ('motion blur', 'speed lines', '...is depicted', a weapon 'swings
+    through the air') instead of narrating the story. Series-agnostic."""
     clean = _TAG_RE.sub("", str(text or ""))
-    return bool(_SHOT_DESC_RE.search(clean) or _EFFECT_DESC_RE.search(clean))
+    return bool(_SHOT_DESC_RE.search(clean) or _EFFECT_DESC_RE.search(clean)
+                or _MONTAGE_META_RE.search(clean))
 
 
 # The prose-first writer receives scene_file names as sentence TAGS — which
@@ -197,11 +230,21 @@ def is_shot_description(text: str) -> bool:
 # A file name in narration is pipeline bookkeeping read aloud — categorically
 # unshippable, and a deterministic check, not judge territory.
 _IMAGE_FILE_RE = re.compile(r"\S+\.(?:jpe?g|png|webp)\b", re.I)
+# The SAME bookkeeping leak WITHOUT the extension: "The sequence begins with
+# frame p000098." (real Nano ch1 group 22, 2026-07-04) — the p-number scene id
+# read aloud. `p` + 4+ digits is the pipeline's panel scheme and collides with no
+# English word, so it needs no "frame/panel" prefix to be unambiguous. (Kept
+# separate from _IMAGE_FILE_RE so "shot 12 times" and other bare numbers never
+# false-positive — only the p-scheme token is a leak.)
+_PANEL_ID_RE = re.compile(r"\bp\d{4,}\b", re.I)
 
 
 def mentions_image_file(text: str) -> bool:
-    """True when a narration line names an image file ('p000032.jpg')."""
-    return bool(_IMAGE_FILE_RE.search(str(text or "")))
+    """True when a narration line names an image file ('p000032.jpg') or a bare
+    panel scene id ('p000098', as in 'begins with frame p000098') — both are
+    pipeline bookkeeping (a scene TAG) read aloud, never narration."""
+    s = str(text or "")
+    return bool(_IMAGE_FILE_RE.search(s) or _PANEL_ID_RE.search(s))
 
 
 def _words(text: str) -> List[str]:

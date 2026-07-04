@@ -578,7 +578,41 @@ def test_mentions_image_file_catches_filename_leaks():
     assert rs.mentions_image_file(
         "It progresses through the series to conclude at p000032.jpg.")
     assert rs.mentions_image_file("He stares at chunk_003.PNG in silence.")
+    # the SAME leak without an extension — the bare p-number scene id read aloud
+    # ("The sequence begins with frame p000098.", real Nano ch1 group 22)
+    assert rs.mentions_image_file("The sequence begins with frame p000098.")
+    assert rs.mentions_image_file("It ends on p000032 as the dust settles.")
     assert not rs.mentions_image_file(
         "He tears through the underbrush, blade out, and the hunt turns.")
+    # bare numbers that are NOT the p-scheme must stay clean (no false positives)
+    assert not rs.mentions_image_file("He was shot 12 times before he fell.")
     assert not rs.mentions_image_file("")
     assert not rs.mentions_image_file(None)
+
+
+def test_is_shot_description_catches_montage_meta_filler():
+    # the small-model punt on a dense action run: narrate the MEDIUM (camera,
+    # shots, sequence) instead of the story. Real Nano ch1 group 7 (2026-07-04)
+    # collapsed 6 richly-understood attack panels into these two lines, and they
+    # slipped every other guard (no "camera"/"unfolds" in _SHOT_DESC_RE, and a
+    # 9-word line clears the 1.0s/panel budget floor over a 3-panel span).
+    for bad in [
+        "The scene unfolds through a series of connected shots.",
+        "The action continues as the camera follows the subject.",
+        "The sequence begins as connected panels reveal the fight.",
+        "The montage shows the battle from every angle.",
+    ]:
+        assert rs.is_shot_description(bad), bad
+    # real story prose that SHARES the risky vocabulary must stay clean — the
+    # medium-noun+verb pairing and lone "camera" are the only triggers.
+    for good in [
+        "The scene shifts to the courtyard.",
+        "He follows the trail into the woods.",
+        "The battle continues past dawn.",
+        "A cold panel of light falls across the floor.",
+        "The panel begins to glow with system light.",   # story sense of "panel"
+        "The action moves to the rooftop as he gives chase.",  # story "action"
+        "The ambush goes full zero-star experience as the assassins swarm him.",
+        "In a blur of steel, our guy lunges forward with a desperate scream.",
+    ]:
+        assert not rs.is_shot_description(good), good
