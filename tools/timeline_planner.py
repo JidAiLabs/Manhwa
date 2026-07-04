@@ -873,9 +873,15 @@ def filter_scene_files(
     bubble_dom_ratio_thr: float,
     bubble_edge_mean_thr: float,
     bubble_std_thr: float,
+    keep_files: Optional["set"] = None,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     dropped: List[Dict[str, Any]] = []
     kept: List[str] = []
+    # Files the caller guarantees must be SHOWN (stamped system cards) — a story
+    # beat whose on-screen text is the plot. NEVER run the bad-panel verdict on
+    # one: a flat notification card reads 'blank' to is_bad_panel, and dropping it
+    # trades a cosmetic flag for a blocking system_card_unshown downstream.
+    keep = {os.path.basename(str(f)) for f in (keep_files or set())}
 
     def check_one(fbase: str, base_dir: str) -> Tuple[bool, str, Optional[Dict[str, float]]]:
         p = _resolve_img(base_dir, fbase)
@@ -894,6 +900,10 @@ def filter_scene_files(
     for f in files:
         fbase = os.path.basename(str(f))
         if not fbase:
+            continue
+
+        if fbase in keep:                 # stamped system card — never husk-drop
+            kept.append(fbase)
             continue
 
         if prefer_clean and clean_dir:
@@ -1234,6 +1244,33 @@ def protected_story_files(vision_path: str) -> "set":
     return out
 
 
+def protected_system_files(vision_path: str) -> "set":
+    """Every panel the UNDERSTANDING stamped panel_kind=='system' (an in-world
+    status screen / notification / system message). These are STORY BEATS whose
+    on-screen text carries plot, so they must ALWAYS be shown. This is the EXACT
+    predicate render_prep.system_files and prep_qa.system_coverage_flags key on,
+    so the planner's drop filters, the render-prep junk judge and the QA gate all
+    agree by construction. Unlike protected_story_files it defers ENTIRELY to the
+    stamped kind (no OCR/title-card heuristic): a system card that fails the
+    caps/flat card heuristic (mixed case, ellipsis) is STILL protected — that
+    mismatch was the dropped-system-card bug. Degrades to the empty set (older
+    manifest without panel_kind stamped) — never raises."""
+    out: set = set()
+    if not vision_path or not os.path.exists(vision_path):
+        return out
+    try:
+        with open(vision_path, "r", encoding="utf-8") as fh:
+            items = json.load(fh).get("items") or []
+    except Exception:
+        return out
+    for it in items:
+        f = os.path.basename(str(it.get("scene_file") or ""))
+        if not f or str(it.get("panel_kind") or "").strip().lower() != "system":
+            continue
+        out.add(f)
+    return out
+
+
 _TEXT_CONTEXT_SUBJECT_TERMS = (
     "speech bubble",
     "bubble",
@@ -1560,16 +1597,30 @@ def main() -> int:
     # effects/empties are already gone (filtered at grouping); captions stay
     # droppable (their words ride the narration). Union drives both filters below.
     protected_story = protected_story_files(args.vision)
-    protected = protected_cards | protected_story
+    # panels the understanding stamped panel_kind=='system' (in-world status
+    # screens / notifications) — the SAME predicate the QA gate
+    # (system_coverage_flags) and render_prep (system_files) key on. Pin them
+    # here so all three stages agree by construction: a stamped-system card that
+    # misses the OCR title-card heuristic is never dropped (the blocking
+    # system_card_unshown bug). Drives every filter below + must_show.
+    protected_system = protected_system_files(args.vision)
+    protected = protected_cards | protected_story | protected_system
     if protected_story:
         print(f"[plan] protected {len(protected_story)} understood story panel(s) "
               f"from the redundant-drop")
+    if protected_system:
+        print(f"[plan] protected {len(protected_system)} understood system card(s) "
+              f"(always shown)")
     # bare caption/monologue cards are narrated, not shown: drop them from the
     # montage (the narration already carries their words), holding a real scene
     # for any beat that would otherwise be a blank card. In-world screens are
-    # panel_kind 'story', not 'caption', so they stay.
+    # panel_kind 'story', not 'caption', so they stay. A stamped-system card can
+    # be mis-boxed as a 'speech bubble' subject and read as context-only — subtract
+    # protected_system so it is NEVER montage-dropped (the same by-construction
+    # guarantee the husk filter + must_show below give it downstream).
     chrome_set = publication_chrome_files(args.vision)
-    context_only_set = chrome_set | caption_files(args.vision) | text_context_only_files(args.vision)
+    context_only_set = (chrome_set | caption_files(args.vision)
+                        | text_context_only_files(args.vision)) - protected_system
     # per-panel camera targets (faces/objects/text_blocks) so each cut's pan can
     # END centered on the panel's FACE instead of a generic drift that may land on
     # an inpainted (blank) speech bubble.
@@ -1616,6 +1667,7 @@ def main() -> int:
                 bubble_dom_ratio_thr=float(args.bubble_dom_ratio),
                 bubble_edge_mean_thr=float(args.bubble_edge_mean),
                 bubble_std_thr=float(args.bubble_std_thr),
+                keep_files=(protected_system & set(scene_files)),
             )
             if dropped:
                 dropped_summary.append({"group_id": group_id, "dropped": dropped})
@@ -1910,10 +1962,12 @@ def main() -> int:
                         # voiced plan only: trim a span to fit the REAL clip
                         # instead of stretching into a silent montage tail. Only
                         # system/title cards are pinned against the trim (story
-                        # panels are droppable when the line is short).
+                        # panels are droppable when the line is short) — stamped
+                        # system cards join the OCR-detected title cards so a card
+                        # that misses the heuristic still gets a guaranteed slot.
                         trim_to_fit=(args.mode == "narrated"
                                      and audio_duration > 0.0),
-                        must_show=protected_cards,
+                        must_show=protected_cards | protected_system,
                     )
 
             # PER-CUT motion: each cut is a DIFFERENT panel, so its pan must end on

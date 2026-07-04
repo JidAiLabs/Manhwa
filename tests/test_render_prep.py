@@ -1682,3 +1682,14 @@ def test_protect_narrated_from_junk_empty_narrated_is_noop():
     junk = {"p001.jpg": "sliver"}
     assert rp.protect_narrated_from_junk(dict(junk), set()) == junk
     assert rp.protect_narrated_from_junk(dict(junk), None) == junk
+
+
+def test_protect_narrated_from_junk_also_protects_system_files():
+    # FIX 3: a stamped system card the visual judge called junk must SURVIVE — its
+    # on-screen text IS the beat, and dropping it here surfaces a blocking
+    # system_card_unshown. also_protect spares it even when it owns no narration.
+    junk = {"sys.jpg": "flat glow", "cap.jpg": "blank husk", "art.jpg": "abstract"}
+    narrated = {"art.jpg"}                        # only art owns a spoken line
+    out = rp.protect_narrated_from_junk(junk, narrated, also_protect={"sys.jpg"})
+    assert set(out) == {"cap.jpg"}               # sys (system) + art (narrated) spared
+    assert junk is out                           # mutates in place

@@ -26,6 +26,13 @@ _SPEC = importlib.util.spec_from_file_location(
 tp = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(tp)  # type: ignore[union-attr]
 
+_PQ_SPEC = importlib.util.spec_from_file_location(
+    "prep_qa",
+    Path(__file__).resolve().parent.parent / "tools" / "prep_qa.py",
+)
+pq = importlib.util.module_from_spec(_PQ_SPEC)
+_PQ_SPEC.loader.exec_module(pq)  # type: ignore[union-attr]
+
 
 # ---- looks_like_system_card: the manifest-level title/system-card signal ------
 
@@ -216,3 +223,121 @@ def test_e2e_panel_rich_group_unaffected(tmp_path):
         shot_scene_files=["art1.jpg", "art2.jpg"])
     rendered = {c["file"] for item in plan["timeline"] for c in item.get("cuts", [])}
     assert rendered == {"art1.jpg", "art2.jpg"}   # exactly the picks, nothing extra
+
+
+# =============================================================================
+# FIX 3 — a panel stamped panel_kind=='system' is NEVER dropped from the cuts.
+# protected_system_files defers ENTIRELY to the stamped kind (the SAME predicate
+# render_prep.system_files + prep_qa.system_coverage_flags use), so the planner's
+# drop filters, the fit-trim and the QA gate agree by construction — a stamped
+# system card that MISSES the OCR title-card heuristic is still shown.
+# =============================================================================
+
+def test_protected_system_files_protects_card_failing_ocr_heuristic(tmp_path):
+    # a stamped-system card whose OCR is mixed-case with an ellipsis: the caps/
+    # flat title-card heuristic REJECTS it, but the stamped kind protects it.
+    sys_item = {"scene_file": "scenes/sys.jpg", "panel_kind": "system",
+                "subjects": ["speech bubble"], "ocr_clean": "Loading the world...",
+                "text_coverage": 0.05}
+    assert tp.looks_like_system_card(sys_item) is False     # heuristic misses it
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps({"items": [sys_item]}))
+    assert "sys.jpg" in tp.protected_system_files(str(vp))  # stamp protects it
+
+
+def test_protected_system_files_ignores_caption_panel(tmp_path):
+    # a caption panel (words ride the narration, folded) is NOT a system card
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps({"items": [
+        {"scene_file": "cap.jpg", "panel_kind": "caption",
+         "subjects": ["text"], "ocr_clean": "Meanwhile...", "text_coverage": 0.2},
+        {"scene_file": "sys.jpg", "panel_kind": "system",
+         "ocr_clean": "SYSTEM ALERT", "text_coverage": 0.05},
+    ]}))
+    out = tp.protected_system_files(str(vp))
+    assert out == {"sys.jpg"}                    # only the system card
+    assert "cap.jpg" not in out
+
+
+def test_protected_system_files_missing_manifest_is_empty():
+    assert tp.protected_system_files("") == set()          # degrade, never raises
+
+
+def test_build_cuts_must_show_keeps_system_card_under_aggressive_trim():
+    # a fit-trim that affords only ONE slot (2.0s @ 2.0 floor) still pins the
+    # system card via must_show, even though the BROAD protected set (every panel)
+    # would otherwise let the leading story panels take the slot.
+    trim = tp.build_cuts(["a.jpg", "b.jpg", "sys.jpg"], 2.0,
+                         min_cut_sec=2.0, floor=2.0, trim_to_fit=True,
+                         protected={"a.jpg", "b.jpg", "sys.jpg"},
+                         must_show={"sys.jpg"})
+    files = [c["file"] for c in trim]
+    assert "sys.jpg" in files                    # system card pinned, shown
+    assert all(c["dur"] >= 2.0 for c in trim)    # never a flash
+
+
+def test_filter_scene_files_keeps_system_card_drops_blank(tmp_path):
+    # is_bad_panel reads a flat notification card as 'blank'. keep_files (the
+    # stamped system set) exempts it from the husk drop; a genuine non-system
+    # blank with the SAME flat pixels still drops.
+    import cv2
+    import numpy as np
+    clean = tmp_path / "clean"; clean.mkdir()
+    flat = np.full((240, 320, 3), 255, np.uint8)           # flat white -> "blank"
+    cv2.imwrite(str(clean / "sys.jpg"), flat)
+    cv2.imwrite(str(clean / "blank.jpg"), flat.copy())
+    kept, dropped = tp.filter_scene_files(
+        files=["sys.jpg", "blank.jpg"], clean_dir=str(clean), raw_dir="",
+        prefer_clean=True,
+        blank_dom_ratio_thr=0.975, blank_std_thr=6.0,
+        strip_white_ratio_thr=0.82, strip_bbox_h_frac_thr=0.25,
+        bubble_dom_ratio_thr=0.88, bubble_edge_mean_thr=0.055,
+        bubble_std_thr=14.0,
+        keep_files={"sys.jpg"})
+    assert "sys.jpg" in kept                     # exempt system card kept
+    assert "blank.jpg" not in kept               # real blank still dropped
+    assert any(d["file"] == "blank.jpg" for d in dropped)
+
+
+def test_system_card_survives_planner_and_qa_clean(tmp_path):
+    # CROSS-STAGE INVARIANT: a stamped-system card the script's per-shot list
+    # EXCLUDED, mis-boxed as a 'speech bubble' subject (so the montage caption-drop
+    # WOULD fold it) AND failing the OCR title-card heuristic (mixed case, ellipsis)
+    # is pinned back by the planner protection at every stage, so the QA gate that
+    # keys on the SAME panel_kind=='system' predicate reports NO system_card_unshown.
+    import sys
+    vision = {"items": [
+        {"scene_file": "sys.jpg", "panel_kind": "system",
+         "subjects": ["speech bubble"], "ocr_clean": "Loading the world...",
+         "text_coverage": 0.05},
+        {"scene_file": "art1.jpg", "panel_kind": "story",
+         "subjects": ["a swordsman"], "ocr_clean": "", "text_coverage": 0.0},
+    ]}
+    groups = {"groups": [
+        {"group_id": 1, "shot_id": 1, "segment": "present",
+         "scene_files": ["sys.jpg", "art1.jpg"]}]}
+    script = {"sections": [
+        {"section_index": 0,
+         "script_paragraphs": [{"text": "A swordsman steps into the loading world."}],
+         "shots": [{"group_id": 1, "segment_id": "g0001_p00",
+                    "scene_files": ["art1.jpg"]}]}]}          # sys.jpg omitted by LLM
+    vp = tmp_path / "manifest.vision.json"; vp.write_text(json.dumps(vision))
+    gp = tmp_path / "manifest.groups.json"; gp.write_text(json.dumps(groups))
+    sp = tmp_path / "manifest.script.json"; sp.write_text(json.dumps(script))
+    outp = tmp_path / "render.plan.json"
+    argv = ["timeline_planner", "--groups", str(gp), "--script", str(sp),
+            "--vision", str(vp), "--out", str(outp), "--mode", "narrated"]
+    old = sys.argv
+    try:
+        sys.argv = argv
+        tp.main()
+    finally:
+        sys.argv = old
+    plan = json.loads(outp.read_text())
+    rendered = {c["file"] for it in plan["timeline"] for c in it.get("cuts", [])}
+    assert "sys.jpg" in rendered                  # shown despite the LLM omission
+    # the QA gate (same stamped predicate) is therefore clean
+    beats = {"beats": [{"group_id": 1, "scene_files": ["sys.jpg", "art1.jpg"]}]}
+    vitems = {"sys.jpg": {"panel_kind": "system"},
+              "art1.jpg": {"panel_kind": "story"}}
+    assert pq.system_coverage_flags(beats, plan, vitems) == []

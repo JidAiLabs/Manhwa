@@ -1672,15 +1672,23 @@ def _collapse_same_image_cuts_within_item(cuts: List[Dict[str, Any]]) -> List[Di
 
 
 def protect_narrated_from_junk(junk: Dict[str, str],
-                               narrated_files: set) -> Dict[str, str]:
+                               narrated_files: set,
+                               *, also_protect: Optional[set] = None) -> Dict[str, str]:
     """Drop narrated panels from the visual judge's *junk* set (mutates + returns
     it). A panel that owns its own spoken line is a story beat the writer chose to
     describe; after the caption-fold fix narrated panels are all real `story` art,
     so the judge calling one 'flat glow / abstract' (an action-impact or energy/
     flash climax like the golden transformation burst) is a FALSE POSITIVE —
     dropping it makes a neighbour HOLD for 12-16s while the narrator describes a
-    shot never shown. Operator manual_drops are applied AFTER this and still win."""
-    for f in [f for f in junk if f in (narrated_files or set())]:
+    shot never shown. Operator manual_drops are applied AFTER this and still win.
+
+    *also_protect* extends the spare set with panels that must survive the judge
+    regardless of narration — stamped panel_kind=='system' cards, whose on-screen
+    text is the story beat: dropping one trades a cosmetic flag for a blocking
+    system_card_unshown (mirrors the substitute-garbage path which already spares
+    system_files via its exempt set)."""
+    protect = set(narrated_files or set()) | set(also_protect or set())
+    for f in [f for f in junk if f in protect]:
         junk.pop(f, None)
     return junk
 
@@ -2487,9 +2495,12 @@ def main() -> int:
         cache_path=os.path.join(clean_dir, ".cut_judge_cache.json"),
         reuse=args.reuse_clean)
     # A panel that OWNS its own narration line is a story beat the writer chose
-    # to describe — show it (see protect_narrated_from_junk). Operator
+    # to describe — show it (see protect_narrated_from_junk). Stamped system
+    # cards (panel_kind=='system') are spared too — their on-screen text IS the
+    # beat, and dropping one here would surface a blocking system_card_unshown
+    # (same intent as the substitute path's system_files exempt below). Operator
     # manual_drops below still WIN (the human overrides the writer).
-    protect_narrated_from_junk(junk, narrated_files)
+    protect_narrated_from_junk(junk, narrated_files, also_protect=system_files)
     # operator drops: one click on the dashboard bans a panel for good
     mdp = os.path.join(args.episode_dir, "manual_drops.json")
     if os.path.exists(mdp):
