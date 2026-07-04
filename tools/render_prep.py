@@ -2431,6 +2431,15 @@ def main() -> int:
         cuts_by_segment[item["segment_id"]] = new_cuts
         all_dropped.extend(dropped)
 
+    # exempt_from_drop only runs in the MULTI-cut branch above, so a SOLE-cut
+    # system card never enters exempt_all — the first substitute_garbage_sole_cuts
+    # (a flat status card reads as high-coverage 'garbage') then swaps it out for a
+    # neighbour (ORV p000004: planner cut it, render_prep substituted p000003).
+    # Seed exempt_all with system_files so EVERY exempt_all-based drop below (both
+    # substitutes, cross-segment dedup, repeat-cap) spares stamped system cards —
+    # the render half of the "in-world system cards are always shown" guarantee.
+    exempt_all |= system_files
+
     # consecutive shown cuts must differ — the artist's blow-up/repeat panels
     # land in NEIGHBORING segments and the per-segment dedup never sees them.
     # Substitution can CREATE new adjacencies, so iterate to a fixpoint.
