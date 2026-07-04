@@ -399,7 +399,13 @@ def vision_flags(parent: str, vitem: Dict[str, Any], *,
                            f"chrome per scene_chrome rules is SHOWN — "
                            f"ocr={str(vitem.get('ocr_clean'))[:80]!r}",
                            scene=parent, segment_id=segment_id))
-    if rp.empty_bubble_panel(vitem):
+    # a stamped system card is INTENTIONALLY shown (its on-screen UI text IS the
+    # story beat); the base 'empty/bubble-only' mark it carried BEFORE
+    # apply_system_card_overrides reclassified it must not re-flag it once the
+    # planner/render_prep (correctly) keep it. Same panel_kind=='system' predicate
+    # the system_card_unshown gate + the render protections use.
+    if (rp.empty_bubble_panel(vitem)
+            and str(vitem.get("panel_kind") or "").strip().lower() != "system"):
         flags.append(_flag("empty_bubble_shown", ERROR,
                            "panel understanding marks this as empty / "
                            "speech-bubble-only, but it is still shown",
