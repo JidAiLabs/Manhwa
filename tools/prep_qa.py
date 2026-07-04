@@ -339,6 +339,53 @@ def cross_dup_flags(seq: Sequence[Dict[str, Any]],
     return flags
 
 
+def near_dup_residual_flags(seq: Sequence[Dict[str, Any]],
+                            get_img,
+                            get_boxes,
+                            *,
+                            is_exempt=None,
+                            ham_max: int = 8) -> List[Dict[str, Any]]:
+    """TRIPWIRE for a near-duplicate panel that survived the render_prep dedup
+    ladder — the residual the user keeps catching by eye. Cleaning removes only
+    the text inside a bubble (the outline stays), so two identical drawings under
+    different dialogue split a raw perceptual hash and slip the ladder; here we
+    bubble-MASK the hash (`rp._mask_bubbles_for_hash`, via `rp._dhash8_bgr`'s
+    boxes arg) over CONSECUTIVE shown cuts so identical art collapses to the same
+    hash and the pair surfaces.
+
+    A WARN, never an ERROR and never auto-dropped (kept out of _VISUAL_DROPPABLE):
+    auto-dropping a residual would re-hit the sole-cut-empties-a-segment problem —
+    render_prep (bubble-masked hashing + canonicalize) is the real fix, this is
+    only the tripwire that turns a regression yellow instead of shipping silent.
+    A same-file hold (prev == cur, a deliberate continuous shot) is never a dup;
+    system/doc panels (a shared UI frame carrying different text) are exempt via
+    *is_exempt*. *get_boxes*(f) supplies the per-file bubble boxes to mask."""
+    exempt = is_exempt or (lambda f: False)
+    flags: List[Dict[str, Any]] = []
+    prev: Optional[Dict[str, Any]] = None
+    for cur in seq:
+        if cur.get("branding"):
+            prev = None                 # branding is never a dup nor a reference
+            continue
+        f = str(cur.get("file"))
+        pf = str(prev.get("file")) if prev else ""
+        if (prev and pf != f                     # distinct files (not a hold)
+                and not exempt(f) and not exempt(pf)):
+            ia, ib = get_img(pf), get_img(f)
+            if ia is not None and ib is not None:
+                ha = rp._dhash8_bgr(ia, get_boxes(pf))
+                hb = rp._dhash8_bgr(ib, get_boxes(f))
+                if (ha ^ hb).bit_count() <= ham_max:
+                    flags.append(_flag(
+                        "near_dup_residual", WARN,
+                        f"near-identical to the previous cut after bubble-masking "
+                        f"({pf} in {prev.get('segment_id')}) — a duplicate slipped "
+                        f"the render_prep dedup ladder",
+                        scene=f, segment_id=str(cur.get("segment_id") or "")))
+        prev = cur
+    return flags
+
+
 def vision_flags(parent: str, vitem: Dict[str, Any], *,
                  dims_entry: Optional[Dict[str, Any]],
                  series_title: Optional[str],
@@ -1824,6 +1871,34 @@ def main() -> int:
     # a panel owning its own narration line is a distinct beat, never a cross_dup
     flags.extend(cross_dup_flags(cuts, _clean_img,
                                  narrated=rp.narrated_files_from_plan(plan)))
+
+    # residual near-dup tripwire: cross_dup keys on containment; this bubble-masks
+    # the hash so identical art under DIFFERENT dialogue (whose outlines survive
+    # cleaning) is caught too. WARN only — render_prep is the real fix, and
+    # auto-dropping here would re-hit the sole-cut-empties-a-segment problem.
+    _bxc: Dict[str, List[Tuple[int, int, int, int]]] = {}
+
+    def _qa_boxes(f: str) -> List[Tuple[int, int, int, int]]:
+        if f not in _bxc:
+            img = _clean_img(f)
+            if detector is None or img is None:
+                _bxc[f] = []
+            else:
+                _bxc[f] = [(int(x1), int(y1), int(x2), int(y2))
+                           for (x1, y1, x2, y2, _s) in detector.detect(
+                               img, imgsz=1024, conf=args.bubble_conf)]
+        return _bxc[f]
+
+    def _qa_exempt(f: str) -> bool:
+        d = dims.get(f) or {}
+        if d.get("doc") or d.get("sys"):
+            return True
+        pk = str((vitems.get(parent_scene(f)) or vitems.get(f)
+                  or {}).get("panel_kind") or "").strip().lower()
+        return pk in ("system", "doc", "document")
+
+    flags.extend(near_dup_residual_flags(cuts, _clean_img, _qa_boxes,
+                                         is_exempt=_qa_exempt))
 
     # vision-level checks once per shown parent scene
     seen_parents: set = set()

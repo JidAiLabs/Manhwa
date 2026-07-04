@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -205,35 +206,57 @@ def test_cross_segment_near_identical_dropped_when_segment_keeps_a_cut():
     cbs = {"g17": [{"file": "eye0.jpg", "start": 0.0, "dur": 6.0}],
            "g18": [{"file": "eye1.jpg", "start": 0.0, "dur": 3.0},
                    {"file": "other.jpg", "start": 3.0, "dur": 3.0}]}
-    out, dropped = rp.drop_cross_segment_near_identical_cuts(
+    out, dropped, canon = rp.drop_cross_segment_near_identical_cuts(
         cbs, ["g17", "g18"], lambda f: imgs.get(f))
     assert dropped == [("g18", "eye1.jpg")]              # LATER twin dropped
+    assert canon == []                                   # dropped, not canonicalized
     assert [c["file"] for c in out["g18"]] == ["other.jpg"]
     assert [c["file"] for c in out["g17"]] == ["eye0.jpg"]
     assert abs(out["g18"][0]["dur"] - 6.0) < 1e-6        # freed time redistributed
 
 
-def test_cross_segment_near_identical_sole_cut_NOT_dropped_no_held_image():
+def test_cross_segment_near_identical_sole_cut_canonicalized_to_twin():
     # if g0018's ONLY cut is the repeat, dropping it would empty the segment and
-    # its narration would hold a neighbour 12-16s (the held-image regression). The
-    # retain-a-cut guard must KEEP it — this is what makes overriding the narrated
-    # protection safe.
+    # its narration would hold a neighbour 12-16s (the held-image regression).
+    # Instead CANONICALIZE it to the earlier twin (eye0): the sole cut keeps its
+    # own dur/audio but now shows eye0, so a follow-on merge folds the two
+    # consecutive same-image sole cuts into ONE continuous Ken-Burns pan.
     imgs = {"eye0.jpg": _hramp(base=0), "eye1.jpg": _hramp(base=20)}
     cbs = {"g17": [{"file": "eye0.jpg", "start": 0.0, "dur": 6.0}],
            "g18": [{"file": "eye1.jpg", "start": 0.0, "dur": 6.0}]}
-    out, dropped = rp.drop_cross_segment_near_identical_cuts(
+    out, dropped, canon = rp.drop_cross_segment_near_identical_cuts(
         cbs, ["g17", "g18"], lambda f: imgs.get(f))
-    assert dropped == []
-    assert [c["file"] for c in out["g18"]] == ["eye1.jpg"]
+    assert dropped == []                                 # never emptied
+    assert canon == [("g18", "eye1.jpg", "eye0.jpg")]    # rewritten to the twin
+    assert [c["file"] for c in out["g18"]] == ["eye0.jpg"]  # now the earlier twin
+    assert len(out["g18"]) == 1                          # still exactly one cut
+    assert abs(out["g18"][0]["dur"] - 6.0) < 1e-6        # its own dur untouched
+
+    # merge-composition follow-on: the rewritten plan's two consecutive same-image
+    # sole cuts fold into a single continuous-motion run (no held-image freeze).
+    plan = {"timeline": [
+        {"segment_id": "g17", "duration_sec": 6.0, "cuts": out["g17"]},
+        {"segment_id": "g18", "duration_sec": 6.0, "cuts": out["g18"]},
+    ]}
+    merged = rp.merge_consecutive_same_image_cuts(plan)
+    m17 = merged["timeline"][0]["cuts"]
+    m18 = merged["timeline"][1]["cuts"]
+    assert [c["file"] for c in m17] == ["eye0.jpg"]      # both items still show eye0
+    assert [c["file"] for c in m18] == ["eye0.jpg"]
+    assert len(m17) == 1 and len(m18) == 1               # neither segment emptied
+    # each item carries a slice of ONE continuous slow move (not a static hold)
+    assert m17[0].get("motion", {}).get("mode") == "kenburns"
+    assert m18[0].get("motion", {}).get("mode") == "kenburns"
 
 
 def test_cross_segment_distinct_panels_both_kept():
     imgs = {"a.jpg": _hramp(), "b.jpg": _vramp()}
     cbs = {"g1": [{"file": "a.jpg", "start": 0.0, "dur": 4.0}],
            "g2": [{"file": "b.jpg", "start": 0.0, "dur": 4.0}]}
-    out, dropped = rp.drop_cross_segment_near_identical_cuts(
+    out, dropped, canon = rp.drop_cross_segment_near_identical_cuts(
         cbs, ["g1", "g2"], lambda f: imgs.get(f))
     assert dropped == []
+    assert canon == []                                   # distinct: no canonicalize
 
 
 def test_cross_segment_exempt_is_not_a_dedup_reference():
@@ -243,9 +266,105 @@ def test_cross_segment_exempt_is_not_a_dedup_reference():
     cbs = {"g1": [{"file": "sys.jpg", "start": 0.0, "dur": 4.0}],
            "g2": [{"file": "eye.jpg", "start": 0.0, "dur": 4.0},
                   {"file": "x.jpg", "start": 4.0, "dur": 4.0}]}
-    out, dropped = rp.drop_cross_segment_near_identical_cuts(
+    out, dropped, canon = rp.drop_cross_segment_near_identical_cuts(
         cbs, ["g1", "g2"], lambda f: imgs.get(f), exempt={"sys.jpg"})
     assert dropped == []
+    assert canon == []                                   # exempt prev: no canonicalize
+
+
+# ---- FIX 1 Root A: bubble-masked hashing (identical art, different dialogue) --
+# Text cleaning removes only what is INSIDE a bubble — the outline stays — so two
+# identical drawings under different dialogue split the hash and slip the dedup
+# ladder (the assassin p054/p055, crying p104/p105 pairs). _mask_bubbles_for_hash
+# neutralizes each bubble region (flat-surround fill, else Telea inpaint) so the
+# art collapses to a near-dup — HASH-ONLY, never written to disk.
+
+def _bubble_base(grad="h"):
+    """Flat-white top band (where the bubbles live, so a flat-surround fill
+    restores them EXACTLY) over a low-frequency gradient (gives NCC variance that
+    survives the 64x64 downscale, so distinct art stays distinct)."""
+    img = np.full((400, 300, 3), 255, np.uint8)
+    if grad == "h":
+        row = np.linspace(0, 220, 300).astype(np.uint8)
+        img[200:400] = np.stack([np.tile(row, (200, 1))] * 3, axis=-1)
+    else:
+        col = np.linspace(0, 220, 200).astype(np.uint8)
+        img[200:400] = np.stack([np.tile(col.reshape(-1, 1), (1, 300))] * 3, axis=-1)
+    return img.astype(np.uint8)
+
+
+def _with_bubble(img, x1):
+    """Paint a cleaned bubble (dark OUTLINE only — text already removed) on the
+    white band; return (image, box) with a small pad around the outline."""
+    out = img.copy()
+    cv2.rectangle(out, (x1, 40), (x1 + 120, 160), (0, 0, 0), 4)
+    return out, (x1 - 2, 38, x1 + 122, 162)
+
+
+def test_mask_bubbles_makes_identical_art_a_near_dup_within_segment():
+    # identical art, the bubble drawn at a DIFFERENT spot per copy
+    a, boxA = _with_bubble(_bubble_base("h"), 30)
+    b, boxB = _with_bubble(_bubble_base("h"), 150)
+    cuts = [{"file": "p1.jpg", "start": 0.0, "dur": 4.0},
+            {"file": "p2.jpg", "start": 4.0, "dur": 4.0}]
+    imgs = {"p1.jpg": a, "p2.jpg": b}
+    # raw: the differing bubbles hold the NCC below the 0.96 gate -> both kept
+    assert rp._near_identical_similarity(a, b) < 0.96
+    _, raw = rp.drop_near_identical_cuts(cuts, imgs)
+    assert raw == []
+    # masked: bubbles neutralized -> identical art scores ~1.0 -> later dropped
+    assert rp._near_identical_similarity(
+        a, b, boxes_a=[boxA], boxes_b=[boxB]) >= 0.96
+    _, masked = rp.drop_near_identical_cuts(
+        cuts, imgs, boxes_by_file={"p1.jpg": [boxA], "p2.jpg": [boxB]})
+    assert masked == ["p2.jpg"]
+
+
+def test_mask_bubbles_keeps_distinct_art_distinct():
+    # different art (horizontal vs vertical gradient), each with a bubble: masking
+    # must NOT collapse them into a false-positive drop.
+    a, boxA = _with_bubble(_bubble_base("h"), 30)
+    c, boxC = _with_bubble(_bubble_base("v"), 30)
+    cuts = [{"file": "a.jpg", "start": 0.0, "dur": 4.0},
+            {"file": "c.jpg", "start": 4.0, "dur": 4.0}]
+    assert rp._near_identical_similarity(
+        a, c, boxes_a=[boxA], boxes_b=[boxC]) < 0.96
+    _, masked = rp.drop_near_identical_cuts(
+        cuts, {"a.jpg": a, "c.jpg": c},
+        boxes_by_file={"a.jpg": [boxA], "c.jpg": [boxC]})
+    assert masked == []
+
+
+def test_mask_bubbles_threads_into_cross_segment_dhash_drop():
+    # Root A also masks the cross-segment dhash pass. Identical art with a FILLED
+    # bubble at different spots (art surround -> Telea inpaint branch): raw dhash
+    # is far apart (kept); masked collapses so the later twin drops when its
+    # segment keeps another cut.
+    eyeL = _hramp(); boxL = (30, 30, 170, 170)
+    cv2.rectangle(eyeL, boxL[:2], boxL[2:], (255, 255, 255), -1)
+    eyeR = _hramp(); boxR = (130, 230, 270, 370)
+    cv2.rectangle(eyeR, boxR[:2], boxR[2:], (255, 255, 255), -1)
+    imgs = {"eyeL.jpg": eyeL, "eyeR.jpg": eyeR, "other.jpg": _vramp()}
+    cbs = {"g1": [{"file": "eyeL.jpg", "start": 0.0, "dur": 4.0}],
+           "g2": [{"file": "eyeR.jpg", "start": 0.0, "dur": 3.0},
+                  {"file": "other.jpg", "start": 3.0, "dur": 3.0}]}
+    boxes = {"eyeL.jpg": [boxL], "eyeR.jpg": [boxR], "other.jpg": []}
+    # unmasked: the bubbles hold the twins apart -> nothing dropped
+    _, d0, c0 = rp.drop_cross_segment_near_identical_cuts(
+        {k: list(v) for k, v in cbs.items()}, ["g1", "g2"], lambda f: imgs.get(f))
+    assert d0 == [] and c0 == []
+    # masked (get_boxes): the twins collapse -> later dropped (g2 keeps 'other')
+    out, d1, canon = rp.drop_cross_segment_near_identical_cuts(
+        {k: list(v) for k, v in cbs.items()}, ["g1", "g2"],
+        lambda f: imgs.get(f), get_boxes=lambda f: boxes.get(f, []))
+    assert d1 == [("g2", "eyeR.jpg")] and canon == []
+    assert [c["file"] for c in out["g2"]] == ["other.jpg"]
+
+
+def test_mask_bubbles_empty_boxes_is_noop():
+    img = _hramp(base=10)
+    out = rp._mask_bubbles_for_hash(img, [])
+    assert out is img                                    # untouched, no copy
 
 
 # ---- FIX 4: narration-bearing panels are protected from the dedup ------------

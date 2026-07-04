@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -489,6 +490,77 @@ def test_cross_dup_flag_for_consecutive_near_identical_cuts():
     # shot; real ch1 p043/p044 dhash 37 falsely matched by multi_scale_contained)
     fl2 = pq.cross_dup_flags(seq, lambda f: imgs.get(f), narrated={"b.jpg"})
     assert not any(f.get("scene") == "b.jpg" for f in fl2)
+
+
+# ---- FIX 1 Root C: near_dup_residual tripwire (bubble-masked, WARN only) ------
+# cross_dup keys on containment; this bubble-MASKS the perceptual hash so
+# identical art under DIFFERENT dialogue (whose outlines survive text cleaning)
+# is caught too. WARN only — never auto-dropped; render_prep is the real fix.
+
+def _bubbled(grad="h", x1=30):
+    """Identical-shape helper: flat-white top band + a low-freq gradient bottom,
+    with a cleaned bubble (dark outline) on the band; returns (image, box)."""
+    img = np.full((400, 300, 3), 255, np.uint8)
+    if grad == "h":
+        row = np.linspace(0, 220, 300).astype(np.uint8)
+        img[200:400] = np.stack([np.tile(row, (200, 1))] * 3, axis=-1)
+    else:
+        col = np.linspace(0, 220, 200).astype(np.uint8)
+        img[200:400] = np.stack([np.tile(col.reshape(-1, 1), (1, 300))] * 3, axis=-1)
+    cv2.rectangle(img, (x1, 40), (x1 + 120, 160), (0, 0, 0), 4)
+    return img.astype(np.uint8), (x1 - 2, 38, x1 + 122, 162)
+
+
+def test_near_dup_residual_warns_on_masked_near_dup_pair():
+    a, boxA = _bubbled("h", 30)
+    b, boxB = _bubbled("h", 150)               # identical art, bubble elsewhere
+    seq = [{"segment_id": "g1", "file": "a.jpg"},
+           {"segment_id": "g2", "file": "b.jpg"}]
+    imgs = {"a.jpg": a, "b.jpg": b}
+    boxes = {"a.jpg": [boxA], "b.jpg": [boxB]}
+    fl = pq.near_dup_residual_flags(seq, lambda f: imgs.get(f),
+                                    lambda f: boxes.get(f, []))
+    assert [f["code"] for f in fl] == ["near_dup_residual"]
+    assert fl[0]["severity"] == "WARN" and fl[0]["scene"] == "b.jpg"
+
+
+def test_near_dup_residual_silent_on_distinct_art():
+    # a clean plan (distinct consecutive art) yields ZERO near_dup_residual
+    a, boxA = _bubbled("h", 30)
+    c, boxC = _bubbled("v", 30)                # different art
+    seq = [{"segment_id": "g1", "file": "a.jpg"},
+           {"segment_id": "g2", "file": "c.jpg"}]
+    imgs = {"a.jpg": a, "c.jpg": c}
+    boxes = {"a.jpg": [boxA], "c.jpg": [boxC]}
+    fl = pq.near_dup_residual_flags(seq, lambda f: imgs.get(f),
+                                    lambda f: boxes.get(f, []))
+    assert fl == []
+
+
+def test_near_dup_residual_exempts_system_and_doc_panels():
+    # two system/doc panels sharing a UI frame but carrying different text must
+    # NOT flag — a shared chrome is not a duplicate story panel
+    a, boxA = _bubbled("h", 30)
+    b, boxB = _bubbled("h", 150)
+    seq = [{"segment_id": "g1", "file": "a.jpg"},
+           {"segment_id": "g2", "file": "b.jpg"}]
+    imgs = {"a.jpg": a, "b.jpg": b}
+    boxes = {"a.jpg": [boxA], "b.jpg": [boxB]}
+    fl = pq.near_dup_residual_flags(seq, lambda f: imgs.get(f),
+                                    lambda f: boxes.get(f, []),
+                                    is_exempt=lambda f: f == "b.jpg")
+    assert fl == []
+
+
+def test_near_dup_residual_silent_on_same_file_hold():
+    # the SAME file held over two consecutive cuts is a deliberate continuous
+    # shot (merge_consecutive_same_image_cuts), never a duplicate
+    a, boxA = _bubbled("h", 30)
+    seq = [{"segment_id": "g1", "file": "a.jpg"},
+           {"segment_id": "g2", "file": "a.jpg"}]
+    fl = pq.near_dup_residual_flags(seq, lambda f: {"a.jpg": a}.get(f),
+                                    lambda f: {"a.jpg": [boxA]}.get(f, []))
+    assert fl == []
 
 
 def test_missing_audio_is_info_on_estimate_plans():

@@ -271,7 +271,9 @@ def drop_visual_duplicate_cuts(
     return _redistribute(cuts, dropped), dropped
 
 
-def _near_identical_similarity(a: np.ndarray, b: np.ndarray, *, size: int = 64) -> float:
+def _near_identical_similarity(a: np.ndarray, b: np.ndarray, *, size: int = 64,
+                               boxes_a: Sequence[Tuple[int, int, int, int]] = (),
+                               boxes_b: Sequence[Tuple[int, int, int, int]] = ()) -> float:
     """Full-image similarity in [0,1] for two SIMILAR-SIZED panels.
 
     Both images are downscaled to a fixed *size*x*size* grayscale grid (so a
@@ -281,7 +283,17 @@ def _near_identical_similarity(a: np.ndarray, b: np.ndarray, *, size: int = 64) 
     match; only the same drawing, barely changed, scores near 1.0. Returns 0.0
     when either image is featureless (flat) — a zero-variance NCC is undefined
     and would spuriously match every other flat panel.
+
+    *boxes_a*/*boxes_b* (optional): detected bubble boxes to neutralize
+    (`_mask_bubbles_for_hash`) before the NCC. Cleaning removes only the text
+    inside a bubble — the OUTLINE stays — so identical art under different
+    dialogue scores below the gate; masking the bubbles pushes it back to ~1.0.
     """
+    if len(boxes_a):
+        a = _mask_bubbles_for_hash(a, boxes_a)
+    if len(boxes_b):
+        b = _mask_bubbles_for_hash(b, boxes_b)
+
     def gray64(im: np.ndarray) -> np.ndarray:
         g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) if im.ndim == 3 else im
         return cv2.resize(g, (size, size), interpolation=cv2.INTER_AREA).astype(np.float64)
@@ -301,6 +313,7 @@ def drop_near_identical_cuts(
     thresh: float = 0.96,
     min_area_ratio: float = 0.7,
     protect: Optional[set] = None,
+    boxes_by_file: Optional[Dict[str, Sequence[Tuple[int, int, int, int]]]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Drop the LATER of any pair of SIMILAR-SIZED, near-identical cuts.
 
@@ -315,9 +328,12 @@ def drop_near_identical_cuts(
     filter. The EARLIER cut is kept, the later dropped, freed time redistributed.
     Conservative by design: 0.96 NCC means the same drawing barely changed —
     two distinct panels (different characters/scenes) score far lower and survive.
-    *protect* files (system cards) are never dropped.
+    *protect* files (system cards) are never dropped. *boxes_by_file* (optional):
+    per-file bubble boxes, masked before the NCC so identical art under different
+    dialogue bubbles (the assassin p054/p055 pair) still scores as a near-dup.
     """
     prot = protect or set()
+    bbf = boxes_by_file or {}
     dropped: List[str] = []
     n = len(cuts)
     for i in range(n):
@@ -336,25 +352,74 @@ def drop_near_identical_cuts(
             ratio = min(area_a, area_b) / max(1, max(area_a, area_b))
             if ratio < min_area_ratio:
                 continue  # different-sized seam pair — not our case
-            if _near_identical_similarity(a, b) >= thresh:
+            if _near_identical_similarity(
+                    a, b, boxes_a=bbf.get(fi, ()), boxes_b=bbf.get(fj, ())) >= thresh:
                 dropped.append(fj)  # keep the earlier cut, drop the later
     return _redistribute(cuts, dropped), dropped
 
 
-def _dhash8_bgr(img: np.ndarray) -> int:
+def _dhash8_bgr(img: np.ndarray,
+                boxes: Sequence[Tuple[int, int, int, int]] = ()) -> int:
     """8x8 difference hash of a BGR (cv2) image — the perceptual hash for the
     cross-segment near-identical drop below. Shift-tolerant where NCC is not: the
     source-repeated eye p090/p095 (a re-drawn crop, not a pixel copy) measures
     hamming 3 here but only 0.88 NCC (below the 0.96 near-identical gate), while
     the pipeline's dhash64 gives 24 (it is tuned for exact chunk-overlap dups).
     Distinct panels score 38-40 and the flash-bisection halves 23 — both far above
-    the drop threshold, so the pass never touches them."""
+    the drop threshold, so the pass never touches them.
+
+    *boxes* (optional): detected bubble boxes to neutralize
+    (`_mask_bubbles_for_hash`) before hashing, so two identical drawings that
+    differ ONLY in their dialogue bubbles (whose outlines survive text cleaning)
+    hash the same instead of splitting apart."""
+    if len(boxes):
+        img = _mask_bubbles_for_hash(img, boxes)
     g = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     g = cv2.resize(g, (9, 8), interpolation=cv2.INTER_AREA)
     diff = g[:, 1:] > g[:, :-1]
     out = 0
     for bit in diff.flatten():
         out = (out << 1) | int(bit)
+    return out
+
+
+def _mask_bubbles_for_hash(
+    img: np.ndarray,
+    boxes: Sequence[Tuple[int, int, int, int]],
+) -> np.ndarray:
+    """Neutralize each detected speech/caption bubble so its OUTLINE and SHAPE
+    stop perturbing a perceptual hash / NCC. Cleaning removes only the text
+    INSIDE a bubble — the outline stays, by design (`clean_scene_image`) — so two
+    panels of identical art with different dialogue bubbles hash DIFFERENTLY and
+    slip the dedup ladder (the assassin p054/p055, crying p104/p105 pairs). For
+    each box we fill it: the ring-median flat-surround fill when the box sits on a
+    uniform void (`_flat_surround_fill`), else a Telea inpaint over the box so the
+    region blends into its artwork neighbourhood.
+
+    HASH-ONLY — the result is NEVER written to disk, so the pipeline rule "clean
+    text only, never inpaint the shown image" does not apply here. Empty *boxes*
+    is a no-op (returns the input unchanged)."""
+    if img is None or not len(boxes):
+        return img
+    out = img.copy()
+    h, w = out.shape[:2]
+    inpaint_mask: Optional[np.ndarray] = None
+    for rect in boxes:
+        x1, y1, x2, y2 = (int(v) for v in rect)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        fill = _flat_surround_fill(out, (x1, y1, x2, y2))
+        if fill is not None:
+            out[y1:y2, x1:x2] = fill          # flat void: match the surround tone
+        else:
+            if inpaint_mask is None:
+                inpaint_mask = np.zeros((h, w), np.uint8)
+            inpaint_mask[y1:y2, x1:x2] = 255  # art surround: inpaint below
+    if inpaint_mask is not None:
+        src = out if out.dtype == np.uint8 else np.clip(out, 0, 255).astype(np.uint8)
+        out = cv2.inpaint(src, inpaint_mask, 3, cv2.INPAINT_TELEA)
     return out
 
 
@@ -366,7 +431,9 @@ def drop_cross_segment_near_identical_cuts(
     ham_max: int = 8,
     min_area_ratio: float = 0.7,
     exempt: Optional[set] = None,
-) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]]]:
+    get_boxes=None,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]],
+           List[Tuple[str, str, str]]]:
     """Drop a SOURCE-REPEATED panel shown again across a segment boundary — the
     near-identical eye close-up the comic draws twice a few beats apart (p090 at
     g0017's tail, p095 at g0018's head). The containment pass can't see it (same
@@ -384,10 +451,22 @@ def drop_cross_segment_near_identical_cuts(
     and never a comparison reference. Only CONSECUTIVE shown cuts are compared, so a
     deliberate flashback callback to a much earlier panel is never `prev` in view
     and always survives. The EARLIER twin is kept; freed time is redistributed
-    within the affected segment (audio/timing intact)."""
+    within the affected segment (audio/timing intact).
+
+    *get_boxes*(f) (optional): per-file bubble boxes, masked before the dhash
+    (`_mask_bubbles_for_hash`) so identical art under different dialogue bubbles is
+    still recognized. When the later twin is the SOLE cut of its segment (dropping
+    it would empty the segment and hold a neighbour), it is instead CANONICALIZED
+    to the earlier twin — c["file"] is rewritten to the earlier file, its own
+    audio/duration untouched — so the now-consecutive same-image sole cuts fold
+    into ONE continuous Ken-Burns pan downstream (merge_consecutive_same_image_cuts)
+    with no held image and no re-cut. Returns (out, dropped, canonicalized) where
+    canonicalized is a list of (segment, from_file, to_file) for logging."""
     ex = exempt or set()
+    gb = get_boxes or (lambda f: ())
     out = {k: list(v) for k, v in cuts_by_segment.items()}
     dropped: List[Tuple[str, str]] = []
+    canonicalized: List[Tuple[str, str, str]] = []
     prev_file: Optional[str] = None
     prev_hash: Optional[int] = None
     for seg in order:
@@ -400,7 +479,7 @@ def drop_cross_segment_near_identical_cuts(
                 kept.append(c)          # blank/system/split: not a dup or a ref
                 continue
             img = get_img(f)
-            h = _dhash8_bgr(img) if img is not None else None
+            h = _dhash8_bgr(img, gb(f)) if img is not None else None
             near = False
             if (prev_file and prev_file != f and prev_hash is not None
                     and h is not None):
@@ -416,13 +495,25 @@ def drop_cross_segment_near_identical_cuts(
             if near and survivors_if_drop >= 1:
                 dropped.append((seg, f))
                 continue                # keep the earlier twin as the reference
+            if near and prev_file and prev_file not in ex:
+                # SOLE cut of its segment (survivors_if_drop < 1): dropping it
+                # would empty the segment and hold a neighbour 12-16s. Instead
+                # canonicalize to the earlier twin — same image, its OWN audio/
+                # duration untouched — so the now-consecutive same-image sole cuts
+                # fold into ONE continuous Ken-Burns pan downstream
+                # (merge_consecutive_same_image_cuts). prev_file/prev_hash stay so
+                # a run of near-dup sole cuts all canonicalize to the first twin.
+                canonicalized.append((seg, f, prev_file))
+                c["file"] = prev_file
+                kept.append(c)
+                continue
             kept.append(c)
             if h is not None:
                 prev_file, prev_hash = f, h
         if len(kept) != len(cuts) and kept:
             removed = [str(c.get("file")) for c in cuts if c not in kept]
             out[seg] = _redistribute(cuts, removed)
-    return out, dropped
+    return out, dropped, canonicalized
 
 
 # ---------------------------------------------------------------------------
@@ -2266,8 +2357,12 @@ def main() -> int:
             if len(new_cuts) > 1:
                 imgs = {k: v for k, v in imgs.items()
                         if k in {str(c["file"]) for c in new_cuts}}
+                # this pass runs on the ORIGINAL _img scenes, so _boxes (original
+                # coords) align — mask the bubbles so identical art under
+                # different dialogue (the assassin pair) still reads as a near-dup
                 new_cuts, ndropped = drop_near_identical_cuts(
-                    new_cuts, imgs, protect=protect_files)
+                    new_cuts, imgs, protect=protect_files,
+                    boxes_by_file={k: _boxes(k) for k in imgs})
                 dropped = list(dropped) + ndropped
                 if ndropped:
                     print(f"[ok] {item.get('segment_id')}: "
@@ -2406,12 +2501,29 @@ def main() -> int:
                 if im is not None:
                     return im
         return _trimmed_clean(f)
-    cuts_by_segment, nidrop = drop_cross_segment_near_identical_cuts(
+
+    def _shown_boxes(f):
+        # bubble boxes aligned to the SHOWN (trimmed-clean) crop _shown_img hashes:
+        # the cleaner already returns them in original-scene coords (_cleaned[1]),
+        # so offset by the content_bbox trim _trimmed_clean applies. Empty for
+        # system/title/doc panels (the cleaner returns no boxes there). On the
+        # --reuse-clean path the cached crop may differ in scale, so the offset is
+        # approximate there; the strict hamming gate keeps that from mis-dropping.
+        cl, boxes = _cleaned(f)
+        if cl is None or not boxes or args.no_trim:
+            return boxes
+        tx1, ty1, _tx2, _ty2 = content_bbox(cl)
+        return [(x1 - tx1, y1 - ty1, x2 - tx1, y2 - ty1)
+                for (x1, y1, x2, y2) in boxes]
+    cuts_by_segment, nidrop, nicanon = drop_cross_segment_near_identical_cuts(
         cuts_by_segment, order, _shown_img,
-        exempt=system_files)
+        exempt=system_files, get_boxes=_shown_boxes)
     for seg, f in nidrop:
         all_dropped.append(f)
         print(f"[ok] {seg}: cross-segment near-identical {f} dropped")
+    for seg, f, canon in nicanon:
+        print(f"[ok] {seg}: cross-segment near-identical sole cut {f} -> "
+              f"canonicalized to {canon} (folds into one continuous pan)")
 
     shown = sorted({c["file"] for cs in cuts_by_segment.values() for c in cs})
 
