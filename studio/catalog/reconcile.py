@@ -73,8 +73,15 @@ def derive_status(ep: str) -> Optional[str]:
     if not ep or not os.path.isdir(ep):
         return None
     for status, marker in _STATUS_MARKERS:
-        if _exists(ep, marker):
-            return status
+        if not _exists(ep, marker):
+            continue
+        # render.plan.json is ALSO written as an ESTIMATED preview during the
+        # 'prepare' stage (before voicing — the estimate_plan QA flags), so it must
+        # not outrank 'voiced': only count 'planned' once the real voiced audio
+        # exists, else a scripted-awaiting-review chapter would be advanced.
+        if status == "planned" and not _exists(ep, "tts/tts_index.json"):
+            continue
+        return status
     # no derived manifest, but raw source pages present -> downloaded
     try:
         for f in os.listdir(ep):

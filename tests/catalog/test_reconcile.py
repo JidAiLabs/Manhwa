@@ -93,6 +93,16 @@ def test_derive_status_downloaded_and_empty(tmp_path):
     assert reconcile.derive_status(str(tmp_path / "nope")) is None  # missing dir
 
 
+def test_derive_status_estimated_plan_is_scripted_not_planned(tmp_path):
+    # the 'prepare' stage writes render.plan.json (estimated) BEFORE voicing; with no
+    # voiced audio it must read as 'scripted', not 'planned' — else a
+    # scripted-awaiting-review chapter is wrongly advanced by reconcile.
+    _con, ep = _mk_chapter(tmp_path)
+    (ep / "render" / "segment_both.mp4").unlink()   # not rendered
+    (ep / "tts" / "tts_index.json").unlink()        # not voiced (plan is an estimate)
+    assert reconcile.derive_status(str(ep)) == "scripted"
+
+
 # ---- reconcile_chapter -------------------------------------------------------
 
 def test_consistent_chapter_is_a_noop(tmp_path):
