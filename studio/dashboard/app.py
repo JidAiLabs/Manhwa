@@ -22,7 +22,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from studio.catalog import reset
+from studio.catalog import reconcile, reset
 from studio.catalog.db import connect
 from studio.catalog.models import STATUS_ORDER
 from studio.dashboard import bundles, discovery, eta, gates, jobs
@@ -193,6 +193,10 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
     for sid, title, source, surl, autopilot, new_pending in con.execute(
             "SELECT id, title, source, series_url, autopilot, "
             "COALESCE(new_pending, 0) FROM series ORDER BY id"):
+        # reconcile-on-load: prune dead stage_run rows + repair drifted statuses
+        # so the readiness counts below reflect the artifacts on disk, not stale
+        # rows (the "prep 2 · voice 1" lie). Skips chapters the worker is running.
+        reconcile.reconcile_series(con, sid)
         chs = con.execute(
             "SELECT status, season FROM chapter WHERE series_id=?",
             (sid,)).fetchall()
@@ -410,6 +414,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         ch = dict(zip(("id", "series_id", "number", "label", "status",
                        "ep_dir", "url"), r))
         ch["url"] = _http_url(ch["url"])
+        # reconcile-on-load: repair any drift between the DB and the files on disk
+        # so this page can never show a state the artifacts contradict (stale
+        # status, dead run-history rows, a render approval that outlived its video)
+        _rec = reconcile.reconcile_chapter(c, ch)
+        if _rec["status_to"]:
+            ch["status"] = _rec["status_to"]
         title = (c.execute("SELECT title FROM series WHERE id=?",
                            (ch["series_id"],)).fetchone() or ["?"])[0]
         ep_rel = (Path(ch["ep_dir"]).resolve().relative_to(
