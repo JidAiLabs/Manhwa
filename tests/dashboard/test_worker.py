@@ -322,6 +322,13 @@ def test_h_qa_scan_cosmetic_error_passes_blocking_fails(tmp_path, monkeypatch):
     state2, err2 = con.execute("SELECT state, error FROM job WHERE id=?",
                                (jid2,)).fetchone()
     assert state2 == "failed" and "cut_gap" in err2
+    # verify blocking code is NOT logged in the cosmetic line
+    log_file = con.execute("SELECT log_path FROM job WHERE id=?", (jid2,)).fetchone()[0]
+    log_content = open(log_file).read()
+    cosmetic_lines = [l for l in log_content.split('\n')
+                      if '[qa] non-blocking QA flags' in l]
+    if cosmetic_lines:
+        assert "cut_gap" not in cosmetic_lines[0]
 
 
 def test_run_prep_and_qa_heal_aware_returns_instead_of_raising(

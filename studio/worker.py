@@ -382,7 +382,7 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
         qa_args.append("--semantic-heal")   # QA-eyes: grounding_weak -> auto-heal
     rc = _stream(qa_args, log)
     # started_at was captured before the subprocess launch (a few lines up) —
-    # the rc is still logged below for diagnostics, but the VERDICT (not the
+    # rc is captured for the failure message only; the VERDICT (not the
     # exit code) is the gate: a crashed/skipped QA must never read as green.
     verdict = _qa_verdict(ep, started_at=t0)
     plan_sha = None
@@ -951,9 +951,10 @@ def _h_qa_scan(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         (ch["id"], "qa_scan", round(time.time() - started_at, 2),
          0 if verdict.blocking else 1, ch["series_id"]))
     con.commit()
-    if verdict.codes:
+    cosmetic = verdict.codes - verdict.blocking
+    if cosmetic:
         log.write("[qa] non-blocking QA flags on this scan (cosmetic, "
-                  f"flagged for review): {sorted(verdict.codes)}\n")
+                  f"flagged for review): {sorted(cosmetic)}\n")
     if verdict.blocking:
         raise NonRetryableError(
             f"prep-QA found BLOCKING flags ({sorted(verdict.blocking)}) "
