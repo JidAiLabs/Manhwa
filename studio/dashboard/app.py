@@ -22,6 +22,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from studio import paths
 from studio.catalog import reconcile, reset
 from studio.catalog.db import connect
 from studio.catalog.models import STATUS_ORDER
@@ -442,9 +443,9 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                            "ORDER BY id DESC LIMIT 60", (cid,))]
         has_preview = bool(ch["ep_dir"] and (
             Path(ch["ep_dir"]) / "render" / "voice_preview.mp3").exists())
-        seg = (Path(ch["ep_dir"]) / "render" / "segment_both.mp4"
+        seg = (Path(ch["ep_dir"]) / paths.SEGMENT_MP4
                if ch["ep_dir"] else None)
-        render_url = (f"/media/{ep_rel}/render/segment_both.mp4"
+        render_url = (f"/media/{ep_rel}/{paths.SEGMENT_MP4}"
                       f"?v={int(seg.stat().st_mtime)}"
                       if seg and seg.exists() and ep_rel is not None else None)
         qa_html = Path(ch["ep_dir"] or "") / "prep_qa.html"

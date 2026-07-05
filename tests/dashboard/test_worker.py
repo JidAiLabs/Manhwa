@@ -1012,6 +1012,44 @@ def test_render_segment_triggers_auto_intro_for_last_chapter(
                        "bundle_id=?", (bid,)).fetchone()[0] == 1
 
 
+def test_render_branding_defaults_both(tmp_path, monkeypatch):
+    """A render_segment job with no 'branding' in its payload must default to
+    'both' — even when the series has legacy branding/intro.mp4 assets on
+    disk. The old default flipped to 'none' (-> single.mp4 via intro+outro
+    concat) whenever has_branding_segs was true, but that path is dead:
+    render_prep has hard-forced intro/outro durations to 0 since 2026-06-29,
+    so branding is ALWAYS 'both' in practice now."""
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path, status="voiced")
+    con.execute("INSERT INTO stage_run (chapter_id, stage, duration_sec, ok) "
+                "VALUES (5,'qa_scan',1.0,1)")
+    from studio.dashboard import gates as g
+    g.approve(con, "render", chapter_id=5)
+    con.commit()
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    # legacy branding assets present -> pre-fix code picked "none" here
+    bdir = tmp_path / "assets" / "branding" / "series" / "1"
+    bdir.mkdir(parents=True)
+    (bdir / "intro.mp4").write_text("i")
+    (bdir / "outro.mp4").write_text("o")
+    calls = []
+
+    def fake_stream(cmd, log, **kw):
+        calls.append([str(a) for a in cmd])
+        return 0
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    jobs.enqueue(con, "render_segment", chapter_id=5, payload={})
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='render_segment'").fetchone()
+    assert state == "done", err
+    render_prep_cmd, remotion_cmd = calls[0], calls[1]
+    assert render_prep_cmd[render_prep_cmd.index("--branding") + 1] == "both"
+    out = str(ep / "render" / "segment_both.mp4")
+    assert out in remotion_cmd
+    assert not (ep / "render" / "single.mp4").exists()   # dead branch never runs
+
+
 # ---- Task 4: heal re-sanitizes so the marker matches the rewritten script --
 
 def test_rescript_triggers_sanitize(tmp_path, monkeypatch):

@@ -22,12 +22,14 @@ import os
 import sqlite3
 from typing import Any, Dict, Mapping, Optional
 
+from studio import paths
+
 # status -> the marker file (relative to ep_dir) whose existence proves the stage
 # finished, HIGHEST first. Mirrors pipeline._STAGE_TABLE (test_reconcile asserts
 # they stay in sync) plus the render step (`render_segment`, which sets
 # chapter.status='rendered' but is NOT in STATUS_ORDER) as the top rung.
 _STATUS_MARKERS = [
-    ("rendered", "render/segment_both.mp4"),
+    ("rendered", paths.SEGMENT_MP4),
     ("planned",  "render.plan.json"),
     ("voiced",   "tts/tts_index.json"),
     ("scripted", "manifest.script.json"),
@@ -50,7 +52,7 @@ _STAGE_ARTIFACT = {
     "planned":        "render.plan.json",
     "prepped":        "render.plan.clean.json",
     "qa_scan":        "prep_qa.json",
-    "render_segment": "render/segment_both.mp4",
+    "render_segment": paths.SEGMENT_MP4,
 }
 
 _PAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
@@ -95,7 +97,7 @@ def derive_status(ep: str) -> Optional[str]:
 def _render_is_stale(ep: str) -> bool:
     """A render approval outlived its video: no mp4, or the mp4 is older than the
     clean plan it should have been rendered from."""
-    mp4 = os.path.join(ep, "render", "segment_both.mp4")
+    mp4 = os.path.join(ep, paths.SEGMENT_MP4)
     plan = os.path.join(ep, "render.plan.clean.json")
     if not os.path.exists(mp4):
         return True

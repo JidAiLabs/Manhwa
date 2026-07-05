@@ -67,7 +67,10 @@ export const CutView: React.FC<{
   const inset = motion?.fg_fit?.safe_inset_pct ?? DEFAULT_SAFE_INSET;
   const boxPct = (1 - 2 * inset) * 100;
 
-  if (tall && dims) {
+  if (tall && dims && !file2) {
+    // A split2 pair (file2 set) must fall through to the split branch below
+    // even when tall — producer: render_prep.py splitpass (~:2717). Otherwise
+    // this early return renders only `file` and silently drops the second half.
     // Tall panels are complete cuts, not footage to crop into a 16:9 close-up.
     // Keep the whole panel visible and let the blurred fill carry the frame —
     // but DON'T sit still: drift the panel vertically (a gentle scroll shot)

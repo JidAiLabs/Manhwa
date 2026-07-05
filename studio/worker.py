@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TextIO
 
+from studio import paths
 from studio.dashboard import bundles, gates, jobs
 
 REPO = Path(__file__).resolve().parent.parent
@@ -999,10 +1000,10 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
     if not allowed:
         raise RuntimeError(f"render blocked: {why}")
     ch = _chapter(con, job["chapter_id"])
-    bdir = _series_branding_dir(ch["series_id"])
-    has_branding_segs = (bdir / "intro.mp4").exists()
-    branding = job["payload"].get("branding") or (
-        "none" if has_branding_segs else "both")
+    # branding "intro"/"outro"/"none" (-> single.mp4) is dead: render_prep has
+    # hard-forced those segment durations to 0 since 2026-06-29, so every
+    # enqueuer forces "both" and this default is never actually seen either.
+    branding = job["payload"].get("branding") or "both"
     ep = Path(ch["ep_dir"] or "")
     with record_stage(con, chapter_id=ch["id"], stage="render_segment",
                       series_id=ch["series_id"]):
@@ -1023,18 +1024,6 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
                      log, cwd=str(REPO / "remotion"))
         if rc != 0:
             raise RuntimeError(f"remotion exited {rc}")
-        if branding == "none" and has_branding_segs:
-            # the chapter's standalone SINGLE video = intro + segment + outro
-            single = ep / "render" / "single.mp4"
-            segs = bundles.wrap_with_branding(
-                [str(out)], str(bdir / "intro.mp4"), str(bdir / "outro.mp4"))
-            lst = ep / "render" / "single_concat.txt"
-            lst.write_text("".join(f"file '{s_}'\n" for s_ in segs))
-            rc = _stream(["ffmpeg", "-y", "-loglevel", "error", "-f",
-                          "concat", "-safe", "0", "-i", str(lst), "-c",
-                          "copy", str(single)], log)
-            if rc != 0:
-                raise RuntimeError(f"single concat exited {rc}")
         con.execute("UPDATE chapter SET status='rendered' WHERE id=?",
                     (ch["id"],))
         con.commit()
@@ -1207,11 +1196,10 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
     segs = []
     for cid in bundles.bundle_chapters(con, bid):
         ch = _chapter(con, cid)
-        rdir = Path(ch["ep_dir"] or "") / "render"
-        found = sorted(rdir.glob("segment_*.mp4")) or sorted(rdir.glob("*.mp4"))
+        found = paths.find_segment_mp4(Path(ch["ep_dir"] or ""))
         if not found:
             raise RuntimeError(f"chapter {cid} has no rendered segment")
-        segs.append(str(found[0]))
+        segs.append(str(found))
     # An APPROVED arc teaser is the bundle's cold open — prepend it BEFORE the
     # branding wrap so the published order is [teaser, ch1…chN, outro]. 'planned'
     # already blocked the gate above; 'declined'/'none' simply don't prepend.
@@ -1253,12 +1241,11 @@ def _concat_intro_ch1(con: sqlite3.Connection, bid: int, log: TextIO) -> None:
     if not cids:
         raise RuntimeError(f"bundle {bid} has no chapters")
     first = _chapter(con, cids[0])
-    rdir = Path(first["ep_dir"] or "") / "render"
-    found = sorted(rdir.glob("segment_*.mp4")) or sorted(rdir.glob("*.mp4"))
+    found = paths.find_segment_mp4(Path(first["ep_dir"] or ""))
     if not found:
         raise RuntimeError(f"chapter {cids[0]} (bundle {bid} first) has no "
                            "rendered segment")
-    segs = [str(found[0])]
+    segs = [str(found)]
     teaser_mp4 = REPO / "dist" / f"bundle_{bid}" / "teaser.mp4"
     trow = con.execute("SELECT teaser_state FROM bundle WHERE id=?",
                        (bid,)).fetchone()
