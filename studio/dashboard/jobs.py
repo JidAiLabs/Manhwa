@@ -77,20 +77,29 @@ def enqueue(con: sqlite3.Connection, type: str, *, series_id: Optional[int] = No
     different series' jobs never dedupe against each other. Only 'queued' rows
     match, so a retry enqueued while the original job is still 'running' is
     always a fresh row (this is how the worker's auto-retry stays unaffected).
+    A dedupe hit adopts the more urgent (lower) priority so expedite call sites
+    keep working.
     """
     if dedupe:
         if chapter_id is not None or bundle_id is not None:
             existing = con.execute(
-                "SELECT id FROM job WHERE state='queued' AND type=? AND "
+                "SELECT id, priority FROM job WHERE state='queued' AND type=? AND "
                 "chapter_id IS ? AND bundle_id IS ? LIMIT 1",
                 (type, chapter_id, bundle_id)).fetchone()
         else:
             existing = con.execute(
-                "SELECT id FROM job WHERE state='queued' AND type=? AND "
+                "SELECT id, priority FROM job WHERE state='queued' AND type=? AND "
                 "chapter_id IS NULL AND bundle_id IS NULL AND series_id IS ? "
                 "LIMIT 1", (type, series_id)).fetchone()
         if existing:
-            return int(existing[0])
+            existing_id, existing_priority = existing
+            # adopt lower (more urgent) priority if the new call is more urgent
+            if priority < existing_priority:
+                con.execute(
+                    "UPDATE job SET priority=? WHERE id=? AND state='queued'",
+                    (priority, existing_id))
+                con.commit()
+            return int(existing_id)
     cur = con.execute(
         "INSERT INTO job (type, series_id, chapter_id, bundle_id, payload_json,"
         " priority) VALUES (?,?,?,?,?,?)",

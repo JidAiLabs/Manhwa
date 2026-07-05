@@ -216,3 +216,24 @@ def test_enqueue_series_scope_key_includes_series(tmp_path):
     # same series_id DOES dedupe (series-scoped key)
     c = jobs.enqueue(con, "refresh", series_id=1)
     assert c == a
+
+
+def test_enqueue_dedupe_adopts_lower_priority(tmp_path):
+    """A dedupe hit adopts the more urgent (lower) priority so expedite call
+    sites keep working. Raising priority is never done (a later low-urgency
+    duplicate must not demote an expedited job)."""
+    con = _con(tmp_path)
+    # enqueue with default priority 100
+    a = jobs.enqueue(con, "prepare", chapter_id=1)
+    row = con.execute("SELECT priority FROM job WHERE id=?", (a,)).fetchone()
+    assert row[0] == 100
+    # enqueue same key with priority 1 (more urgent) → returns a, priority becomes 1
+    b = jobs.enqueue(con, "prepare", chapter_id=1, priority=1)
+    assert b == a
+    row = con.execute("SELECT priority FROM job WHERE id=?", (a,)).fetchone()
+    assert row[0] == 1
+    # enqueue same key with priority 50 (less urgent) → returns a, priority STAYS 1
+    c = jobs.enqueue(con, "prepare", chapter_id=1, priority=50)
+    assert c == a
+    row = con.execute("SELECT priority FROM job WHERE id=?", (a,)).fetchone()
+    assert row[0] == 1
