@@ -189,6 +189,32 @@ def test_synthesize_manifest_revoices_only_changed_segments(tmp_path):
     assert (tmp_path / "clips" / "g0002_p01.wav").exists()
 
 
+def test_failed_clip_not_reused_next_run(tmp_path):
+    # a clip that exhausted retries ships as a SILENCE placeholder flagged
+    # tts_failed, with a text_sha that MATCHES the narration — the cache must
+    # never treat it as a hit, else the mute clip is reused forever. The next
+    # run must re-synthesize it (fresh retries) while healthy clips stay cached.
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    idx["clips"][0]["tts_failed"] = True     # g0001_p00 shipped as silence
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    calls = []
+    out = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="kokoro",
+        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    # the failed clip is re-voiced; the healthy one stays cached
+    assert len(calls) == 1
+    assert os.path.basename(calls[0]).startswith("g0001_p00.attempt")
+    row = next(c for c in out["clips"] if c["segment_id"] == "g0001_p00")
+    assert row["cached"] is False
+    assert not row.get("tts_failed")         # re-synthesis succeeded this time
+    healthy = next(c for c in out["clips"] if c["segment_id"] == "g0002_p01")
+    assert healthy["cached"] is True
+
+
 def test_synthesize_manifest_speed_stamped_and_invalidates_cache(tmp_path,
                                                                  monkeypatch):
     # a speed change is part of the delivery: it must re-render (not reuse

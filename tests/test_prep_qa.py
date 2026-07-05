@@ -1146,6 +1146,29 @@ def test_audio_flags_missing_clip_for_voiced_chapter():
     assert out[0]["segment_id"] == "g0002_p01"
 
 
+def test_audio_failed_flag_on_tts_failed_clip():
+    """A clip that exhausted TTS retries ships as a silence placeholder with
+    tts_failed=true and a text_sha that MATCHES the narration (so the
+    staleness gate alone can't catch it) — audio_flags must ERROR on the
+    tts_failed marker directly, fail-closed, instead of letting the mute
+    placeholder pass QA forever."""
+    from narration_consistency import narration_sha
+    plan = {"source_tts_index": "tts/tts_index.json",      # voiced plan
+            "timeline": [_seg("g0001_p00", "He runs.", ["a.jpg"])]}
+    idx = {"clips": [{"segment_id": "g0001_p00",
+                      "text_sha": narration_sha("He runs."),
+                      "audio_file": "clips/g0001_p00.wav",
+                      "tts_failed": True}]}
+    out = pq.audio_flags(plan, idx)
+    assert [f["code"] for f in out] == ["audio_failed"]
+    assert out[0]["severity"] == pq.ERROR
+    assert out[0]["segment_id"] == "g0001_p00"
+    assert "g0001_p00.wav" in out[0]["detail"]
+
+    # a clean index (no tts_failed clips) must not trip the new flag
+    assert pq.audio_flags(plan, _idx(("g0001_p00", "He runs."))) == []
+
+
 # ---- system_coverage_flags: stamped panel_kind="system" must be shown --------
 
 def _beats_with_scene_files(items):

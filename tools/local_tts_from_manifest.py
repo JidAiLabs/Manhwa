@@ -840,6 +840,7 @@ def synthesize_manifest(
     prior_sha: Dict[str, str] = {}
     prior_exag: Dict[str, float] = {}
     prior_speed: Dict[str, float] = {}
+    prior_failed: set = set()
     prior_index_path = os.path.join(out_dir, "tts_index.json")
     if os.path.exists(prior_index_path) and not overwrite:
         try:
@@ -848,6 +849,9 @@ def synthesize_manifest(
                 sid = c.get("segment_id")
                 sha = c.get("text_sha") or (
                     narration_sha(c["sent_text"]) if c.get("sent_text") is not None else None)
+                if sid and c.get("tts_failed"):
+                    # failed clip = silence placeholder — never cache-worthy
+                    prior_failed.add(str(sid))
                 if sid and sha:
                     prior_sha[str(sid)] = str(sha)
                     if c.get("exaggeration") is not None:
@@ -857,6 +861,7 @@ def synthesize_manifest(
             prior_sha = {}
             prior_exag = {}
             prior_speed = {}
+            prior_failed = set()
 
     index: Dict[str, Any] = {
         "source_script": os.path.abspath(script_obj.get("_path", "")) if script_obj.get("_path") else "",
@@ -886,7 +891,10 @@ def synthesize_manifest(
         # keying on text alone reused audio synthesized at the old intensity.
         # `speed` (atempo tempo) is part of the delivery: a speed change must
         # re-render, else old-tempo audio ships under the new setting.
+        # A prior tts_failed clip is a SILENCE placeholder with a matching
+        # text_sha — never a cache hit: re-synthesize it with fresh retries.
         cached = (os.path.exists(audio_path) and not overwrite
+                  and seg_id not in prior_failed
                   and prior_sha.get(seg_id) == text_sha
                   and prior_exag.get(seg_id) == exaggeration
                   and abs(prior_speed.get(seg_id, 1.0) - float(speed)) < 1e-3)

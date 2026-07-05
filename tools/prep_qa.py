@@ -614,6 +614,19 @@ def audio_flags(plan: Dict[str, Any],
             "audio_missing", ERROR,
             "narrated segment has no voiced clip — run the voiced stage",
             segment_id=seg))
+    # fail-closed on TTS failures: a clip that exhausted retries ships as a
+    # SILENCE placeholder whose text_sha MATCHES the narration, so the
+    # staleness gate above can't see it — without this check the mute
+    # segment passes QA, renders as dead air, and is cached forever.
+    for clip in (tts_index or {}).get("clips") or []:
+        if isinstance(clip, dict) and clip.get("tts_failed"):
+            seg = str(clip.get("segment_id") or "")
+            wav = str(clip.get("audio_file") or f"clips/{seg}.wav")
+            flags.append(_flag(
+                "audio_failed", ERROR,
+                f"TTS synthesis failed for this segment — {wav} is a silence "
+                "placeholder, not voiced audio; re-run the voiced stage",
+                segment_id=seg))
     return flags
 
 
