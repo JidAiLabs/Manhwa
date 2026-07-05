@@ -117,6 +117,18 @@ def _cancel_monitor(db_path: str) -> None:
         time.sleep(3)
 
 
+def _record_pgid(con: sqlite3.Connection, job_id: int,
+                 pgid: Optional[int]) -> None:
+    """Persist (pgid=int) or clear (pgid=None) the CURRENTLY LIVE child's
+    process-group id for a running job. start_new_session=True (below) makes
+    the child its own session/group leader, so pgid == pid. Each _stream call
+    within the same job overwrites this, so while the job is 'running' the
+    column tracks "the live child, if any" — requeue_orphans reads it back at
+    worker boot to reap a survivor before its job is requeued."""
+    con.execute("UPDATE job SET pgid=? WHERE id=?", (pgid, job_id))
+    con.commit()
+
+
 def _stream(cmd, log: TextIO, cwd: str = str(REPO),
             env: Optional[Dict[str, str]] = None,
             timeout: Optional[int] = None) -> int:
@@ -129,9 +141,12 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO),
     p = subprocess.Popen(cmd, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
                          text=True, env=env, start_new_session=True)
     jid = getattr(_CUR, "job_id", None)        # operator-cancel registry
+    jcon = getattr(_CUR, "con", None)          # orphan-reap registry (pgid)
     if jid is not None:
         with _ACTIVE_LK:
             _ACTIVE[jid] = p
+        if jcon is not None:
+            _record_pgid(jcon, jid, p.pid)     # start_new_session -> pgid==pid
     try:
         return p.wait(timeout=to)
     except subprocess.TimeoutExpired:
@@ -151,6 +166,8 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO),
         if jid is not None:
             with _ACTIVE_LK:
                 _ACTIVE.pop(jid, None)
+            if jcon is not None:
+                _record_pgid(jcon, jid, None)  # this child is no longer live
 
 
 def _series_env(con: sqlite3.Connection,
@@ -1233,6 +1250,7 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
     log_path = os.path.join(log_dir, f"{job['id']}-{job['type']}.log")
     jobs.set_log(con, job["id"], log_path)
     _CUR.job_id = job["id"]                     # for the operator-cancel monitor
+    _CUR.con = con                              # for _stream's pgid persistence
     try:
         with open(log_path, "a", encoding="utf-8") as log:
             handler = handlers.get(job["type"])
@@ -1284,6 +1302,7 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
             jobs.finish(con, job["id"], ok=False, error=str(e)[:300])
     finally:
         _CUR.job_id = None
+        _CUR.con = None
     return True
 
 
@@ -1297,11 +1316,53 @@ def _heartbeat(con: sqlite3.Connection) -> None:
     con.commit()
 
 
+def _reap_pgid(pgid: int) -> bool:
+    """Identity-checked kill of a leftover child process GROUP from a worker
+    that died mid-job. NEVER kills blind: a pid/pgid can be recycled by an
+    unrelated process once the original exits, so this only fires when a live
+    member of the group is still running a command FROM THIS REPO (`ps`'s
+    command line contains the repo path) — otherwise it's a no-op (the
+    pid-reuse guard). Returns True only when a kill signal was actually
+    delivered.
+
+    `ps -o command= -g <pgid>` was verified live on macOS (Darwin) to filter
+    correctly by process group and to NOT truncate long command lines when
+    piped (non-tty) — no pgrep fallback needed here.
+    """
+    import signal
+    try:
+        out = subprocess.run(["ps", "-o", "command=", "-g", str(pgid)],
+                             capture_output=True, text=True, timeout=5)
+    except Exception:
+        return False    # can't confirm identity -> do nothing, fail closed
+    if not any(str(REPO) in line for line in out.stdout.splitlines()):
+        return False    # no line is ours -> recycled pgid or already gone
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+        return True
+    except (ProcessLookupError, PermissionError):
+        # ProcessLookupError: fully reaped already, nothing to kill.
+        # PermissionError: verified live on macOS — killpg on a pgid whose
+        # only member is a defunct (zombie) leader raises EPERM, not ESRCH.
+        # Either way there is no live process left to protect against.
+        return False
+
+
 def requeue_orphans(con: sqlite3.Connection) -> int:
     """Jobs left 'running' by a dead worker process would block their lane
-    forever — at boot (one worker per host) they all go back to queued."""
-    cur = con.execute("UPDATE job SET state='queued', started_at=NULL "
-                      "WHERE state='running' AND type!='heartbeat'")
+    forever — at boot (one worker per host) they all go back to queued.
+    BEFORE requeuing, reap any surviving child (workers spawn with
+    start_new_session=True, so pgid == pid): otherwise the still-running old
+    child and the fresh retry both write the same chapter's artifacts at
+    once."""
+    for jid, pgid in con.execute(
+            "SELECT id, pgid FROM job WHERE state='running' AND "
+            "pgid IS NOT NULL").fetchall():
+        reaped = _reap_pgid(pgid)
+        print(f"[worker] orphan reap: job {jid} pgid {pgid} -> "
+              f"{'killed' if reaped else 'identity mismatch / already gone, skipped'}")
+    cur = con.execute("UPDATE job SET state='queued', started_at=NULL, "
+                      "pgid=NULL WHERE state='running' AND type!='heartbeat'")
     # a cancel in flight when the worker died -> just record it cancelled
     con.execute("UPDATE job SET state='cancelled', finished_at=datetime('now') "
                 "WHERE state='cancelling'")

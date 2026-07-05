@@ -322,8 +322,10 @@ def test_drop_panel_button_bans_file_and_requeues(client, tmp_path):
            follow_redirects=False)        # idempotent
     assert _json.loads((ep / "manual_drops.json").read_text()) == \
         ["p000031.jpg"]
+    # enqueue dedupe: the second click folds onto the still-queued prepare
+    # from the first click instead of piling up a duplicate job.
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='prepare'"
-                       ).fetchone()[0] == 2
+                       ).fetchone()[0] == 1
 
 
 def test_chapter_page_gallery_shows_flow_span_grouped(client, tmp_path,

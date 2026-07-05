@@ -61,7 +61,36 @@ def _row(r) -> Dict[str, Any]:
 
 def enqueue(con: sqlite3.Connection, type: str, *, series_id: Optional[int] = None,
             chapter_id: Optional[int] = None, bundle_id: Optional[int] = None,
-            payload: Optional[Dict[str, Any]] = None, priority: int = 100) -> int:
+            payload: Optional[Dict[str, Any]] = None, priority: int = 100,
+            dedupe: bool = True) -> int:
+    """Insert a job row; returns its id — or, when deduped, the id of the
+    already-QUEUED duplicate instead of inserting a new row.
+
+    dedupe=True (default) folds a new job into an existing 'queued' row with
+    the same (type, chapter_id, bundle_id) key. The payload is NOT part of the
+    key: a queued duplicate with a different payload still dedups onto the
+    existing row (pass dedupe=False to force a fresh row regardless — the
+    escape hatch for callers that need one). series_id is deliberately NOT
+    part of the key when chapter_id or bundle_id is set (they already pin the
+    series); for series-scoped jobs (chapter_id AND bundle_id both NULL — e.g.
+    refresh/discovery_scan/add_series) series_id IS part of the key so two
+    different series' jobs never dedupe against each other. Only 'queued' rows
+    match, so a retry enqueued while the original job is still 'running' is
+    always a fresh row (this is how the worker's auto-retry stays unaffected).
+    """
+    if dedupe:
+        if chapter_id is not None or bundle_id is not None:
+            existing = con.execute(
+                "SELECT id FROM job WHERE state='queued' AND type=? AND "
+                "chapter_id IS ? AND bundle_id IS ? LIMIT 1",
+                (type, chapter_id, bundle_id)).fetchone()
+        else:
+            existing = con.execute(
+                "SELECT id FROM job WHERE state='queued' AND type=? AND "
+                "chapter_id IS NULL AND bundle_id IS NULL AND series_id IS ? "
+                "LIMIT 1", (type, series_id)).fetchone()
+        if existing:
+            return int(existing[0])
     cur = con.execute(
         "INSERT INTO job (type, series_id, chapter_id, bundle_id, payload_json,"
         " priority) VALUES (?,?,?,?,?,?)",
@@ -71,10 +100,26 @@ def enqueue(con: sqlite3.Connection, type: str, *, series_id: Optional[int] = No
     return int(cur.lastrowid)
 
 
+# chapter lease: a chapter with any RUNNING job (any type/lane) is not
+# eligible — closes the multi-writer hole where e.g. prepare(gpu) and
+# voiceover(tts) for the SAME chapter could otherwise run at once and both
+# write the same manifests. NULL chapter_id (series/bundle-scoped jobs) is
+# never leased. Appended to a queued-job SELECT's WHERE clause.
+_CHAPTER_LEASE_FILTER = (
+    " AND (chapter_id IS NULL OR chapter_id NOT IN "
+    "(SELECT chapter_id FROM job WHERE state='running' AND "
+    "chapter_id IS NOT NULL))")
+
+
 def claim_next(con: sqlite3.Connection,
                lane: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """No lane: fully serial (legacy). With a lane: one running job per lane
-    — the serial-GPU guarantee holds inside each resource."""
+    — the serial-GPU guarantee holds inside each resource. A chapter-scoped
+    job is additionally skipped (not blocked — the next eligible queued job,
+    e.g. a different chapter, is still claimable) while ANY other job for the
+    same chapter is already running, in any lane: the chapter lease. There is
+    no bundle-level lease (deliberate): concat/plan_teaser already share the
+    cpu lane at width 1, so bundle jobs are serialized by the lane alone."""
     if lane is None:
         running = con.execute(
             "SELECT COUNT(*) FROM job WHERE state='running' AND "
@@ -82,7 +127,8 @@ def claim_next(con: sqlite3.Connection,
         if running:
             return None
         r = con.execute(
-            f"SELECT {_COLS} FROM job WHERE state='queued' "
+            f"SELECT {_COLS} FROM job WHERE state='queued'"
+            f"{_CHAPTER_LEASE_FILTER} "
             "ORDER BY priority, id LIMIT 1").fetchone()
     else:
         types = _lane_types(lane)
@@ -94,15 +140,18 @@ def claim_next(con: sqlite3.Connection,
             return None
         r = con.execute(
             f"SELECT {_COLS} FROM job WHERE state='queued' AND type IN "
-            f"({qs}) ORDER BY priority, id LIMIT 1", types).fetchone()
+            f"({qs}){_CHAPTER_LEASE_FILTER} "
+            "ORDER BY priority, id LIMIT 1", types).fetchone()
     if not r:
         return None
     cur = con.execute(
         "UPDATE job SET state='running', started_at=datetime('now') "
-        "WHERE id=? AND state='queued'", (r[0],))
+        "WHERE id=? AND state='queued' AND (chapter_id IS NULL OR NOT EXISTS "
+        "(SELECT 1 FROM job j2 WHERE j2.state='running' AND "
+        "j2.chapter_id = job.chapter_id))", (r[0],))
     con.commit()
     if cur.rowcount == 0:
-        return None     # a sibling lane thread won the claim race
+        return None     # a sibling lane thread won the claim race, or leased
     r2 = con.execute(f"SELECT {_COLS} FROM job WHERE id=?", (r[0],)).fetchone()
     return _row(r2)
 

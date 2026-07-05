@@ -127,3 +127,92 @@ def test_series_thumbnail_is_claimable_on_its_lane(tmp_path):
     jobs.enqueue(con, "series_thumbnail", series_id=1)
     j = jobs.claim_next(con, lane=jobs.LANES["series_thumbnail"])
     assert j and j["type"] == "series_thumbnail" and j["series_id"] == 1
+
+
+# ---- chapter lease: mutual exclusion across lanes for the SAME chapter -----
+
+def test_claim_skips_chapter_with_running_job(tmp_path):
+    """Chapter lease: a chapter with an already-RUNNING job is skipped for ANY
+    other lane's queued job on that chapter — but the skip does not BLOCK the
+    lane; the next eligible queued job (a different chapter) is still claimed."""
+    con = _con(tmp_path)
+    a_prep = jobs.enqueue(con, "prepare", chapter_id=1)
+    assert jobs.claim_next(con, lane="gpu")["id"] == a_prep   # A's prepare running
+    a_voice = jobs.enqueue(con, "voiceover", chapter_id=1)    # same chapter, diff lane
+    b_voice = jobs.enqueue(con, "voiceover", chapter_id=2)    # different chapter
+    claimed = jobs.claim_next(con, lane="tts")
+    assert claimed is not None and claimed["id"] == b_voice   # A skipped, B claimed
+    # A's voiceover is still sitting queued, not lost or silently claimed
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (a_voice,)).fetchone()[0] == "queued"
+
+
+def test_claim_lease_released_on_finish(tmp_path):
+    con = _con(tmp_path)
+    a_prep = jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.claim_next(con, lane="gpu")
+    a_voice = jobs.enqueue(con, "voiceover", chapter_id=1)
+    assert jobs.claim_next(con, lane="tts") is None      # leased while prepare runs
+    jobs.finish(con, a_prep, ok=True)
+    claimed = jobs.claim_next(con, lane="tts")
+    assert claimed is not None and claimed["id"] == a_voice
+
+
+def test_claim_update_guard_blocks_race(tmp_path):
+    """A true SELECT-then-UPDATE race window is hard to fabricate in a
+    single-threaded synchronous test — but the same lease guard lives on the
+    UPDATE, so this asserts its observable, end-to-end behavior: a chapter
+    with a running job blocks ALL its other queued jobs (even same-lane), and
+    claim_next moves on to the next eligible candidate instead of returning
+    None just because the head of the queue is leased out."""
+    con = _con(tmp_path)
+    jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.claim_next(con, lane="gpu")                      # A's prepare -> running
+    a_qa = jobs.enqueue(con, "qa_scan", chapter_id=1)     # same lane, same chapter
+    b_prep = jobs.enqueue(con, "prepare", chapter_id=2)   # different chapter
+    claimed = jobs.claim_next(con, lane="gpu")
+    assert claimed is not None and claimed["id"] == b_prep
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (a_qa,)).fetchone()[0] == "queued"
+
+
+# ---- enqueue dedupe: double-clicks / retries must not pile up duplicates --
+
+def test_enqueue_dedupes_identical_queued(tmp_path):
+    con = _con(tmp_path)
+    a = jobs.enqueue(con, "prepare", chapter_id=1)
+    b = jobs.enqueue(con, "prepare", chapter_id=1)
+    assert a == b
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='prepare' AND "
+                       "chapter_id=1").fetchone()[0] == 1
+
+
+def test_enqueue_dedupe_off_inserts(tmp_path):
+    con = _con(tmp_path)
+    a = jobs.enqueue(con, "prepare", chapter_id=1)
+    b = jobs.enqueue(con, "prepare", chapter_id=1, dedupe=False)
+    assert a != b
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='prepare' AND "
+                       "chapter_id=1").fetchone()[0] == 2
+
+
+def test_enqueue_retry_not_deduped_while_original_running(tmp_path):
+    con = _con(tmp_path)
+    a = jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.claim_next(con, lane="gpu")                     # a -> running
+    b = jobs.enqueue(con, "prepare", chapter_id=1)       # retry-style re-enqueue
+    assert b != a
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (b,)).fetchone()[0] == "queued"
+
+
+def test_enqueue_series_scope_key_includes_series(tmp_path):
+    con = _con(tmp_path)
+    a = jobs.enqueue(con, "refresh", series_id=1)
+    b = jobs.enqueue(con, "refresh", series_id=2)
+    assert a != b
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='refresh'"
+                       ).fetchone()[0] == 2
+    # same series_id DOES dedupe (series-scoped key)
+    c = jobs.enqueue(con, "refresh", series_id=1)
+    assert c == a

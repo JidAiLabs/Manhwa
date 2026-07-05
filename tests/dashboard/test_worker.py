@@ -746,6 +746,105 @@ def test_concat_intro_ch1_builds_final_with_aac(tmp_path, monkeypatch):
     assert lf.index("teaser.mp4") < lf.index("segment_both.mp4")   # teaser first
 
 
+# ---- orphan-reap on restart: pgid persistence + identity-checked kill ------
+
+
+def test_requeue_orphans_reaps_persisted_pgid(tmp_path, monkeypatch):
+    """A running job with a persisted pgid (a worker died mid-job) must have
+    its child reaped BEFORE the row goes back to 'queued' — otherwise the old
+    child and the fresh retry write the same artifacts concurrently."""
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    con.execute("UPDATE job SET state='running', pgid=12345 WHERE id=?", (jid,))
+    con.commit()
+    calls = []
+    monkeypatch.setattr(worker, "_reap_pgid",
+                        lambda pgid: calls.append(pgid) or True)
+    n = worker.requeue_orphans(con)
+    assert calls == [12345]
+    assert n == 1
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "queued"
+
+
+def test_requeue_orphans_skips_reap_when_no_pgid(tmp_path, monkeypatch):
+    """A running job that never spawned a child (or already cleared its pgid)
+    must NOT trigger a reap attempt — nothing to identity-check or kill."""
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    con.execute("UPDATE job SET state='running' WHERE id=?", (jid,))  # pgid NULL
+    con.commit()
+    calls = []
+    monkeypatch.setattr(worker, "_reap_pgid",
+                        lambda pgid: calls.append(pgid) or True)
+    n = worker.requeue_orphans(con)
+    assert calls == []
+    assert n == 1
+
+
+def test_stream_persists_and_clears_pgid(tmp_path):
+    """_stream's persist/clear responsibility, tested directly against the
+    helper (every existing worker test monkeypatches _stream itself, so there
+    is no realistic way to exercise the real subprocess path here — and the
+    brief is explicit that a subprocess harness isn't worth building just for
+    this)."""
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    worker._record_pgid(con, jid, 99999)
+    assert con.execute("SELECT pgid FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == 99999
+    worker._record_pgid(con, jid, None)
+    assert con.execute("SELECT pgid FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] is None
+
+
+# ---- _reap_pgid: identity-checked kill (never kill blind on pid reuse) -----
+
+def test_reap_pgid_identity_mismatch_skips(monkeypatch):
+    """A ps line that does NOT contain this repo's path means the pgid was
+    recycled by an unrelated process (or the group has nothing of ours left
+    in it) — _reap_pgid must skip it, never kill on a guess."""
+    import subprocess
+    import types
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: types.SimpleNamespace(
+        stdout="/usr/bin/some-other-process\n", returncode=0))
+    killed = []
+    monkeypatch.setattr(worker.os, "killpg",
+                        lambda pgid, sig: killed.append(pgid))
+    assert worker._reap_pgid(999999) is False
+    assert killed == []
+
+
+def test_reap_pgid_kills_matching_repo_child(monkeypatch):
+    import subprocess
+    import types
+    cmdline = f"{worker.PY} {worker.REPO}/tools/render_prep.py --plan x\n"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: types.SimpleNamespace(
+        stdout=cmdline, returncode=0))
+    killed = []
+    monkeypatch.setattr(worker.os, "killpg",
+                        lambda pgid, sig: killed.append(pgid))
+    assert worker._reap_pgid(4242) is True
+    assert killed == [4242]
+
+
+def test_reap_pgid_tolerates_already_gone_process(monkeypatch):
+    """killpg on an already-reaped pgid (ProcessLookupError) or an all-zombie
+    process group (PermissionError — reproduced live on macOS: killpg on a
+    pgid whose only member is a defunct leader raises EPERM, not ESRCH) must
+    not raise. requeue_orphans runs at worker boot; a crash there would be
+    worse than leaving a stale lease for one cycle."""
+    import subprocess
+    import types
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: types.SimpleNamespace(
+        stdout=f"{worker.REPO}/tools/x.py\n", returncode=0))
+
+    def boom(pgid, sig):
+        raise PermissionError("Operation not permitted")
+    monkeypatch.setattr(worker.os, "killpg", boom)
+    assert worker._reap_pgid(4242) is False
+
+
 def test_render_segment_triggers_auto_intro_for_last_chapter(
         tmp_path, monkeypatch):
     """End-to-end: rendering the LAST chapter of an autopilot bundle flips it to

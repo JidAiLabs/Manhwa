@@ -23,3 +23,18 @@ def test_existing_db_upgraded(tmp_path):
     con = connect(p)
     cols = {r[1] for r in con.execute("PRAGMA table_info(chapter)")}
     assert "season" in cols
+
+
+def test_job_pgid_column_added(tmp_path):
+    """pgid (additive, nullable) persists the live child's process-group id for
+    a running job so a restarted worker can reap survivors before requeuing."""
+    p = tmp_path / "s.db"
+    con = connect(p)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(job)")}
+    assert "pgid" in cols
+    # re-connecting (a worker restart against an already-migrated db) must not
+    # error — the ALTER TABLE is guarded by the same PRAGMA check used for
+    # every other additive column in this file.
+    con2 = connect(p)
+    cols2 = {r[1] for r in con2.execute("PRAGMA table_info(job)")}
+    assert "pgid" in cols2

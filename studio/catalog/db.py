@@ -47,6 +47,9 @@ def connect(path: Path | str) -> sqlite3.Connection:
           log_path TEXT,
           error TEXT
         );
+        -- chapter-lease lookups (claim_next) filter running jobs by chapter on
+        -- every claim attempt — index keeps that a cheap lookup, not a scan.
+        CREATE INDEX IF NOT EXISTS job_state_chapter ON job(state, chapter_id);
         CREATE TABLE IF NOT EXISTS stage_run (
           id INTEGER PRIMARY KEY,
           chapter_id INTEGER,
@@ -120,5 +123,15 @@ def connect(path: Path | str) -> sqlite3.Connection:
         # arc-teaser sequencing: none|planned|approved|declined
         con.execute("ALTER TABLE bundle ADD COLUMN teaser_state TEXT "
                     "NOT NULL DEFAULT 'none'")
+    jcols = {r[1] for r in con.execute("PRAGMA table_info(job)")}
+    if "pgid" not in jcols:
+        # the live child's process-group id while the job is 'running' (the
+        # worker spawns with start_new_session=True, so pgid == the child's
+        # pid); NULL when no child is currently active. Lets a restarted
+        # worker's orphan reaper (studio.worker.requeue_orphans) identity-check
+        # and kill a surviving child before its job is requeued, instead of a
+        # blind UPDATE that lets the old child and the fresh retry both write
+        # the same chapter's artifacts at once.
+        con.execute("ALTER TABLE job ADD COLUMN pgid INTEGER")
     con.commit()
     return con
