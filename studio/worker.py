@@ -494,6 +494,38 @@ def _rescript(ep: Path, cfg, env, log: TextIO) -> None:
              "--cast", str(ep / "manifest.cast.json")]
     if _stream(sargs, log, env=env) != 0:
         raise RuntimeError("script_expander (heal) failed")
+    # ADVERTISER-SAFETY: the rewrite above just replaced manifest.script.json;
+    # manifest.sanitize.json still describes the OLD text. Re-sanitize now
+    # (mirrors _stage_scripted's own narration_sanitize gate exactly — no new
+    # config knob) so this heal iteration converges on an already-fresh
+    # marker instead of leaving _stage_voiced's freshness backstop to redo the
+    # same work at voice time.
+    if getattr(cfg, "narration_sanitize", True):
+        _run_sanitize(ep, log)
+
+
+def _run_sanitize(ep: Path, log: TextIO) -> None:
+    """Re-run narration_sanitize_pass so manifest.sanitize.json reflects the
+    CURRENT manifest.script.json — same tool/CLI contract and backend routing
+    as pipeline._run_sanitize_pass, self-contained like the other heal helpers
+    (loads its own cfg/project/location via _beats_cfg). rc==2 means
+    'unresolved blocks recorded' (the marker is written either way; the
+    voiced-stage gate is what enforces it, not this helper) — not a failure.
+    Any other non-zero rc is a genuine tool crash and surfaces as the
+    heal-step failure it is."""
+    cfg, project, location = _beats_cfg()
+    sargs = [PY, str(REPO / "tools" / "narration_sanitize_pass.py"),
+             "--script", str(ep / "manifest.script.json"),
+             "--seed", ep.name,
+             "--marker", str(ep / "manifest.sanitize.json")]
+    if cfg.beats_backend == "ollama":
+        sargs += ["--reframe-backend", "ollama", "--reframe-model", cfg.beats_model]
+    else:
+        sargs += ["--reframe-backend", "vertex", "--reframe-model", cfg.beats_model,
+                  "--project", project, "--location", location]
+    rc = _stream(sargs, log)
+    if rc not in (0, 2):
+        raise RuntimeError(f"narration_sanitize_pass (heal) failed (rc={rc})")
 
 
 def _replan(ep: Path, log: TextIO) -> None:

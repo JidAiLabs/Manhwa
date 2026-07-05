@@ -85,7 +85,6 @@ def _tool_stub(ep_dir_ref: list[Path]):
         "cast_builder.py":            "manifest.cast.json",
         "gemini_narrative_pass.py":   "manifest.beats.json",
         "narration_punchup.py":       "manifest.beats.json",
-        "narration_sanitize_pass.py": "manifest.beats.json",
         "script_expander.py":         "manifest.script.json",
         "elevenlabs_tts_from_manifest.py": "tts/tts_index.json",
         "local_tts_from_manifest.py": "tts/tts_index.json",
@@ -99,6 +98,15 @@ def _tool_stub(ep_dir_ref: list[Path]):
     def stub(script_name: str, args_list: list[str]) -> None:
         calls.append(script_name)
         call_args.append((script_name, list(args_list)))
+        if script_name == "narration_sanitize_pass.py" and ep_dir_ref[0] is not None:
+            # a real run always writes a PARSEABLE marker (clean here); a bare
+            # .touch() on the wrong file left manifest.sanitize.json missing,
+            # which the voiced-stage freshness backstop (Task 4) correctly
+            # treats as untrusted and keeps re-invoking.
+            mp = ep_dir_ref[0] / "manifest.sanitize.json"
+            mp.parent.mkdir(parents=True, exist_ok=True)
+            mp.write_text('{"unresolved_blocks": []}')
+            return
         marker = SCRIPT_TO_MARKER.get(script_name)
         if marker and ep_dir_ref[0] is not None:
             mp = ep_dir_ref[0] / marker
@@ -478,6 +486,14 @@ def _capturing_stub(ep_dir: Path):
 
     def stub(script_name, args_list, **kwargs):
         calls.append((script_name, list(args_list)))
+        if script_name == "narration_sanitize_pass.py":
+            # a real run always writes a PARSEABLE marker; a bare .touch()
+            # would leave it empty, which the voiced-stage freshness backstop
+            # (Task 4) correctly treats as corrupt and re-invokes forever.
+            mp = ep_dir / "manifest.sanitize.json"
+            mp.parent.mkdir(parents=True, exist_ok=True)
+            mp.write_text('{"unresolved_blocks": []}')
+            return
         marker = SCRIPT_TO_MARKER.get(script_name)
         if marker:
             mp = ep_dir / marker
@@ -707,5 +723,91 @@ def test_beated_passes_per_panel_segmentation(tmp_path, monkeypatch):
                            segmentation="per_panel")
     args = next(a for n, a in stub.call_args if n == "gemini_narrative_pass.py")
     assert args[args.index("--segmentation") + 1] == "per_panel"
+
+
+# ---------------------------------------------------------------------------
+# _stage_voiced: advertiser-safety sanitize freshness backstop (fail-closed)
+# ---------------------------------------------------------------------------
+
+class TestVoicedSanitizeFreshness:
+    """A missing/stale/corrupt manifest.sanitize.json must never be read as
+    'clean' — _stage_voiced re-runs the SAME sanitize pass _stage_scripted
+    uses right there, and refuses to voice if the marker still can't be read
+    afterward (fail-closed replaces the old silent [])."""
+
+    def _cfg(self, tmp_path):
+        # a local TTS backend so the gate's own outcome is what's under test,
+        # not the unrelated ElevenLabs credential check that follows it.
+        return replace(_make_cfg(tmp_path), tts_backend="chatterbox")
+
+    def _ep(self, tmp_path):
+        ep = tmp_path / "ep"
+        ep.mkdir()
+        (ep / "manifest.script.json").write_text("{}")
+        return ep
+
+    def test_voiced_skips_rerun_when_marker_fresh(self, tmp_path, monkeypatch):
+        import studio.pipeline as pipeline_mod
+        ep = self._ep(tmp_path)
+        (ep / "manifest.sanitize.json").write_text('{"unresolved_blocks": []}')
+
+        reruns = []
+        monkeypatch.setattr(pipeline_mod, "_run_sanitize_pass",
+                            lambda *a, **k: reruns.append(1))
+        monkeypatch.setattr(pipeline_mod, "_run_tool", lambda *a, **k: None)
+
+        pipeline_mod._stage_voiced(ep, self._cfg(tmp_path))
+        assert reruns == []
+
+    def test_voiced_recomputes_stale_sanitize_marker(self, tmp_path, monkeypatch):
+        import os
+        import studio.pipeline as pipeline_mod
+        ep = self._ep(tmp_path)
+        marker = ep / "manifest.sanitize.json"
+        marker.write_text('{"unresolved_blocks": []}')
+        old = (ep / "manifest.script.json").stat().st_mtime - 100
+        os.utime(marker, (old, old))   # marker predates the script -> stale
+
+        reruns = []
+
+        def fake_rerun(ep_dir, cfg, p):
+            reruns.append(1)
+            marker.write_text('{"unresolved_blocks": []}')   # rerun -> clean
+
+        monkeypatch.setattr(pipeline_mod, "_run_sanitize_pass", fake_rerun)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", lambda *a, **k: None)
+
+        pipeline_mod._stage_voiced(ep, self._cfg(tmp_path))   # must not raise
+        assert reruns == [1]
+
+    def test_voiced_corrupt_marker_triggers_rerun(self, tmp_path, monkeypatch):
+        import studio.pipeline as pipeline_mod
+        ep = self._ep(tmp_path)
+        marker = ep / "manifest.sanitize.json"
+        marker.write_text("{not valid json")
+
+        reruns = []
+
+        def fake_rerun(ep_dir, cfg, p):
+            reruns.append(1)
+            marker.write_text('{"unresolved_blocks": []}')
+
+        monkeypatch.setattr(pipeline_mod, "_run_sanitize_pass", fake_rerun)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", lambda *a, **k: None)
+
+        pipeline_mod._stage_voiced(ep, self._cfg(tmp_path))
+        assert reruns == [1]
+
+    def test_voiced_fails_closed_when_marker_missing_after_rerun(
+            self, tmp_path, monkeypatch):
+        import studio.pipeline as pipeline_mod
+        ep = self._ep(tmp_path)   # no marker at all
+
+        monkeypatch.setattr(pipeline_mod, "_run_sanitize_pass",
+                            lambda *a, **k: None)   # rerun writes nothing
+        monkeypatch.setattr(pipeline_mod, "_run_tool", lambda *a, **k: None)
+
+        with pytest.raises(RuntimeError, match="sanitize marker missing"):
+            pipeline_mod._stage_voiced(ep, self._cfg(tmp_path))
 
 

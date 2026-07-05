@@ -1010,3 +1010,91 @@ def test_render_segment_triggers_auto_intro_for_last_chapter(
                        ).fetchone()[0] == "rendered"
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
                        "bundle_id=?", (bid,)).fetchone()[0] == 1
+
+
+# ---- Task 4: heal re-sanitizes so the marker matches the rewritten script --
+
+def test_rescript_triggers_sanitize(tmp_path, monkeypatch):
+    """_rescript rewrites manifest.script.json via script_expander; the
+    sanitize marker it leaves behind now describes stale text. _rescript must
+    re-sanitize so a heal iteration converges on an already-fresh marker
+    instead of deferring the work to the voiced-stage freshness backstop."""
+    import types
+    ep = tmp_path / "ep"
+    ep.mkdir()
+
+    calls = []
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
+                        calls.append(" ".join(map(str, cmd))) or 0)
+    sanitize_calls = []
+    monkeypatch.setattr(worker, "_run_sanitize",
+                        lambda ep_, log_: sanitize_calls.append(ep_))
+
+    cfg = types.SimpleNamespace(script_model="s", narration_source="gemini_verbatim",
+                               narration_sanitize=True)
+    worker._rescript(ep, cfg, None, open(tmp_path / "log.txt", "w"))
+
+    assert any("script_expander.py" in c for c in calls)
+    assert sanitize_calls == [ep]
+
+
+def test_rescript_skips_sanitize_when_config_disabled(tmp_path, monkeypatch):
+    """Mirrors _stage_scripted's own gating exactly: the pipeline introduces
+    no new config knob, so narration_sanitize=False must suppress the heal
+    re-sanitize the same way it suppresses the scripted-stage one."""
+    import types
+    ep = tmp_path / "ep"
+    ep.mkdir()
+
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    sanitize_calls = []
+    monkeypatch.setattr(worker, "_run_sanitize",
+                        lambda ep_, log_: sanitize_calls.append(ep_))
+
+    cfg = types.SimpleNamespace(script_model="s", narration_source="gemini_verbatim",
+                               narration_sanitize=False)
+    worker._rescript(ep, cfg, None, open(tmp_path / "log.txt", "w"))
+
+    assert sanitize_calls == []
+
+
+def test_run_sanitize_shells_narration_sanitize_pass(tmp_path, monkeypatch):
+    """_run_sanitize shells narration_sanitize_pass.py with the same
+    --script/--seed/--marker contract pipeline._run_sanitize_pass uses, and
+    tolerates rc==2 ('unresolved blocks recorded' — the marker is written
+    either way; the voiced-stage gate is what enforces it, not this helper)."""
+    import types
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
+        types.SimpleNamespace(beats_backend="ollama", beats_model="m"), "p", "l"))
+    seen = {}
+
+    def fake_stream(cmd, log, **kw):
+        seen["cmd"] = cmd
+        return 2   # unresolved blocks recorded -- must NOT raise
+
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+
+    worker._run_sanitize(ep, open(tmp_path / "log.txt", "w"))
+
+    cmd = seen["cmd"]
+    assert "narration_sanitize_pass.py" in cmd[1]
+    assert cmd[cmd.index("--script") + 1] == str(ep / "manifest.script.json")
+    assert cmd[cmd.index("--seed") + 1] == ep.name
+    assert cmd[cmd.index("--marker") + 1] == str(ep / "manifest.sanitize.json")
+    assert cmd[cmd.index("--reframe-backend") + 1] == "ollama"
+
+
+def test_run_sanitize_raises_on_real_failure(tmp_path, monkeypatch):
+    """A crash (bad manifest, missing backend) is not the tolerated rc==2 —
+    it must surface as the heal-step failure it is, not a silent pass."""
+    import types
+    import pytest
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
+        types.SimpleNamespace(beats_backend="ollama", beats_model="m"), "p", "l"))
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 1)
+    with pytest.raises(RuntimeError):
+        worker._run_sanitize(ep, open(tmp_path / "log.txt", "w"))

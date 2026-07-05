@@ -370,17 +370,41 @@ def _run_sanitize_pass(ep_dir: Path, cfg: Config, p: dict) -> None:
         raise
 
 
-def _read_sanitize_unresolved(marker_path: Path) -> list:
-    """Unresolved advertiser-safety blocks from manifest.sanitize.json (written
-    by narration_sanitize_pass). Read directly as JSON so the gate needs no
-    cross-package import. Missing/unreadable marker → [] (the gate only HALTS on
-    a marker that explicitly lists blocks)."""
+def _read_sanitize_marker(marker_path: Path) -> "dict | None":
+    """Parsed manifest.sanitize.json, or None if missing/unreadable/corrupt.
+    Shared by the freshness backstop and _read_sanitize_unresolved so 'can't
+    be trusted' means the same thing in both places."""
     import json
     if not marker_path.exists():
-        return []
+        return None
     try:
-        data = json.loads(marker_path.read_text(encoding="utf-8"))
+        return json.loads(marker_path.read_text(encoding="utf-8"))
     except Exception:
+        return None
+
+
+def _sanitize_marker_stale(marker_path: Path, script_path: Path) -> bool:
+    """True when manifest.sanitize.json can no longer be trusted to reflect
+    the CURRENT manifest.script.json: missing, unparseable, or older than the
+    script (a heal/rewrite replaced the script without re-running the
+    sanitizer). Callers must treat 'stale' as 'unknown', never as 'clean' —
+    fail-closed, matching the voiced gate's own posture."""
+    if _read_sanitize_marker(marker_path) is None:
+        return True
+    try:
+        return marker_path.stat().st_mtime < script_path.stat().st_mtime
+    except OSError:
+        return True
+
+
+def _read_sanitize_unresolved(marker_path: Path) -> list:
+    """Unresolved advertiser-safety blocks from manifest.sanitize.json (written
+    by narration_sanitize_pass). Missing/unreadable marker → []. Safe to call
+    on its own only AFTER the freshness backstop in _stage_voiced has already
+    guaranteed the marker exists and is current — in isolation this function
+    cannot distinguish 'clean' from 'never ran'."""
+    data = _read_sanitize_marker(marker_path)
+    if data is None:
         return []
     return [b for b in (data.get("unresolved_blocks") or []) if isinstance(b, dict)]
 
@@ -395,7 +419,21 @@ def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
     # worker surfaces it and never voices. A clean chapter has no unresolved
     # blocks and proceeds normally.
     if cfg.narration_sanitize:
-        unresolved = _read_sanitize_unresolved(ep_dir / "manifest.sanitize.json")
+        marker_path = ep_dir / "manifest.sanitize.json"
+        # FRESHNESS BACKSTOP (fail-closed): a heal rewrite (worker._rescript)
+        # can replace manifest.script.json without ever re-running the
+        # sanitizer, and a voiceover-rewind resume-by-status run SKIPS
+        # _stage_scripted entirely once its own marker (manifest.script.json)
+        # already exists — so a stale/missing/corrupt sanitize marker must
+        # never be read as "clean". Re-run the SAME pass _stage_scripted uses,
+        # right here, before ever consulting it.
+        if _sanitize_marker_stale(marker_path, p["script"]):
+            _run_sanitize_pass(ep_dir, cfg, p)
+            if _read_sanitize_marker(marker_path) is None:
+                raise RuntimeError(
+                    "sanitize marker missing/unreadable after re-run — "
+                    "refusing to voice")
+        unresolved = _read_sanitize_unresolved(marker_path)
         if unresolved:
             preview = ", ".join(
                 f"{b.get('segment_id', '?')}:'{b.get('matched', '')}'"
@@ -403,7 +441,7 @@ def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
             raise RuntimeError(
                 f"voiced blocked: narration sanitize left {len(unresolved)} "
                 f"unresolved advertiser-safety BLOCK(s) [{preview}] — "
-                f"see {ep_dir / 'manifest.sanitize.json'}")
+                f"see {marker_path}")
     backend = (cfg.tts_backend or "elevenlabs").lower()
     if backend != "elevenlabs":   # any local backend (chatterbox[-turbo]/kokoro)
         # Free local TTS — no credential needed. Same tts_index.json contract.
