@@ -111,12 +111,18 @@ def test_prepare_deterministic_qa_block_does_not_burn_retries(tmp_path, monkeypa
     _seed_chapter(con, tmp_path)
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
-                        lambda c, ch, log, **kw: {"system_card_unshown"})
+                        lambda c, ch, log, **kw: None)
     monkeypatch.setattr(worker, "_heal_to_green", lambda c, ch, ep, log: None)
     monkeypatch.setattr(worker, "_heal_visual_drops",
                         lambda c, ch, ep, log: set())
-    monkeypatch.setattr(worker, "_qa_error_codes",
-                        lambda ep: {"system_card_unshown"})   # BLOCKING, stays red
+    # the FINAL verdict (built fresh after heal) is the gate now, not a disk
+    # re-read -> stub it directly instead of _qa_error_codes (heal-convergence
+    # only, no longer a gate's source of truth).
+    monkeypatch.setattr(worker, "_qa_verdict", lambda ep, **kw: worker.QAVerdict(
+        ok=False, blocking={"system_card_unshown"},
+        codes={"system_card_unshown"},
+        report={"flags": [{"code": "system_card_unshown", "severity": "ERROR"}]},
+        reason="blocking QA codes: ['system_card_unshown']"))   # stays red
     jobs.enqueue(con, "prepare", chapter_id=5)
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     state, err = con.execute(
@@ -200,6 +206,124 @@ def test_qa_error_codes_reads_report(tmp_path):
     assert worker._qa_error_codes(tmp_path / "nope") == set()
 
 
+# ---- QAVerdict: one fail-closed gate replacing two disagreeing policies ----
+
+def test_qa_verdict_missing_report_blocks(tmp_path):
+    v = worker._qa_verdict(tmp_path / "nope", started_at=time.time())
+    assert v.ok is False and v.blocking == {"qa_report_invalid"}
+    assert v.report is None
+
+
+def test_qa_verdict_corrupt_report_blocks(tmp_path):
+    (tmp_path / "prep_qa.json").write_text("{not valid json")
+    v = worker._qa_verdict(tmp_path, started_at=time.time())
+    assert v.ok is False and v.blocking == {"qa_report_invalid"}
+    assert v.report is None
+
+
+def test_qa_verdict_stale_report_blocks(tmp_path):
+    import json
+    import os
+    report = tmp_path / "prep_qa.json"
+    report.write_text(json.dumps({"flags": []}))
+    started_at = time.time()
+    stale = started_at - 10.0     # well past the 1.0s grace window
+    os.utime(report, (stale, stale))
+    v = worker._qa_verdict(tmp_path, started_at=started_at)
+    assert v.ok is False and v.blocking == {"qa_report_invalid"}
+    assert v.report is None
+
+
+def test_qa_verdict_fresh_clean_report_passes(tmp_path):
+    import json
+    started_at = time.time()
+    (tmp_path / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "ghost_text", "severity": "WARN"}]}))
+    v = worker._qa_verdict(tmp_path, started_at=started_at)
+    assert v.ok is True and v.blocking == set() and v.codes == set()
+    assert v.report is not None
+
+
+def test_structural_codes_block(tmp_path):
+    import json
+    started_at = time.time()
+    (tmp_path / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "cut_gap", "severity": "ERROR"}]}))
+    v = worker._qa_verdict(tmp_path, started_at=started_at)
+    assert v.ok is False and v.blocking == {"cut_gap"}
+
+
+def test_env_demotes_blocking_code(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("STUDIO_QA_NONBLOCKING", "cut_gap")
+    started_at = time.time()
+    (tmp_path / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "cut_gap", "severity": "ERROR"}]}))
+    v = worker._qa_verdict(tmp_path, started_at=started_at)
+    # demoted out of `blocking` but still visible in `codes` (heal/logging still
+    # sees it -- the env hatch silences the GATE, not the signal).
+    assert v.ok is True and v.blocking == set() and v.codes == {"cut_gap"}
+
+
+def test_autopilot_uses_run_verdict_not_disk(tmp_path):
+    import json
+    con = _con(tmp_path)
+    ep = _autopilot_series(con, tmp_path, flags=[])   # writes a clean report
+    ch = {"id": 5, "series_id": 1}
+
+    clean_verdict = worker.QAVerdict(ok=True, blocking=set(), codes=set(),
+                                     report={"flags": []}, reason="")
+    (ep / "prep_qa.json").write_text(json.dumps(
+        {"flags": [{"code": "missing_audio", "severity": "ERROR"}]}))  # disk dirty
+    assert worker._autopilot_clean(con, ch, clean_verdict) is True
+
+    dirty_verdict = worker.QAVerdict(
+        ok=False, blocking={"missing_audio"}, codes={"missing_audio"},
+        report={"flags": [{"code": "missing_audio", "severity": "ERROR"}]},
+        reason="x")
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": []}))   # disk clean
+    assert worker._autopilot_clean(con, ch, dirty_verdict) is False
+
+
+def test_qa_stage_meta_records_plan_sha(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": []}))
+    (ep / "render.plan.clean.json").write_text('{"cuts": []}')
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    verdict = worker._run_prep_and_qa(con, ch, open(tmp_path / "l.txt", "w"))
+    assert verdict.ok is True
+    expected = hashlib.sha256(
+        (ep / "render.plan.clean.json").read_bytes()).hexdigest()
+    assert worker._last_qa_plan_sha(con, 5) == expected
+
+
+def test_h_qa_scan_cosmetic_error_passes_blocking_fails(tmp_path, monkeypatch):
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path, status="voiced")
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+
+    (ep / "prep_qa.json").write_text(json.dumps(
+        {"flags": [{"code": "chrome_leak", "severity": "ERROR"}]}))  # cosmetic
+    jid1 = jobs.enqueue(con, "qa_scan", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l1"))
+    state1, err1 = con.execute("SELECT state, error FROM job WHERE id=?",
+                               (jid1,)).fetchone()
+    assert state1 == "done", err1
+
+    (ep / "prep_qa.json").write_text(json.dumps(
+        {"flags": [{"code": "cut_gap", "severity": "ERROR"}]}))  # structural
+    jid2 = jobs.enqueue(con, "qa_scan", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l2"))
+    state2, err2 = con.execute("SELECT state, error FROM job WHERE id=?",
+                               (jid2,)).fetchone()
+    assert state2 == "failed" and "cut_gap" in err2
+
+
 def test_run_prep_and_qa_heal_aware_returns_instead_of_raising(
         tmp_path, monkeypatch):
     import json
@@ -212,8 +336,9 @@ def test_run_prep_and_qa_heal_aware_returns_instead_of_raising(
                         1 if any("prep_qa.py" in str(c) for c in cmd) else 0)
     ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
     log = open(tmp_path / "log.txt", "w")
-    codes = worker._run_prep_and_qa(con, ch, log, heal_aware=True)
-    assert codes == {"missing_audio"}
+    verdict = worker._run_prep_and_qa(con, ch, log, heal_aware=True)
+    assert verdict.blocking == {"missing_audio"} and not verdict.ok
+    assert verdict.codes == {"missing_audio"}
     with pytest.raises(RuntimeError):
         worker._run_prep_and_qa(con, ch, log, heal_aware=False)
 
@@ -224,11 +349,15 @@ def test_prepare_auto_heals_red_qa_to_green(tmp_path, monkeypatch):
     _seed_chapter(con, tmp_path)
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
-                        lambda c, ch, log, **kw: {"caption_unvoiced"})
+                        lambda c, ch, log, **kw: None)
     healed = []
     monkeypatch.setattr(worker, "_heal_to_green",
                         lambda c, ch, ep, log: healed.append(1))
-    monkeypatch.setattr(worker, "_qa_error_codes", lambda ep: set())  # green now
+    # the FINAL verdict (built fresh after heal) is the gate now -> stub it
+    # directly to say "green now" instead of the no-longer-authoritative
+    # _qa_error_codes.
+    monkeypatch.setattr(worker, "_qa_verdict", lambda ep, **kw: worker.QAVerdict(
+        ok=True, blocking=set(), codes=set(), report={"flags": []}, reason=""))
     jid = jobs.enqueue(con, "prepare", chapter_id=5)
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     state, err = con.execute("SELECT state, error FROM job WHERE id=?",
@@ -242,10 +371,13 @@ def test_prepare_fails_if_heal_cannot_reach_green(tmp_path, monkeypatch):
     _seed_chapter(con, tmp_path)
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
-                        lambda c, ch, log, **kw: {"montage_degenerate"})
+                        lambda c, ch, log, **kw: None)
     monkeypatch.setattr(worker, "_heal_to_green", lambda c, ch, ep, log: None)
-    monkeypatch.setattr(worker, "_qa_error_codes",
-                        lambda ep: {"montage_degenerate"})   # BLOCKING, still red
+    # the FINAL verdict is the gate now -> stub it directly, still red.
+    monkeypatch.setattr(worker, "_qa_verdict", lambda ep, **kw: worker.QAVerdict(
+        ok=False, blocking={"montage_degenerate"}, codes={"montage_degenerate"},
+        report={"flags": [{"code": "montage_degenerate", "severity": "ERROR"}]},
+        reason="blocking QA codes: ['montage_degenerate']"))   # still red
     jid = jobs.enqueue(con, "prepare", chapter_id=5)
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     state, err = con.execute("SELECT state, error FROM job WHERE id=?",
@@ -494,7 +626,9 @@ def test_autopilot_voiceover_advances_to_render(tmp_path, monkeypatch):
     g.approve(con, "voice", chapter_id=5, note="autopilot")
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     monkeypatch.setattr(worker, "_run_prep_and_qa",
-                        lambda c, ch, log, **kw: set())
+                        lambda c, ch, log, **kw: worker.QAVerdict(
+                            ok=True, blocking=set(), codes=set(),
+                            report={"flags": []}, reason=""))
     jobs.enqueue(con, "voiceover", chapter_id=5)
     worker.run_once(con, handlers=worker.HANDLERS,
                     log_dir=str(tmp_path / "l"))
