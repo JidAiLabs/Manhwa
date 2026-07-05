@@ -1358,7 +1358,12 @@ def requeue_orphans(con: sqlite3.Connection) -> int:
     for jid, pgid in con.execute(
             "SELECT id, pgid FROM job WHERE state='running' AND "
             "pgid IS NOT NULL").fetchall():
-        reaped = _reap_pgid(pgid)
+        try:
+            reaped = _reap_pgid(pgid)
+        except Exception as e:      # this loop must never block the requeue
+            print(f"[worker] orphan reap: job {jid} pgid {pgid} -> "
+                  f"reap raised {e!r}, skipping")
+            continue
         print(f"[worker] orphan reap: job {jid} pgid {pgid} -> "
               f"{'killed' if reaped else 'identity mismatch / already gone, skipped'}")
     cur = con.execute("UPDATE job SET state='queued', started_at=NULL, "
