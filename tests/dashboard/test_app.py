@@ -68,6 +68,32 @@ def test_approve_endpoint_stores_content_sha(client, tmp_path):
     assert stored == gates.gate_sha("render", ep)
 
 
+def test_post_revoice_restamps_stale_voice_approval(client, tmp_path):
+    """post_revoice must treat an existing-but-STALE voice approval (the
+    narration was healed/rewritten after it was approved) as absent: it has
+    to re-stamp the gate with the CURRENT sha before enqueueing, or the
+    voiceover job it just queued blocks inside the worker's sha-validating
+    gate check — a manufactured dead-letter."""
+    c, con = client
+    from studio.dashboard import gates
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    script = ep / "manifest.script.json"
+    script.write_text('{"paragraphs": ["original"]}')
+    con.execute("UPDATE chapter SET ep_dir=?, status='voiced' WHERE id=1",
+               (str(ep),))
+    gates.approve(con, "voice", chapter_id=1,
+                 content_sha=gates.gate_sha("voice", ep))
+    script.write_text('{"paragraphs": ["healed"]}')      # re-narrated
+    con.commit()
+    c.post("/chapter/1/revoice", follow_redirects=False)
+    current = gates.gate_sha("voice", ep)
+    assert gates._approval_valid(con, "voice", chapter_id=1,
+                                 current_sha=current)
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover' "
+                       "AND chapter_id=1").fetchone()[0] == 1
+
+
 def test_series_thumbnail_job_and_approval_flow(client, tmp_path, monkeypatch):
     """The series page is where the one-per-manhwa thumbnail is generated and
     approved (answers 'where will I see it to approve it'). Generate enqueues a

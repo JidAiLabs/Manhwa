@@ -565,6 +565,33 @@ def test_autopilot_clean_report_advances_to_voice(tmp_path, monkeypatch):
     assert (n_appr, n_jobs) == (1, 1)
 
 
+def test_bulk_auto_to_reapproves_stale_voice_and_enqueues(tmp_path, monkeypatch):
+    """A prior 'bulk' voice approval whose content_sha no longer matches the
+    script (a heal rewrote it after that approval) must not wedge the auto_to
+    chain: the old existence-only guard skipped BOTH the re-approve and the
+    enqueue when a stale row was already there, silently stalling the bulk
+    run. ensure_approval treats the stale row as absent, so both fire again."""
+    con = _con(tmp_path)
+    ep = _autopilot_series(con, tmp_path, flags=[
+        {"code": "ghost_text", "severity": "WARN"}])
+    (ep / "manifest.script.json").write_text('{"paragraphs": ["healed"]}')
+    gates.approve(con, "voice", chapter_id=5, note="bulk",
+                 content_sha="stale-sha-from-before-the-heal")
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "prepare", chapter_id=5, payload={"auto_to": "voice"})
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover' "
+                       "AND chapter_id=5").fetchone()[0] == 1   # no stall
+    stored = con.execute(
+        "SELECT content_sha FROM approval WHERE gate='voice' AND "
+        "chapter_id=5 ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert stored == gates.gate_sha("voice", ep)                # fresh sha
+    assert gates.voice_allowed(con, 5, ep) == (True, "")
+
+
 def test_autopilot_voice_approval_stores_content_sha(tmp_path, monkeypatch):
     """The autopilot voice approval must bind to the script CONTENT, not just
     insert a checkbox row — content_sha has to be the real gate_sha."""

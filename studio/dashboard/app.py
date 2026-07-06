@@ -792,13 +792,17 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # runner actually re-runs the voiced stage.
         c = con()
         reset.rewind_chapter(c, cid, "scripted", clear_approvals=("render",))
-        # narration stays approved; auto_to=video re-approves render after QA
-        if not gates._has_approval(c, "voice", chapter_id=cid):
-            row = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
-                            (cid,)).fetchone()
-            gates.approve(c, "voice", chapter_id=cid, note="re-voice",
-                          content_sha=gates.gate_sha(
-                              "voice", row[0] if row else None))
+        # narration stays approved; auto_to=video re-approves render after QA.
+        # Clicking Re-voice IS consent for whatever narration is on disk now,
+        # so (re-)stamp the voice gate unconditionally: ensure_approval no-ops
+        # if the existing row is already valid for the CURRENT content, and
+        # re-stamps if it's stale (a heal rewrote the script after approval)
+        # or absent — otherwise the enqueue below would wedge on a sha
+        # mismatch inside the voiceover handler's gate check.
+        row = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
+                        (cid,)).fetchone()
+        gates.ensure_approval(c, "voice", chapter_id=cid,
+                              ep_dir=row[0] if row else None, note="re-voice")
         jobs.enqueue(c, "voiceover", chapter_id=cid,
                      payload={"auto_to": "video"}, priority=50)
         return RedirectResponse(f"/chapter/{cid}", status_code=303)

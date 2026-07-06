@@ -26,10 +26,6 @@ def _mk_chapter(tmp_path, status="rendered"):
                  "manifest.script.json", "render.plan.json",
                  "render.plan.clean.json", "prep_qa.json"):
         (ep / name).write_text(json.dumps({"name": name}))
-    # the render is produced FROM the clean plan, so a fresh mp4 is the newest
-    # file (else _render_is_stale would flag the fixture itself as stale)
-    _pm = os.path.getmtime(ep / "render.plan.clean.json")
-    os.utime(ep / "render" / "segment_both.mp4", (_pm + 100, _pm + 100))
     con.execute("INSERT INTO series (id, source, series_url, slug, title, "
                 "added_at) VALUES (1,'asura','u','s','T','now')")
     con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
@@ -166,7 +162,8 @@ def test_legacy_null_sha_approval_is_backfilled_on_reconcile(tmp_path):
     drift becomes detectable instead of the row staying eternally NULL."""
     from studio.dashboard import gates
     con, ep = _mk_chapter(tmp_path, status="rendered")   # approval row is NULL
-    reconcile.reconcile_chapter(con, _ch(con))
+    out = reconcile.reconcile_chapter(con, _ch(con))
+    assert out["content_sha_backfilled"] == 1
     stored = con.execute("SELECT content_sha FROM approval WHERE gate='render' "
                          "AND chapter_id=310").fetchone()[0]
     assert stored is not None

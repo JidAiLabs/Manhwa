@@ -97,6 +97,32 @@ def _approval_valid(con: sqlite3.Connection, gate: str, *,
     return True if stored is None else stored == current_sha
 
 
+def ensure_approval(con: sqlite3.Connection, gate: str, *,
+                    series_id: Optional[int] = None,
+                    chapter_id: Optional[int] = None,
+                    bundle_id: Optional[int] = None,
+                    ep_dir: Optional[Union[str, Path]] = None,
+                    note: str = "") -> None:
+    """For auto-advance flows only (bulk 'run to X', autopilot, re-voice):
+    treat a STALE approval — row exists but its content_sha no longer
+    matches current content — the same as an ABSENT one. Those flows used to
+    guard on existence-only `_has_approval`, which a healed script or
+    regenerated plan defeats: the stale row still "exists", so the guard
+    skips re-approving AND re-enqueueing, silently wedging the chain even
+    though the flow's own comments declare it auto-approves on drift.
+
+    No-op when the newest row is already valid for the current content;
+    otherwise inserts a fresh row stamped with the current sha, which
+    supersedes the stale one (newest-wins in `_approval_valid`). Never touches
+    the manual /approve endpoint or any human-review gate."""
+    current_sha = gate_sha(gate, ep_dir)
+    if _approval_valid(con, gate, series_id=series_id, chapter_id=chapter_id,
+                       bundle_id=bundle_id, current_sha=current_sha):
+        return
+    approve(con, gate, series_id=series_id, chapter_id=chapter_id,
+           bundle_id=bundle_id, note=note, content_sha=current_sha)
+
+
 def thumbnail_approved(con: sqlite3.Connection, series_id: int) -> bool:
     """One thumbnail per manhwa — approved at the SERIES level. Regenerating
     the thumbnail clears this (the worker deletes the row), so an APPROVED

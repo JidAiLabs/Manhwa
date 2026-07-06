@@ -774,19 +774,20 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     # The bulk request IS the story approval, so advance past the voice gate up to
     # the requested target — QA still had to be green (we raised above otherwise).
     auto_to = (job.get("payload") or {}).get("auto_to")
-    if auto_to in ("voice", "video") and not gates._has_approval(
-            con, "voice", chapter_id=ch["id"]):
+    voice_sha = gates.gate_sha("voice", ch["ep_dir"])
+    voice_valid = gates._approval_valid(con, "voice", chapter_id=ch["id"],
+                                        current_sha=voice_sha)
+    if auto_to in ("voice", "video") and not voice_valid:
         log.write(f"[bulk] auto_to={auto_to}: QA green -> voiceover queued\n")
-        gates.approve(con, "voice", chapter_id=ch["id"], note="bulk",
-                     content_sha=gates.gate_sha("voice", ch["ep_dir"]))
+        gates.ensure_approval(con, "voice", chapter_id=ch["id"],
+                              ep_dir=ch["ep_dir"], note="bulk")
         jobs.enqueue(con, "voiceover", chapter_id=ch["id"],
                      payload={"auto_to": auto_to})
-    elif _autopilot_clean(con, ch, verdict) and not gates._has_approval(
-            con, "voice", chapter_id=ch["id"]):
+    elif _autopilot_clean(con, ch, verdict) and not voice_valid:
         log.write("[autopilot] QA spotless → story auto-approved, "
                   "voiceover queued\n")
-        gates.approve(con, "voice", chapter_id=ch["id"], note="autopilot",
-                     content_sha=gates.gate_sha("voice", ch["ep_dir"]))
+        gates.ensure_approval(con, "voice", chapter_id=ch["id"],
+                              ep_dir=ch["ep_dir"], note="autopilot")
         jobs.enqueue(con, "voiceover", chapter_id=ch["id"])
 
 

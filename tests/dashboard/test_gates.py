@@ -148,6 +148,32 @@ def test_approval_with_sha_invalid_when_subject_file_deleted(tmp_path):
     assert not allowed and "narration" in why
 
 
+def test_newest_approval_wins_over_older_mismatch(tmp_path):
+    """Two rows, same gate: an older mismatching sha must not shadow a newer
+    row that IS valid for current content — newest-by-id is authoritative."""
+    con = _con(tmp_path)
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    (ep / "manifest.script.json").write_text('{"paragraphs": ["line"]}')
+    gates.approve(con, "voice", chapter_id=1, content_sha="stale-sha")
+    gates.approve(con, "voice", chapter_id=1,
+                 content_sha=gates.gate_sha("voice", ep))
+    assert gates.voice_allowed(con, 1, ep) == (True, "")
+
+
+def test_newest_approval_loses_to_newer_mismatch(tmp_path):
+    """Inverse: a valid older row must not paper over a newer mismatching one."""
+    con = _con(tmp_path)
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    (ep / "manifest.script.json").write_text('{"paragraphs": ["line"]}')
+    gates.approve(con, "voice", chapter_id=1,
+                 content_sha=gates.gate_sha("voice", ep))
+    gates.approve(con, "voice", chapter_id=1, content_sha="stale-sha")
+    allowed, why = gates.voice_allowed(con, 1, ep)
+    assert not allowed and "narration" in why
+
+
 def test_thumbnail_approval_is_series_scoped(tmp_path):
     """One thumbnail per manhwa — approved at the SERIES level, not chapter or
     bundle. Other series stay unapproved, and same-id chapter/bundle approvals

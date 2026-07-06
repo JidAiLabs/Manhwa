@@ -152,7 +152,8 @@ def reconcile_chapter(con: sqlite3.Connection,
     summary (all falsey when already consistent). ``ch`` is any mapping with
     ``id``, ``status`` and ``ep_dir`` (a sqlite3.Row or a dict)."""
     out: Dict[str, Any] = {"status_from": None, "status_to": None,
-                           "stage_runs_pruned": 0, "render_approval_cleared": 0}
+                           "stage_runs_pruned": 0, "render_approval_cleared": 0,
+                           "content_sha_backfilled": 0}
     cid = int(ch["id"])
     status = str(ch["status"] or "")
     ep = str(ch["ep_dir"] or "")
@@ -198,6 +199,7 @@ def reconcile_chapter(con: sqlite3.Connection,
             if backfill_sha is not None:
                 con.execute("UPDATE approval SET content_sha=? WHERE id=?",
                             (backfill_sha, approval_id))
+                out["content_sha_backfilled"] = 1
                 changed = True
         if _render_is_stale(con, cid, ep):
             n = con.execute(
