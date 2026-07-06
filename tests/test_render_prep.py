@@ -1829,8 +1829,11 @@ def test_protect_narrated_from_junk_also_protects_system_files():
 
 _FIXDIR = Path(__file__).resolve().parent / "fixtures" / "dedup"
 _FIX_BOXES = {
-    "p000054.jpg": [(1, 0, 166, 121), (52, 99, 230, 241)],
-    "p000055.jpg": [(54, 0, 220, 70)],
+    # p000054/p000055 measured at max-width 600 (q65) — re-margined off the
+    # ham==14 boundary (was max-width 400/q60); masked ham now 12, matching
+    # the full-resolution originals (see D3 note above).
+    "p000054.jpg": [(2, 1, 245, 181), (80, 150, 344, 362)],
+    "p000055.jpg": [(83, 0, 328, 106)],
     "p000090.jpg": [],
     "p000095.jpg": [(155, 276, 389, 447)],
 }
@@ -1927,6 +1930,35 @@ def test_dedup_invariant_leaves_distinct_panels_alone():
     assert folds == []
     assert [c["file"] for it in out["timeline"] for c in it["cuts"]] == \
         ["a.jpg", "b.jpg", "p000090.jpg", "p000095.jpg"]
+
+
+def test_dedup_invariant_transitive_three_in_a_row():
+    # A/B/C are three CONSECUTIVE shown panels, each a twin of its neighbour,
+    # richness strictly increasing A < B < C (by raw area) with window=1 so
+    # each comparison only ever sees its IMMEDIATE predecessor: B folds into A
+    # first (alias a->b), then C's comparison hits b.jpg -- already aliased --
+    # so it folds ONTO that alias (alias b->c), producing a genuine two-hop
+    # chain a->b->c. This pins _resolve's while-loop: a naive single-lookup
+    # alias would leave A's cut pointing at "b.jpg" instead of walking on to
+    # the final survivor, so not everything would fold to ONE file.
+    imgs = {"a.jpg": _hramp(w=300, h=400), "b.jpg": _hramp(w=320, h=400),
+            "c.jpg": _hramp(w=340, h=400)}
+    plan = {"timeline": [
+        {"segment_id": "g1", "tts_text": "x",
+         "cuts": [{"file": "a.jpg", "start": 0.0, "dur": 3.0}]},
+        {"segment_id": "g2", "tts_text": "y",
+         "cuts": [{"file": "b.jpg", "start": 0.0, "dur": 3.0}]},
+        {"segment_id": "g3", "tts_text": "z",
+         "cuts": [{"file": "c.jpg", "start": 0.0, "dur": 3.0}]},
+    ], "scene_dims": {}}
+    out, folds = rp.enforce_shown_twin_invariant(
+        plan, lambda f: imgs.get(f), window=1)
+    assert {(lo, hi) for _, lo, hi, *_ in folds} == \
+        {("a.jpg", "b.jpg"), ("b.jpg", "c.jpg")}
+    # every cut collapses to ONE survivor -- the alias chain fully resolved,
+    # not just the one-hop "b.jpg" an unresolved chain would leave behind
+    shown = [c["file"] for it in out["timeline"] for c in it["cuts"]]
+    assert shown == ["c.jpg", "c.jpg", "c.jpg"]
 
 
 def test_canonicalize_requires_raw_twins():

@@ -1639,3 +1639,31 @@ def test_long_hold_blocks_substituted_only():
     # blocking: heal can't fix a hold, so the worker must gate on it
     from studio.worker import _CRITICAL_QA_CODES
     assert "long_hold" in _CRITICAL_QA_CODES
+
+
+def test_long_hold_per_cut_standin_mixed_segment():
+    # ONE multi-cut segment: cut 1 genuinely owns this beat's panel (in-group,
+    # brief); cut 2 shows a DIFFERENT group's panel -- as a cross-group fold
+    # would land it -- and is held long on its own. long_hold's stand-in test
+    # is PER CUT, so cut 2 alone trips it even though its sibling cut 1 is
+    # legitimate. panel_substituted (story_flags) is PER SEGMENT: it unions
+    # every cut's file in the item, and cut 1 keeps that union intersecting
+    # the beat's intended panels, so it stays quiet. This pins the two checks'
+    # intentional difference in granularity -- not a bug in either.
+    plan = {"timeline": [
+        {"segment_id": "g0061_p00", "tts_text": "ok", "duration_sec": 13.0,
+         "cuts": [{"file": "p000200.jpg", "start": 0.0, "dur": 1.0},
+                  {"file": "p000201.jpg", "start": 1.0, "dur": 12.0}]},
+    ]}
+    beats = _beats([
+        {"group_id": 61, "scene_files": ["p000200.jpg"]},
+        {"group_id": 62, "scene_files": ["p000201.jpg"]},
+    ])
+    lh = [f for f in pq.long_hold_flags(plan, beats, max_hold_sec=10.0)
+          if f["code"] == "long_hold"]
+    assert lh and lh[0]["scene"] == "p000201.jpg"
+    assert lh[0]["segment_id"] == "g0061_p00"
+    # per-segment check sees cut 1's genuine art and stays quiet
+    sub = [f for f in pq.story_flags(plan, beats, {})
+           if f["code"] == "panel_substituted"]
+    assert sub == []

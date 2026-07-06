@@ -1058,14 +1058,29 @@ def long_hold_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any], *,
     """One FILE on screen continuously for > *max_hold_sec*
     ([render].max_same_image_hold_sec) while STANDING IN for art it does not
     own — the p000090 eye held ~24s because p000095 was canonicalized away and
-    the narration for BOTH segments played over one image. A stand-in cut is
-    the condition panel_substituted already detects: its segment's beat
-    intends none of the shown art (canonicalized swap / held neighbour). A
-    long single-image span on a panel that GENUINELY owns that narration (its
-    file is among the beat's scene_files, no substitution) is content-driven
-    pacing by design and stays legal at any length. BLOCKING: heal re-writes
-    narration, it cannot restore a swapped-away panel — the chapter must go
-    back through prepare."""
+    the narration for BOTH segments played over one image.
+
+    "Stand-in" is evaluated PER CUT here — each cut's file is a stand-in when
+    it is absent from its OWN segment's beat scene_files, independent of any
+    other cut in that same segment. This is DELIBERATELY finer-grained than
+    `panel_substituted` (story_flags), which is PER SEGMENT: it unions every
+    cut's file across the item and flags only when NONE of them intersect the
+    beat's intended panels. The per-segment view answers "did this beat's art
+    land on screen at all" (one genuine cut is enough to say yes); it is
+    structurally blind to a single foreign cut riding alongside a genuine one
+    in a multi-cut segment — exactly what a cross-group fold from
+    enforce_shown_twin_invariant/drop_cross_segment_near_identical_cuts can
+    produce (a later beat's cut folds into an earlier group's near-identical
+    art). That foreign cut hogging screen time past the cap is a real defect
+    even though panel_substituted correctly stays quiet (the segment's own
+    panel is ALSO present). Do not collapse this onto panel_substituted's
+    per-segment result — that would blind long_hold to exactly this case.
+
+    A long single-image span on a panel that GENUINELY owns that narration
+    (its file is among the beat's scene_files, no substitution) is
+    content-driven pacing by design and stays legal at any length. BLOCKING:
+    heal re-writes narration, it cannot restore a swapped-away panel — the
+    chapter must go back through prepare."""
     bfiles: Dict[int, set] = {}
     for b in (beats_obj or {}).get("beats") or []:
         try:
@@ -1088,6 +1103,8 @@ def long_hold_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any], *,
             if not f or c.get("file2") or c.get("layout"):
                 seq.append(None)                 # split layouts break the run
                 continue
+            # per-CUT stand-in test (see docstring): a sibling cut in this
+            # same segment being genuine does NOT clear this one.
             standin = bool(intended) and _base_scene(f) not in intended
             seq.append((f, float(c.get("dur") or 0.0), seg, standin))
 

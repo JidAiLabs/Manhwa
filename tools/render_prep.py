@@ -582,6 +582,11 @@ def drop_cross_segment_near_identical_cuts(
                             kept.append(c)
                             prev_file, prev_hash = f, h
                             continue
+                    else:
+                        print(f"[dedup-guard] {seg}: raw image(s) unavailable "
+                              f"for {prev_file!r}/{f!r} — guard skipped, "
+                              f"canonicalizing on crop-twin alone (legacy "
+                              f"behavior)")
                 canonicalized.append((seg, f, prev_file))
                 c["file"] = prev_file
                 kept.append(c)
@@ -1971,9 +1976,16 @@ def enforce_shown_twin_invariant(
     crop geometry can neither manufacture (D4) nor hide (D3) a twin — for
     every pair of shown cuts within a sliding *window* of shown cuts. Twin =
     `twin_verdict` (masked ham <= *ham_max*, or <= *ham_max_contained* with
-    OCR dialogue containment — the echo-pair signature). Same-file pairs need
-    no test here: consecutive runs are merge_consecutive_same_image_cuts' job
-    and far-apart repeats are capped by cap_repeats_with_holds.
+    OCR dialogue containment — the echo-pair signature). Same-file pairs are
+    DELIBERATELY skipped (`fi == fj` never reaches the twin test) — no fold is
+    needed since a same-file recurrence is not two DIFFERENT panels shipping
+    together, it is one panel shown twice, which is already someone else's
+    job at every distance: consecutive runs are
+    merge_consecutive_same_image_cuts', far-apart repeats are capped by
+    cap_repeats_with_holds/held_repeat_flags, and an excessive same-file span
+    standing in for art it doesn't own is long_hold_flags'. This is an
+    intentional deviation from an earlier brief's "(plus any same-file pairs
+    anywhere)" ask, not an oversight.
 
     Resolution is MERGE, never drop-narration: the twins collapse to ONE file
     — the richer panel (more bubbles, else larger raw area, else the earlier)
