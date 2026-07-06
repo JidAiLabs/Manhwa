@@ -43,6 +43,11 @@ PANEL_SCHEMA: Dict[str, Any] = {
                       "enum": ["calm", "tense", "intense", "explosive"]},
         "panel_kind": {"type": "STRING",
                        "enum": ["story", "chrome", "empty", "caption", "system"]},
+        # eyes wave: structured action-intensity fields. NOT in `required` so
+        # every existing consumer of pu_v1-shaped records keeps parsing.
+        "strikes_or_weapons": {"type": "STRING",
+                               "enum": ["none", "visible", "in_use"]},
+        "sfx_text": {"type": "STRING"},
     },
     "required": ["description", "action", "intensity", "panel_kind"],
 }
@@ -63,6 +68,11 @@ SYSTEM = (
     "'explosive' for genuine PEAKS — a real clash, a shocking reveal, mortal "
     "danger. Grade routine action, travel, dialogue, and ordinary reactions "
     "(e.g. a stumble or a fall) as 'calm' or 'tense'. Most panels are calm/tense.\n"
+    "  strikes_or_weapons: 'none' (no weapon or strike in this panel), "
+    "'visible' (a weapon is drawn/present but not being used), 'in_use' (a "
+    "strike, stab, blow, or crash is being DELIVERED in this panel).\n"
+    "  sfx_text: any painted sound-effect lettering on the art, transcribed "
+    "if you can read it; '' if none.\n"
     "  panel_kind: classify this panel for the recap —\n"
     "    'chrome' = PUBLICATION/PLATFORM furniture wrapping THIS release, never the "
     "story world: this series' COVER, an EPISODE/CHAPTER-NUMBER card, the creator/site/"
@@ -100,7 +110,10 @@ SYSTEM = (
 # Bump this whenever SYSTEM/PANEL_SCHEMA change materially — it is stamped onto
 # every record and gates --resume acceptance (see understand_panels), so a
 # prompt change no longer requires manually deleting understood.json.
-PROMPT_VERSION = "pu_v1"
+# pu_v2: impact-SFX fusion (strikes_or_weapons + sfx_text fields, the
+# detector-driven impact notice) — invalidates ALL pu_v1 records, INTENDED:
+# chapters re-understand under the impact-aware prompt.
+PROMPT_VERSION = "pu_v2"
 
 
 def _norm_panel_kind(v: Any) -> str:
@@ -168,19 +181,38 @@ def _is_caption_bubble_on_plain(description: Any, subjects: Any) -> bool:
     return bool(_BUBBLE_OR_TEXT_RE.search(desc) and _PLAIN_BG_RE.search(desc))
 
 
-def build_payload(panel: Dict[str, Any], prev_descs: List[str]) -> Dict[str, Any]:
+def build_payload(panel: Dict[str, Any], prev_descs: List[str],
+                  impact_regions: Optional[List[Dict[str, Any]]] = None
+                  ) -> Dict[str, Any]:
     """Pure: the per-panel model input (OCR + cheap vision signals + rolling
-    context for continuity). Image is attached separately by the caller."""
+    context for continuity). Image is attached separately by the caller.
+
+    `impact_regions` (from impact_lettering.detect_impact_lettering) appends
+    ONE context block when painted impact-SFX lettering was detected: OCR
+    captures ZERO stylized SFX, so without this the model under-reads a stab
+    panel as a calm one. The wording maps the signal to a GENERIC physical
+    impact only — the calm-landscape control proved this shape does not
+    hallucinate violence onto quiet panels (the detector never fires there)."""
     v = panel.get("vision") or {}
     labels = [x.get("desc") for x in (v.get("labels") or []) if x.get("desc")]
     objects = [x.get("name") for x in (v.get("objects") or []) if x.get("name")]
-    return {
+    payload = {
         "scene_file": panel.get("scene_file"),
         "ocr": (panel.get("ocr_clean") or "")[:900],
         "labels": labels[:12],
         "objects": objects[:12],
         "previous_panels": [d for d in prev_descs[-2:] if d],
     }
+    if impact_regions:
+        boxes = ", ".join(
+            "x={0} y={1} w={2} h={3}".format(*(r.get("bbox") or [0, 0, 0, 0]))
+            for r in impact_regions[:4])
+        payload["impact_sfx_notice"] = (
+            "Large impact-style SFX lettering is painted on this panel "
+            f"(region(s): {boxes}). In manhwa this marks a physical impact — "
+            "a strike, stab, blow, or crash. Describe the physical action "
+            "accordingly, and transcribe the lettering if you can read it.")
+    return payload
 
 
 def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -193,8 +225,10 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
         return {"scene_file": scene_file, "description": "", "subjects": [],
                 "action": "", "dialogue": "", "setting": "",
                 "intensity": "unknown", "panel_kind": "empty",
+                "strikes_or_weapons": "none", "sfx_text": "",
                 "error": "parse_failed"}
     inten = str(parsed.get("intensity") or "").lower()
+    sow = str(parsed.get("strikes_or_weapons") or "").strip().lower()
     description = str(parsed.get("description") or "").strip()
     subjects = [str(s) for s in (parsed.get("subjects") or []) if s]
     kind = _norm_panel_kind(parsed.get("panel_kind"))
@@ -214,7 +248,27 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
         "intensity": inten if inten in
         ("calm", "tense", "intense", "explosive") else "unknown",
         "panel_kind": kind,
+        # eyes wave: structured action fields (model-claimed; the DETECTOR
+        # verdict `impact_sfx` is stamped separately in understand_panels).
+        "strikes_or_weapons": sow if sow in ("none", "visible", "in_use")
+        else "none",
+        "sfx_text": str(parsed.get("sfx_text") or "").strip(),
     }
+
+
+def _detect_impact_regions(scene_path: Optional[str]) -> List[Dict[str, Any]]:
+    """DETERMINISTIC impact-SFX regions for one scene image (the cheap CV pass
+    that runs BEFORE the model call). Fail-soft: a missing/unreadable image or
+    an unavailable cv2 returns [] — understanding must never crash on it.
+    Imported lazily so this module keeps importing without cv2 (unit tests)."""
+    if not scene_path or not os.path.exists(scene_path):
+        return []
+    try:
+        import cv2
+        from impact_lettering import detect_impact_lettering
+        return detect_impact_lettering(cv2.imread(scene_path))
+    except Exception:
+        return []
 
 
 def _scene_sha(scene_path: Optional[str]) -> str:
@@ -233,10 +287,17 @@ def _scene_sha(scene_path: Optional[str]) -> str:
 def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
                       *, log: Callable[[str], None] = lambda _m: None,
                       prior: Optional[Dict[str, Dict[str, Any]]] = None,
-                      concurrency: int = 1) -> List[Dict[str, Any]]:
+                      concurrency: int = 1,
+                      impact_fn: Optional[Callable[
+                          [Optional[str]], List[Dict[str, Any]]]] = None
+                      ) -> List[Dict[str, Any]]:
     """Describe each panel in order, threading rolling context (the last 2
     panels). `call_fn(payload, image_path) -> parsed dict|None` is injected.
     `prior` (scene_file -> good record) lets --resume skip done panels.
+    `impact_fn(scene_path) -> regions` (default: the real impact-lettering
+    detector, fail-soft) runs BEFORE each model call; its verdict is stamped
+    on the record as `impact_sfx` — DETECTOR-owned, never model-claimed —
+    and, when present, injects the impact context block into the payload.
 
     concurrency>1 runs panels in BATCHES of that size: every panel in a batch
     shares the SAME context (the descriptions taken BEFORE the batch), so order
@@ -246,13 +307,20 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
     from concurrent.futures import ThreadPoolExecutor
     prior = prior or {}
     conc = max(1, int(concurrency))
+    detect_impact = impact_fn if impact_fn is not None else _detect_impact_regions
     out: List[Dict[str, Any]] = []
     prev_descs: List[str] = []
 
     def _understand(it: Dict[str, Any], ctx: List[str]) -> Dict[str, Any]:
+        regions = detect_impact(it.get("scene_path")) or []
         rec = assemble_record(
             it.get("scene_file"),
-            call_fn(build_payload(it, ctx), it.get("scene_path")))
+            call_fn(build_payload(it, ctx, impact_regions=regions),
+                    it.get("scene_path")))
+        # DETECTOR-owned impact verdict — stamped AFTER assemble_record so the
+        # model can never claim or override it (the deterministic signal the
+        # impact_mismatch QA gate reads back from understood.json).
+        rec["impact_sfx"] = {"present": bool(regions), "regions": len(regions)}
         # Content-keyed provenance, stamped at emit time (see the prior.get(sf)
         # acceptance check below, which requires both to still match on resume).
         rec["scene_sha"] = _scene_sha(it.get("scene_path"))

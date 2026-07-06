@@ -341,3 +341,88 @@ def test_writeback_before_understood_dump_mtime_order(tmp_path, monkeypatch):
     vision = json.loads(vision_path.read_text())
     assert vision["items"][0]["panel_kind"] == "story"
     assert vision["items"][0]["subjects"] == ["man"]
+
+
+# ---------------------------------------------------------------------------
+# Impact-SFX fusion (eyes wave): the deterministic detector's verdict is
+# stamped on every record (DETECTOR-owned, never model-claimed), the panel
+# prompt gains ONE context block when lettering is present, and the schema
+# grows strikes_or_weapons + sfx_text without touching existing fields.
+# ---------------------------------------------------------------------------
+
+def test_prompt_version_bumped_for_impact_fields():
+    # pu_v2 invalidates every pu_v1 resume record (INTENDED — chapters
+    # re-understand under the impact-aware prompt).
+    assert pu.PROMPT_VERSION == "pu_v2"
+
+
+def test_panel_schema_adds_impact_fields_backward_compatibly():
+    props = pu.PANEL_SCHEMA["properties"]
+    assert props["strikes_or_weapons"]["enum"] == ["none", "visible", "in_use"]
+    assert props["sfx_text"]["type"] == "STRING"
+    # existing required set unchanged — old consumers keep parsing
+    assert pu.PANEL_SCHEMA["required"] == [
+        "description", "action", "intensity", "panel_kind"]
+
+
+def test_build_payload_appends_impact_notice_only_when_regions():
+    panel = {"scene_file": "p5.jpg"}
+    base = pu.build_payload(panel, [])
+    assert "impact_sfx_notice" not in base     # byte-compatible when no signal
+    regions = [{"bbox": [10, 20, 64, 75], "area_frac": 0.006,
+                "mean_hue_deg": 356.0}]
+    p = pu.build_payload(panel, [], impact_regions=regions)
+    notice = p["impact_sfx_notice"]
+    assert "Large impact-style SFX lettering" in notice
+    assert "strike, stab, blow, or crash" in notice
+    assert "transcribe" in notice
+    assert "10" in notice and "75" in notice   # bbox summary is included
+
+
+def test_assemble_record_normalizes_strikes_and_sfx_text():
+    rec = pu.assemble_record("p1.jpg", {
+        "description": "x", "action": "y", "intensity": "calm",
+        "panel_kind": "story", "strikes_or_weapons": "IN_USE",
+        "sfx_text": " Puk "})
+    assert rec["strikes_or_weapons"] == "in_use"
+    assert rec["sfx_text"] == "Puk"
+    # missing / invalid enum -> safe defaults; parse failure carries them too
+    assert pu.assemble_record("p2.jpg", {})["strikes_or_weapons"] == "none"
+    assert pu.assemble_record("p2.jpg", {})["sfx_text"] == ""
+    assert pu.assemble_record(
+        "p3.jpg", {"strikes_or_weapons": "everywhere"}
+    )["strikes_or_weapons"] == "none"
+    bad = pu.assemble_record("p4.jpg", None)
+    assert bad["strikes_or_weapons"] == "none" and bad["sfx_text"] == ""
+
+
+def test_understand_panels_stamps_detector_owned_impact_sfx():
+    items = [{"scene_file": "p0.jpg", "scene_path": "/s/p0.jpg"},
+             {"scene_file": "p1.jpg", "scene_path": "/s/p1.jpg"}]
+    regions = {"/s/p1.jpg": [{"bbox": [1, 2, 30, 40], "area_frac": 0.01,
+                              "mean_hue_deg": 350.0}]}
+    payloads = {}
+
+    def stub(payload, image_path):
+        payloads[payload["scene_file"]] = payload
+        # the model CLAIMS an impact stamp — the detector's verdict must win
+        return {"description": "d", "action": "a", "intensity": "calm",
+                "impact_sfx": {"present": True, "regions": 9}}
+
+    out = pu.understand_panels(items, stub,
+                               impact_fn=lambda sp: regions.get(sp, []))
+    assert out[0]["impact_sfx"] == {"present": False, "regions": 0}
+    assert out[1]["impact_sfx"] == {"present": True, "regions": 1}
+    # the notice reaches ONLY the flagged panel's prompt
+    assert "impact_sfx_notice" not in payloads["p0.jpg"]
+    assert "impact_sfx_notice" in payloads["p1.jpg"]
+
+
+def test_default_impact_fn_is_fail_soft_on_missing_images():
+    # scene paths that don't exist (unit-test items) must never crash the
+    # loop — the default detector path returns [] and stamps absent.
+    items = [{"scene_file": "p0.jpg", "scene_path": "/nonexistent/p0.jpg"}]
+    out = pu.understand_panels(
+        items, lambda payload, image_path: {
+            "description": "d", "action": "a", "intensity": "calm"})
+    assert out[0]["impact_sfx"] == {"present": False, "regions": 0}

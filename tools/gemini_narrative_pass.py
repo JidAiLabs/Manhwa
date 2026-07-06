@@ -481,6 +481,16 @@ def _pack_group_payload(
                           if isinstance(it.get("subjects"), list) else [])),
             }
         )
+        # Eyes wave: the DETECTOR-stamped impact verdict (panel_understand)
+        # must reach the writer as an unmissable per-panel marker — OCR sees
+        # none of the painted SFX, so without this the writer under-reads a
+        # stab panel as calm. Keys exist ONLY when the signal does, keeping
+        # the payload byte-compatible for every unflagged panel.
+        if (understood.get("impact_sfx") or {}).get("present"):
+            scenes[-1]["impact_sfx"] = "[IMPACT SFX on panel]"
+        _sow = str(understood.get("strikes_or_weapons") or "").strip().lower()
+        if _sow and _sow != "none":
+            scenes[-1]["strikes_or_weapons"] = _sow
 
     return {
         "group_id": int(group.get("shot_id") or group.get("group_id") or 0),

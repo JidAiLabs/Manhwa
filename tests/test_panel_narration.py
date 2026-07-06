@@ -279,3 +279,51 @@ def test_bumped_num_ctx_fits_oversized_beats_prompt():
     assert gnp._bumped_num_ctx("connection refused", 8192, 2048) is None
     # already large enough -> no bump
     assert gnp._bumped_num_ctx(err, cur_ctx=16384, num_predict=2048, ctx_max=16384) is None
+
+
+# ---------------------------------------------------------------------------
+# Impact-SFX fusion (eyes wave): the detector-stamped signal must reach the
+# narration writer's input — a terse per-panel marker the writer cannot miss.
+# ---------------------------------------------------------------------------
+
+def test_pack_group_payload_carries_impact_marker():
+    group = {"shot_id": 9, "scene_files": ["a.jpg", "b.jpg"]}
+    vision = {"a.jpg": {"vision": {"labels": [], "objects": []}},
+              "b.jpg": {"vision": {"labels": [], "objects": []}}}
+    understood = {
+        "a.jpg": {"description": "A blade sinks into his side.",
+                  "action": "He stabs the man.",
+                  "impact_sfx": {"present": True, "regions": 2},
+                  "strikes_or_weapons": "in_use"},
+        "b.jpg": {"description": "They speak quietly.", "action": "He nods.",
+                  "impact_sfx": {"present": False, "regions": 0},
+                  "strikes_or_weapons": "none"},
+    }
+    scenes = gnp._pack_group_payload(group, vision, understood)["scenes_signals"]
+    assert scenes[0]["impact_sfx"] == "[IMPACT SFX on panel]"
+    assert scenes[0]["strikes_or_weapons"] == "in_use"
+    # byte-compatible when there is no signal: the keys simply do not exist
+    assert "impact_sfx" not in scenes[1]
+    assert "strikes_or_weapons" not in scenes[1]
+
+
+def test_pack_group_payload_weapon_marker_without_detector_signal():
+    # a model-claimed visible weapon travels even when the detector is silent
+    group = {"shot_id": 10, "scene_files": ["a.jpg"]}
+    vision = {"a.jpg": {"vision": {"labels": [], "objects": []}}}
+    understood = {"a.jpg": {"description": "He rests a hand on the hilt.",
+                            "action": "He waits.",
+                            "strikes_or_weapons": "visible"}}
+    scene = gnp._pack_group_payload(group, vision, understood)["scenes_signals"][0]
+    assert scene["strikes_or_weapons"] == "visible"
+    assert "impact_sfx" not in scene
+
+
+def test_pack_group_payload_legacy_understanding_unchanged():
+    # a pu_v1-era record (no impact fields at all) packs exactly as before
+    group = {"shot_id": 11, "scene_files": ["a.jpg"]}
+    vision = {"a.jpg": {"vision": {"labels": [], "objects": []}}}
+    understood = {"a.jpg": {"description": "The alley narrows.",
+                            "action": "He runs."}}
+    scene = gnp._pack_group_payload(group, vision, understood)["scenes_signals"][0]
+    assert "impact_sfx" not in scene and "strikes_or_weapons" not in scene
