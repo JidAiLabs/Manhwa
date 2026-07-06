@@ -475,6 +475,9 @@ def drop_cross_segment_near_identical_cuts(
     min_area_ratio: float = 0.7,
     exempt: Optional[set] = None,
     get_boxes=None,
+    get_raw_img=None,
+    get_raw_boxes=None,
+    on_recrop=None,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]],
            List[Tuple[str, str, str]]]:
     """Drop a SOURCE-REPEATED panel shown again across a segment boundary — the
@@ -504,7 +507,20 @@ def drop_cross_segment_near_identical_cuts(
     audio/duration untouched — so the now-consecutive same-image sole cuts fold
     into ONE continuous Ken-Burns pan downstream (merge_consecutive_same_image_cuts)
     with no held image and no re-cut. Returns (out, dropped, canonicalized) where
-    canonicalized is a list of (segment, from_file, to_file) for logging."""
+    canonicalized is a list of (segment, from_file, to_file) for logging.
+
+    MANUFACTURED-TWIN GUARD (*get_raw_img*/*get_raw_boxes*/*on_recrop*): the
+    pass compares the SHOWN images, and the cleaner can manufacture a twin out
+    of two DISTINCT panels by cropping one to the region they share (the
+    p000090/p000095 eye: crop ham 3, raw masked ham ~22-26 — canonicalizing
+    swapped p095's art away and ONE image held ~24s). So before the sole-cut
+    canonicalize, the RAW panels (*get_raw_img*, bubble-masked via
+    *get_raw_boxes*) must ALSO be twins (ham <= *ham_max*); when the crops
+    match but the raws don't, the cut is NOT canonicalized — *on_recrop*(seg,
+    file) is called instead so the caller re-writes that cut's clean image as
+    the FULL panel (the raw art is distinct; showing it whole is strictly
+    better than a twin crop or a 24s hold). Raw images unavailable -> the
+    guard stays out of the way (legacy canonicalize behavior)."""
     ex = exempt or set()
     gb = get_boxes or (lambda f: ())
     out = {k: list(v) for k, v in cuts_by_segment.items()}
@@ -546,6 +562,26 @@ def drop_cross_segment_near_identical_cuts(
                 # fold into ONE continuous Ken-Burns pan downstream
                 # (merge_consecutive_same_image_cuts). prev_file/prev_hash stay so
                 # a run of near-dup sole cuts all canonicalize to the first twin.
+                #
+                # ... but ONLY when the RAW panels are twins too. A crop-twin
+                # whose raws are distinct is the cleaner's manufacture (the
+                # p090/p095 eye band): canonicalizing it hides real art behind
+                # a ~24s single-image hold. Re-crop to the full panel instead.
+                if get_raw_img is not None:
+                    ra, rb = get_raw_img(prev_file), get_raw_img(f)
+                    if ra is not None and rb is not None:
+                        grb = get_raw_boxes or (lambda _f: ())
+                        raw_ham = (_dhash8_bgr(ra, grb(prev_file))
+                                   ^ _dhash8_bgr(rb, grb(f))).bit_count()
+                        if raw_ham > ham_max:
+                            print(f"[dedup-guard] {seg}: crop-twin but "
+                                  f"raw-distinct — re-cropped to full panel "
+                                  f"instead of canonicalize")
+                            if on_recrop is not None:
+                                on_recrop(seg, f)
+                            kept.append(c)
+                            prev_file, prev_hash = f, h
+                            continue
                 canonicalized.append((seg, f, prev_file))
                 c["file"] = prev_file
                 kept.append(c)
@@ -2681,9 +2717,16 @@ def main() -> int:
         tx1, ty1, _tx2, _ty2 = content_bbox(cl)
         return [(x1 - tx1, y1 - ty1, x2 - tx1, y2 - ty1)
                 for (x1, y1, x2, y2) in boxes]
+    # force_full_panel: cuts the manufactured-twin guard bounced off the
+    # canonicalize path (crop-twin, raw-distinct) — their clean image is
+    # written as the FULL cleaned panel below (no dead-box recrop, no split),
+    # so the distinct art ships instead of a twin crop / 24s hold.
+    force_full_panel: set = set()
     cuts_by_segment, nidrop, nicanon = drop_cross_segment_near_identical_cuts(
         cuts_by_segment, order, _shown_img,
-        exempt=system_files, get_boxes=_shown_boxes)
+        exempt=system_files, get_boxes=_shown_boxes,
+        get_raw_img=_img, get_raw_boxes=_boxes,
+        on_recrop=lambda seg, f: force_full_panel.add(f))
     for seg, f in nidrop:
         all_dropped.append(f)
         print(f"[ok] {seg}: cross-segment near-identical {f} dropped")
@@ -2737,6 +2780,14 @@ def main() -> int:
                     or _panel_kind(fname) == "system")   # sys cards are protected
         blanked = bool(boxes) or (not rich and not sysf
                                   and bool(word_boxes_by_file.get(fname)))
+        if fname in force_full_panel:
+            # manufactured-twin guard: the aggressive recrop turned this panel
+            # into a hash-twin of a DISTINCT neighbour — write it whole (border
+            # trim only, in _write_part) so its real art is what ships.
+            _write_part(fname, img, doc=rich, sys_panel=sysf, blanked=blanked)
+            print(f"[ok] {fname}: FULL-PANEL rewrite (dedup-guard) -> "
+                  f"{scene_dims[fname]['w']}x{scene_dims[fname]['h']}")
+            continue
         parts, pinfo = select_panel_crops(img, boxes, text_rich=rich,
                                           no_split=args.no_split)
         if pinfo.get("recropped"):

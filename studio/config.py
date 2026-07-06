@@ -78,6 +78,14 @@ class Config:
                                              # STUDIO_NARR_SEGMENTATION wins;
                                              # invalid values fall back to
                                              # "adaptive" with a warning.
+    max_same_image_hold_sec: float = 10.0   # [render] long_hold QA cap: one
+                                             # file shown continuously past
+                                             # this while STANDING IN for
+                                             # another beat's art (swapped/held
+                                             # panel) BLOCKS the chapter; a
+                                             # genuine own-panel hold is
+                                             # content-driven pacing and stays
+                                             # legal at any length.
     narration_sanitize: bool = True         # advertiser-safety pass over the
                                              # FINAL narration before TTS: the
                                              # scripted stage runs
@@ -160,6 +168,7 @@ def load(path: Path | None = None) -> Config:
     t = data.get("tts", {})
     tr = data.get("teaser", {})
     n = data.get("narration", {})
+    r = data.get("render", {})
     return Config(
         sites=sites,
         yolo_weights=(lambda _w: _w if _w.is_absolute()
@@ -185,6 +194,8 @@ def load(path: Path | None = None) -> Config:
         segmentation=_valid_segmentation(
             os.environ.get("STUDIO_NARR_SEGMENTATION")
             or n.get("segmentation", "adaptive")),
+        max_same_image_hold_sec=float(
+            r.get("max_same_image_hold_sec", 10.0) or 10.0),
         narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
                                      bool(m.get("narration_sanitize", True))),
         teaser_enabled=_env_bool("STUDIO_TEASER_ENABLED",

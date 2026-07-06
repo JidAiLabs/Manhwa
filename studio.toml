@@ -50,6 +50,13 @@ python = ".mlx_venv/bin/python"   # repo-relative -> resolves per host (Air/Mini
 kokoro_voice = "am_puck"   # used only when backend = "kokoro"
 speed = 1.05   # delivery tempo (ffmpeg atempo, pitch-preserved) — 1.05 = 5% snappier; transcript UNCHANGED
 
+[render]
+# long_hold QA cap: one file shown continuously past this many seconds while
+# STANDING IN for another beat's art (a swapped/held panel, e.g. the 24s
+# canonicalized eye) BLOCKS the chapter. A genuine own-panel hold is
+# content-driven pacing and stays legal at any length.
+max_same_image_hold_sec = 10.0
+
 [teaser]
 # bundle-level arc teaser: pick a high-stakes window from a bundle's chapters,
 # render a short teaser.mp4, and prepend it to the bundle concat.

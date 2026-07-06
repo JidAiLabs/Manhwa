@@ -1814,17 +1814,17 @@ def test_protect_narrated_from_junk_also_protects_system_files():
     assert junk is out                           # mutates in place
 
 
-# ---- Track B: shown-panel twin INVARIANT (final pass) ------------------------
-# Regression fixtures: REAL Nano ch1 panels (downscaled, tests/fixtures/dedup)
-# pinning the forensically verified production escapes (2026-07-06):
+# ---- Tracks B+C: shown-panel twin INVARIANT + manufactured-twin guard --------
+# Regression fixtures: 4 REAL Nano ch1 panels (downscaled, tests/fixtures/dedup)
+# pinning the two forensically verified production escapes (2026-07-06):
 #   D3 p000054/p000055 — consecutive artist "echo" panels; the second's dialogue
 #     is a tail-substring of the first's. Both own narration -> protect_files
 #     shielded them from every per-segment dedup, and the one narration-overriding
-#     pass bailed at its min_area_ratio gate (0.598 < 0.7 on these fixtures)
-#     before the bubble-masked hashing ever ran — BOTH panels shipped on screen.
+#     pass bailed at its min_area_ratio gate (0.560 < 0.7) before hashing.
 #   D4 p000090/p000095 — DISTINCT panels (raw masked ham ~22) whose CLEANED crops
-#     became hash-twins; pinned by the Track C canonicalize-guard tests below.
-# Bubble boxes were measured with the production ogkalu detector ON the
+#     became hash-twins (eye band, ham <= 8) -> the sole-cut canonicalize swapped
+#     p095 to p000090 and the merge held ONE image ~24s; p095's art never shown.
+# Bubble boxes below were measured with the production ogkalu detector ON the
 # downscaled fixtures (hardcoded so the tests stay hermetic — no model download).
 
 _FIXDIR = Path(__file__).resolve().parent / "fixtures" / "dedup"
@@ -1927,3 +1927,46 @@ def test_dedup_invariant_leaves_distinct_panels_alone():
     assert folds == []
     assert [c["file"] for it in out["timeline"] for c in it["cuts"]] == \
         ["a.jpg", "b.jpg", "p000090.jpg", "p000095.jpg"]
+
+
+def test_canonicalize_requires_raw_twins():
+    # D4: the cleaner cropped p000095 to its eye band -> the SHOWN crops are
+    # hash-twins of p000090 (measured ham <= 8) though the RAW panels are
+    # distinct (masked ham ~22). Canonicalizing swaps p095's art away and holds
+    # ONE image ~24s. The guard must require the RAWS to also be twins; when
+    # they are not, take the re-crop path (show p095 whole) instead.
+    raw90, raw95 = _fiximg("p000090.jpg"), _fiximg("p000095.jpg")
+    crop95 = raw95[10:260]        # the manufactured eye-band crop
+    shown = {"p000090.jpg": raw90, "p000095.jpg": crop95}
+    raws = {"p000090.jpg": raw90, "p000095.jpg": raw95}
+    # preconditions pinned from production forensics
+    assert (rp._dhash8_bgr(raw90) ^ rp._dhash8_bgr(crop95)).bit_count() <= 8
+    assert (rp._dhash8_bgr(raw90) ^ rp._dhash8_bgr(raw95)).bit_count() > 8
+    cbs = {"g0019_p00": [{"file": "p000090.jpg", "start": 0.0, "dur": 12.0}],
+           "g0020_p01": [{"file": "p000095.jpg", "start": 0.0, "dur": 12.0}]}
+    recropped = []
+    out, dropped, canon = rp.drop_cross_segment_near_identical_cuts(
+        cbs, ["g0019_p00", "g0020_p01"], lambda f: shown.get(f),
+        get_raw_img=lambda f: raws.get(f),
+        get_raw_boxes=lambda f: _FIX_BOXES.get(f, []),
+        on_recrop=lambda seg, f: recropped.append((seg, f)))
+    assert canon == []                            # NEVER canonicalize raw-distinct
+    assert dropped == []                          # sole cut: nothing dropped
+    assert [c["file"] for c in out["g0020_p01"]] == ["p000095.jpg"]  # own art kept
+    assert recropped == [("g0020_p01", "p000095.jpg")]   # re-crop path taken
+
+
+def test_canonicalize_still_folds_true_raw_twins():
+    # counterpart: when the raws REALLY are twins (a source-repeated panel), the
+    # sole-cut canonicalize must keep working exactly as before the guard.
+    imgs = {"eye0.jpg": _hramp(base=0), "eye1.jpg": _hramp(base=20)}
+    cbs = {"g17": [{"file": "eye0.jpg", "start": 0.0, "dur": 6.0}],
+           "g18": [{"file": "eye1.jpg", "start": 0.0, "dur": 6.0}]}
+    recropped = []
+    out, dropped, canon = rp.drop_cross_segment_near_identical_cuts(
+        cbs, ["g17", "g18"], lambda f: imgs.get(f),
+        get_raw_img=lambda f: imgs.get(f),
+        on_recrop=lambda seg, f: recropped.append((seg, f)))
+    assert canon == [("g18", "eye1.jpg", "eye0.jpg")]
+    assert recropped == [] and dropped == []
+    assert [c["file"] for c in out["g18"]] == ["eye0.jpg"]

@@ -387,6 +387,71 @@ def near_dup_residual_flags(seq: Sequence[Dict[str, Any]],
     return flags
 
 
+def dup_shown_flags(seq: Sequence[Dict[str, Any]],
+                    get_raw_img,
+                    get_raw_boxes,
+                    get_ocr,
+                    *,
+                    is_exempt=None,
+                    window: int = 8,
+                    ham_max: int = 8,
+                    ham_max_contained: int = 14) -> List[Dict[str, Any]]:
+    """BLOCKING tripwire for the shown-twin INVARIANT: no two shown panels may
+    be masked-raw twins. Uses the exact predicate render_prep enforces with
+    (`rp.twin_verdict` over `rp._dhash8_bgr` of the RAW `scenes/` panels,
+    bubbles masked) so enforcement and QA cannot drift — render_prep's final
+    invariant pass folds every such pair, making this flag never fire in
+    practice; when a FUTURE gate/bypass ships a twin pair anyway, this blocks
+    the chapter instead of shipping an on-screen duplicate (the p054/p055 echo
+    pair escaped every per-pass gate and shipped silently).
+
+    Compares DISTINCT files among shown cuts within a sliding *window* of
+    shown cuts (mirrors the invariant pass; a deliberate far-apart flashback
+    callback is out of window). A same-file pair is never a dup here — holds
+    and capped repeats are deliberate and governed by held_repeat/long_hold.
+    *is_exempt* files (system/doc — shared UI frames under different text) and
+    files with no raw scene image (split halves) are never compared. One flag
+    per offending pair."""
+    exempt = is_exempt or (lambda f: False)
+    hashes: Dict[str, Optional[int]] = {}
+
+    def _h(f: str) -> Optional[int]:
+        if f not in hashes:
+            img = get_raw_img(f)
+            hashes[f] = (None if img is None
+                         else rp._dhash8_bgr(img, get_raw_boxes(f)))
+        return hashes[f]
+
+    ent = [c for c in seq if not c.get("branding")]
+    flags: List[Dict[str, Any]] = []
+    seen_pairs: set = set()
+    n = len(ent)
+    for j in range(n):
+        fj = str(ent[j].get("file") or "")
+        if not fj or exempt(fj) or _h(fj) is None:
+            continue
+        for i in range(max(0, j - window), j):
+            fi = str(ent[i].get("file") or "")
+            if not fi or fi == fj or exempt(fi) or _h(fi) is None:
+                continue
+            ham = (_h(fi) ^ _h(fj)).bit_count()      # type: ignore[operator]
+            if not rp.twin_verdict(ham, get_ocr(fi), get_ocr(fj),
+                                   ham_max=ham_max,
+                                   ham_max_contained=ham_max_contained):
+                continue
+            key = tuple(sorted((fi, fj)))
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            flags.append(_flag(
+                "dup_shown", ERROR,
+                f"shown panel is a masked-raw twin of {fi} "
+                f"(in {ent[i].get('segment_id')}, masked ham={ham}) — a "
+                "duplicate bypassed the render_prep dedup invariant",
+                scene=fj, segment_id=str(ent[j].get("segment_id") or "")))
+    return flags
+
+
 def vision_flags(parent: str, vitem: Dict[str, Any], *,
                  dims_entry: Optional[Dict[str, Any]],
                  series_title: Optional[str],
@@ -984,6 +1049,69 @@ def held_repeat_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
                 f"panel {seq[i][0]} shown in {run} consecutive cuts — must be ONE "
                 "static hold (no restarting pan); >=5 means panels lost upstream",
                 scene=seq[i][0], segment_id=seq[i][1]))
+        i = j + 1
+    return flags
+
+
+def long_hold_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any], *,
+                    max_hold_sec: float = 10.0) -> List[Dict[str, Any]]:
+    """One FILE on screen continuously for > *max_hold_sec*
+    ([render].max_same_image_hold_sec) while STANDING IN for art it does not
+    own — the p000090 eye held ~24s because p000095 was canonicalized away and
+    the narration for BOTH segments played over one image. A stand-in cut is
+    the condition panel_substituted already detects: its segment's beat
+    intends none of the shown art (canonicalized swap / held neighbour). A
+    long single-image span on a panel that GENUINELY owns that narration (its
+    file is among the beat's scene_files, no substitution) is content-driven
+    pacing by design and stays legal at any length. BLOCKING: heal re-writes
+    narration, it cannot restore a swapped-away panel — the chapter must go
+    back through prepare."""
+    bfiles: Dict[int, set] = {}
+    for b in (beats_obj or {}).get("beats") or []:
+        try:
+            gid = int(b.get("group_id"))
+        except (TypeError, ValueError):
+            continue
+        bfiles[gid] = {str(f) for f in (b.get("scene_files") or [])}
+
+    # flatten to (file, dur, segment, standin) per shown cut; None breaks runs
+    seq: List[Optional[Tuple[str, float, str, bool]]] = []
+    for it in (plan or {}).get("timeline") or []:
+        if it.get("branding"):
+            seq.append(None)
+            continue
+        seg = str(it.get("segment_id") or "")
+        m = _SEG_GROUP_RE.match(seg)
+        intended = bfiles.get(int(m.group(1))) if m else None
+        for c in it.get("cuts") or []:
+            f = str(c.get("file") or "")
+            if not f or c.get("file2") or c.get("layout"):
+                seq.append(None)                 # split layouts break the run
+                continue
+            standin = bool(intended) and _base_scene(f) not in intended
+            seq.append((f, float(c.get("dur") or 0.0), seg, standin))
+
+    flags: List[Dict[str, Any]] = []
+    i, n = 0, len(seq)
+    while i < n:
+        if seq[i] is None:
+            i += 1
+            continue
+        j = i
+        while (j + 1 < n and seq[j + 1] is not None
+               and seq[j + 1][0] == seq[i][0]):
+            j += 1
+        run = [r for r in seq[i:j + 1] if r is not None]
+        total = sum(r[1] for r in run)
+        if total > max_hold_sec and any(r[3] for r in run):
+            first_sub = next(r for r in run if r[3])
+            flags.append(_flag(
+                "long_hold", ERROR,
+                f"panel {run[0][0]} held on screen {total:.1f}s (> "
+                f"{max_hold_sec:.1f}s cap) while standing in for "
+                f"{first_sub[2]}'s intended art — a swapped/held stand-in, "
+                "not content-driven pacing",
+                scene=run[0][0], segment_id=run[0][2]))
         i = j + 1
     return flags
 
@@ -1713,6 +1841,10 @@ def main() -> int:
                     help="Gemma vision-judge: narration vs shown panel per "
                          "segment (WARN-level)")
     ap.add_argument("--semantic-model", default="gemma4:26b")
+    ap.add_argument("--max-hold-sec", type=float, default=10.0,
+                    help="long_hold cap: one file shown continuously past this "
+                         "while standing in for another beat's art BLOCKS "
+                         "([render].max_same_image_hold_sec)")
     ap.add_argument("--semantic-heal", action="store_true",
                     help="run the grounding 'eyes' (grounding_weak flags that "
                          "feed auto-heal); off by default — opt-in via "
@@ -1803,6 +1935,8 @@ def main() -> int:
     flags.extend(montage_flags(plan))
     flags.extend(page_floor_flags(ep))
     flags.extend(held_repeat_flags(plan))
+    flags.extend(long_hold_flags(plan, beats_obj,
+                                 max_hold_sec=args.max_hold_sec))
     flags.extend(sfx_voiced_flags(script_obj))
     flags.extend(raw_caps_voiced_flags(script_obj))
     flags.extend(shot_description_flags(beats_obj))
@@ -1920,6 +2054,38 @@ def main() -> int:
 
     flags.extend(near_dup_residual_flags(cuts, _clean_img, _qa_boxes,
                                          is_exempt=_qa_exempt))
+
+    # shown-twin INVARIANT tripwire (BLOCKING): masked-raw hashing over the
+    # ORIGINAL scenes/ panels — the same rp.twin_verdict render_prep's final
+    # invariant pass enforces, so this only fires when a future bypass ships a
+    # twin pair the pass should have folded. Raw images/boxes (not the clean
+    # crops): crop geometry must not be able to hide or manufacture a twin.
+    _rawc: Dict[str, Any] = {}
+
+    def _raw_img(f: str):
+        if f not in _rawc:
+            _rawc[f] = cv2.imread(os.path.join(scenes_dir, f))
+        return _rawc[f]
+
+    _rawbx: Dict[str, List[Tuple[int, int, int, int]]] = {}
+
+    def _raw_boxes(f: str) -> List[Tuple[int, int, int, int]]:
+        if f not in _rawbx:
+            img = _raw_img(f)
+            if detector is None or img is None:
+                _rawbx[f] = []
+            else:
+                _rawbx[f] = [(int(x1), int(y1), int(x2), int(y2))
+                             for (x1, y1, x2, y2, _s) in detector.detect(
+                                 img, imgsz=1024, conf=args.bubble_conf)]
+        return _rawbx[f]
+
+    def _raw_ocr(f: str) -> str:
+        vit = vitems.get(parent_scene(f)) or vitems.get(f) or {}
+        return str(vit.get("ocr_clean") or "")
+
+    flags.extend(dup_shown_flags(cuts, _raw_img, _raw_boxes, _raw_ocr,
+                                 is_exempt=_qa_exempt))
 
     # vision-level checks once per shown parent scene
     seen_parents: set = set()

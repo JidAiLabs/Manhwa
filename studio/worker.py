@@ -232,6 +232,15 @@ _CRITICAL_QA_CODES = {
     # prep_qa emits this when the TTS/render pipeline itself failed a clip (a
     # later task wires the emitter) — a chapter can't ship without its audio.
     "audio_failed",
+    # shown-twin INVARIANT tripwire: two shown panels are masked-raw twins —
+    # a duplicate bypassed render_prep's final fold pass. Heal can't fix a
+    # plan-level duplicate; block rather than ship the on-screen repeat.
+    "dup_shown",
+    # one file held past [render].max_same_image_hold_sec while STANDING IN
+    # for another beat's art (the 24s canonicalized eye) — heal re-writes
+    # narration, it can't restore a swapped-away panel. A genuine own-panel
+    # long hold (content-driven pacing) never carries this code.
+    "long_hold",
 }
 # DELIBERATELY NOT critical: "visual_loop". It looks like montage_degenerate's
 # sibling, but render_prep.cap_repeats_with_holds caps every NON-exempt panel at
@@ -405,6 +414,7 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
                "--episode-dir", str(ep), "--series-title", title]
     from studio.config import load as _load_cfg
     cfg = _load_cfg()
+    qa_args += ["--max-hold-sec", str(cfg.max_same_image_hold_sec)]
     if semantic:
         qa_args.append("--semantic")
     if cfg.semantic_heal:
@@ -1011,9 +1021,12 @@ def _h_qa_scan(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     title = _series_title(con, ch["series_id"])
     ep = Path(ch["ep_dir"] or "")
     started_at = time.time()
+    from studio.config import load as _load_cfg
     rc = _stream([PY, str(REPO / "tools" / "prep_qa.py"),
                   "--episode-dir", str(ep),
-                  "--series-title", title], log)
+                  "--series-title", title,
+                  "--max-hold-sec",
+                  str(_load_cfg().max_same_image_hold_sec)], log)
     verdict = _qa_verdict(ep, started_at=started_at)
     plan_sha = _stamp_plan_sha(ep, verdict)
     con.execute(

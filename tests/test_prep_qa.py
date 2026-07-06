@@ -1531,3 +1531,111 @@ def test_flash_cut_threshold_is_coupled_to_two_seconds():
     plan = _plan([_item("g0001_p01", ["p.jpg"], dur=1.5)])
     flags = pq.plan_flags(plan, clean_files={"p.jpg"}, audio_exists=lambda p: True)
     assert any(f["code"] == "flash_cut" for f in flags)
+
+
+# ---- Tracks B+C: dup_shown blocking tripwire + long_hold cap ------------------
+# dup_shown: the BLOCKING QA mirror of render_prep's shown-twin invariant —
+# masked-RAW hashing (rp.twin_verdict, the SAME shared predicate) over shown
+# cuts, so any FUTURE bypass of the dedup ladder trips a blocking flag instead
+# of shipping a duplicate. long_hold: one file held continuously past the
+# [render].max_same_image_hold_sec cap AND standing in for art it doesn't own
+# (the p000090 24s eye) — a genuine own-panel long hold stays legal.
+
+def _twin_ramp(base=0, w=300, h=400):
+    """Two ramps at different brightness hash IDENTICAL under 8x8 dhash."""
+    row = np.linspace(0, 200, w).astype(np.uint8)
+    img = np.stack([np.tile(row, (h, 1))] * 3, axis=-1)
+    return np.clip(img.astype(int) + base, 0, 255).astype(np.uint8)
+
+
+def _vert_ramp(w=300, h=400):
+    col = np.linspace(0, 200, h).astype(np.uint8)
+    return np.stack([np.tile(col.reshape(-1, 1), (1, w))] * 3,
+                    axis=-1).astype(np.uint8)
+
+
+def test_dup_shown_blocking_flag():
+    # hand-built plan with two shown masked-twins that (hypothetically) slipped
+    # every render_prep pass -> prep_qa must emit a BLOCKING ERROR.
+    plan = {"timeline": [
+        {"segment_id": "g0001_p00", "tts_text": "a", "duration_sec": 4.0,
+         "cuts": [{"file": "twinA.jpg", "start": 0.0, "dur": 4.0}]},
+        {"segment_id": "g0002_p00", "tts_text": "b", "duration_sec": 4.0,
+         "cuts": [{"file": "twinB.jpg", "start": 0.0, "dur": 4.0}]},
+        {"segment_id": "g0003_p00", "tts_text": "c", "duration_sec": 4.0,
+         "cuts": [{"file": "other.jpg", "start": 0.0, "dur": 4.0}]},
+    ]}
+    raws = {"twinA.jpg": _twin_ramp(0), "twinB.jpg": _twin_ramp(20),
+            "other.jpg": _vert_ramp()}
+    fl = pq.dup_shown_flags(pq.iter_shown_cuts(plan),
+                            lambda f: raws.get(f),
+                            lambda f: [], lambda f: "")
+    dup = [f for f in fl if f["code"] == "dup_shown"]
+    assert dup and all(f["severity"] == pq.ERROR for f in dup)
+    assert any("twinB.jpg" == f["scene"] for f in dup)
+    # the distinct panel never flags; a HEALTHY plan is quiet
+    assert not any(f["scene"] == "other.jpg" for f in dup)
+    healthy = {"timeline": [
+        {"segment_id": "g1", "tts_text": "a", "duration_sec": 4.0,
+         "cuts": [{"file": "twinA.jpg", "start": 0.0, "dur": 4.0}]},
+        {"segment_id": "g2", "tts_text": "b", "duration_sec": 4.0,
+         "cuts": [{"file": "other.jpg", "start": 0.0, "dur": 4.0}]},
+    ]}
+    assert pq.dup_shown_flags(pq.iter_shown_cuts(healthy),
+                              lambda f: raws.get(f),
+                              lambda f: [], lambda f: "") == []
+    # a SAME-FILE pair (a deliberate hold / capped repeat) is never a dup here
+    held = {"timeline": [
+        {"segment_id": "g1", "tts_text": "a", "duration_sec": 4.0,
+         "cuts": [{"file": "twinA.jpg", "start": 0.0, "dur": 4.0}]},
+        {"segment_id": "g2", "tts_text": "b", "duration_sec": 4.0,
+         "cuts": [{"file": "twinA.jpg", "start": 0.0, "dur": 4.0}]},
+    ]}
+    assert pq.dup_shown_flags(pq.iter_shown_cuts(held),
+                              lambda f: raws.get(f),
+                              lambda f: [], lambda f: "") == []
+    # exempt (system/doc) panels are never compared
+    assert pq.dup_shown_flags(pq.iter_shown_cuts(plan),
+                              lambda f: raws.get(f),
+                              lambda f: [], lambda f: "",
+                              is_exempt=lambda f: True) == []
+    # the worker BLOCKS on it — this is the tripwire, not a cosmetic nit
+    from studio.worker import _CRITICAL_QA_CODES
+    assert "dup_shown" in _CRITICAL_QA_CODES
+
+
+def test_long_hold_blocks_substituted_only():
+    # D4 shape: p000090 held ~24s across two segments, the second of which
+    # intended DIFFERENT art (p000095 was canonicalized away) -> BLOCK.
+    plan = {"timeline": [
+        {"segment_id": "g0019_p00", "tts_text": "a", "duration_sec": 12.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 12.0}]},
+        {"segment_id": "g0020_p01", "tts_text": "b", "duration_sec": 12.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 12.0}]},
+    ]}
+    beats_sub = _beats([
+        {"group_id": 19, "scene_files": ["p000090.jpg"]},
+        {"group_id": 20, "scene_files": ["p000095.jpg"]},
+    ])
+    fl = pq.long_hold_flags(plan, beats_sub, max_hold_sec=10.0)
+    lh = [f for f in fl if f["code"] == "long_hold"]
+    assert lh and all(f["severity"] == pq.ERROR for f in lh)
+    assert lh[0]["scene"] == "p000090.jpg"
+    # the SAME 24s span on a panel that genuinely owns both segments' narration
+    # (no substitution) is content-driven pacing -> stays legal.
+    beats_own = _beats([
+        {"group_id": 19, "scene_files": ["p000090.jpg"]},
+        {"group_id": 20, "scene_files": ["p000090.jpg"]},
+    ])
+    assert pq.long_hold_flags(plan, beats_own, max_hold_sec=10.0) == []
+    # under the cap: quiet even when substituted
+    short = {"timeline": [
+        {"segment_id": "g0019_p00", "tts_text": "a", "duration_sec": 4.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 4.0}]},
+        {"segment_id": "g0020_p01", "tts_text": "b", "duration_sec": 4.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 4.0}]},
+    ]}
+    assert pq.long_hold_flags(short, beats_sub, max_hold_sec=10.0) == []
+    # blocking: heal can't fix a hold, so the worker must gate on it
+    from studio.worker import _CRITICAL_QA_CODES
+    assert "long_hold" in _CRITICAL_QA_CODES
