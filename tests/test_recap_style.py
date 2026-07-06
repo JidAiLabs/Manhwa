@@ -629,3 +629,93 @@ def test_is_shot_description_catches_montage_meta_filler():
         "In a blur of steel, our guy lunges forward with a desperate scream.",
     ]:
         assert not rs.is_shot_description(good), good
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-06 Nano ch1 vision-review classes B (display-format meta), C
+# (writer-truncated line) and D (camera-POV prose). Real lines verbatim.
+# ---------------------------------------------------------------------------
+
+def test_display_meta_lines_are_shot_descriptions():
+    # class B — the two REAL voiced lines (g0024_p13 / g0024_p15): the old
+    # montage-meta patterns missed the phrasing, so NO check fired
+    for bad in [
+        "The text is displayed as a standalone caption.",
+        "The text is displayed as a title or organizational name card.",
+        "A caption is shown over the artwork.",
+        "The chapter title appears as a banner.",
+        "Bold lettering is presented across the frame.",
+    ]:
+        assert rs.is_shot_description(bad), bad
+    # in-story senses of the same nouns must stay clean
+    for good in [
+        "He pulled a card from his sleeve and smiled.",
+        "The royal title passes to his brother.",
+        "She presented the medal to the victor.",
+        "His name appears on the assassination list.",
+        "A mechanical voice drones on, announcing that the 7th generation "
+        "nano machine activation has officially begun.",   # g0025_p00, correct
+    ]:
+        assert not rs.is_shot_description(good), good
+
+
+def test_camera_pov_lines_are_shot_descriptions():
+    # class D — the two REAL voiced lines (g0018_p22 / g0004_p08)
+    for bad in [
+        "An electrified hand reaches out toward the viewer.",
+        "The hooded figure in the foreground holds a sword ready for combat "
+        "while delivering a threat.",
+        "Dark shapes gather in the background.",
+    ]:
+        assert rs.is_shot_description(bad), bad
+    for good in [
+        "He reaches out toward the fallen prince.",
+        "The hooded figure holds a sword ready for combat while delivering "
+        "a threat.",
+        "She fades into the crowd without a sound.",
+    ]:
+        assert not rs.is_shot_description(good), good
+
+
+def test_truncated_real_line_is_fragment_and_amputates_cleanly():
+    # class C — the REAL g0011_p16 line: ends on a bare word, so the old
+    # fragment test (,;: / ellipsis / lowercase) never fired
+    line = "But there is no mercy to be found, only the"
+    assert not rs.ends_terminal(line)
+    assert rs.is_spoken_fragment(line)
+    # deterministic repair: amputate the dangling function-word stub after
+    # the last clause separator — every complete clause survives
+    assert rs.repair_spoken_line(line) == "But there is no mercy to be found."
+
+
+def test_ends_terminal_accepts_normal_line_shapes():
+    for ok in [
+        "The clearing goes silent.",
+        "Seriously, what even is that light?!",
+        "He can only mutter, 'Ancestor...?'",
+        "A pause hangs in the air…",
+        'He whispers, "It ends tonight."',
+    ]:
+        assert rs.ends_terminal(ok), ok
+        assert not rs.is_spoken_fragment(ok), ok
+
+
+def test_repair_closes_complete_clause_and_leaves_bare_stub():
+    # complete clause that just lost its period -> close it
+    assert (rs.repair_spoken_line("He grabs the rope, hauling himself up")
+            == "He grabs the rope, hauling himself up.")
+    # dangling function-word tail with NO separator to cut at -> unchanged
+    # (the truncated_line QA flag heals it with a real re-write)
+    assert (rs.repair_spoken_line("He turns toward the sound of")
+            == "He turns toward the sound of")
+
+
+def test_repair_spoken_fragments_amputates_truncated_segment_line():
+    beats = {"beats": [{"group_id": 11, "segments": [
+        {"span": ["p000052.jpg"],
+         "line": "But there is no mercy to be found, only the"},
+    ]}]}
+    assert rs.repair_spoken_fragments(beats) == 1
+    seg = beats["beats"][0]["segments"][0]
+    assert seg["line"] == "But there is no mercy to be found."
+    assert beats["beats"][0]["narration"] == "But there is no mercy to be found."

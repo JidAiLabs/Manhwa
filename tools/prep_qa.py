@@ -59,6 +59,7 @@ from manifest_freshness import verify_chapter as _verify_chapter_freshness
 from manifest_io import read_manifest
 from recap_style import (
     analyze_recap_style,
+    ends_terminal,
     is_shot_description,
     mentions_image_file,
     mentions_impact_marker,
@@ -921,6 +922,33 @@ def shot_description_flags(beats_obj: Any) -> List[Dict[str, Any]]:
                     "shot_description", ERROR,
                     f"narration names the shot/camera, not the story: {line[:80]!r} "
                     "— re-narrate what HAPPENS in the panel",
+                    scene=str((s["span"] or [""])[0]),
+                    segment_id=seg))
+    return flags
+
+
+def truncated_line_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """A voiced line that stops mid-sentence ("But there is no mercy to be
+    found, only the" — real Nano ch1 g0011_p16, 2026-07-06 review): the
+    writer truncated its final passage sentence, and no guard fired because
+    the line ended on a bare word, not a , ; or :. Writer-side nets (the
+    sentence rejoin in segments_from_sentences + the fragment repair's
+    amputation) stop it at source; this is the QA TRIPWIRE so any dangle
+    that reaches a manifest is an ERROR the auto-heal re-narrates.
+    Deterministic: terminal punctuation via the same recap_style authority
+    the repair uses."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            if line and not ends_terminal(line):
+                flags.append(_flag(
+                    "truncated_line", ERROR,
+                    f"narration stops mid-sentence: {line[:80]!r} — the "
+                    "thought never ends; finish it or re-narrate the group",
                     scene=str((s["span"] or [""])[0]),
                     segment_id=seg))
     return flags
@@ -2116,6 +2144,7 @@ def main() -> int:
     flags.extend(sfx_voiced_flags(script_obj))
     flags.extend(raw_caps_voiced_flags(script_obj))
     flags.extend(shot_description_flags(beats_obj))
+    flags.extend(truncated_line_flags(beats_obj))
     flags.extend(filename_in_narration_flags(beats_obj))
     flags.extend(impact_marker_leak_flags(beats_obj))
     flags.extend(story_flags(plan, beats_obj, vitems))

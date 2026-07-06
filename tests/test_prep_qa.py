@@ -1708,3 +1708,48 @@ def test_long_hold_per_cut_standin_mixed_segment():
     sub = [f for f in pq.story_flags(plan, beats, {})
            if f["code"] == "panel_substituted"]
     assert sub == []
+
+
+def test_truncated_line_flags_mid_sentence_stop_as_healable_error():
+    # 2026-07-06 review class C tripwire — the REAL g0011_p16 line verbatim
+    beats = {"beats": [{"group_id": 11, "segments": [
+        {"span": ["p000052.jpg"],
+         "line": "But there is no mercy to be found, only the"},
+        {"span": ["p000053.jpg"], "line": "The clearing goes silent."},
+    ]}]}
+    fl = pq.truncated_line_flags(beats)
+    assert [f["code"] for f in fl] == ["truncated_line"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0011"
+    assert fl[0]["scene"] == "p000052.jpg"
+
+
+def test_truncated_line_flags_quiet_on_terminal_lines():
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["a.jpg"], "line": "Seriously, what even is that light?!"},
+        {"span": ["b.jpg"], "line": "He can only mutter, 'Ancestor...?'"},
+        {"span": ["c.jpg"], "line": "A pause hangs in the air…"},
+    ]}]}
+    assert pq.truncated_line_flags(beats) == []
+    from tools.narration_heal import HEALABLE
+    assert "truncated_line" in HEALABLE
+    import studio.worker as worker
+    assert "truncated_line" not in worker._CRITICAL_QA_CODES
+
+
+def test_display_meta_and_camera_pov_fire_shot_description_flags():
+    # 2026-07-06 review classes B + D reach the healable ERROR through the
+    # same single-authority detector
+    beats = {"beats": [{"group_id": 24, "segments": [
+        {"span": ["p000109.jpg"],
+         "line": "The text is displayed as a standalone caption."},
+        {"span": ["p000111.jpg"],
+         "line": "The text is displayed as a title or organizational name "
+                 "card."},
+    ]}, {"group_id": 18, "segments": [
+        {"span": ["p000087.jpg"],
+         "line": "An electrified hand reaches out toward the viewer."},
+    ]}]}
+    fl = pq.shot_description_flags(beats)
+    assert [f["segment_id"] for f in fl] == ["g0024", "g0024", "g0018"]
+    assert all(f["code"] == "shot_description" for f in fl)

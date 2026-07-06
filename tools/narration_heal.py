@@ -45,6 +45,9 @@ HEALABLE = {
     # per-span writing, which is the fix. NOT in the worker blocking set yet
     # (first run measures precision).
     "narration_offset",
+    # a voiced line stops mid-sentence ("...no mercy to be found, only the")
+    # — a writer-truncated final sentence; a re-roll writes the full thought.
+    "truncated_line",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -70,6 +73,10 @@ def _note_for(code: str, detail: str) -> str:
                 "'the screen/chapter shows'.")
     if code == "fragment_dangle":
         return "The narration is a dangling fragment — make it a complete sentence."
+    if code == "truncated_line":
+        return ("This line STOPS MID-SENTENCE — the thought never ends. "
+                "Re-narrate it as a complete sentence that finishes the "
+                "thought and ends with terminal punctuation.")
     if code == "shot_description":
         return ("This line describes the artwork or a visual effect (motion blur, "
                 "speed lines, 'is depicted') instead of the story — re-narrate the "

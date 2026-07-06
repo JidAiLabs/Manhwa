@@ -41,6 +41,7 @@ from niche_modules import register_block  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     dedupe_consecutive_panel_lines,
+    ends_terminal,
     is_shot_description,
     mentions_image_file,
     mentions_impact_marker,
@@ -1104,6 +1105,26 @@ def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
             (sys_tags if is_sys[j] else story_tags).add(j)
         sents.append({"text": text, "tags": sorted(story_tags),
                       "sys": sorted(sys_tags)})
+    # sentence-integrity rejoin (2026-07-06, class C): a "sentence" the model
+    # split mid-thought (no terminal punctuation) is HALF a sentence — fold
+    # the next one back into it (text joined, tags unioned) so no derived
+    # line can dangle mid-clause. A dangling FINAL sentence has no neighbor
+    # to rejoin; the fragment net (repair_spoken_fragments) amputates its
+    # stub and the truncated_line QA flag heals what survives.
+    rejoined: List[Dict[str, Any]] = []
+    for s in sents:
+        pure_sys = not s["tags"] and len(s["sys"]) == 1
+        # never fold a system card's OWN line into a dangling predecessor —
+        # the card would lose its dedicated line to a pad
+        if (rejoined and not ends_terminal(rejoined[-1]["text"])
+                and not pure_sys):
+            prev = rejoined[-1]
+            prev["text"] = (prev["text"] + " " + s["text"]).strip()
+            prev["tags"] = sorted(set(prev["tags"]) | set(s["tags"]))
+            prev["sys"] = sorted(set(prev["sys"]) | set(s["sys"]))
+        else:
+            rejoined.append(s)
+    sents = rejoined
     if not sents:
         return None
 

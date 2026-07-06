@@ -213,15 +213,57 @@ _MONTAGE_META_RE = re.compile(
 )
 
 
+# DISPLAY-FORMAT meta: a line that narrates how TEXT IS PRESENTED on the panel
+# instead of the story — "The text is displayed as a standalone caption.",
+# "...as a title or organizational name card." (real Nano ch1 g0024_p13/_p15,
+# 2026-07-06 vision review; the montage-meta patterns above missed the
+# phrasing, so NO check fired and the lines were voiced). These are
+# understanding descriptions of system/text cards: the family gates the pad
+# ladder + writer input AND fires the shot_description ERROR via
+# is_shot_description below. "appears as a" is scoped to the display-noun
+# family on either side — a story line like "the stranger appears as a
+# silhouette" or "he pulled a card from his sleeve" must never fire.
+_DISPLAY_META_RE = re.compile(
+    r"\b(?:text|caption|card|title|lettering|logo|wordmark)s?\s+"
+    r"(?:is\s+|are\s+)?(?:displayed|shown|presented|rendered)\b"
+    r"|\bstandalone\s+caption\b"
+    r"|\borganizational\s+name\s*card\b"
+    r"|\b(?:text|caption|card|title|lettering|logo)s?\s+appears?\s+as\s+a\b"
+    r"|\bappears?\s+as\s+a\s+(?:standalone\s+)?"
+    r"(?:caption|card|title|text|logo|graphic|banner)\b",
+    re.I,
+)
+
+
+# CAMERA-POV prose: composition language read aloud — the picture's spatial
+# staging relative to the LENS, never a story fact ("An electrified hand
+# reaches out toward the viewer.", "The hooded figure in the foreground holds
+# a sword...", real Nano ch1 g0018_p22 / g0004_p08). Word-boundary + case-
+# insensitive; deliberately simple per the review (rare class, heal-target,
+# non-blocking) — a figurative "in the background of his mind" false-positive
+# costs one re-narration, not a chapter.
+_CAMERA_POV_RE = re.compile(
+    r"\btoward the viewer\b"
+    r"|\bin the foreground\b"
+    r"|\bin the background\b",
+    re.I,
+)
+
+
 def is_shot_description(text: str) -> bool:
     """True when a narration line names the shot/camera/panel/frame ('A close-up
     shot shows...'), narrates the MEDIUM itself ('the camera follows...', 'a
-    series of connected shots'), OR describes the ARTWORK'S RENDERING / a visual
+    series of connected shots'), describes the ARTWORK'S RENDERING / a visual
     effect ('motion blur', 'speed lines', '...is depicted', a weapon 'swings
-    through the air') instead of narrating the story. Series-agnostic."""
+    through the air'), narrates a TEXT ELEMENT'S PRESENTATION ('the text is
+    displayed as a standalone caption'), OR reads composition/POV staging
+    aloud ('toward the viewer', 'in the foreground') instead of narrating the
+    story. Series-agnostic."""
     clean = _TAG_RE.sub("", str(text or ""))
     return bool(_SHOT_DESC_RE.search(clean) or _EFFECT_DESC_RE.search(clean)
-                or _MONTAGE_META_RE.search(clean))
+                or _MONTAGE_META_RE.search(clean)
+                or _DISPLAY_META_RE.search(clean)
+                or _CAMERA_POV_RE.search(clean))
 
 
 # The prose-first writer receives scene_file names as sentence TAGS — which
@@ -267,12 +309,44 @@ def _words(text: str) -> List[str]:
     return _WORD_RE.findall(_TAG_RE.sub("", str(text or "")))
 
 
+# Terminal-punctuation machinery (2026-07-06 review, class C): the real
+# g0011_p16 line shipped as "But there is no mercy to be found, only the" —
+# a WRITER-truncated final sentence. It ends on a bare word, so the old
+# fragment test (trailing ,;: / leading ellipsis / lowercase start) never
+# fired and the dangle was voiced. A speakable clip must END the thought.
+_TERMINAL_CHARS = ".!?…"
+_TRAILING_CLOSERS = "\"'”’»)]}"
+# Grammar words a sentence can never END on — the signature of a truncated
+# tail ("...only the", "...the sound of"). Used to pick between amputating a
+# dangling tail vs simply closing a complete clause with a period.
+_FUNCTION_TAIL_WORDS = frozenset({
+    "a", "an", "the", "of", "to", "and", "or", "but", "nor", "with", "by",
+    "for", "in", "on", "at", "as", "into", "onto", "from", "than", "his",
+    "her", "their", "its", "my", "your", "our", "only", "so", "that",
+    "this", "these", "those", "is", "are", "was", "were", "be", "been",
+    "very", "such", "no", "any", "some", "toward", "towards", "while",
+    "when", "because", "though", "although", "if", "whose", "which", "who",
+})
+
+
+def ends_terminal(text: str) -> bool:
+    """True when the line ends a spoken thought: terminal punctuation
+    (.!?…), allowing trailing closing quotes/brackets after it."""
+    s = _TAG_RE.sub("", str(text or "")).strip()
+    while s and s[-1] in _TRAILING_CLOSERS:
+        s = s[:-1].rstrip()
+    return bool(s) and s[-1] in _TERMINAL_CHARS
+
+
 def is_spoken_fragment(text: str) -> bool:
     """True for a panel line that cannot stand as its own TTS clip."""
     s = _TAG_RE.sub("", str(text or "")).strip()
     if not s:
         return True
     if s.endswith((",", ";", ":")):
+        return True
+    if not ends_terminal(s):
+        # a mid-sentence dangle voiced as a clip — the g0011_p16 truncation
         return True
     if re.match(r"^(?:\.{2,}|…)\s*", s):
         return True
@@ -309,6 +383,20 @@ def repair_spoken_line(text: str) -> str:
         s = s[0].upper() + s[1:]
     if s.endswith((",", ";", ":")):
         s = s[:-1].rstrip() + "."
+    if s and not ends_terminal(s):
+        last = s.split()[-1].rstrip(_TRAILING_CLOSERS).lower()
+        if last in _FUNCTION_TAIL_WORDS:
+            # writer-truncated tail ("...to be found, only the"): amputate
+            # the dangling stub after the last clause separator — keeps
+            # every complete clause, adds no invented facts. With no
+            # separator to cut at, leave it: the truncated_line QA flag
+            # heals it with a real re-write instead.
+            m = re.match(r"^(.*[,;:—–])\s+\S+(?:\s+\S+){0,4}$", s)
+            if m and m.group(1).rstrip(",;:—– ").strip():
+                s = m.group(1).rstrip(",;:—– ").strip() + "."
+        else:
+            # a complete clause that just lost its final punctuation
+            s = s + "."
     return (tag + s).strip()
 
 

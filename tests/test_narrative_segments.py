@@ -1124,3 +1124,53 @@ def test_corrections_unvoiced_fallback_still_keeps_previous_lines(
     assert [s["span"] for s in beat["segments"]] == [
         ["p1.jpg", "p2.jpg"], ["p3.jpg"]]                # previous beat kept
     assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
+
+
+# ---------------------------------------------------------------------------
+# sentence-integrity rejoin (2026-07-06 review, class C): a model "sentence"
+# with no terminal punctuation is HALF a sentence — fold the next one back in
+# so no derived line can dangle mid-clause.
+# ---------------------------------------------------------------------------
+
+def test_prose_dangling_sentence_rejoins_with_the_next():
+    files = ["p1.jpg", "p2.jpg"]
+    kinds = {f: "story" for f in files}
+    segs = gnp.segments_from_sentences([
+        {"text": "But there is no mercy to be found, only the",
+         "panels": ["p1.jpg"]},
+        {"text": "cold certainty of the blade.", "panels": ["p2.jpg"]},
+    ], files, kinds)
+    assert segs == [{
+        "span": ["p1.jpg", "p2.jpg"],
+        "line": "But there is no mercy to be found, only the cold "
+                "certainty of the blade.",
+    }]
+
+
+def test_prose_dangler_never_steals_a_system_cards_line():
+    files = ["p1.jpg", "p2.jpg"]
+    kinds = {"p1.jpg": "story", "p2.jpg": "system"}
+    segs = gnp.segments_from_sentences([
+        {"text": "The mercy runs out, only the", "panels": ["p1.jpg"]},
+        {"text": "System activation begins now.", "panels": ["p2.jpg"]},
+    ], files, kinds)
+    # the card keeps its OWN line; the dangler stays (the fragment net
+    # amputates it downstream, and truncated_line QA nets any survivor)
+    assert segs == [
+        {"span": ["p1.jpg"], "line": "The mercy runs out, only the"},
+        {"span": ["p2.jpg"], "line": "System activation begins now."},
+    ]
+
+
+def test_grounded_pad_never_copies_display_meta_description():
+    # class B root: g0024_p13/_p15 voiced "The text is displayed as a
+    # standalone caption." — an understanding description of a text card
+    # copied verbatim by the pad ladder. The display-meta family now gates
+    # the ladder, which falls through to the named subjects.
+    u = {"p1.jpg": {
+        "description": "The text is displayed as a standalone caption.",
+        "action": "", "subjects": ["a glowing system card"], "setting": "",
+    }}
+    line = gnp._grounded_pad_line("p1.jpg", u)
+    assert "displayed" not in line and "caption" not in line
+    assert line == "a glowing system card"
