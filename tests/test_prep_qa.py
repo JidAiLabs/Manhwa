@@ -1169,6 +1169,23 @@ def test_audio_failed_flag_on_tts_failed_clip():
     assert pq.audio_flags(plan, _idx(("g0001_p00", "He runs."))) == []
 
 
+def test_audio_failed_flag_group_mode_bare_segment_id():
+    """Group-mode clips are keyed by the BARE group id (g0001, no _p## panel
+    suffix) — audio_flags's tts_failed loop must not assume the per-panel
+    g####_p## shape when flagging a synthesis failure."""
+    from narration_consistency import narration_sha
+    plan = {"source_tts_index": "tts/tts_index.json",      # voiced plan
+            "timeline": [_seg("g0001", "He runs.", ["a.jpg"])]}
+    idx = {"clips": [{"segment_id": "g0001",
+                      "text_sha": narration_sha("He runs."),
+                      "audio_file": "clips/g0001.wav",
+                      "tts_failed": True}]}
+    out = pq.audio_flags(plan, idx)
+    assert [f["code"] for f in out] == ["audio_failed"]
+    assert out[0]["segment_id"] == "g0001"
+    assert "g0001.wav" in out[0]["detail"]
+
+
 # ---- system_coverage_flags: stamped panel_kind="system" must be shown --------
 
 def _beats_with_scene_files(items):

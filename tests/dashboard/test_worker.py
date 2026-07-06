@@ -1353,3 +1353,184 @@ def test_run_sanitize_raises_on_real_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 1)
     with pytest.raises(RuntimeError):
         worker._run_sanitize(ep, open(tmp_path / "log.txt", "w"))
+
+
+# ---------------------------------------------------------------------------
+# Two-lane concurrency: the chapter lease must hold under REAL threads
+# ---------------------------------------------------------------------------
+
+def test_two_lanes_never_claim_same_chapter_concurrently(tmp_path):
+    """Two lane threads (gpu + tts), each with its own real sqlite3 connection
+    to the SAME db file, hammer claim_next in lock-step via Barriers (no
+    sleeps — deterministic). Each round: both threads attempt to claim at the
+    same instant (barrier #1); once BOTH claims have landed (barrier #2), the
+    'running' table is inspected directly for the invariant the chapter lease
+    exists to guarantee — no chapter_id ever has more than one running row —
+    THEN the claimed jobs are released (barrier #3) before the next round.
+    Checking between claim and finish (rather than bucketing by round) is
+    what actually catches an overlap; finishing immediately after claiming
+    would let a broken lease hide behind "already done by the time the other
+    thread got there"."""
+    import threading
+
+    db_path = tmp_path / "s.db"
+    con = connect(db_path)
+    for ch in (1, 2):
+        jobs.enqueue(con, "prepare", chapter_id=ch)      # gpu lane
+        jobs.enqueue(con, "voiceover", chapter_id=ch)    # tts lane
+    con.close()
+
+    rounds = 8             # comfortably more than the 4 jobs so misses still drain
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    claimed_ids: list = []
+    violations: list = []
+
+    def run(lane):
+        c = connect(db_path)
+        for _ in range(rounds):
+            barrier.wait(timeout=5)                      # 1: claim at the same instant
+            job = jobs.claim_next(c, lane=lane)
+            barrier.wait(timeout=5)                      # 2: both claims have landed
+            dupes = c.execute(
+                "SELECT chapter_id FROM job WHERE state='running' "
+                "GROUP BY chapter_id HAVING COUNT(*) > 1").fetchall()
+            with lock:
+                if dupes:
+                    violations.append(dupes)
+                if job:
+                    claimed_ids.append(job["id"])
+            if job:
+                jobs.finish(c, job["id"], ok=True)        # release the lease
+            barrier.wait(timeout=5)                       # 3: next round starts clean
+        c.close()
+
+    t1 = threading.Thread(target=run, args=("gpu",))
+    t2 = threading.Thread(target=run, args=("tts",))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert violations == [], f"chapter lease broken: {violations}"
+    # sanity: all 4 jobs were claimed exactly once combined (no double-claim,
+    # no lost job) -- a vacuous pass (nothing ever claimed) would not catch a
+    # broken lease.
+    assert sorted(claimed_ids) == sorted(set(claimed_ids))
+    assert len(claimed_ids) == 4
+
+
+# ---------------------------------------------------------------------------
+# requeue_orphans: reap must precede the requeue UPDATE (never let a fresh
+# retry and a still-alive old child write the same artifacts at once)
+# ---------------------------------------------------------------------------
+
+def test_orphan_reap_precedes_requeue_update(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    con.execute("UPDATE job SET state='running', pgid=777 WHERE id=?", (jid,))
+    con.commit()
+
+    order = []
+    monkeypatch.setattr(worker, "_reap_pgid",
+                        lambda pgid: order.append(("reap", pgid)) or True)
+
+    class _OrderSpy:
+        """Duck-typed connection wrapper: records WHEN the requeue UPDATE runs
+        relative to _reap_pgid, then delegates to the real connection."""
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **k):
+            if sql.strip().startswith("UPDATE job SET state='queued'"):
+                order.append(("requeue_update", None))
+            return self._real.execute(sql, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    worker.requeue_orphans(_OrderSpy(con))
+    assert [kind for kind, _ in order] == ["reap", "requeue_update"]
+
+
+# ---------------------------------------------------------------------------
+# Dispatch audit: _h_prepare must actually invoke timeline_planner.py (closes
+# the "deleted _plan() would still pass the suite" gap -- every other prepare
+# test stubs _stream with a blanket `lambda cmd, log, **kw: 0` and never
+# inspects `cmd`, so silently dropping the _plan() call would pass them all)
+# ---------------------------------------------------------------------------
+
+def test_h_prepare_dispatches_timeline_planner(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _seed_chapter(con, tmp_path)
+    calls = []
+
+    def fake_stream(cmd, log, **kw):
+        calls.append(cmd)
+        return 0
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_run_prep_and_qa", lambda c, ch, log, **kw: None)
+    monkeypatch.setattr(worker, "_heal_to_green", lambda c, ch, ep, log: None)
+    monkeypatch.setattr(worker, "_heal_visual_drops", lambda c, ch, ep, log: set())
+    monkeypatch.setattr(worker, "_qa_verdict", lambda ep, **kw: worker.QAVerdict(
+        ok=True, blocking=set(), codes=set(), report={"flags": []}, reason=""))
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+
+    dispatched = [" ".join(map(str, cmd)) for cmd in calls]
+    assert any("timeline_planner.py" in s for s in dispatched), dispatched
+
+
+# ---------------------------------------------------------------------------
+# Report-shape guard: _error_codes_from_report must never crash on a
+# well-formed-JSON-but-wrong-shape report (a top-level array, or non-list
+# flags) -- it should read as "nothing to flag", not blow up with AttributeError
+# ---------------------------------------------------------------------------
+
+def test_error_codes_from_report_rejects_non_dict_report():
+    assert worker._error_codes_from_report([1, 2, 3]) == set()
+    assert worker._error_codes_from_report("not even a list") == set()
+
+
+def test_error_codes_from_report_rejects_non_list_flags():
+    assert worker._error_codes_from_report({"flags": "oops"}) == set()
+
+
+def test_qa_verdict_survives_json_array_report_file(tmp_path):
+    """End-to-end: prep_qa.json on disk is a bare JSON array (valid JSON, wrong
+    top-level shape) -- _qa_verdict must not propagate the AttributeError
+    _error_codes_from_report used to raise on a non-dict report."""
+    import json
+    (tmp_path / "prep_qa.json").write_text(json.dumps([1, 2, 3]))
+    v = worker._qa_verdict(tmp_path, started_at=time.time())
+    assert v.codes == set()
+    assert v.blocking == set()
+
+
+# ---------------------------------------------------------------------------
+# _qa_verdict mtime boundary: mtime == started_at - 1.0 is NOT "< started_at
+# - 1.0" -- exactly at the boundary must pass; just below must block.
+# ---------------------------------------------------------------------------
+
+def test_qa_verdict_mtime_exactly_at_boundary_passes(tmp_path):
+    import json
+    import os
+    report = tmp_path / "prep_qa.json"
+    report.write_text(json.dumps({"flags": []}))
+    started_at = time.time()
+    boundary = started_at - 1.0
+    os.utime(report, (boundary, boundary))
+    v = worker._qa_verdict(tmp_path, started_at=started_at)
+    assert v.ok is True and v.report is not None
+
+
+def test_qa_verdict_mtime_just_below_boundary_blocks(tmp_path):
+    import json
+    import os
+    report = tmp_path / "prep_qa.json"
+    report.write_text(json.dumps({"flags": []}))
+    started_at = time.time()
+    just_below = started_at - 1.0 - 0.2
+    os.utime(report, (just_below, just_below))
+    v = worker._qa_verdict(tmp_path, started_at=started_at)
+    assert v.ok is False and v.blocking == {"qa_report_invalid"}

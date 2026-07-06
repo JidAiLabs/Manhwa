@@ -174,3 +174,22 @@ def test_input_sha_matches_hashlib(tmp_path):
     p = tmp_path / "f.json"
     p.write_bytes(b"hello world")
     assert mio.input_sha(p) == hashlib.sha1(b"hello world").hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# write_manifest: tmp-file cleanup when serialization itself fails
+# ---------------------------------------------------------------------------
+
+def test_write_cleans_tmp_on_serialize_failure(tmp_path):
+    """json.dump raising mid-write (a non-serializable value slipped into the
+    payload) must not leave a `.tmp.<pid>` file behind — the BaseException
+    handler removes it before re-raising."""
+    out_path = tmp_path / "manifest.beats.json"
+    try:
+        mio.write_manifest(out_path, {"beats": object()}, tool="t")
+        assert False, "expected a serialization TypeError"
+    except TypeError:
+        pass
+    assert not out_path.exists()
+    leftovers = [p.name for p in tmp_path.iterdir() if ".tmp." in p.name]
+    assert leftovers == [], f"tmp residue left behind: {leftovers}"

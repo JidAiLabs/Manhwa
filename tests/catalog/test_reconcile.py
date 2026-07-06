@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from studio.catalog import reconcile
 from studio.catalog.db import connect
 
@@ -331,3 +333,44 @@ def test_valid_caches_unchanged_file_skips_reparse(tmp_path, monkeypatch):
     assert reconcile._valid(str(ep), "manifest.beats.json") is True
     assert reconcile._valid(str(ep), "manifest.beats.json") is True
     assert calls["n"] == 1                     # second call hit the cache, no re-parse
+
+
+# ---- corrupt-marker matrix: 0-byte / truncated / valid, for BOTH roles a
+# marker plays -- the status-marker role (derive_status) and the
+# stage-artifact role (reconcile_chapter's stage_run pruning). _valid() backs
+# both, but only deletion (not corruption) had exercised the pruning role
+# before this. ----------------------------------------------------------------
+
+def _write_marker(path, kind):
+    if kind == "zero_byte":
+        path.write_bytes(b"")
+    elif kind == "truncated":
+        path.write_text('{"trunc')           # non-empty, unparseable JSON
+    else:
+        path.write_text(json.dumps({"ok": True}))
+
+
+@pytest.mark.parametrize("kind,counted", [
+    ("zero_byte", False), ("truncated", False), ("valid", True)])
+def test_status_marker_corruption_matrix(tmp_path, kind, counted):
+    """derive_status's per-marker read (status-marker role): a 0-byte or
+    truncated manifest.script.json must NOT promote status to 'scripted';
+    a valid one must."""
+    reconcile._VALID_CACHE.clear()
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    _write_marker(ep / "manifest.script.json", kind)
+    assert (reconcile.derive_status(str(ep)) == "scripted") is counted
+
+
+@pytest.mark.parametrize("kind,counted", [
+    ("zero_byte", False), ("truncated", False), ("valid", True)])
+def test_stage_artifact_corruption_matrix(tmp_path, kind, counted):
+    """reconcile_chapter's stage_run pruning (stage-artifact role): a 0-byte
+    or truncated prep_qa.json (the qa_scan stage-artifact) must prune the
+    qa_scan row exactly as a DELETED file would; a valid one must keep it."""
+    reconcile._VALID_CACHE.clear()
+    con, ep = _mk_chapter(tmp_path)
+    _write_marker(ep / "prep_qa.json", kind)
+    reconcile.reconcile_chapter(con, _ch(con))
+    assert ("qa_scan" in _stages(con)) is counted

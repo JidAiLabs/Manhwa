@@ -281,7 +281,16 @@ class QAVerdict:
 
 
 def _error_codes_from_report(report: dict) -> set:
-    return {f.get("code") for f in report.get("flags") or []
+    """{codes} of ERROR-severity flags. A well-formed-JSON-but-wrong-shape
+    report (a bare array, or a non-list `flags`) must read as "nothing to
+    flag", not crash with AttributeError — callers (_qa_verdict) need a
+    verdict object back, not an unhandled exception from a malformed report."""
+    if not isinstance(report, dict):
+        return set()
+    flags = report.get("flags")
+    if not isinstance(flags, list):
+        return set()
+    return {f.get("code") for f in flags
             if f.get("severity") == "ERROR"}
 
 
