@@ -244,3 +244,42 @@ def test_missing_arrays_section_is_skipped():
     call_fn = _stub_constant("They were intimate.")
     summ = nsp.sanitize_script(obj, seed="ch0001", call_fn=call_fn)
     assert summ.reframed == 1
+
+
+def test_atomic_script_rewrite_via_manifest_io(tmp_path):
+    """Verify that sanitize_script rewrite is atomic (no .tmp.* residue) and
+    preserves upstream provenance (_meta.inputs from script_expander)."""
+    # Build a script object with upstream _meta.inputs stamped by script_expander
+    upstream_inputs = {"manifest.beats.json": "abc123", "manifest.vision.json": "def456"}
+    obj = _script_with("The hunter walks into the gate at dawn.")
+    obj["_meta"] = {
+        "schema": 1,
+        "tool": "script_expander",
+        "written_at": "2026-07-06T00:00:00Z",
+        "inputs": upstream_inputs,
+    }
+
+    script_path = tmp_path / "manifest.script.json"
+    script_path.write_text(json.dumps(obj, ensure_ascii=False, indent=2))
+
+    # Run sanitize_script (deterministic layer, no model)
+    script_obj = json.loads(script_path.read_text())
+    summ = nsp.sanitize_script(script_obj, seed="ch0001", call_fn=None)
+
+    # Simulate the main() path: preserve inputs, write atomically
+    prior_inputs = (script_obj.get("_meta") or {}).get("inputs") or {}
+    nsp.write_manifest(script_path, script_obj, tool="narration_sanitize_pass",
+                       extra_meta={"inputs": prior_inputs} if prior_inputs else None)
+
+    # Verify no .tmp.* residue
+    tmp_files = list(tmp_path.glob("manifest.script.json.tmp.*"))
+    assert tmp_files == [], f"Found tmp residue: {tmp_files}"
+
+    # Verify the rewritten script is readable and has correct _meta
+    rewritten = json.loads(script_path.read_text())
+    assert rewritten["_meta"]["tool"] == "narration_sanitize_pass"
+    assert rewritten["_meta"]["schema"] == 1
+
+    # Verify upstream inputs are preserved
+    assert rewritten["_meta"]["inputs"] == upstream_inputs, \
+        f"Expected inputs {upstream_inputs}, got {rewritten['_meta'].get('inputs')}"

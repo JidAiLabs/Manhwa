@@ -268,8 +268,10 @@ def main() -> int:
 
     summary = sanitize_script(script_obj, seed=args.seed, call_fn=call_fn)
 
-    script_path.write_text(json.dumps(script_obj, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
+    # Preserve the upstream inputs stamped by script_expander, then write atomically.
+    prior_inputs = (script_obj.get("_meta") or {}).get("inputs") or {}
+    write_manifest(script_path, script_obj, tool="narration_sanitize_pass",
+                   extra_meta={"inputs": prior_inputs} if prior_inputs else None)
     marker = args.marker or str(script_path.with_name("manifest.sanitize.json"))
     write_marker(marker, summary, seed=args.seed, script_path=args.script)
 
