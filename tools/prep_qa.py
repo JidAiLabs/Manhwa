@@ -461,6 +461,83 @@ def dup_shown_flags(seq: Sequence[Dict[str, Any]],
     return flags
 
 
+def perceptual_echo_flags(seq: Sequence[Dict[str, Any]],
+                          get_clean_img,
+                          get_clean_boxes,
+                          get_raw_img,
+                          get_raw_boxes,
+                          *,
+                          is_exempt=None,
+                          window: int = 3,
+                          ham_max: int = 8) -> List[Dict[str, Any]]:
+    """V2 tripwire (WARN, measure-first — never blocking, never dropped): two
+    nearby shown cuts whose SHOWN CROPS are bubble-masked dhash twins (ham <=
+    *ham_max*) while their RAW panels are NOT (raw masked ham > *ham_max*).
+    The masked-RAW invariant (dup_shown) correctly treats them as distinct
+    panels — an artist zoom-echo (p000044 tight-re-crops p000043's lower
+    half) or a husk re-crop (p000095's art band == p000090) — but the viewer
+    reads the same picture twice. render_prep.ken_differentiate_echo_pairs is
+    the fix (distinct ken regions); this measures what shipped.
+
+    Pairs compared within a sliding *window* of shown cuts (|i-j| < window).
+    Same-file pairs (holds/ken-variety sub-cuts) never flag; *is_exempt*
+    files (system/doc — shared UI frames) and files without a raw scene image
+    (split halves — raw-distinctness unprovable) are skipped. One flag per
+    pair, carrying BOTH ham values."""
+    exempt = is_exempt or (lambda f: False)
+    ent = [c for c in seq if not c.get("branding")]
+    ch: Dict[str, Optional[int]] = {}
+    rh: Dict[str, Optional[int]] = {}
+
+    def _ch(f: str) -> Optional[int]:
+        if f not in ch:
+            img = get_clean_img(f)
+            ch[f] = (None if img is None
+                     else rp._dhash8_bgr(img, get_clean_boxes(f)))
+        return ch[f]
+
+    def _rh(f: str) -> Optional[int]:
+        if f not in rh:
+            img = get_raw_img(f)
+            rh[f] = (None if img is None
+                     else rp._dhash8_bgr(img, get_raw_boxes(f)))
+        return rh[f]
+
+    flags: List[Dict[str, Any]] = []
+    seen_pairs: set = set()
+    for j in range(len(ent)):
+        fj = str(ent[j].get("file") or "")
+        if not fj or exempt(fj):
+            continue
+        for i in range(max(0, j - (window - 1)), j):
+            fi = str(ent[i].get("file") or "")
+            if not fi or fi == fj or exempt(fi):
+                continue
+            key = tuple(sorted((fi, fj)))
+            if key in seen_pairs:
+                continue
+            if _ch(fi) is None or _ch(fj) is None:
+                continue
+            sham = (_ch(fi) ^ _ch(fj)).bit_count()   # type: ignore[operator]
+            if sham > ham_max:
+                continue
+            if _rh(fi) is None or _rh(fj) is None:
+                continue                # split half etc: raw unprovable
+            rham = (_rh(fi) ^ _rh(fj)).bit_count()   # type: ignore[operator]
+            if rham <= ham_max:
+                continue                # raw twins — dup_shown's (blocking) job
+            seen_pairs.add(key)
+            flags.append(_flag(
+                "perceptual_echo", WARN,
+                f"shown crop reads as the same picture as {fi} "
+                f"(in {ent[i].get('segment_id')}): shown-crop masked "
+                f"ham={sham} <= {ham_max} while the RAW panels are distinct "
+                f"(raw masked ham={rham}) — a zoom-echo/husk-crop echo; "
+                "ken differentiation should vary the pair",
+                scene=fj, segment_id=str(ent[j].get("segment_id") or "")))
+    return flags
+
+
 def vision_flags(parent: str, vitem: Dict[str, Any], *,
                  dims_entry: Optional[Dict[str, Any]],
                  series_title: Optional[str],
@@ -2349,6 +2426,15 @@ def main() -> int:
 
     flags.extend(dup_shown_flags(cuts, _raw_img, _raw_boxes, _raw_ocr,
                                  is_exempt=_qa_exempt))
+
+    # V2 echo net (WARN, measure-first): shown-crop twins whose RAWS are
+    # distinct — the zoom-echo / husk-crop class dup_shown correctly ignores
+    # but the viewer reads as a stutter. Same helpers as the checks above
+    # (clean-crop masked hashing / raw masked hashing), so QA and render_prep's
+    # ken differentiation measure the same thing.
+    flags.extend(perceptual_echo_flags(cuts, _clean_img, _qa_boxes,
+                                       _raw_img, _raw_boxes,
+                                       is_exempt=_qa_exempt))
 
     # vision-level checks once per shown parent scene
     seen_parents: set = set()

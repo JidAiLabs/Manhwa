@@ -1921,3 +1921,102 @@ def test_held_repeat_and_repeat_cut_exempt_ken_variety_subcuts():
     fl2 = pq.plan_flags(bare, clean_files={"p000095.jpg"},
                         audio_exists=lambda p: True)
     assert "repeat_cut" in [f["code"] for f in fl2]
+
+
+# ---- V2 echo net (2026-07 review): perceptual_echo WARN, measure-first -------
+# Shown-crop bubble-masked twins whose RAW panels are DISTINCT — the class the
+# masked-RAW invariant (dup_shown) correctly keeps as separate panels but a
+# viewer reads as the same picture twice. The p000090/p000095 eye-husk pair is
+# the incident: p000095's SHIPPED crop hash-twinned p000090 (production dhash
+# 3) while the raws measure masked ham 22. The fixture JPGs are downscaled q65
+# re-encodes, so the shipped crop is reconstructed from p000090's art region;
+# the RAW predicate runs on the real fixture panels.
+
+_ECHO_FIX = Path(__file__).resolve().parent / "fixtures" / "dedup"
+_P95_RAW_BOXES = [(155, 276, 389, 447)]     # p000095's blank cleaned bubble
+
+
+def _echo_imgs():
+    p90 = cv2.imread(str(_ECHO_FIX / "p000090.jpg"))
+    p95 = cv2.imread(str(_ECHO_FIX / "p000095.jpg"))
+    p54 = cv2.imread(str(_ECHO_FIX / "p000054.jpg"))
+    assert p90 is not None and p95 is not None and p54 is not None
+    return p90, p95, p54
+
+
+def _cut(seg, f, dur=4.0, branding=False):
+    return {"segment_id": seg, "file": f, "idx": 0, "dur": dur,
+            "branding": branding}
+
+
+def test_perceptual_echo_flags_p90_p95_pair_with_both_hams():
+    p90, p95, p54 = _echo_imgs()
+    crop95 = p90[5:225, 5:395]              # reconstructed shipped husk crop
+    cuts = [_cut("g0019_p00", "p000090.jpg"),
+            _cut("g0019_p01", "p000054.jpg"),     # distinct panel between
+            _cut("g0020_p01", "p000095.jpg")]
+    clean = {"p000090.jpg": p90, "p000054.jpg": p54, "p000095.jpg": crop95}
+    raw = {"p000090.jpg": p90, "p000054.jpg": p54, "p000095.jpg": p95}
+    rb = {"p000095.jpg": _P95_RAW_BOXES}
+    fl = pq.perceptual_echo_flags(cuts, lambda f: clean.get(f),
+                                  lambda f: [], lambda f: raw.get(f),
+                                  lambda f: rb.get(f, []))
+    assert [f["code"] for f in fl] == ["perceptual_echo"]
+    assert fl[0]["severity"] == pq.WARN                    # measure-first
+    assert fl[0]["scene"] == "p000095.jpg"
+    assert fl[0]["segment_id"] == "g0020_p01"
+    # both ham values in the detail (shown twin, raw distinct)
+    assert "ham=" in fl[0]["detail"] and "raw masked ham=" in fl[0]["detail"]
+    # genuinely different panels never flag (p54 pairs are silent)
+    assert not any(f["scene"] == "p000054.jpg" for f in fl)
+    # NOT blocking: never in the worker's critical gate
+    from studio.worker import _CRITICAL_QA_CODES
+    assert "perceptual_echo" not in _CRITICAL_QA_CODES
+
+
+def test_perceptual_echo_skips_raw_twins_window_exempt_and_rawless():
+    p90, p95, _p54 = _echo_imgs()
+    crop95 = p90[5:225, 5:395]
+    clean = {"p000090.jpg": p90, "p000095.jpg": crop95}
+    raw = {"p000090.jpg": p90, "p000095.jpg": p95}
+    rb = {"p000095.jpg": _P95_RAW_BOXES}
+    pair = [_cut("g1", "p000090.jpg"), _cut("g2", "p000095.jpg")]
+    # crop twins whose RAWS are ALSO twins: dup_shown's (blocking) domain
+    raw_twin = {"p000090.jpg": p90, "p000095.jpg": p90}
+    assert pq.perceptual_echo_flags(pair, lambda f: clean.get(f),
+                                    lambda f: [],
+                                    lambda f: raw_twin.get(f),
+                                    lambda f: []) == []
+    # out of the 3-cut window: a far-apart recurrence is out of scope
+    far = ([pair[0]]
+           + [_cut(f"x{i}", f"z{i}.jpg") for i in range(3)]
+           + [pair[1]])
+    zs = {f"z{i}.jpg": np.full((60, 60, 3), 10 * i + 5, np.uint8)
+          for i in range(3)}
+    assert pq.perceptual_echo_flags(far,
+                                    lambda f: clean.get(f) if f in clean
+                                    else zs.get(f),
+                                    lambda f: [],
+                                    lambda f: raw.get(f) if f in raw
+                                    else zs.get(f),
+                                    lambda f: rb.get(f, [])) == []
+    # exempt (system/doc) files never compared
+    assert pq.perceptual_echo_flags(pair, lambda f: clean.get(f),
+                                    lambda f: [], lambda f: raw.get(f),
+                                    lambda f: rb.get(f, []),
+                                    is_exempt=lambda f: True) == []
+    # no raw scene image (split halves): raw-distinctness unprovable -> skip
+    assert pq.perceptual_echo_flags(pair, lambda f: clean.get(f),
+                                    lambda f: [], lambda f: None,
+                                    lambda f: []) == []
+    # same-file pair (a hold / ken-variety sub-cuts): never an echo
+    hold = [_cut("g1", "p000090.jpg"), _cut("g2", "p000090.jpg")]
+    assert pq.perceptual_echo_flags(hold, lambda f: clean.get(f),
+                                    lambda f: [], lambda f: raw.get(f),
+                                    lambda f: rb.get(f, [])) == []
+    # branding breaks nothing but is never a member
+    br = [pair[0], _cut("intro", "intro.jpg", branding=True), pair[1]]
+    fl = pq.perceptual_echo_flags(br, lambda f: clean.get(f),
+                                  lambda f: [], lambda f: raw.get(f),
+                                  lambda f: rb.get(f, []))
+    assert [f["scene"] for f in fl] == ["p000095.jpg"]
