@@ -41,6 +41,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+_TD = os.path.dirname(os.path.abspath(__file__))
+if _TD not in sys.path:
+    sys.path.insert(0, _TD)
+from manifest_io import write_manifest  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # 1. cross-chunk contained-fragment filter (pure)
@@ -2737,8 +2742,12 @@ def main() -> int:
                                          outro_dur=0.0, which=which)
 
     out_path = args.out_plan or (os.path.splitext(args.plan)[0] + ".clean.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(out_plan, f, ensure_ascii=False, indent=2)
+    script_path = os.path.join(args.episode_dir, "manifest.script.json")
+    beats_path = os.path.join(args.episode_dir, "manifest.beats.json")
+    tts_index_path = os.path.join(args.episode_dir, "tts", "tts_index.json")
+    write_manifest(out_path, out_plan,
+                   inputs=(script_path, beats_path, tts_index_path),
+                   tool="render_prep")
 
     print(f"[ok] wrote={out_path} shown={len(shown)} "
           f"seam_dups_dropped={sorted(set(all_dropped))} bubbles_inpainted={bubbles_cleaned} "

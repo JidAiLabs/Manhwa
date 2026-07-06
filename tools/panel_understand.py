@@ -27,7 +27,8 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from gemini_narrative_pass import (                                   # noqa: E402
-    load_json, dump_json, _call_model_with_backoff)
+    load_json, _call_model_with_backoff)
+from manifest_io import write_manifest                                # noqa: E402
 
 # Gemini-style schema (UPPERCASE enums) — _call_model converts it for Ollama.
 PANEL_SCHEMA: Dict[str, Any] = {
@@ -633,9 +634,10 @@ def main() -> int:
         log=lambda m: print(m, flush=True))
     if sysn:
         print(f"[ok] system-card override: {sysn} caption/empty->system")
-    dump_json(args.out, {
+    write_manifest(args.out, {
         "source_vision_manifest": os.path.abspath(args.vision_manifest),
-        "model": model, "count": len(panels), "panels": panels})
+        "model": model, "count": len(panels), "panels": panels},
+        inputs=(args.vision_manifest,), tool="panel_understand")
 
     # Centralize the chrome/story verdict: stamp panel_kind back onto the vision
     # manifest so the SINGLE chrome chokepoint (scene_chrome.is_chrome_scene —
@@ -660,7 +662,10 @@ def main() -> int:
             it["subjects"] = subj
             changed = True
     if changed:
-        dump_json(args.vision_manifest, vision)
+        # Task 8 reorders this write-back; for now it stays a plain rewrite of
+        # vision's own content, just made atomic (no declared inputs — it is
+        # not derived FROM another manifest, it is patched in place).
+        write_manifest(args.vision_manifest, vision, inputs=(), tool="panel_understand")
         print(f"[ok] stamped panel_kind + subjects onto {os.path.basename(args.vision_manifest)}")
 
     ok = sum(1 for p in panels if p.get("description") and not p.get("error"))

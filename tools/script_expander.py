@@ -28,6 +28,7 @@ from openai import OpenAI
 # Shared exact-token + estimated-cost accounting (sibling tool module).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from usage_cost import UsageAccumulator  # noqa: E402
+from manifest_io import write_manifest  # noqa: E402
 
 
 def _openai_usage(resp: Any) -> Dict[str, int]:
@@ -2250,7 +2251,7 @@ def main() -> int:
         "sections": out_sections,
     }
 
-    dump_json(args.out, out_obj)
+    write_manifest(args.out, out_obj, inputs=(args.beats,), tool="script_expander")
     print(f"[ok] wrote={args.out} sections={len(out_sections)} parse_errors={parse_errors} regenerated={regenerated}")
     print(usage.summary())
     return 0

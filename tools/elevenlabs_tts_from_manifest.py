@@ -24,6 +24,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from narration_consistency import narration_sha  # noqa: E402
+from manifest_io import write_manifest  # noqa: E402
 
 ELEVEN_BASE = "https://api.elevenlabs.io"
 _TAG_RE = re.compile(r"\[[^\[\]]+\]")
@@ -348,7 +349,7 @@ def main() -> int:
 
     index["total_duration_sec"] = round(total, 4)
     out_index = os.path.join(out_dir, "tts_index.json")
-    dump_json(out_index, index)
+    write_manifest(out_index, index, inputs=(args.script,), tool="elevenlabs_tts_from_manifest")
     print(f"[ok] wrote={out_index} clips={len(index['clips'])} total_sec={index['total_duration_sec']}")
     return 0
 

@@ -35,6 +35,7 @@ from google.genai.errors import ClientError
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_selection import normalize_scene_selection  # noqa: E402
 from usage_cost import UsageAccumulator  # noqa: E402
+from manifest_io import write_manifest  # noqa: E402
 from narration_safe_rules import SAFE_NARRATION_RULES  # noqa: E402
 from niche_modules import register_block  # noqa: E402
 from recap_style import (  # noqa: E402
@@ -2124,7 +2125,8 @@ def main() -> int:
         },
         "beats": beats_out,
     }
-    dump_json(args.out, out_obj)
+    write_manifest(args.out, out_obj, inputs=(args.groups_manifest, args.cast),
+                   tool="gemini_narrative_pass")
     print(f"[ok] wrote={args.out} beats={len(beats_out)} parse_errors={parse_errors} regenerated={regenerated}")
     print(usage.summary())
     return 0

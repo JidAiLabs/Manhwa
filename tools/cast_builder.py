@@ -22,10 +22,16 @@ Auth mirrors gemini_narrative_pass (Vertex AI via the gcp-vision SA key).
 import argparse
 import json
 import os
+import sys
 from typing import Any, Dict, List, Optional
 
 from google import genai
 from google.genai import types
+
+_TD = os.path.dirname(os.path.abspath(__file__))
+if _TD not in sys.path:
+    sys.path.insert(0, _TD)
+from manifest_io import write_manifest                                # noqa: E402
 
 
 def _load(path: str) -> Dict[str, Any]:
@@ -205,9 +211,10 @@ def main() -> int:
             ),
         )
         cast = json.loads(resp.text)
-    cast["_meta"] = {"model": args.model, "images_used": len(images), "ocr_lines": len(ocr)}
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(cast, f, ensure_ascii=False, indent=2)
+    write_manifest(args.out, cast, inputs=(args.groups_manifest, args.vision_manifest),
+                   tool="cast_builder",
+                   extra_meta={"model": args.model, "images_used": len(images),
+                               "ocr_lines": len(ocr)})
 
     members = cast.get("cast") or []
     print(f"[ok] {args.out} — {len(members)} cast members")

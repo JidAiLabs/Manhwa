@@ -41,6 +41,7 @@ from beats_segments import (  # noqa: E402
 )
 from narration_consistency import strip_chrome_opener  # noqa: E402
 from niche_modules import register_block  # noqa: E402
+from manifest_io import write_manifest  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     dedupe_consecutive_panel_lines,
@@ -934,8 +935,7 @@ def main() -> int:
         _vision_by_file(args.episode_dir),
         _understood_by_file(args.episode_dir))
 
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2)
+    write_manifest(args.out, out, inputs=(args.beats,), tool="narration_punchup")
     print(f"[ok] wrote={args.out} punched={applied}/{len(lines)} "
           f"(rejected lines keep the grounded original)")
     return 0

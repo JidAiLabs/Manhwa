@@ -29,7 +29,8 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from gemini_narrative_pass import (                                   # noqa: E402
-    load_json, dump_json, _call_model_with_backoff)
+    load_json, _call_model_with_backoff)
+from manifest_io import write_manifest                                # noqa: E402
 
 _SEGMENTS = ("present", "flashback", "dream")
 
@@ -581,7 +582,7 @@ def main() -> int:
                                            if s["segment"] != "present")},
         "shots": shots,
     }
-    dump_json(args.out, out)
+    write_manifest(args.out, out, inputs=(args.understood,), tool="story_group")
 
     # Chapter STORY SPINE (logline + premise + ordered arc) — the through-line the
     # narrator uses so beats connect into one story instead of isolated captions.
@@ -594,7 +595,7 @@ def main() -> int:
         "arc": [{"group_id": s["shot_id"], "arc_label": s["arc_label"],
                  "segment": s["segment"]} for s in shots],
     }
-    dump_json(story_out, spine)
+    write_manifest(story_out, spine, inputs=(args.understood,), tool="story_group")
     print(f"[ok] wrote={args.out} scenes={len(story)} shots={len(shots)} "
           f"(story-grouped) excluded={len(excluded)} | spine={story_out} "
           f"logline={'y' if spine['logline'] else 'n'}")

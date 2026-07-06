@@ -47,6 +47,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from narration_sanitize import Sanitizer  # noqa: E402
 from narration_reframe import reframe_line, ReframeCallFn  # noqa: E402
+from manifest_io import write_manifest  # noqa: E402
 
 _DENYLIST = str(Path(__file__).with_name("narration_denylist.json"))
 _LEADING_TAG_RE = re.compile(r"^\s*\[([a-zA-Z_]+)\]\s*")
@@ -212,17 +213,18 @@ def sanitize_script(
     return summary
 
 
-def write_marker(marker_path: str | Path, summary: PassSummary, *, seed: str) -> None:
+def write_marker(marker_path: str | Path, summary: PassSummary, *, seed: str,
+                  script_path: str | Path = "") -> None:
     """Persist the pass result to manifest.sanitize.json. The voiced gate reads
     ``unresolved_blocks`` from here and refuses to voice when it's non-empty."""
     payload = {
-        "schema_version": "sanitize_marker_v1",
         "seed": seed,
         "ok": not summary.has_unresolved,
         **summary.as_dict(),
     }
-    Path(marker_path).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                                 encoding="utf-8")
+    write_manifest(marker_path, payload, inputs=(script_path,),
+                    tool="narration_sanitize_pass",
+                    extra_meta={"schema_version": "sanitize_marker_v1"})
 
 
 def read_unresolved_blocks(marker_path: str | Path) -> List[Dict[str, str]]:
@@ -269,7 +271,7 @@ def main() -> int:
     script_path.write_text(json.dumps(script_obj, ensure_ascii=False, indent=2),
                            encoding="utf-8")
     marker = args.marker or str(script_path.with_name("manifest.sanitize.json"))
-    write_marker(marker, summary, seed=args.seed)
+    write_marker(marker, summary, seed=args.seed, script_path=args.script)
 
     print(f"[sanitize] changed={summary.changed} reframed={summary.reframed} "
           f"unresolved_blocks={len(summary.unresolved_blocks)} marker={marker}")

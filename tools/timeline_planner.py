@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Tuple, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_selection import choose_kept_scenes  # noqa: E402
 from scene_chrome import is_chrome_scene  # noqa: E402
+from manifest_io import read_manifest  # noqa: E402
 
 try:
     from PIL import Image, ImageStat, ImageFilter
@@ -1544,7 +1545,9 @@ def main() -> int:
 
     beats_by_gid: Dict[int, Dict[str, Any]] = {}
     if args.beats:
-        beats_by_gid = index_beats(load_json(args.beats))
+        # Hard-error on a missing/corrupt/keyless beats manifest — a silent
+        # empty default here used to yield an empty plan with no error.
+        beats_by_gid = index_beats(read_manifest(args.beats, required_keys=("beats",)))
 
     script_by_gid: Dict[str, Dict[str, Any]] = {}
     if args.script:

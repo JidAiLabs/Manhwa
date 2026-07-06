@@ -56,6 +56,7 @@ from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 from narration_consistency import audio_consistency, strip_chrome_opener
 from manifest_freshness import verify_chapter as _verify_chapter_freshness
+from manifest_io import read_manifest
 from recap_style import (
     analyze_recap_style,
     is_shot_description,
@@ -1731,8 +1732,9 @@ def main() -> int:
     ]
 
     plan_path = args.plan or os.path.join(ep, "render.plan.clean.json")
-    with open(plan_path, "r", encoding="utf-8") as f:
-        plan = json.load(f)
+    # Hard-error on a missing/corrupt/keyless plan — a silent empty "timeline"
+    # default used to let a corrupt plan pass through QA as an empty report.
+    plan = read_manifest(plan_path, required_keys=("timeline",))
     clean_dir = os.path.join(ep, plan.get("scenes_subdir") or "scenes_clean")
     clean_files = set(os.listdir(clean_dir)) if os.path.isdir(clean_dir) else set()
     dims = plan.get("scene_dims") or {}

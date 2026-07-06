@@ -40,6 +40,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from narration_consistency import narration_sha  # noqa: E402
+from manifest_io import write_manifest  # noqa: E402
 
 # tts_align is a sibling module in tools/; import it the same way this module
 # loads itself (spec from file) so it works regardless of sys.path.
@@ -1559,8 +1560,7 @@ def main() -> int:
     )
 
     out_index = os.path.join(os.path.abspath(args.out_dir), "tts_index.json")
-    with open(out_index, "w", encoding="utf-8") as f:
-        json.dump(index, f, ensure_ascii=False, indent=2)
+    write_manifest(out_index, index, inputs=(args.script,), tool="local_tts_from_manifest")
     print(f"[ok] wrote={out_index} clips={len(index['clips'])} total={index['total_duration_sec']:.1f}s")
     return 0
 
