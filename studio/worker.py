@@ -872,18 +872,19 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
                  "-b:a", "96k", str(rdir / "voice_preview.mp3")],
                 log)
     auto_to = (job.get("payload") or {}).get("auto_to")
-    if auto_to == "video" and not gates._has_approval(
-            con, "render", chapter_id=ch["id"]):
+    render_sha = gates.gate_sha("render", ch["ep_dir"])
+    render_valid = gates._approval_valid(con, "render", chapter_id=ch["id"],
+                                         current_sha=render_sha)
+    if auto_to == "video" and not render_valid:
         log.write("[bulk] auto_to=video: voiced QA green -> render queued\n")
-        gates.approve(con, "render", chapter_id=ch["id"], note="bulk",
-                     content_sha=gates.gate_sha("render", ch["ep_dir"]))
+        gates.ensure_approval(con, "render", chapter_id=ch["id"],
+                              ep_dir=ch["ep_dir"], note="bulk")
         jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
                      payload={"branding": "both"})
-    elif _autopilot_clean(con, ch, verdict) and not gates._has_approval(
-            con, "render", chapter_id=ch["id"]):
+    elif _autopilot_clean(con, ch, verdict) and not render_valid:
         log.write("[autopilot] voiced QA spotless → render queued\n")
-        gates.approve(con, "render", chapter_id=ch["id"], note="autopilot",
-                     content_sha=gates.gate_sha("render", ch["ep_dir"]))
+        gates.ensure_approval(con, "render", chapter_id=ch["id"],
+                              ep_dir=ch["ep_dir"], note="autopilot")
         jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
                      payload={"branding": "both"})
 

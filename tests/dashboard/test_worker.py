@@ -719,6 +719,39 @@ def test_autopilot_render_approval_stores_content_sha(tmp_path, monkeypatch):
     assert stored == g.gate_sha("render", ep)
 
 
+def test_voiceover_auto_to_reapproves_stale_render_and_enqueues(tmp_path, monkeypatch):
+    """A prior 'bulk' render approval whose content_sha no longer matches the
+    plan/tts (a plan regeneration after that approval) must not wedge the
+    auto_to=video chain: the old existence-only guard skipped BOTH the
+    re-approve and the enqueue when a stale row was already there, silently
+    stalling the render auto-advance. ensure_approval treats the stale row as
+    absent, so both fire again."""
+    con = _con(tmp_path)
+    ep = _autopilot_series(con, tmp_path, flags=[])
+    from studio.dashboard import gates as g
+    g.approve(con, "voice", chapter_id=5, note="autopilot")
+    (ep / "tts").mkdir(parents=True, exist_ok=True)
+    (ep / "render.plan.clean.json").write_text('{"cuts": []}')
+    (ep / "tts" / "tts_index.json").write_text('{"clips": []}')
+    # Insert a stale render approval from before the plan was regenerated
+    g.approve(con, "render", chapter_id=5, note="bulk",
+             content_sha="stale-sha-from-before-plan-regen")
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: worker.QAVerdict(
+                            ok=True, blocking=set(), codes=set(),
+                            report={"flags": []}, reason=""))
+    jobs.enqueue(con, "voiceover", chapter_id=5, payload={"auto_to": "video"})
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='render_segment' "
+                       "AND chapter_id=5").fetchone()[0] == 1   # no stall
+    stored = con.execute(
+        "SELECT content_sha FROM approval WHERE gate='render' AND "
+        "chapter_id=5 ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert stored == g.gate_sha("render", ep)                # fresh sha
+
+
 # --- last-resort visual heal must BLOCK when it can't actually drop the panel ---
 
 def test_heal_visual_drops_blocks_when_over_cap(tmp_path, monkeypatch):
