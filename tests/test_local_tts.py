@@ -270,6 +270,85 @@ def test_synthesize_manifest_revoices_on_mood_only_change(tmp_path):
     assert out["clips"][0]["cached"] is True        # untouched clip reused
 
 
+def test_synthesize_manifest_backend_change_invalidates_cache(tmp_path):
+    # per-clip caching (text_sha/exaggeration/speed) says nothing about WHICH
+    # voice produced the audio — a backend switch must force a full re-voice
+    # even though every segment's text_sha still matches.
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="qwen-mlx",
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    calls = []
+    out = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="chatterbox",
+        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    assert len(calls) == 2                              # both re-synthesized
+    assert all(c["cached"] is False for c in out["clips"])
+
+
+def test_synthesize_manifest_voice_ref_bytes_change_invalidates_cache(tmp_path):
+    # same voice_ref PATH but different bytes underneath (e.g. a re-recorded
+    # narrator ref) must invalidate — the path alone is not enough proof.
+    ref = tmp_path / "narrator_ref.wav"
+    ref.write_bytes(b"ORIGINAL_VOICE_BYTES")
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="qwen-mlx", voice_ref=str(ref),
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    assert idx.get("voice_ref_sha")                     # stamped on write
+    ref.write_bytes(b"DIFFERENT_VOICE_BYTES_ENTIRELY")
+    calls = []
+    out = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="qwen-mlx", voice_ref=str(ref),
+        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    assert len(calls) == 2
+    assert all(c["cached"] is False for c in out["clips"])
+
+
+def test_synthesize_manifest_unchanged_provenance_still_caches(tmp_path):
+    # regression guard: backend + voice_ref + voice_ref_sha all identical ->
+    # the per-clip text_sha cache still governs reuse as before.
+    ref = tmp_path / "narrator_ref.wav"
+    ref.write_bytes(b"STABLE_VOICE_BYTES")
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="qwen-mlx", voice_ref=str(ref),
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    calls = []
+    out = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="qwen-mlx", voice_ref=str(ref),
+        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    assert calls == []
+    assert all(c["cached"] is True for c in out["clips"])
+
+
+def test_synthesize_manifest_legacy_index_without_sha_accepted_once(tmp_path):
+    # an index written before voice_ref_sha existed has no stored sha for it.
+    # Same path -> accepted once (legacy grace, not a mismatch) and the field
+    # is stamped going forward so future runs compare it for real.
+    ref = tmp_path / "narrator_ref.wav"
+    ref.write_bytes(b"LEGACY_VOICE_BYTES")
+    idx = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="qwen-mlx", voice_ref=str(ref),
+        synth_fn=_synth_write([]), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    del idx["voice_ref_sha"]                            # simulate pre-upgrade index
+    (tmp_path / "tts_index.json").write_text(json.dumps(idx))
+    calls = []
+    out = lt.synthesize_manifest(
+        _script(), str(tmp_path), backend="qwen-mlx", voice_ref=str(ref),
+        synth_fn=_synth_write(calls), duration_fn=lambda p: 1.0,
+        group_mode=False)
+    assert calls == []                                  # accepted once
+    assert out["voice_ref_sha"]                         # stamped for next time
+
+
 def test_synthesize_manifest_prunes_orphan_clips(tmp_path):
     (tmp_path / "clips").mkdir()
     (tmp_path / "clips" / "g0099_p09.wav").write_bytes(b"orphan")   # not in script

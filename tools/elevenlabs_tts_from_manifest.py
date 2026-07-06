@@ -200,6 +200,45 @@ def extract_items_from_manifest(script_obj: Dict[str, Any], text_source: str) ->
     out.sort(key=lambda x: (x["group_id"], x["section_index"], x["paragraph_index"]))
     return out
 
+def load_prior_tts_reuse(
+    prior_index_path: str,
+    overwrite: bool,
+    voice_id: str,
+    model_id: str,
+    output_format: str,
+) -> Dict[str, str]:
+    """Load the prior tts_index.json's segment_id->text_sha reuse map.
+
+    A per-clip text_sha match says nothing about which voice rendered the
+    audio: if voice_id/model_id/output_format changed since the prior run,
+    the ENTIRE reuse map is discarded (bulk invalidate) so every clip is
+    re-synthesized under the new voice, even though its text is unchanged.
+    """
+    prior_sha: Dict[str, str] = {}
+    if not (os.path.exists(prior_index_path) and not overwrite):
+        return prior_sha
+    try:
+        prev = json.load(open(prior_index_path))
+        prior_voice_id = prev.get("voice_id")
+        prior_model_id = prev.get("model_id")
+        prior_output_format = prev.get("output_format")
+        mismatch = None
+        if prior_voice_id is not None and prior_voice_id != voice_id:
+            mismatch = f"voice_id {prior_voice_id!r} -> {voice_id!r}"
+        elif prior_model_id is not None and prior_model_id != model_id:
+            mismatch = f"model_id {prior_model_id!r} -> {model_id!r}"
+        elif prior_output_format is not None and prior_output_format != output_format:
+            mismatch = f"output_format {prior_output_format!r} -> {output_format!r}"
+        if mismatch:
+            print(f"[tts] provenance changed ({mismatch}); discarding cached clips")
+            return {}
+        for c in (prev.get("clips") or []):
+            if c.get("segment_id") and c.get("text_sha"):
+                prior_sha[str(c["segment_id"])] = str(c["text_sha"])
+    except Exception:
+        return {}
+    return prior_sha
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True, help="manifest.script.json")
@@ -261,16 +300,13 @@ def main() -> int:
 
     # text-aware incremental cache (mirrors local_tts): reuse a clip only when
     # its narration is UNCHANGED, so a beats/script regen re-voices ONLY the
-    # changed segments. Existence-only caching shipped stale audio.
-    prior_sha: Dict[str, str] = {}
+    # changed segments. Existence-only caching shipped stale audio. A run-level
+    # provenance change (voice_id/model_id/output_format) bulk-invalidates the
+    # whole map — see load_prior_tts_reuse.
     prior_index_path = os.path.join(out_dir, "tts_index.json")
-    if os.path.exists(prior_index_path) and not args.overwrite:
-        try:
-            for c in (json.load(open(prior_index_path)).get("clips") or []):
-                if c.get("segment_id") and c.get("text_sha"):
-                    prior_sha[str(c["segment_id"])] = str(c["text_sha"])
-        except Exception:
-            prior_sha = {}
+    prior_sha = load_prior_tts_reuse(
+        prior_index_path, args.overwrite,
+        args.voice_id, args.model_id, args.output_format)
 
     for it in items:
         seg_id = it["segment_id"]

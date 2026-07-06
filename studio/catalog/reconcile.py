@@ -146,6 +146,19 @@ def _render_is_stale(con: sqlite3.Connection, cid: int, ep: str) -> bool:
         con, "render", chapter_id=cid, current_sha=gates.gate_sha("render", ep))
 
 
+def _voice_is_stale(con: sqlite3.Connection, cid: int, ep: str) -> bool:
+    """A voice approval outlived the script it approved: the script is gone,
+    or the approval's content_sha no longer matches manifest.script.json's
+    CURRENT bytes (a healed/regenerated script is a different approval
+    subject — same shape as _render_is_stale, but for the PRE-voice gate)."""
+    script = os.path.join(ep, "manifest.script.json")
+    if not os.path.exists(script):
+        return True
+    from studio.dashboard import gates  # lazy: dashboard imports catalog
+    return not gates._approval_valid(
+        con, "voice", chapter_id=cid, current_sha=gates.gate_sha("voice", ep))
+
+
 def reconcile_chapter(con: sqlite3.Connection,
                       ch: Mapping[str, Any]) -> Dict[str, Any]:
     """Repair the DB to match the artifacts on disk for one chapter. Returns a
@@ -153,7 +166,7 @@ def reconcile_chapter(con: sqlite3.Connection,
     ``id``, ``status`` and ``ep_dir`` (a sqlite3.Row or a dict)."""
     out: Dict[str, Any] = {"status_from": None, "status_to": None,
                            "stage_runs_pruned": 0, "render_approval_cleared": 0,
-                           "content_sha_backfilled": 0}
+                           "voice_approval_cleared": 0, "content_sha_backfilled": 0}
     cid = int(ch["id"])
     status = str(ch["status"] or "")
     ep = str(ch["ep_dir"] or "")
@@ -199,13 +212,37 @@ def reconcile_chapter(con: sqlite3.Connection,
             if backfill_sha is not None:
                 con.execute("UPDATE approval SET content_sha=? WHERE id=?",
                             (backfill_sha, approval_id))
-                out["content_sha_backfilled"] = 1
+                out["content_sha_backfilled"] += 1
                 changed = True
         if _render_is_stale(con, cid, ep):
             n = con.execute(
                 "DELETE FROM approval WHERE gate='render' AND chapter_id=?",
                 (cid,)).rowcount
             out["render_approval_cleared"] = n
+            changed = changed or bool(n)
+
+    # 4. voice approval mirrors the render rule above (backfill a legacy NULL
+    #    sha once, clear when stale) but for the PRE-voice gate, which approves
+    #    the SCRIPT rather than the rendered video. Reconcile only REPAIRS
+    #    state: clearing a stale voice approval must never enqueue anything —
+    #    it just stops the UI/worker from treating drifted content as approved.
+    voice_row = con.execute(
+        "SELECT id, content_sha FROM approval WHERE gate='voice' AND "
+        "chapter_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+    if voice_row is not None:
+        voice_approval_id, voice_stored_sha = voice_row
+        if voice_stored_sha is None:
+            voice_backfill_sha = gates.gate_sha("voice", ep)
+            if voice_backfill_sha is not None:
+                con.execute("UPDATE approval SET content_sha=? WHERE id=?",
+                            (voice_backfill_sha, voice_approval_id))
+                out["content_sha_backfilled"] += 1
+                changed = True
+        if _voice_is_stale(con, cid, ep):
+            n = con.execute(
+                "DELETE FROM approval WHERE gate='voice' AND chapter_id=?",
+                (cid,)).rowcount
+            out["voice_approval_cleared"] = n
             changed = changed or bool(n)
 
     if changed:
@@ -223,7 +260,7 @@ def reconcile_series(con: sqlite3.Connection, series_id: int) -> Dict[str, int]:
     for r in rows:
         res = reconcile_chapter(con, {"id": r[0], "status": r[1], "ep_dir": r[2]})
         if (res["status_to"] or res["stage_runs_pruned"]
-                or res["render_approval_cleared"]):
+                or res["render_approval_cleared"] or res["voice_approval_cleared"]):
             totals["chapters_repaired"] += 1
         totals["stage_runs_pruned"] += res["stage_runs_pruned"]
     return totals

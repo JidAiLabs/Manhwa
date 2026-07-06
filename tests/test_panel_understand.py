@@ -58,9 +58,15 @@ def test_understand_panels_is_ordered_threads_context_and_covers_all():
 
 
 def test_resume_skips_already_understood_panels():
+    # resume acceptance is content-keyed (Task 12): a cached record must carry
+    # a scene_sha matching the CURRENT scene file bytes + the current
+    # PROMPT_VERSION, not just a scene_file name match. "a" doesn't exist on
+    # disk, so its current sha is "" (see _scene_sha) — the cached record
+    # mirrors that so the match holds and p0 is genuinely reused.
     items = [{"scene_file": "p0.jpg", "scene_path": "a"},
              {"scene_file": "p1.jpg", "scene_path": "b"}]
-    prior = {"p0.jpg": {"scene_file": "p0.jpg", "description": "kept", "intensity": "calm"}}
+    prior = {"p0.jpg": {"scene_file": "p0.jpg", "description": "kept", "intensity": "calm",
+                        "scene_sha": "", "prompt_version": pu.PROMPT_VERSION}}
     calls = []
 
     def stub(payload, image_path):
@@ -70,6 +76,86 @@ def test_resume_skips_already_understood_panels():
     out = pu.understand_panels(items, stub, prior=prior)
     assert calls == ["p1.jpg"]                       # p0 reused, only p1 called
     assert out[0]["description"] == "kept" and out[1]["description"] == "new"
+    assert out[1]["scene_sha"] == "" and out[1]["prompt_version"] == pu.PROMPT_VERSION
+
+
+def test_resume_legacy_record_without_provenance_reruns():
+    # a record from before Task 12 has no scene_sha/prompt_version at all —
+    # name match + non-empty description + no error used to be enough to
+    # reuse it, but that let new pixels under an old filename (or a prompt
+    # rewrite) silently reuse stale understanding. It must now re-run once
+    # (and get stamped), the intended one-time migration cost.
+    items = [{"scene_file": "p0.jpg", "scene_path": "a"}]
+    prior = {"p0.jpg": {"scene_file": "p0.jpg", "description": "kept", "intensity": "calm"}}
+    calls = []
+
+    def stub(payload, image_path):
+        calls.append(payload["scene_file"])
+        return {"description": "new", "action": "y", "intensity": "tense"}
+
+    out = pu.understand_panels(items, stub, prior=prior)
+    assert calls == ["p0.jpg"]                       # re-run despite the name match
+    assert out[0]["description"] == "new"
+    assert out[0]["scene_sha"] == "" and out[0]["prompt_version"] == pu.PROMPT_VERSION
+
+
+def test_resume_rejects_changed_scene_bytes(tmp_path):
+    # same scene_file name, but the pixels underneath changed -> the stored
+    # scene_sha no longer matches the current file's sha, so it must re-run.
+    scene = tmp_path / "p0.jpg"
+    scene.write_bytes(b"NEW PIXELS")
+    items = [{"scene_file": "p0.jpg", "scene_path": str(scene)}]
+    prior = {"p0.jpg": {"scene_file": "p0.jpg", "description": "kept", "intensity": "calm",
+                        "scene_sha": "stale-sha-from-old-pixels",
+                        "prompt_version": pu.PROMPT_VERSION}}
+    calls = []
+
+    def stub(payload, image_path):
+        calls.append(payload["scene_file"])
+        return {"description": "new", "action": "y", "intensity": "tense"}
+
+    out = pu.understand_panels(items, stub, prior=prior)
+    assert calls == ["p0.jpg"]
+    assert out[0]["description"] == "new"
+
+
+def test_resume_rejects_prompt_version_bump(tmp_path):
+    # same scene bytes, but the record was produced under an older prompt
+    # version -> must re-run so the new prompt's output is picked up.
+    scene = tmp_path / "p0.jpg"
+    scene.write_bytes(b"STABLE PIXELS")
+    items = [{"scene_file": "p0.jpg", "scene_path": str(scene)}]
+    prior = {"p0.jpg": {"scene_file": "p0.jpg", "description": "kept", "intensity": "calm",
+                        "scene_sha": pu._scene_sha(str(scene)),
+                        "prompt_version": "pu_v0_old"}}
+    calls = []
+
+    def stub(payload, image_path):
+        calls.append(payload["scene_file"])
+        return {"description": "new", "action": "y", "intensity": "tense"}
+
+    out = pu.understand_panels(items, stub, prior=prior)
+    assert calls == ["p0.jpg"]
+    assert out[0]["description"] == "new"
+
+
+def test_resume_accepts_full_content_match(tmp_path):
+    # same scene bytes AND same prompt_version -> genuinely reused, no re-run.
+    scene = tmp_path / "p0.jpg"
+    scene.write_bytes(b"STABLE PIXELS")
+    items = [{"scene_file": "p0.jpg", "scene_path": str(scene)}]
+    prior = {"p0.jpg": {"scene_file": "p0.jpg", "description": "kept", "intensity": "calm",
+                        "scene_sha": pu._scene_sha(str(scene)),
+                        "prompt_version": pu.PROMPT_VERSION}}
+    calls = []
+
+    def stub(payload, image_path):
+        calls.append(payload["scene_file"])
+        return {"description": "new", "action": "y", "intensity": "tense"}
+
+    out = pu.understand_panels(items, stub, prior=prior)
+    assert calls == []                                # fully reused, no call
+    assert out[0]["description"] == "kept"
 
 
 def test_batched_parallel_shares_prebatch_context_and_preserves_order():

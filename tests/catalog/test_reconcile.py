@@ -159,15 +159,22 @@ def test_keeps_fresh_render_approval(tmp_path):
 def test_legacy_null_sha_approval_is_backfilled_on_reconcile(tmp_path):
     """A pre-content_sha approval row (content_sha IS NULL) is grandfathered
     valid, but reconcile stamps it with TODAY's sha (one-time) so future
-    drift becomes detectable instead of the row staying eternally NULL."""
+    drift becomes detectable instead of the row staying eternally NULL.
+    _mk_chapter creates BOTH the 'render' and 'voice' approval rows with a
+    NULL content_sha, so a single reconcile backfills both -> count is 2
+    (Task 12 extended this backfill to the voice gate)."""
     from studio.dashboard import gates
-    con, ep = _mk_chapter(tmp_path, status="rendered")   # approval row is NULL
+    con, ep = _mk_chapter(tmp_path, status="rendered")   # both approval rows NULL
     out = reconcile.reconcile_chapter(con, _ch(con))
-    assert out["content_sha_backfilled"] == 1
+    assert out["content_sha_backfilled"] == 2
     stored = con.execute("SELECT content_sha FROM approval WHERE gate='render' "
                          "AND chapter_id=310").fetchone()[0]
     assert stored is not None
     assert stored == gates.gate_sha("render", str(ep))
+    voice_stored = con.execute("SELECT content_sha FROM approval WHERE gate='voice' "
+                               "AND chapter_id=310").fetchone()[0]
+    assert voice_stored is not None
+    assert voice_stored == gates.gate_sha("voice", str(ep))
 
 
 def test_clears_render_approval_when_sha_drifts(tmp_path):
@@ -200,6 +207,49 @@ def test_keeps_render_approval_when_video_merely_older_than_plan(tmp_path):
     assert _n_approvals(con, "render") == 1
 
 
+def test_clears_voice_approval_when_script_sha_drifts(tmp_path):
+    """Mirrors test_clears_render_approval_when_sha_drifts, but for the
+    PRE-voice gate: a healed/regenerated manifest.script.json changes its
+    bytes -> the stored content_sha no longer matches -> reconcile clears
+    the stale voice approval so the worker/UI stop treating it as approved."""
+    from studio.dashboard import gates
+    con, ep = _mk_chapter(tmp_path, status="rendered")
+    current = gates.gate_sha("voice", str(ep))
+    con.execute("UPDATE approval SET content_sha=? WHERE gate='voice' "
+                "AND chapter_id=310", (current,))
+    con.commit()
+    (ep / "manifest.script.json").write_text('{"changed": true}')  # script healed
+    out = reconcile.reconcile_chapter(con, _ch(con))
+    assert out["voice_approval_cleared"] == 1
+    assert _n_approvals(con, "voice") == 0
+    # render's approval subject (plan+tts bytes) is untouched by the script edit
+    assert _n_approvals(con, "render") == 1
+
+
+def test_keeps_fresh_voice_approval(tmp_path):
+    con, ep = _mk_chapter(tmp_path, status="rendered")
+    from studio.dashboard import gates
+    current = gates.gate_sha("voice", str(ep))
+    con.execute("UPDATE approval SET content_sha=? WHERE gate='voice' "
+                "AND chapter_id=310", (current,))
+    con.commit()
+    out = reconcile.reconcile_chapter(con, _ch(con))
+    assert out["voice_approval_cleared"] == 0
+    assert _n_approvals(con, "voice") == 1
+
+
+def test_reconcile_never_enqueues_a_job(tmp_path):
+    """CAUTION from the Task 12 brief: clearing a stale voice (or render)
+    approval must NOT enqueue anything — reconcile only repairs state, it
+    never drives the pipeline forward on its own."""
+    con, ep = _mk_chapter(tmp_path, status="rendered")
+    (ep / "manifest.script.json").write_text('{"changed": true}')   # drifts voice
+    (ep / "render" / "segment_both.mp4").unlink()                   # drifts render
+    reconcile.reconcile_chapter(con, _ch(con))
+    n_jobs = con.execute("SELECT COUNT(*) FROM job WHERE chapter_id=310").fetchone()[0]
+    assert n_jobs == 0
+
+
 def test_skips_chapter_with_active_job(tmp_path):
     con, ep = _mk_chapter(tmp_path, status="rendered")
     (ep / "render" / "segment_both.mp4").unlink()          # drift present
@@ -226,6 +276,21 @@ def test_reconcile_series_totals(tmp_path):
     totals = reconcile.reconcile_series(con, 1)
     assert totals["chapters_repaired"] == 1
     assert totals["stage_runs_pruned"] == 1                # render_segment row
+
+
+def test_reconcile_series_counts_voice_only_repairs(tmp_path):
+    # a chapter whose ONLY drift is a stale voice approval (status, stage_run
+    # and render approval all untouched) must still count as repaired at the
+    # series level — mirrors the pre-existing render_approval_cleared check.
+    from studio.dashboard import gates
+    con, ep = _mk_chapter(tmp_path, status="rendered")
+    current = gates.gate_sha("voice", str(ep))
+    con.execute("UPDATE approval SET content_sha=? WHERE gate='voice' "
+                "AND chapter_id=310", (current,))
+    con.commit()
+    (ep / "manifest.script.json").write_text('{"changed": true}')  # only voice drifts
+    totals = reconcile.reconcile_series(con, 1)
+    assert totals["chapters_repaired"] == 1
 
 
 # ---- _valid memo cache --------------------------------------------------------

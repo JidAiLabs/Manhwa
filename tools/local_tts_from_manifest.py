@@ -40,7 +40,7 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from narration_consistency import narration_sha  # noqa: E402
-from manifest_io import write_manifest  # noqa: E402
+from manifest_io import write_manifest, input_sha  # noqa: E402
 
 # tts_align is a sibling module in tools/; import it the same way this module
 # loads itself (spec from file) so it works regardless of sys.path.
@@ -843,21 +843,47 @@ def synthesize_manifest(
     prior_speed: Dict[str, float] = {}
     prior_failed: set = set()
     prior_index_path = os.path.join(out_dir, "tts_index.json")
+    # Run-level provenance guard: per-clip caching (text_sha/exaggeration/
+    # speed) says nothing about WHICH voice produced the audio. Switching
+    # backend or swapping the narrator ref wav under the same path must
+    # invalidate every cached clip even when a clip's own text_sha still
+    # matches, else the run silently ships old-voice audio under the new
+    # engine/ref. voice_ref_sha hashes the ref wav's bytes so a same-path
+    # swap (not just a path change) is caught too.
+    voice_ref_sha = input_sha(voice_ref) if voice_ref and os.path.exists(voice_ref) else ""
     if os.path.exists(prior_index_path) and not overwrite:
         try:
             prev = json.load(open(prior_index_path))
-            for c in prev.get("clips") or []:
-                sid = c.get("segment_id")
-                sha = c.get("text_sha") or (
-                    narration_sha(c["sent_text"]) if c.get("sent_text") is not None else None)
-                if sid and c.get("tts_failed"):
-                    # failed clip = silence placeholder — never cache-worthy
-                    prior_failed.add(str(sid))
-                if sid and sha:
-                    prior_sha[str(sid)] = str(sha)
-                    if c.get("exaggeration") is not None:
-                        prior_exag[str(sid)] = float(c["exaggeration"])
-                    prior_speed[str(sid)] = float(c.get("speed") or 1.0)
+            prior_backend = prev.get("backend")
+            prior_voice_ref = prev.get("voice_ref")
+            prior_voice_ref_sha = prev.get("voice_ref_sha")
+            mismatch = None
+            if prior_backend is not None and prior_backend != backend:
+                mismatch = f"backend {prior_backend!r} -> {backend!r}"
+            elif prior_voice_ref is not None and prior_voice_ref != voice_ref:
+                mismatch = f"voice_ref {prior_voice_ref!r} -> {voice_ref!r}"
+            elif prior_voice_ref_sha is not None and prior_voice_ref_sha != voice_ref_sha:
+                # legacy grace: indexes written before voice_ref_sha existed
+                # have no stored sha. When the path is unchanged that is
+                # accepted once here (this branch requires a STORED sha that
+                # disagrees) and voice_ref_sha is stamped below so the next
+                # run can compare it for real.
+                mismatch = "voice_ref audio changed (sha mismatch)"
+            if mismatch:
+                print(f"[tts] provenance changed ({mismatch}); discarding cached clips")
+            else:
+                for c in prev.get("clips") or []:
+                    sid = c.get("segment_id")
+                    sha = c.get("text_sha") or (
+                        narration_sha(c["sent_text"]) if c.get("sent_text") is not None else None)
+                    if sid and c.get("tts_failed"):
+                        # failed clip = silence placeholder — never cache-worthy
+                        prior_failed.add(str(sid))
+                    if sid and sha:
+                        prior_sha[str(sid)] = str(sha)
+                        if c.get("exaggeration") is not None:
+                            prior_exag[str(sid)] = float(c["exaggeration"])
+                        prior_speed[str(sid)] = float(c.get("speed") or 1.0)
         except Exception:
             prior_sha = {}
             prior_exag = {}
@@ -868,6 +894,7 @@ def synthesize_manifest(
         "source_script": os.path.abspath(script_obj.get("_path", "")) if script_obj.get("_path") else "",
         "backend": backend,
         "voice_ref": voice_ref,
+        "voice_ref_sha": voice_ref_sha,
         "text_source": text_source,
         "clips": [],
         "total_duration_sec": 0.0,

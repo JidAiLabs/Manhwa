@@ -28,7 +28,7 @@ if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from gemini_narrative_pass import (                                   # noqa: E402
     load_json, _call_model_with_backoff)
-from manifest_io import write_manifest                                # noqa: E402
+from manifest_io import write_manifest, input_sha                     # noqa: E402
 
 # Gemini-style schema (UPPERCASE enums) — _call_model converts it for Ollama.
 PANEL_SCHEMA: Dict[str, Any] = {
@@ -96,6 +96,11 @@ SYSTEM = (
     "The 'previous_panels' field is context for continuity only — describe THIS "
     "panel, not the previous ones."
 )
+
+# Bump this whenever SYSTEM/PANEL_SCHEMA change materially — it is stamped onto
+# every record and gates --resume acceptance (see understand_panels), so a
+# prompt change no longer requires manually deleting understood.json.
+PROMPT_VERSION = "pu_v1"
 
 
 def _norm_panel_kind(v: Any) -> str:
@@ -212,6 +217,19 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
     }
 
 
+def _scene_sha(scene_path: Optional[str]) -> str:
+    """sha1 of the scene file's bytes; '' when scene_path is missing/falsy or
+    unreadable. Fail-soft so a not-yet-materialized/synthetic scene_path
+    (unit tests) never crashes the resume/emit path — it just never matches
+    a real cached sha, which is the correct (re-run) outcome."""
+    if not scene_path:
+        return ""
+    try:
+        return input_sha(scene_path)
+    except OSError:
+        return ""
+
+
 def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
                       *, log: Callable[[str], None] = lambda _m: None,
                       prior: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -232,9 +250,14 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
     prev_descs: List[str] = []
 
     def _understand(it: Dict[str, Any], ctx: List[str]) -> Dict[str, Any]:
-        return assemble_record(
+        rec = assemble_record(
             it.get("scene_file"),
             call_fn(build_payload(it, ctx), it.get("scene_path")))
+        # Content-keyed provenance, stamped at emit time (see the prior.get(sf)
+        # acceptance check below, which requires both to still match on resume).
+        rec["scene_sha"] = _scene_sha(it.get("scene_path"))
+        rec["prompt_version"] = PROMPT_VERSION
+        return rec
 
     def _flush(batch: List[Dict[str, Any]]) -> None:
         if not batch:
@@ -257,7 +280,16 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
         if not sf:
             continue
         done = prior.get(sf)
-        if done and done.get("description") and not done.get("error"):
+        # Resume acceptance is content-keyed, not name-keyed: the scene's own
+        # pixels AND the prompt that produced the description must both still
+        # match, else new art under an old filename (or a prompt rewrite)
+        # would silently reuse stale understanding. A record missing either
+        # key (pre-Task-12 cache) is a legacy record — NOT accepted; it
+        # re-runs once and gets stamped, which is the intended one-time
+        # migration cost.
+        if (done and done.get("description") and not done.get("error")
+                and done.get("scene_sha") == _scene_sha(it.get("scene_path"))
+                and done.get("prompt_version") == PROMPT_VERSION):
             _flush(batch)                # emit the pending batch first (keep order)
             batch = []
             out.append(done)
