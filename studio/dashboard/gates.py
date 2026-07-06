@@ -173,11 +173,3 @@ def concat_allowed(con: sqlite3.Connection, bundle_id: int) -> Tuple[bool, str]:
     if not _has_approval(con, "concat", bundle_id=bundle_id):
         return False, "needs concat approval"
     return True, ""
-
-
-def teaser_allowed(con: sqlite3.Connection, bundle_id: int) -> Tuple[bool, str]:
-    """The teaser is the bundle's cold open — confirm-upstream-before-render:
-    the user must read+approve the selected hook before it's prepended."""
-    if not _has_approval(con, "teaser", bundle_id=bundle_id):
-        return False, "needs teaser approval"
-    return True, ""

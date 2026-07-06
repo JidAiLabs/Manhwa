@@ -373,6 +373,54 @@ def test_drop_panel_button_bans_file_and_requeues(client, tmp_path):
                        ).fetchone()[0] == 1
 
 
+def test_drop_then_render_blocked_until_reprepared(client, tmp_path):
+    """Operator drops a bad panel on an already-rendered+approved chapter: the
+    drop writes manual_drops.json + enqueues a re-prepare (existing behavior,
+    see test_drop_panel_button_bans_file_and_requeues above). Once the
+    re-prepare rewrites the clean plan (simulated here the SAME way
+    test_post_revoice_restamps_stale_voice_approval fakes a pipeline rewrite —
+    no real subprocess chain runs), the render gate's content_sha binding
+    must catch the drift: a direct render attempt — the exact gate check
+    worker._h_render_segment makes before touching any tool — is blocked
+    until the chapter is re-approved against the NEW plan."""
+    import io
+    import json as _json
+    from studio.dashboard import gates
+    from studio import worker
+
+    c, con = client
+    ep = tmp_path / "ep"
+    (ep / "tts").mkdir(parents=True)
+    (ep / "render.plan.clean.json").write_text('{"cuts": ["a"]}')
+    (ep / "tts" / "tts_index.json").write_text('{"clips": ["a"]}')
+    con.execute("UPDATE chapter SET ep_dir=?, status='rendered' WHERE id=1",
+               (str(ep),))
+    con.execute("INSERT INTO stage_run (chapter_id, stage, ok, duration_sec) "
+                "VALUES (1,'qa_scan',1,10)")
+    con.commit()
+    c.post("/approve", data={"gate": "render", "chapter_id": 1},
+           follow_redirects=False)
+    assert gates.render_allowed(con, 1, str(ep))[0] is True   # baseline: clean
+
+    r = c.post("/chapter/1/drop", data={"file": "p000031.jpg"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert _json.loads((ep / "manual_drops.json").read_text()) == \
+        ["p000031.jpg"]
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='prepare' AND "
+                       "chapter_id=1").fetchone()[0] == 1
+
+    # Simulate the re-prepare completing: it drops the panel and rewrites
+    # render.plan.clean.json with different bytes.
+    (ep / "render.plan.clean.json").write_text('{"cuts": []}')
+
+    allowed, why = gates.render_allowed(con, 1, str(ep))
+    assert allowed is False and "approval" in why
+
+    with pytest.raises(RuntimeError, match="approval"):
+        worker._h_render_segment(con, {"chapter_id": 1}, io.StringIO())
+
+
 def test_chapter_page_gallery_shows_flow_span_grouped(client, tmp_path,
                                                       monkeypatch):
     """Adaptive flow narration: the chapter page's narration gallery renders

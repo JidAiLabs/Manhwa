@@ -47,8 +47,10 @@ def test_approve_sets_state_and_records_gate(client):
     assert r.status_code == 303
     assert con.execute("SELECT teaser_state FROM bundle WHERE id=?",
                        (bid,)).fetchone()[0] == "approved"
-    # an explicit teaser approval is recorded so the gate can attest to it
-    assert gates.teaser_allowed(con, bid)[0] is True
+    # an explicit teaser approval is recorded (concat_allowed reads it via
+    # bundle.teaser_state, not a dedicated teaser_allowed gate — that dead
+    # API was deleted; approval EXISTENCE is what matters here)
+    assert gates._has_approval(con, "teaser", bundle_id=bid) is True
 
 
 def test_videos_page_renders_plan_teaser_button(client):

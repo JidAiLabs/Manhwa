@@ -1081,7 +1081,13 @@ def _autostart_intro_if_ready(con: sqlite3.Connection, chapter_id: int,
     auto_intro=True (the worker then auto-approves it + builds intro+ch1). Fires
     once per bundle — guarded by teaser_state AND a dedupe on any existing
     plan_teaser job, so a second render-completion pass can't double-enqueue.
-    A no-op when autopilot is off (the manual Plan-teaser path is preserved)."""
+    A no-op when autopilot is off (the manual Plan-teaser path is preserved) OR
+    when [teaser].enabled is False — that config knob gates ONLY this
+    auto-start path; the manual dashboard 'Plan teaser' button stays
+    unconditional."""
+    cfg, _, _ = _beats_cfg()
+    if not cfg.teaser_enabled:
+        return
     rows = con.execute("SELECT bundle_id FROM bundle_chapter WHERE chapter_id=?",
                        (chapter_id,)).fetchall()
     for (bid,) in rows:
@@ -1118,11 +1124,12 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
     """Plan + render a bundle's ARC TEASER (the cold open). teaser_planner.py
     selects a high-stakes window across the bundle's chapters and materializes a
     SYNTHETIC episode dir (dist/bundle_<id>/teaser/); we then run the SAME render
-    TOOLS the chapter segments use on that dir (script_expander -> local TTS ->
-    timeline_planner -> render_prep -> remotion), copy the result to
-    dist/bundle_<id>/teaser.mp4, and mark the teaser 'planned' for review. When
-    the planner selects no window it writes nothing -> teaser_state stays 'none'
-    so the concat is never blocked waiting on a teaser that doesn't exist."""
+    TOOLS the chapter segments use on that dir (script_expander -> sanitize ->
+    TTS, backend-dispatched exactly like pipeline._stage_voiced -> timeline_planner
+    -> render_prep -> remotion), copy the result to dist/bundle_<id>/teaser.mp4,
+    and mark the teaser 'planned' for review. When the planner selects no window
+    it writes nothing -> teaser_state stays 'none' so the concat is never
+    blocked waiting on a teaser that doesn't exist."""
     import shutil
     from studio import pipeline as _pl
     bid = job["bundle_id"]
@@ -1150,7 +1157,11 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
                 "--out-dir", str(out_dir),
                 "--backend", cfg.beats_backend,
                 "--max-scan-chapters", str(cfg.teaser_max_hook_scan_chapters),
-                "--shortlist-n", str(cfg.teaser_shortlist_n)]
+                "--shortlist-n", str(cfg.teaser_shortlist_n),
+                "--min-panels", str(cfg.teaser_min_panels),
+                "--max-hook-panels", str(cfg.teaser_max_hook_panels),
+                "--payoff-tail-frac", str(cfg.teaser_payoff_tail_frac),
+                "--max-seconds", str(cfg.teaser_max_seconds)]
         if cfg.beats_backend == "ollama":
             argv += ["--ollama-model", cfg.beats_model]
         else:
@@ -1164,22 +1175,59 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
             return
         # 2) render the teaser dir with the chapter render tool chain. The first
         # three go through pipeline._run_tool (it sets PYTHONPATH for the tools);
-        # render_prep + remotion mirror _h_render_segment exactly.
+        # render_prep + remotion mirror _h_render_segment exactly — EXCEPT no
+        # prep_qa/render_allowed gate: teaser_state='planned' already forces a
+        # human to watch the finished mp4 before it can be approved/prepended,
+        # so an automated QA pass here would just be redundant gatekeeping in
+        # front of mandatory human review. Never add a teaser prep_qa step.
         _pl._run_tool("script_expander.py",
                       ["--beats", str(out_dir / "manifest.beats.json"),
                        "--out", str(out_dir / "manifest.script.json"),
                        "--model", cfg.script_model,
                        "--narration-source", "gemini_verbatim",
                        "--cast", str(out_dir / "manifest.cast.json")])
-        tts_args = ["--script", str(out_dir / "manifest.script.json"),
-                    "--out-dir", str(out_dir / "tts"),
-                    "--backend", (cfg.tts_backend or "elevenlabs").lower()]
-        if cfg.tts_voice_ref:
-            tts_args += ["--voice-ref", cfg.tts_voice_ref]
-        if (cfg.tts_backend or "").lower() == "kokoro" and cfg.tts_kokoro_voice:
-            tts_args += ["--kokoro-voice", cfg.tts_kokoro_voice]
-        _pl._run_tool("local_tts_from_manifest.py", tts_args,
-                      python_exe=cfg.tts_python)
+        # ADVERTISER-SAFETY: mirror pipeline._stage_scripted + _stage_voiced —
+        # sanitize the teaser narration BEFORE it's ever voiced. A teaser has
+        # no separate 'voiced' stage to re-check the marker later, so the gate
+        # lives right here: unresolved blocks FAIL this job outright (never
+        # voice unsanitized).
+        if cfg.narration_sanitize:
+            _run_sanitize(out_dir, log)
+            unresolved = _pl._read_sanitize_unresolved(
+                out_dir / "manifest.sanitize.json")
+            if unresolved:
+                preview = ", ".join(
+                    f"{b.get('segment_id', '?')}:'{b.get('matched', '')}'"
+                    for b in unresolved[:5])
+                raise RuntimeError(
+                    f"teaser blocked: narration sanitize left "
+                    f"{len(unresolved)} unresolved advertiser-safety "
+                    f"BLOCK(s) [{preview}] — see "
+                    f"{out_dir / 'manifest.sanitize.json'}")
+        # TTS backend dispatch — mirrors pipeline._stage_voiced exactly (local
+        # backends here always went through the local CLI; the bug was
+        # unconditionally doing that even when cfg.tts_backend=="elevenlabs",
+        # which local_tts_from_manifest's argparse rejects outright).
+        backend = (cfg.tts_backend or "elevenlabs").lower()
+        if backend != "elevenlabs":
+            tts_args = ["--script", str(out_dir / "manifest.script.json"),
+                        "--out-dir", str(out_dir / "tts"),
+                        "--backend", backend]
+            if cfg.tts_voice_ref:
+                tts_args += ["--voice-ref", cfg.tts_voice_ref]
+            if float(getattr(cfg, "tts_speed", 1.0) or 1.0) != 1.0:
+                tts_args += ["--speed", str(cfg.tts_speed)]
+            if backend == "kokoro" and cfg.tts_kokoro_voice:
+                tts_args += ["--kokoro-voice", cfg.tts_kokoro_voice]
+            _pl._run_tool("local_tts_from_manifest.py", tts_args,
+                          python_exe=cfg.tts_python)
+        else:
+            _pl._check_elevenlabs()
+            voice = os.environ.get("ELEVENLABS_VOICE_ID", "")
+            _pl._run_tool("elevenlabs_tts_from_manifest.py",
+                          ["--script", str(out_dir / "manifest.script.json"),
+                           "--out-dir", str(out_dir / "tts"),
+                           "--voice-id", voice])
         _pl._run_tool("timeline_planner.py",
                       ["--groups", str(out_dir / "manifest.groups.json"),
                        "--beats", str(out_dir / "manifest.beats.json"),

@@ -11,12 +11,30 @@ pointed at tmp_path so dist/ writes stay hermetic.
 from __future__ import annotations
 
 import io
+import types
 from pathlib import Path
 
 from studio.catalog.db import connect
 from studio.catalog import repo
 
 FIXED_NOW = "2026-06-28T00:00:00+00:00"
+
+
+def _fake_cfg(**overrides):
+    """A cfg double covering every attribute _h_teaser/_autostart_intro_if_ready
+    read — Task 13 wiring widened that surface (spoiler/cost-guard params +
+    narration_sanitize + teaser_enabled), so tests that pin down one field
+    still need the rest present. Callers override only what they care about."""
+    base = dict(
+        beats_backend="vertex", beats_model="gemini-2.5-flash",
+        teaser_model="gemini-2.5-flash", teaser_max_hook_scan_chapters=12,
+        teaser_shortlist_n=4, teaser_min_panels=4, teaser_max_hook_panels=10,
+        teaser_payoff_tail_frac=0.2, teaser_max_seconds=90,
+        teaser_enabled=True, narration_sanitize=False,
+        script_model="gpt-5-nano", tts_backend="chatterbox", tts_voice_ref="",
+        tts_kokoro_voice="", tts_python="", tts_speed=1.0)
+    base.update(overrides)
+    return types.SimpleNamespace(**base)
 
 
 def _bundle(con, tmp_path, n=2):
@@ -182,3 +200,177 @@ def test_h_concat_no_teaser_when_declined(tmp_path, monkeypatch):
 
     assert not captured["segs"][0].endswith("teaser.mp4")
     assert len(captured["segs"]) == 2                       # chapters only
+
+
+# ---------------------------------------------------------------------------
+# Task 13: config wiring + backend dispatch + sanitize gate
+# ---------------------------------------------------------------------------
+
+def test_h_teaser_passes_spoiler_and_cost_guard_params(tmp_path, monkeypatch):
+    """teaser_min_panels/max_hook_panels/payoff_tail_frac/max_seconds must
+    reach the planner's argv. The planner's own --payoff-tail-frac argparse
+    default is 0.0 (guard OFF) — if this wiring is missing, the configured
+    0.20 spoiler guard silently never engages in production."""
+    import studio.worker as w
+
+    con = connect(tmp_path / "s.db")
+    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    monkeypatch.setattr(w, "_beats_cfg", lambda: (
+        _fake_cfg(teaser_min_panels=6, teaser_max_hook_panels=9,
+                  teaser_payoff_tail_frac=0.33, teaser_max_seconds=45),
+        "proj", "loc"))
+    stream_calls: list = []
+    monkeypatch.setattr(w, "_stream", lambda argv, log, **k:
+                        stream_calls.append([str(a) for a in argv]) or 0)
+
+    w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+
+    argv = next(c for c in stream_calls if any("teaser_planner.py" in a for a in c))
+    assert argv[argv.index("--min-panels") + 1] == "6"
+    assert argv[argv.index("--max-hook-panels") + 1] == "9"
+    assert argv[argv.index("--payoff-tail-frac") + 1] == "0.33"
+    assert argv[argv.index("--max-seconds") + 1] == "45"
+
+
+def _stream_with_teaser_manifest(out_dir):
+    """A fake_stream that satisfies the planner-writes-a-manifest gate and the
+    remotion-writes-a-segment gate, so _h_teaser runs past both early exits."""
+    def fake_stream(argv, log, **k):
+        sargv = [str(a) for a in argv]
+        if any("teaser_planner.py" in a for a in sargv):
+            od = Path(sargv[sargv.index("--out-dir") + 1])
+            od.mkdir(parents=True, exist_ok=True)
+            (od / "manifest.teaser.json").write_text("{}")
+        if "remotion" in sargv:
+            (out_dir / "render").mkdir(parents=True, exist_ok=True)
+            (out_dir / "render" / "segment_none.mp4").write_bytes(b"\x00")
+        return 0
+    return fake_stream
+
+
+def test_h_teaser_elevenlabs_backend_routes_to_elevenlabs_tool(
+        tmp_path, monkeypatch):
+    """[tts].backend='elevenlabs' must route to elevenlabs_tts_from_manifest.py
+    (mirrors pipeline._stage_voiced's dispatch) — local_tts_from_manifest's
+    argparse doesn't accept 'elevenlabs' as a --backend choice, so the old
+    unconditional local-CLI call exited 2 whenever this backend was configured."""
+    import studio.worker as w
+    import studio.pipeline as pl
+
+    con = connect(tmp_path / "s.db")
+    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    monkeypatch.setattr(w, "_beats_cfg", lambda: (
+        _fake_cfg(tts_backend="elevenlabs"), "proj", "loc"))
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+    monkeypatch.setenv("ELEVENLABS_VOICE_ID", "voice-123")
+    out_dir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    monkeypatch.setattr(w, "_stream", _stream_with_teaser_manifest(out_dir))
+    tool_calls: list = []
+    monkeypatch.setattr(
+        pl, "_run_tool",
+        lambda script, args, **k: tool_calls.append((script, list(args))))
+
+    w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+
+    names = [s for s, _ in tool_calls]
+    assert "elevenlabs_tts_from_manifest.py" in names
+    assert "local_tts_from_manifest.py" not in names
+    ev_args = next(a for s, a in tool_calls
+                  if s == "elevenlabs_tts_from_manifest.py")
+    assert ev_args[ev_args.index("--voice-id") + 1] == "voice-123"
+
+
+def test_h_teaser_local_backend_includes_speed(tmp_path, monkeypatch):
+    """A non-1.0 cfg.tts_speed must reach local_tts_from_manifest's argv —
+    the old call omitted --speed unconditionally, so teaser narration always
+    voiced at 1.0x regardless of the chapter TTS tempo."""
+    import studio.worker as w
+    import studio.pipeline as pl
+
+    con = connect(tmp_path / "s.db")
+    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    monkeypatch.setattr(w, "_beats_cfg", lambda: (
+        _fake_cfg(tts_backend="chatterbox", tts_speed=1.15), "proj", "loc"))
+    out_dir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    monkeypatch.setattr(w, "_stream", _stream_with_teaser_manifest(out_dir))
+    tool_calls: list = []
+    monkeypatch.setattr(
+        pl, "_run_tool",
+        lambda script, args, **k: tool_calls.append((script, list(args))))
+
+    w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+
+    local_args = next(a for s, a in tool_calls if s == "local_tts_from_manifest.py")
+    assert local_args[local_args.index("--speed") + 1] == "1.15"
+
+
+def test_h_teaser_sanitize_before_tts_unresolved_fails(tmp_path, monkeypatch):
+    """narration_sanitize_pass must run on the teaser script BEFORE any TTS
+    tool call, and unresolved advertiser-safety blocks FAIL the job outright
+    (never voice unsanitized) — the teaser previously skipped the sanitizer
+    entirely, so a hard BLOCK line could reach TTS unfiltered."""
+    import json
+    import pytest
+    import studio.worker as w
+    import studio.pipeline as pl
+
+    con = connect(tmp_path / "s.db")
+    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    monkeypatch.setattr(w, "_beats_cfg", lambda: (
+        _fake_cfg(narration_sanitize=True), "proj", "loc"))
+
+    def fake_stream(argv, log, **k):
+        sargv = [str(a) for a in argv]
+        if any("teaser_planner.py" in a for a in sargv):
+            od = Path(sargv[sargv.index("--out-dir") + 1])
+            od.mkdir(parents=True, exist_ok=True)
+            (od / "manifest.teaser.json").write_text("{}")
+        if any("narration_sanitize_pass.py" in a for a in sargv):
+            marker = Path(sargv[sargv.index("--marker") + 1])
+            marker.write_text(json.dumps({"unresolved_blocks": [
+                {"segment_id": "g0001_p01", "matched": "slur"}]}))
+            return 2                      # tool contract: 2 = unresolved recorded
+        return 0
+
+    monkeypatch.setattr(w, "_stream", fake_stream)
+    tool_calls: list = []
+    monkeypatch.setattr(
+        pl, "_run_tool", lambda script, args, **k: tool_calls.append(script))
+
+    with pytest.raises(RuntimeError, match="unresolved"):
+        w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+
+    # script_expander ran (sanitize needs its output) but NO TTS/timeline
+    # tool ever fired -> the block landed strictly before voicing.
+    assert tool_calls == ["script_expander.py"]
+
+
+def test_autostart_intro_skipped_when_teaser_disabled(tmp_path, monkeypatch):
+    """teaser_enabled=False gates ONLY the auto-start detection path — the
+    manual dashboard 'Plan teaser' button (post_teaser_plan in app.py, which
+    enqueues plan_teaser directly with no cfg check at all) stays
+    unconditional, per the brief's explicit requirement."""
+    import studio.worker as w
+    from studio.dashboard import jobs
+
+    con = connect(tmp_path / "s.db")
+    sid, bid, cids = _bundle(con, tmp_path, n=2)
+    con.execute("UPDATE series SET autopilot=1 WHERE id=?", (sid,))
+    con.commit()
+    monkeypatch.setattr(w, "_beats_cfg", lambda: (
+        _fake_cfg(teaser_enabled=False), "proj", "loc"))
+
+    # AUTO-START: disabled -> no plan_teaser even though fully rendered +
+    # autopilot is on (both other preconditions satisfied).
+    w._autostart_intro_if_ready(con, cids[-1], io.StringIO())
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
+                       ).fetchone()[0] == 0
+
+    # MANUAL: the button's own enqueue call is untouched by this flag.
+    jobs.enqueue(con, "plan_teaser", bundle_id=bid, payload={})
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' "
+                       "AND bundle_id=?", (bid,)).fetchone()[0] == 1

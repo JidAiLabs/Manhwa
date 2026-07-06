@@ -72,14 +72,6 @@ def test_concat_blocked_when_teaser_planned(tmp_path):
     assert gates.concat_allowed(con, bid)[0] is True
 
 
-def test_teaser_gate_requires_teaser_approval(tmp_path):
-    con = _con(tmp_path)
-    allowed, why = gates.teaser_allowed(con, 5)
-    assert not allowed and "teaser" in why
-    gates.approve(con, "teaser", bundle_id=5, note="hook is strong")
-    assert gates.teaser_allowed(con, 5) == (True, "")
-
-
 def test_voice_gate_requires_narration_approval(tmp_path):
     con = _con(tmp_path)
     allowed, why = gates.voice_allowed(con, 1)

@@ -909,6 +909,9 @@ def test_teaser_auto_mode_approves_and_enqueues_concat(tmp_path, monkeypatch):
     fake_cfg = types.SimpleNamespace(
         beats_backend="ollama", beats_model="gemma", teaser_model="gemma",
         teaser_max_hook_scan_chapters=3, teaser_shortlist_n=4,
+        teaser_min_panels=4, teaser_max_hook_panels=10,
+        teaser_payoff_tail_frac=0.2, teaser_max_seconds=90,
+        narration_sanitize=True,
         script_model="gpt", tts_backend="kokoro", tts_voice_ref=None,
         tts_kokoro_voice=None, tts_python=None)
     monkeypatch.setattr(worker, "_beats_cfg", lambda: (fake_cfg, "proj", "loc"))
@@ -941,6 +944,9 @@ def test_teaser_manual_mode_parks_for_review(tmp_path, monkeypatch):
     fake_cfg = types.SimpleNamespace(
         beats_backend="ollama", beats_model="gemma", teaser_model="gemma",
         teaser_max_hook_scan_chapters=3, teaser_shortlist_n=4,
+        teaser_min_panels=4, teaser_max_hook_panels=10,
+        teaser_payoff_tail_frac=0.2, teaser_max_seconds=90,
+        narration_sanitize=True,
         script_model="gpt", tts_backend="kokoro", tts_voice_ref=None,
         tts_kokoro_voice=None, tts_python=None)
     monkeypatch.setattr(worker, "_beats_cfg", lambda: (fake_cfg, "proj", "loc"))
