@@ -1535,3 +1535,44 @@ def test_qa_verdict_mtime_just_below_boundary_blocks(tmp_path):
     os.utime(report, (just_below, just_below))
     v = worker._qa_verdict(tmp_path, started_at=started_at)
     assert v.ok is False and v.blocking == {"qa_report_invalid"}
+
+
+def test_impact_mismatch_blocks_and_env_hatch_demotes(tmp_path, monkeypatch):
+    """Eyes wave: impact_mismatch is in the blocking set (a narrated segment
+    contradicting detector-verified impact SFX must not ship un-healed), and
+    the STUDIO_QA_NONBLOCKING hatch can demote it without a deploy."""
+    import json
+    assert "impact_mismatch" in worker._CRITICAL_QA_CODES
+    started_at = time.time()
+    (tmp_path / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "impact_mismatch", "severity": "ERROR"}]}))
+    v = worker._qa_verdict(tmp_path, started_at=started_at)
+    assert v.ok is False and v.blocking == {"impact_mismatch"}
+    monkeypatch.setenv("STUDIO_QA_NONBLOCKING", "impact_mismatch")
+    v2 = worker._qa_verdict(tmp_path, started_at=started_at)
+    assert v2.ok is True and v2.blocking == set()
+    assert v2.codes == {"impact_mismatch"}     # hatch silences the gate, not the signal
+
+
+def test_regen_flagged_passes_understanding_to_the_writer(tmp_path, monkeypatch):
+    """Eyes wave: the heal regen MUST hand gemini_narrative_pass the
+    understanding manifest (--understood), exactly like the primary beated
+    stage does — the impact_mismatch heal-then-block design depends on the
+    re-rolled group's payload carrying the [IMPACT SFX on panel] marker,
+    which _pack_group_payload can only build from understood records."""
+    import types
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    calls = []
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
+                        calls.append(" ".join(map(str, cmd))) or 0)
+    cfg = types.SimpleNamespace(beats_model="gemma", beats_backend="ollama",
+                                punchup="off", script_model="s",
+                                narration_source="gemini_verbatim",
+                                narration_sanitize=False)
+    worker._regen_flagged(ep, cfg, "", "", str(ep / "corr.json"), None,
+                          open(tmp_path / "log.txt", "w"))
+    gnp = [c for c in calls if "gemini_narrative_pass.py" in c]
+    assert gnp, "heal regen must invoke the narration writer"
+    assert "--understood" in gnp[0]
+    assert str(ep / "manifest.panels.understood.json") in gnp[0]

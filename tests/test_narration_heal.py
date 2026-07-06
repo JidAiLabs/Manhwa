@@ -183,3 +183,19 @@ def test_heal_multi_panel_group_single_correction_entry():
     corr = nh.corrections_from_qa(rep)
     assert list(corr.keys()) == [7]          # one entry, not two
     assert "PANEL 1" in corr[7]             # both notes merged
+
+
+def test_impact_mismatch_is_healable_error():
+    """Eyes wave: impact_mismatch is heal-THEN-block — the heal loop must
+    re-narrate the flagged group (whose payload now carries the [IMPACT SFX]
+    marker) before the worker's blocking set can park the chapter."""
+    assert "impact_mismatch" in nh.HEALABLE
+    rep = {"flags": [{
+        "code": "impact_mismatch", "severity": "ERROR",
+        "segment_id": "g0005",
+        "detail": "detector-verified impact SFX on p000036.jpg but the "
+                  "narration has no impact wording"}]}
+    corr = nh.corrections_from_qa(rep)
+    assert 5 in corr
+    note = corr[5].lower()
+    assert "impact" in note and ("strike" in note or "stab" in note)

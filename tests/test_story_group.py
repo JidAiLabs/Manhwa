@@ -382,3 +382,47 @@ def test_oversized_beat_splits_at_cap():
 
 def test_default_cap_is_tighter():
     assert sg.DEFAULT_MAX_BEAT_LEN == 6
+
+
+def test_unsafe_spine_dumps_raw_response_before_raising(tmp_path, monkeypatch):
+    """Diagnosability (eyes wave): when spine validation rejects the grouping
+    ("unsafe chapter story spine"), the raw model response is atomically
+    dumped beside the manifests and the raise message names the file — the
+    ORV ep1 grouped_failed left NOTHING to diagnose."""
+    import json
+    import sys as _sys
+
+    import pytest
+
+    understood = {"panels": [{
+        "scene_file": "p0.jpg", "description": "A man walks the ridge line.",
+        "action": "he walks on", "subjects": ["a man"],
+        "panel_kind": "story", "intensity": "calm"}]}
+    vision = {"items": [{"scene_file": "p0.jpg"}]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps(understood))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    out = tmp_path / "manifest.groups.json"
+
+    def fake_call(**kw):
+        parsed = {"chapter": {"logline": "A ridge walk.", "premise": ""},
+                  "beats": [{"scene_files": ["p0.jpg"]}]}
+        return parsed, "RAW_MODEL_TEXT", {}
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")   # main() mutates it
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up),
+        "--vision-manifest", str(vp), "--out", str(out)])
+    with pytest.raises(SystemExit) as ei:
+        sg.main()
+    msg = str(ei.value)
+    assert "unsafe chapter story spine" in msg
+    dumps = sorted(tmp_path.glob(".story_group_raw-*.json"))
+    assert len(dumps) == 1, "raw capture file must exist beside the manifests"
+    data = json.loads(dumps[0].read_text())
+    assert data["raw_response"] == "RAW_MODEL_TEXT"
+    assert data["parsed_obj"]["chapter"]["premise"] == ""
+    assert data["model"] and data["ts"]
+    assert dumps[0].name in msg               # the raise names the capture

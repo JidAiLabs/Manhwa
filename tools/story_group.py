@@ -20,9 +20,11 @@ Coverage is an invariant: every non-chrome panel lands in exactly one shot
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 _TD = os.path.dirname(os.path.abspath(__file__))
@@ -117,6 +119,25 @@ def _chapter_spine_issue(value: Any, payload: Dict[str, Any]) -> str:
     if not _chapter_spine_complete(value):
         return "chapter logline/premise is blank"
     return ""
+
+
+def _dump_story_group_raw(ep_dir: str, *, raw_response: Any, parsed_obj: Any,
+                          model: str) -> str:
+    """Atomically dump the grouper's LAST raw model response beside the
+    manifests when spine validation rejects it, and return the path (the
+    raise names it). Diagnosability fix: a grouped_failed used to leave
+    NOTHING to inspect — the raw text was discarded inside call_fn. Plain
+    tmp+rename (not write_manifest): this is a debug capture, not a manifest
+    with declared inputs."""
+    ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = os.path.join(ep_dir, f".story_group_raw-{ts}.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"raw_response": raw_response, "parsed_obj": parsed_obj,
+                   "model": model, "ts": ts},
+                  f, ensure_ascii=False, indent=2, default=str)
+    os.replace(tmp, path)
+    return path
 
 
 def _normalized_group_num_ctx(value: Any) -> int:
@@ -530,6 +551,10 @@ def main() -> int:
                               location=args.location)
         model = args.model
 
+    # the LAST attempt's raw/parsed response, kept for the rejection dump —
+    # without this a spine rejection discards the very evidence it needs.
+    last_call: Dict[str, Any] = {"raw": None, "parsed": None}
+
     def call_fn(payload: Dict[str, Any]):
         parsed = None
         issue = ""
@@ -546,6 +571,7 @@ def main() -> int:
                 user_payload=payload, image_paths=[], response_schema=GROUP_SCHEMA,
                 max_output_tokens=3000, temperature=args.temperature,
                 backoff_max=60.0, backend=args.backend)
+            last_call["raw"], last_call["parsed"] = _raw, parsed
             issue = _chapter_spine_issue(
                 (parsed or {}).get("chapter") if isinstance(parsed, dict) else None,
                 payload)
@@ -564,9 +590,14 @@ def main() -> int:
     premise = str((chapter or {}).get("premise") or "").strip()
     spine_issue = _chapter_spine_issue(chapter, build_grouping_payload(story))
     if spine_issue:
+        dump = _dump_story_group_raw(
+            os.path.dirname(os.path.abspath(args.out)),
+            raw_response=last_call["raw"], parsed_obj=last_call["parsed"],
+            model=model)
         raise SystemExit(
             "Grouping model returned an unsafe chapter story spine: "
-            + spine_issue + "; refusing to continue")
+            + spine_issue + f"; raw response captured at {dump}"
+            "; refusing to continue")
     # caption-only beats fold into their neighbour so the text rides real art
     shots = merge_caption_solos(shots, caption_files(story))
     shots = annotate_intensity(shots, panels)   # per-shot PACE = peak intensity

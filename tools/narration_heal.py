@@ -31,6 +31,13 @@ HEALABLE = {
     "filler_narration", "beats_incomplete",
     "empty_item", "silent_group", "grounding_weak",
     "shot_description", "filename_in_narration",
+    # detector-verified impact SFX on a span panel but no impact wording in
+    # the line — re-narration IS the fix: the regenerated group's writer
+    # payload carries the [IMPACT SFX on panel] marker, so the re-roll sees
+    # the very signal the original miss lacked. Heal-THEN-block: this code is
+    # also in the worker's _CRITICAL_QA_CODES, so blocking only survives when
+    # healing can't clear it.
+    "impact_mismatch",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -67,6 +74,12 @@ def _note_for(code: str, detail: str) -> str:
                 "actually HAPPENS across these panels: who does what, the force, "
                 "the outcome. Never mention a file, an image name, or 'the series "
                 "of images'.")
+    if code == "impact_mismatch":
+        return ("Painted IMPACT-SFX lettering is on this panel — a strike, "
+                "stab, blow, or crash is landing HERE, and the current line "
+                "misses it entirely. Re-narrate the physical impact "
+                "explicitly: who strikes, what lands, the force and the "
+                "damage. Never describe this panel as calm or uneventful.")
     if code in ("beats_incomplete", "empty_item", "silent_group"):
         return ("The narration is empty — describe what actually happens in this "
                 "panel (and cover any on-panel caption).")

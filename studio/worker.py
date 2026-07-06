@@ -241,6 +241,12 @@ _CRITICAL_QA_CODES = {
     # narration, it can't restore a swapped-away panel. A genuine own-panel
     # long hold (content-driven pacing) never carries this code.
     "long_hold",
+    # a narrated segment contradicts DETECTOR-verified impact SFX on its span
+    # (a stab panel narrated as a peaceful stroll). Heal-THEN-block: the code
+    # is in narration_heal.HEALABLE, so the heal loop re-narrates the group
+    # first (its writer payload now carries the [IMPACT SFX on panel] marker)
+    # — blocking survives only when healing can't clear it.
+    "impact_mismatch",
 }
 # DELIBERATELY NOT critical: "visual_loop". It looks like montage_degenerate's
 # sibling, but render_prep.cap_repeats_with_holds caps every NON-exempt panel at
@@ -483,6 +489,11 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
              "--project", project, "--location", location,
              "--model", cfg.beats_model, "--cast", cast,
              "--story", str(ep / "manifest.story.json"),
+             # the understanding, exactly like the primary beated stage: the
+             # regenerated group's payload must carry the per-panel records —
+             # including the [IMPACT SFX on panel] marker impact_mismatch
+             # healing depends on. The writer fail-softs if the file is gone.
+             "--understood", str(ep / "manifest.panels.understood.json"),
              "--resume", "--corrections", corr_path, "--max-images-per-group", "6"]
     if cfg.beats_backend == "ollama":
         gargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]

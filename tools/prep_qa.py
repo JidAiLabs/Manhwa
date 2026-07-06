@@ -945,6 +945,66 @@ def filename_in_narration_flags(beats_obj: Any) -> List[Dict[str, Any]]:
     return flags
 
 
+# --- impact_mismatch (eyes wave) ---------------------------------------------
+# Impact-class lexicon — a DATA constant, deliberately crude: word STEMS
+# matched at word START, case-insensitive ("stab" covers stabs/stabbing;
+# "pierc" covers pierce/piercing). It catches "peaceful vibes over a stab
+# panel", not poetry. Over-matching (e.g. "cut" also matching "cute") can only
+# SUPPRESS a flag, never create one — the safe direction for a blocking gate.
+# The trigger side is the deterministic impact-SFX detector's stamp
+# (impact_sfx.present in manifest.panels.understood.json), never a model claim.
+_IMPACT_LEXEMES = frozenset({
+    "strik", "struck", "stab", "pierc", "slash", "blow", "hit", "smash",
+    "crash", "impact", "plung", "thrust", "impal", "skewer", "slam", "punch",
+    "kick", "clash", "shatter", "burst", "explo", "gash", "wound", "blood",
+    "bleed", "cut", "sever", "cleav", "bash", "pummel",
+    "drive the blade", "drives the blade", "drove the blade",
+    "run through", "runs through", "ran through",
+})
+_IMPACT_LEXEME_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(re.escape(w) for w in _IMPACT_LEXEMES)) + r")",
+    re.IGNORECASE)
+
+
+def has_impact_lexeme(line: str) -> bool:
+    """True when the narration line carries ANY impact-class word stem."""
+    return bool(_IMPACT_LEXEME_RE.search(str(line or "")))
+
+
+def impact_mismatch_flags(beats_obj: Any, understood_obj: Any
+                          ) -> List[Dict[str, Any]]:
+    """Deterministic narration-vs-art gate (ERROR, heal-then-block): a
+    narrated segment whose span contains a DETECTOR-stamped impact panel
+    (impact_sfx.present, stamped by panel_understand from the impact-SFX
+    lettering detector) must carry at least one impact-class lexeme. A stab
+    panel narrated as a peaceful stroll is exactly the mismatch class the
+    grounding judge scores too softly (WARN) to gate on. Healable: the heal
+    loop re-narrates the group, whose writer payload now carries the
+    [IMPACT SFX on panel] marker. Same _base_scene normalization as
+    span_cover_flags so render-split halves trace back to the understood
+    panel. Silent on legacy understanding (no impact_sfx stamps)."""
+    flags: List[Dict[str, Any]] = []
+    impact_files = {
+        _base_scene(os.path.basename(str(p.get("scene_file") or "")))
+        for p in ((understood_obj or {}).get("panels") or [])
+        if isinstance(p, dict) and (p.get("impact_sfx") or {}).get("present")}
+    if not impact_files or not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            hits = [f for f in s["span"] if _base_scene(f) in impact_files]
+            if hits and line and not has_impact_lexeme(line):
+                flags.append(_flag(
+                    "impact_mismatch", ERROR,
+                    f"detector-verified impact SFX on {hits[0]} but the "
+                    f"narration has no impact wording: {line[:80]!r} — "
+                    "re-narrate the strike/stab/blow explicitly",
+                    scene=str(hits[0]), segment_id=seg))
+    return flags
+
+
 def span_cover_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
                      vitems: Optional[Dict[str, Dict[str, Any]]] = None
                      ) -> List[Dict[str, Any]]:
@@ -1946,6 +2006,7 @@ def main() -> int:
     script_obj = _load_manifest("manifest.script.json")
     story_obj = _load_manifest("manifest.story.json")
     cast_obj = _load_manifest("manifest.cast.json")
+    understood_obj = _load_manifest("manifest.panels.understood.json")
 
     flags.extend(alignment_flags(plan, beats_obj, groups_obj, script_obj))
     flags.extend(audio_flags(plan, _load_manifest("tts/tts_index.json")))
@@ -1961,6 +2022,7 @@ def main() -> int:
     flags.extend(story_flags(plan, beats_obj, vitems))
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))
+    flags.extend(impact_mismatch_flags(beats_obj, understood_obj))
 
     recap_style = analyze_recap_style(
         script_obj, beats_obj, story_obj, cast_obj, vitems)
