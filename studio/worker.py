@@ -1023,16 +1023,39 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
     # enqueuer forces "both" and this default is never actually seen either.
     branding = job["payload"].get("branding") or "both"
     ep = Path(ch["ep_dir"] or "")
+    # Render exactly the plan QA blessed: qa_scan stamps plan_sha into its
+    # passing stage_run (Task 2). Matching -> skip render_prep entirely (it
+    # re-rolls the Gemma visual judge, which can pick a different clean plan
+    # than the one QA validated). Drifted/missing -> hard-fail, never render
+    # silently-different bytes. No stamp at all (legacy, pre-refactor rows) ->
+    # fall back to running render_prep, but pinned to the already-QA'd crops.
+    qa_sha = _last_qa_plan_sha(con, ch["id"])
+    plan_clean = ep / "render.plan.clean.json"
     with record_stage(con, chapter_id=ch["id"], stage="render_segment",
                       series_id=ch["series_id"]):
-        rc = _stream([PY, str(REPO / "tools" / "render_prep.py"),
-                      "--plan", str(ep / "render.plan.json"),
-                      "--scenes-manifest", str(ep / "manifest.scenes.json"),
-                      "--episode-dir", str(ep),
-                      "--series-title", _series_title(con, ch["series_id"]),
-                      "--branding", branding], log)
-        if rc != 0:
-            raise RuntimeError(f"render_prep exited {rc}")
+        if qa_sha is not None:
+            current_sha = (hashlib.sha256(plan_clean.read_bytes()).hexdigest()
+                          if plan_clean.exists() else None)
+            if current_sha != qa_sha:
+                got = current_sha[:8] if current_sha else "missing"
+                raise NonRetryableError(
+                    "clean plan changed since QA (sha drift) — re-run "
+                    f"prepare (qa'd {qa_sha[:8]} != current {got})")
+            log.write("[render] clean plan matches QA'd sha — rendering "
+                      "QA'd bytes, render_prep skipped\n")
+        else:
+            log.write("[render] no QA'd plan_sha on record (legacy chapter) "
+                      "— running render_prep with --reuse-clean\n")
+            rc = _stream([PY, str(REPO / "tools" / "render_prep.py"),
+                          "--plan", str(ep / "render.plan.json"),
+                          "--scenes-manifest",
+                          str(ep / "manifest.scenes.json"),
+                          "--episode-dir", str(ep),
+                          "--series-title",
+                          _series_title(con, ch["series_id"]),
+                          "--branding", branding, "--reuse-clean"], log)
+            if rc != 0:
+                raise RuntimeError(f"render_prep exited {rc}")
         out = ep / "render" / f"segment_{branding}.mp4"
         out.parent.mkdir(parents=True, exist_ok=True)
         rc = _stream(["npx", "remotion", "render", "src/index.ts",

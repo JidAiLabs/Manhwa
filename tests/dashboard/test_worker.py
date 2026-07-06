@@ -1153,6 +1153,114 @@ def test_render_branding_defaults_both(tmp_path, monkeypatch):
     assert not (ep / "render" / "single.mp4").exists()   # dead branch never runs
 
 
+# ---- Task 10: render exactly the QA'd plan (skip render_prep on sha match) --
+
+def test_render_skips_prep_on_matching_sha(tmp_path, monkeypatch):
+    """The stamped plan_sha from the passing qa_scan matches the on-disk clean
+    plan -> render_prep (which re-rolls the Gemma visual judge) must be
+    skipped entirely; only remotion runs, against the QA'd bytes."""
+    import hashlib
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path, status="voiced")
+    (ep / "render.plan.clean.json").write_text('{"cuts": ["qad"]}')
+    sha = hashlib.sha256(
+        (ep / "render.plan.clean.json").read_bytes()).hexdigest()
+    con.execute(
+        "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
+        "meta_json) VALUES (5,'qa_scan',1.0,1, json_object('plan_sha', ?))",
+        (sha,))
+    from studio.dashboard import gates as g
+    g.approve(con, "render", chapter_id=5)
+    con.commit()
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
+                        calls.append([str(a) for a in cmd]) or 0)
+    jobs.enqueue(con, "render_segment", chapter_id=5, payload={})
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='render_segment'").fetchone()
+    assert state == "done", err
+    assert not any("render_prep.py" in " ".join(c) for c in calls)
+    assert any("remotion" in c for c in calls)
+
+
+def test_render_fails_on_plan_drift(tmp_path, monkeypatch):
+    """A stamped plan_sha that no longer matches the on-disk clean plan (it
+    changed since QA blessed it) must hard-fail — never silently render
+    different bytes than what QA validated."""
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path, status="voiced")
+    (ep / "render.plan.clean.json").write_text('{"cuts": ["changed"]}')
+    con.execute(
+        "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
+        "meta_json) VALUES (5,'qa_scan',1.0,1, "
+        "json_object('plan_sha', 'deadbeef00000000'))")
+    from studio.dashboard import gates as g
+    g.approve(con, "render", chapter_id=5)
+    con.commit()
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
+                        calls.append([str(a) for a in cmd]) or 0)
+    jobs.enqueue(con, "render_segment", chapter_id=5, payload={})
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='render_segment'").fetchone()
+    assert state == "failed" and "sha drift" in err
+    assert not any("remotion" in c for c in calls)
+
+
+def test_render_missing_clean_plan_is_drift(tmp_path, monkeypatch):
+    """A stamped plan_sha with NO render.plan.clean.json on disk (wiped, or
+    never regenerated) must be treated as drift, not silently skipped."""
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path, status="voiced")
+    con.execute(
+        "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
+        "meta_json) VALUES (5,'qa_scan',1.0,1, "
+        "json_object('plan_sha', 'deadbeef00000000'))")
+    from studio.dashboard import gates as g
+    g.approve(con, "render", chapter_id=5)
+    con.commit()
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
+                        calls.append([str(a) for a in cmd]) or 0)
+    jobs.enqueue(con, "render_segment", chapter_id=5, payload={})
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='render_segment'").fetchone()
+    assert state == "failed" and "sha drift" in err
+    assert calls == []
+
+
+def test_render_legacy_no_sha_uses_reuse_clean(tmp_path, monkeypatch):
+    """A pre-refactor stage_run never stamped plan_sha. Render must fall back
+    to running render_prep (today's behavior) but WITH --reuse-clean, so a
+    legacy chapter doesn't silently re-roll the Gemma visual judge."""
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path, status="voiced")
+    con.execute("INSERT INTO stage_run (chapter_id, stage, duration_sec, ok) "
+                "VALUES (5,'qa_scan',1.0,1)")   # legacy row: no meta_json
+    from studio.dashboard import gates as g
+    g.approve(con, "render", chapter_id=5)
+    con.commit()
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
+                        calls.append([str(a) for a in cmd]) or 0)
+    jobs.enqueue(con, "render_segment", chapter_id=5, payload={})
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='render_segment'").fetchone()
+    assert state == "done", err
+    render_prep_cmd, remotion_cmd = calls[0], calls[1]
+    assert "render_prep.py" in " ".join(render_prep_cmd)
+    assert "--reuse-clean" in render_prep_cmd
+    assert "remotion" in remotion_cmd
+
+
 # ---- Task 4: heal re-sanitizes so the marker matches the rewritten script --
 
 def test_rescript_triggers_sanitize(tmp_path, monkeypatch):
