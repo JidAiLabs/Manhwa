@@ -1812,3 +1812,118 @@ def test_protect_narrated_from_junk_also_protects_system_files():
     out = rp.protect_narrated_from_junk(junk, narrated, also_protect={"sys.jpg"})
     assert set(out) == {"cap.jpg"}               # sys (system) + art (narrated) spared
     assert junk is out                           # mutates in place
+
+
+# ---- Track B: shown-panel twin INVARIANT (final pass) ------------------------
+# Regression fixtures: REAL Nano ch1 panels (downscaled, tests/fixtures/dedup)
+# pinning the forensically verified production escapes (2026-07-06):
+#   D3 p000054/p000055 — consecutive artist "echo" panels; the second's dialogue
+#     is a tail-substring of the first's. Both own narration -> protect_files
+#     shielded them from every per-segment dedup, and the one narration-overriding
+#     pass bailed at its min_area_ratio gate (0.598 < 0.7 on these fixtures)
+#     before the bubble-masked hashing ever ran — BOTH panels shipped on screen.
+#   D4 p000090/p000095 — DISTINCT panels (raw masked ham ~22) whose CLEANED crops
+#     became hash-twins; pinned by the Track C canonicalize-guard tests below.
+# Bubble boxes were measured with the production ogkalu detector ON the
+# downscaled fixtures (hardcoded so the tests stay hermetic — no model download).
+
+_FIXDIR = Path(__file__).resolve().parent / "fixtures" / "dedup"
+_FIX_BOXES = {
+    "p000054.jpg": [(1, 0, 166, 121), (52, 99, 230, 241)],
+    "p000055.jpg": [(54, 0, 220, 70)],
+    "p000090.jpg": [],
+    "p000095.jpg": [(155, 276, 389, 447)],
+}
+_FIX_OCR = {
+    "p000054.jpg": ("DOING SOMETHING LIKE THAT ISN'T MY STYLE AT ALL BUT... "
+                    "SINCE OUR COMRADE DIED, I GUESS THERE ISN'T A CHOICE..?"),
+    "p000055.jpg": "GUESS THERE ISN'T A CHOICE..?",
+}
+
+
+def _fiximg(f):
+    img = cv2.imread(str(_FIXDIR / f))
+    assert img is not None, f"fixture missing: {_FIXDIR / f}"
+    return img
+
+
+def test_dedup_invariant_folds_echo_pair():
+    # D3 through the new FINAL invariant pass: masked-raw hashing on the FULL
+    # panels (crop geometry can't bypass) + OCR dialogue containment catches the
+    # echo pair; resolution is MERGE into the richer panel (2 bubbles > 1), so
+    # both narration lines still land on a shown image and no line is dropped.
+    plan = {"timeline": [
+        {"segment_id": "g0011_p00", "tts_text": "The assassin wavers.",
+         "scene_files": ["p000054.jpg"], "duration_sec": 4.0,
+         "cuts": [{"file": "p000054.jpg", "start": 0.0, "dur": 4.0}]},
+        {"segment_id": "g0011_p01", "tts_text": "But a comrade died.",
+         "scene_files": ["p000055.jpg"], "duration_sec": 3.0,
+         "cuts": [{"file": "p000055.jpg", "start": 0.0, "dur": 3.0}]},
+    ], "scene_dims": {}}
+    imgs = {f: _fiximg(f) for f in ("p000054.jpg", "p000055.jpg")}
+    out, folds = rp.enforce_shown_twin_invariant(
+        plan, lambda f: imgs.get(f),
+        get_raw_boxes=lambda f: _FIX_BOXES.get(f, []),
+        get_ocr=lambda f: _FIX_OCR.get(f, ""))
+    assert len(folds) == 1                       # exactly the echo pair folded
+    shown = [c["file"] for it in out["timeline"] for c in it.get("cuts") or []]
+    assert shown == ["p000054.jpg", "p000054.jpg"]   # ONE shown file (the richer)
+    for it in out["timeline"]:                   # every narration line kept, 1:1
+        assert str(it.get("tts_text") or "").strip()
+        assert len(it.get("cuts") or []) == 1
+        assert abs(float(it["cuts"][0]["dur"]) -
+                   float(it["duration_sec"])) < 1e-6   # audio timing untouched
+    # writer intent (scene_files) preserved — QA can still see the original span
+    assert out["timeline"][1]["scene_files"] == ["p000055.jpg"]
+    # the EXISTING merge pass then animates the run as one continuous slow pan
+    merged = rp.merge_consecutive_same_image_cuts(out)
+    for it in merged["timeline"]:
+        assert it["cuts"][0].get("motion", {}).get("mode") == "kenburns"
+
+
+def test_dedup_invariant_skips_system_cards():
+    # two DISTINCT system notifications share a UI frame -> hash-twins; the
+    # invariant must never merge them (their on-screen text IS the story beat).
+    imgs = {"sysA.jpg": _hramp(base=0), "sysB.jpg": _hramp(base=15)}
+    plan = {"timeline": [
+        {"segment_id": "s1", "tts_text": "The system speaks.",
+         "cuts": [{"file": "sysA.jpg", "start": 0.0, "dur": 3.0}]},
+        {"segment_id": "s2", "tts_text": "It speaks again.",
+         "cuts": [{"file": "sysB.jpg", "start": 0.0, "dur": 3.0}]},
+    ], "scene_dims": {}}
+    out, folds = rp.enforce_shown_twin_invariant(
+        {"timeline": [dict(i, cuts=[dict(c) for c in i["cuts"]])
+                      for i in plan["timeline"]], "scene_dims": {}},
+        lambda f: imgs.get(f), skip_files={"sysA.jpg", "sysB.jpg"})
+    assert folds == []
+    assert [c["file"] for it in out["timeline"] for c in it["cuts"]] == \
+        ["sysA.jpg", "sysB.jpg"]
+    # sanity contrast: WITHOUT the system exemption the same pair DOES fold
+    out2, folds2 = rp.enforce_shown_twin_invariant(plan, lambda f: imgs.get(f))
+    assert len(folds2) == 1
+
+
+def test_dedup_invariant_leaves_distinct_panels_alone():
+    # distinct art (horizontal vs vertical ramp, ham ~64) is never folded — and
+    # the D4 raws (masked ham ~22, no dialogue containment) are NOT twins either:
+    # the invariant must not paper over two genuinely different drawings.
+    imgs = {"a.jpg": _hramp(), "b.jpg": _vramp(),
+            "p000090.jpg": _fiximg("p000090.jpg"),
+            "p000095.jpg": _fiximg("p000095.jpg")}
+    plan = {"timeline": [
+        {"segment_id": "g1", "tts_text": "x",
+         "cuts": [{"file": "a.jpg", "start": 0.0, "dur": 3.0}]},
+        {"segment_id": "g2", "tts_text": "y",
+         "cuts": [{"file": "b.jpg", "start": 0.0, "dur": 3.0}]},
+        {"segment_id": "g3", "tts_text": "z",
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 3.0}]},
+        {"segment_id": "g4", "tts_text": "w",
+         "cuts": [{"file": "p000095.jpg", "start": 0.0, "dur": 3.0}]},
+    ], "scene_dims": {}}
+    out, folds = rp.enforce_shown_twin_invariant(
+        plan, lambda f: imgs.get(f),
+        get_raw_boxes=lambda f: _FIX_BOXES.get(f, []),
+        get_ocr=lambda f: _FIX_OCR.get(f, ""))
+    assert folds == []
+    assert [c["file"] for it in out["timeline"] for c in it["cuts"]] == \
+        ["a.jpg", "b.jpg", "p000090.jpg", "p000095.jpg"]

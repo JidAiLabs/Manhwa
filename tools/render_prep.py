@@ -428,6 +428,44 @@ def _mask_bubbles_for_hash(
     return out
 
 
+def normalized_ocr_text(s: Any) -> str:
+    """Lowercase, collapse everything non-alphanumeric — the normalization the
+    OCR-containment twin test compares under (OCR of the same dialogue differs
+    in punctuation/casing between panels)."""
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+
+
+def ocr_dialogue_contained(a: Any, b: Any) -> bool:
+    """One panel's OCR dialogue, normalized, is a substring of the other's —
+    the artist "echo" signature (the p000054/p000055 pair repeats the tail of
+    the previous panel's line in a re-drawn close-up). Both sides must carry
+    text and the contained side must be substantial (>= 8 chars normalized), so
+    an empty/`...`/interjection panel never trivially "contains" into
+    everything."""
+    na, nb = normalized_ocr_text(a), normalized_ocr_text(b)
+    if not na or not nb:
+        return False
+    small, big = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(small) >= 8 and small in big
+
+
+def twin_verdict(ham: int, ocr_a: Any = "", ocr_b: Any = "", *,
+                 ham_max: int = 8, ham_max_contained: int = 14) -> bool:
+    """THE shared shown-twin test (render_prep invariant pass + prep_qa
+    `dup_shown` tripwire import this so enforcement and QA can never drift).
+
+    *ham* is the bubble-masked 8x8 dhash distance of the two RAW panels
+    (`_dhash8_bgr` over the full `scenes/` image with `_mask_bubbles_for_hash`
+    boxes — never the shown crops, so crop geometry can't manufacture or hide a
+    twin). Twins: ham <= *ham_max* (the ladder's existing 8), OR ham <=
+    *ham_max_contained* AND the OCR dialogue of one panel contains the other's
+    (echo pairs redraw the art slightly — masked ham 12-14 measured on the
+    p000054/p000055 pair — but repeat the dialogue verbatim)."""
+    if ham <= ham_max:
+        return True
+    return ham <= ham_max_contained and ocr_dialogue_contained(ocr_a, ocr_b)
+
+
 def drop_cross_segment_near_identical_cuts(
     cuts_by_segment: Dict[str, List[Dict[str, Any]]],
     order: Sequence[str],
@@ -1873,6 +1911,120 @@ def merge_consecutive_same_image_cuts(plan: Dict[str, Any]) -> Dict[str, Any]:
     return plan
 
 
+def enforce_shown_twin_invariant(
+    plan: Dict[str, Any],
+    get_raw_img,
+    *,
+    get_raw_boxes=None,
+    get_ocr=None,
+    skip_files: Optional[set] = None,
+    window: int = 8,
+    ham_max: int = 8,
+    ham_max_contained: int = 14,
+) -> Tuple[Dict[str, Any], List[Tuple[str, str, str, int, bool]]]:
+    """FINAL invariant pass — "no two shown panels may be twins" — run after
+    every other dedup/merge pass, immediately before the clean plan is written.
+
+    The dedup ladder is a stack of per-pass gates (protect_files narrated
+    protection, min_area_ratio, consecutive-only comparisons) and each gate is
+    a bypass route: the p000054/p000055 echo pair shipped BOTH panels because
+    narrated protection shielded every per-segment pass and the cross-segment
+    pass bailed at its area gate (0.56 < 0.7) before the bubble-masked hashing
+    ever ran. This pass closes the class: it compares the RAW PANELS
+    (`scenes/` file, full image, bubbles masked) — never the shown crops, so
+    crop geometry can neither manufacture (D4) nor hide (D3) a twin — for
+    every pair of shown cuts within a sliding *window* of shown cuts. Twin =
+    `twin_verdict` (masked ham <= *ham_max*, or <= *ham_max_contained* with
+    OCR dialogue containment — the echo-pair signature). Same-file pairs need
+    no test here: consecutive runs are merge_consecutive_same_image_cuts' job
+    and far-apart repeats are capped by cap_repeats_with_holds.
+
+    Resolution is MERGE, never drop-narration: the twins collapse to ONE file
+    — the richer panel (more bubbles, else larger raw area, else the earlier)
+    — by rewriting every cut of the loser file to the survivor. Every
+    narration line still lands on a shown image (cuts/audio/durations/
+    scene_files untouched); the caller re-runs
+    merge_consecutive_same_image_cuts so a now-consecutive run animates as one
+    continuous slow pan. Never touched: system cards (*skip_files*, their
+    on-screen text IS the beat — two notifications share a UI frame), doc
+    panels (plan scene_dims doc flag, kept text differs under an identical
+    frame), split cuts (file2/layout — a deliberate side-by-side layout), and
+    files with no raw scene image (split halves). Mutates *plan* in place;
+    returns (plan, folds) with folds = [(segment_of_later_cut, loser_file,
+    survivor_file, masked_ham, containment)]."""
+    gb = get_raw_boxes or (lambda _f: ())
+    go = get_ocr or (lambda _f: "")
+    skip = set(skip_files or ())
+    dims = (plan or {}).get("scene_dims") or {}
+
+    entries: List[Tuple[str, Dict[str, Any]]] = []   # (segment_id, cut) shown order
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        for c in item.get("cuts") or []:
+            entries.append((str(item.get("segment_id") or ""), c))
+
+    hashes: Dict[str, Optional[int]] = {}
+
+    def _h(f: str) -> Optional[int]:
+        if f not in hashes:
+            img = get_raw_img(f)
+            hashes[f] = None if img is None else _dhash8_bgr(img, gb(f))
+        return hashes[f]
+
+    def _eligible(f: str) -> bool:
+        if not f or f in skip or (dims.get(f) or {}).get("doc"):
+            return False
+        return _h(f) is not None
+
+    def _richness(f: str) -> Tuple[int, int]:
+        img = get_raw_img(f)
+        area = int(img.shape[0] * img.shape[1]) if img is not None else 0
+        return (len(gb(f) or ()), area)
+
+    alias: Dict[str, str] = {}                       # loser -> survivor
+
+    def _resolve(f: str) -> str:
+        while f in alias:
+            f = alias[f]
+        return f
+
+    folds: List[Tuple[str, str, str, int, bool]] = []
+    n = len(entries)
+    for j in range(n):
+        seg_j, cj = entries[j]
+        if cj.get("file2") or cj.get("layout"):
+            continue                                 # split layout: never folded
+        fj = _resolve(str(cj.get("file") or ""))
+        if not _eligible(fj):
+            continue
+        for i in range(max(0, j - window), j):
+            ci = entries[i][1]
+            if ci.get("file2") or ci.get("layout"):
+                continue
+            fi = _resolve(str(ci.get("file") or ""))
+            if fi == fj or not _eligible(fi):
+                continue
+            ham = (_h(fi) ^ _h(fj)).bit_count()      # type: ignore[operator]
+            contained = ocr_dialogue_contained(go(fi), go(fj))
+            if not twin_verdict(ham, go(fi), go(fj), ham_max=ham_max,
+                                ham_max_contained=ham_max_contained):
+                continue
+            survivor, loser = ((fi, fj) if _richness(fi) >= _richness(fj)
+                               else (fj, fi))
+            alias[loser] = survivor
+            folds.append((seg_j, loser, survivor, ham, contained))
+            fj = survivor
+            break                                    # cut folded; next entry
+
+    if alias:
+        for _seg, c in entries:
+            f = str(c.get("file") or "")
+            if f in alias and not c.get("file2") and not c.get("layout"):
+                c["file"] = _resolve(f)
+    return plan, folds
+
+
 def _norm_tts_text(text: Any) -> str:
     """Normalize a segment's narration for duplicate comparison: drop a leading
     [mood] tag, lowercase, collapse to alphanumeric tokens."""
@@ -2731,6 +2883,22 @@ def main() -> int:
     # into ONE slow Ken Burns spanning the merged duration (audio/timing intact).
     out_plan = merge_consecutive_duplicate_narration(out_plan)
     out_plan = merge_consecutive_same_image_cuts(out_plan)
+
+    # FINAL shown-twin INVARIANT — after every pass above, before the plan is
+    # written: no two shown panels may be masked-raw twins. Catches whatever
+    # slipped the ladder's gates (narrated protection + the 0.7 area gate let
+    # the p054/p055 echo pair ship BOTH panels). Folds rewrite the later twin's
+    # cuts to the richer panel — narration lines/audio untouched — then the
+    # same-image merge re-runs so the folded run pans as ONE continuous move.
+    out_plan, twin_folds = enforce_shown_twin_invariant(
+        out_plan, _img, get_raw_boxes=_boxes,
+        get_ocr=lambda f: str(vision_item.get(f, {}).get("ocr_clean") or ""),
+        skip_files=system_files)
+    for seg, loser, survivor, ham_v, contained in twin_folds:
+        print(f"[dedup-invariant] {seg}: {loser} folded into {survivor} "
+              f"(masked ham={ham_v}, containment={contained})")
+    if twin_folds:
+        out_plan = merge_consecutive_same_image_cuts(out_plan)
 
     which = "none" if args.no_branding else args.branding
     if which != "none":
