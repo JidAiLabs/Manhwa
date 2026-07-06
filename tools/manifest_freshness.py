@@ -47,10 +47,6 @@ from manifest_io import input_sha as _input_sha  # noqa: E402
 # enforced ONLY via _meta input-sha stamps and never mtime-compared.
 _DAG: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...], bool]] = _deps.dag()
 
-# Legacy-shaped view (output -> flat input list) kept for external readers.
-MANIFEST_DAG: Dict[str, List[str]] = {
-    out: list(req) + list(opt) for out, (req, opt, _sha) in _DAG.items()}
-
 # Status -> required manifest files (cumulative, deepest stage wins).
 # 'planned' aliases 'prepped': render.plan.json is transient (an estimate-
 # phase artifact that may not persist), so the persistent sentinel/required

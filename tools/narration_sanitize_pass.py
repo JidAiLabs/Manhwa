@@ -47,7 +47,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from narration_sanitize import Sanitizer  # noqa: E402
 from narration_reframe import reframe_line, ReframeCallFn  # noqa: E402
-from manifest_io import write_manifest  # noqa: E402
+from manifest_io import prior_inputs_extra_meta, write_manifest  # noqa: E402
 
 _DENYLIST = str(Path(__file__).with_name("narration_denylist.json"))
 _LEADING_TAG_RE = re.compile(r"^\s*\[([a-zA-Z_]+)\]\s*")
@@ -269,9 +269,8 @@ def main() -> int:
     summary = sanitize_script(script_obj, seed=args.seed, call_fn=call_fn)
 
     # Preserve the upstream inputs stamped by script_expander, then write atomically.
-    prior_inputs = (script_obj.get("_meta") or {}).get("inputs") or {}
     write_manifest(script_path, script_obj, tool="narration_sanitize_pass",
-                   extra_meta={"inputs": prior_inputs} if prior_inputs else None)
+                   extra_meta=prior_inputs_extra_meta(script_obj))
     marker = args.marker or str(script_path.with_name("manifest.sanitize.json"))
     write_marker(marker, summary, seed=args.seed, script_path=args.script)
 

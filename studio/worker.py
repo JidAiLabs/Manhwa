@@ -425,9 +425,10 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
          0 if verdict.blocking else 1, ch["series_id"], plan_sha))
     con.commit()
     if verdict.blocking and not heal_aware:
+        reason_suffix = f" (reason: {verdict.reason})" if verdict.reason else ""
         raise NonRetryableError(
             f"prep-QA found BLOCKING flags ({sorted(verdict.blocking)}) "
-            f"(subprocess rc={rc}) — open the report in {ep}")
+            f"(subprocess rc={rc}) — open the report in {ep}{reason_suffix}")
     return verdict
 
 
@@ -826,10 +827,8 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
     # gate check first (no chapter row required) so a bad chapter_id still
     # fails with the gate's reason, matching _h_render_segment's ordering —
     # NOT "chapter not in catalog" from the row-required _chapter() below.
-    ep_row = con.execute("SELECT ep_dir FROM chapter WHERE id=?",
-                         (job["chapter_id"],)).fetchone()
-    allowed, why = gates.voice_allowed(con, job["chapter_id"],
-                                       ep_row[0] if ep_row else None)
+    allowed, why = gates.voice_allowed(
+        con, job["chapter_id"], gates.chapter_ep_dir(con, job["chapter_id"]))
     if not allowed:
         raise RuntimeError(f"voiceover blocked: {why}")
     ch = _chapter(con, job["chapter_id"])
@@ -1029,9 +1028,10 @@ def _h_qa_scan(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         log.write("[qa] non-blocking QA flags on this scan (cosmetic, "
                   f"flagged for review): {sorted(cosmetic)}\n")
     if verdict.blocking:
+        reason_suffix = f" (reason: {verdict.reason})" if verdict.reason else ""
         raise NonRetryableError(
             f"prep-QA found BLOCKING flags ({sorted(verdict.blocking)}) "
-            f"(subprocess rc={rc}) — see report in {ep}")
+            f"(subprocess rc={rc}) — see report in {ep}{reason_suffix}")
 
 
 def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
@@ -1039,10 +1039,8 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
     # gate check first (no chapter row required) so a bad chapter_id still
     # fails with the gate's reason (test_render_segment_gate_refusal), not
     # "chapter not in catalog" from the row-required _chapter() below.
-    ep_row = con.execute("SELECT ep_dir FROM chapter WHERE id=?",
-                         (job["chapter_id"],)).fetchone()
-    allowed, why = gates.render_allowed(con, job["chapter_id"],
-                                        ep_row[0] if ep_row else None)
+    allowed, why = gates.render_allowed(
+        con, job["chapter_id"], gates.chapter_ep_dir(con, job["chapter_id"]))
     if not allowed:
         raise RuntimeError(f"render blocked: {why}")
     ch = _chapter(con, job["chapter_id"])
@@ -1236,30 +1234,12 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
                     f"teaser blocked: narration sanitize left "
                     f"{len(unresolved)} unresolved advertiser-safety "
                     f"BLOCK(s) [{preview}] — see {marker}")
-        # TTS backend dispatch — mirrors pipeline._stage_voiced exactly (local
-        # backends here always went through the local CLI; the bug was
-        # unconditionally doing that even when cfg.tts_backend=="elevenlabs",
-        # which local_tts_from_manifest's argparse rejects outright).
-        backend = (cfg.tts_backend or "elevenlabs").lower()
-        if backend != "elevenlabs":
-            tts_args = ["--script", str(out_dir / "manifest.script.json"),
-                        "--out-dir", str(out_dir / "tts"),
-                        "--backend", backend]
-            if cfg.tts_voice_ref:
-                tts_args += ["--voice-ref", cfg.tts_voice_ref]
-            if float(getattr(cfg, "tts_speed", 1.0) or 1.0) != 1.0:
-                tts_args += ["--speed", str(cfg.tts_speed)]
-            if backend == "kokoro" and cfg.tts_kokoro_voice:
-                tts_args += ["--kokoro-voice", cfg.tts_kokoro_voice]
-            _pl._run_tool("local_tts_from_manifest.py", tts_args,
-                          python_exe=cfg.tts_python)
-        else:
-            _pl._check_elevenlabs()
-            voice = os.environ.get("ELEVENLABS_VOICE_ID", "")
-            _pl._run_tool("elevenlabs_tts_from_manifest.py",
-                          ["--script", str(out_dir / "manifest.script.json"),
-                           "--out-dir", str(out_dir / "tts"),
-                           "--voice-id", voice])
+        # TTS backend dispatch — shared with pipeline._stage_voiced via
+        # _pl._tts_dispatch (local backends here always went through the
+        # local CLI; the bug was unconditionally doing that even when
+        # cfg.tts_backend=="elevenlabs", which local_tts_from_manifest's
+        # argparse rejects outright).
+        _pl._tts_dispatch(cfg, out_dir / "manifest.script.json", out_dir / "tts")
         _pl._run_tool("timeline_planner.py",
                       ["--groups", str(out_dir / "manifest.groups.json"),
                        "--beats", str(out_dir / "manifest.beats.json"),

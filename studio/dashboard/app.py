@@ -684,11 +684,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                      series_id: Optional[int] = Form(None),
                      note: str = Form("")):
         c = con()
-        ep_dir = None
-        if chapter_id:
-            row = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
-                            (chapter_id,)).fetchone()
-            ep_dir = row[0] if row else None
+        ep_dir = gates.chapter_ep_dir(c, chapter_id) if chapter_id else None
         gates.approve(c, gate, series_id=series_id, chapter_id=chapter_id,
                       bundle_id=bundle_id, note=note,
                       content_sha=gates.gate_sha(gate, ep_dir))
@@ -799,10 +795,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # re-stamps if it's stale (a heal rewrote the script after approval)
         # or absent — otherwise the enqueue below would wedge on a sha
         # mismatch inside the voiceover handler's gate check.
-        row = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
-                        (cid,)).fetchone()
         gates.ensure_approval(c, "voice", chapter_id=cid,
-                              ep_dir=row[0] if row else None, note="re-voice")
+                              ep_dir=gates.chapter_ep_dir(c, cid), note="re-voice")
         # dedupe=False: operator intent carries a payload; the chapter lease
         # serializes the duplicate and resume-by-status makes it cheap.
         jobs.enqueue(c, "voiceover", chapter_id=cid,

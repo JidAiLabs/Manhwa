@@ -133,30 +133,56 @@ def derive_status(ep: str) -> Optional[str]:
     return None
 
 
-def _render_is_stale(con: sqlite3.Connection, cid: int, ep: str) -> bool:
-    """A render approval outlived its rendered content: no mp4, or the
-    approval's content_sha no longer matches what render.plan.clean.json +
-    tts/tts_index.json hash to NOW. sha comparison (not mtime) — mtime races
-    under concurrent writes."""
-    mp4 = os.path.join(ep, paths.SEGMENT_MP4)
-    if not os.path.exists(mp4):
+# gate -> the file whose absence alone makes that gate's approval stale
+# (render's subject is the rendered mp4; voice's is the approved script).
+_GATE_SUBJECT = {
+    "render": paths.SEGMENT_MP4,
+    "voice": "manifest.script.json",
+}
+
+
+def _gate_is_stale(con: sqlite3.Connection, gate: str, cid: int, ep: str) -> bool:
+    """A `gate` approval outlived its subject: the subject file is gone, or the
+    approval's content_sha no longer matches what the CURRENT content hashes
+    to (gates.gate_sha). sha comparison (not mtime) — mtime races under
+    concurrent writes. Shared by the render (rendered mp4) and voice (approved
+    script) staleness checks — same shape, different subject file + gate."""
+    subject = os.path.join(ep, _GATE_SUBJECT[gate])
+    if not os.path.exists(subject):
         return True
     from studio.dashboard import gates  # lazy: dashboard imports catalog
     return not gates._approval_valid(
-        con, "render", chapter_id=cid, current_sha=gates.gate_sha("render", ep))
+        con, gate, chapter_id=cid, current_sha=gates.gate_sha(gate, ep))
 
 
-def _voice_is_stale(con: sqlite3.Connection, cid: int, ep: str) -> bool:
-    """A voice approval outlived the script it approved: the script is gone,
-    or the approval's content_sha no longer matches manifest.script.json's
-    CURRENT bytes (a healed/regenerated script is a different approval
-    subject — same shape as _render_is_stale, but for the PRE-voice gate)."""
-    script = os.path.join(ep, "manifest.script.json")
-    if not os.path.exists(script):
-        return True
+def _reconcile_gate_approval(con: sqlite3.Connection, gate: str, cid: int,
+                             ep: str, out: Dict[str, Any],
+                             cleared_key: str) -> bool:
+    """Backfill a legacy NULL content_sha once, then clear the approval if
+    _gate_is_stale says it no longer matches. Shared by the render/voice
+    approval-repair blocks in reconcile_chapter — only the gate name and the
+    `out` counter key differ. Returns True iff this call changed the DB."""
     from studio.dashboard import gates  # lazy: dashboard imports catalog
-    return not gates._approval_valid(
-        con, "voice", chapter_id=cid, current_sha=gates.gate_sha("voice", ep))
+    changed = False
+    approval_row = con.execute(
+        "SELECT id, content_sha FROM approval WHERE gate=? AND "
+        "chapter_id=? ORDER BY id DESC LIMIT 1", (gate, cid)).fetchone()
+    if approval_row is not None:
+        approval_id, stored_sha = approval_row
+        if stored_sha is None:
+            backfill_sha = gates.gate_sha(gate, ep)
+            if backfill_sha is not None:
+                con.execute("UPDATE approval SET content_sha=? WHERE id=?",
+                            (backfill_sha, approval_id))
+                out["content_sha_backfilled"] += 1
+                changed = True
+        if _gate_is_stale(con, gate, cid, ep):
+            n = con.execute(
+                "DELETE FROM approval WHERE gate=? AND chapter_id=?",
+                (gate, cid)).rowcount
+            out[cleared_key] = n
+            changed = changed or bool(n)
+    return changed
 
 
 def reconcile_chapter(con: sqlite3.Connection,
@@ -201,49 +227,18 @@ def reconcile_chapter(con: sqlite3.Connection,
     #    that already carries a sha and no longer matches (or the video is
     #    gone) -> clear it, else auto_to=video silently skips the re-render
     #    (the worker gate would otherwise read "already approved").
-    from studio.dashboard import gates  # lazy: dashboard imports catalog
-    approval_row = con.execute(
-        "SELECT id, content_sha FROM approval WHERE gate='render' AND "
-        "chapter_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
-    if approval_row is not None:
-        approval_id, stored_sha = approval_row
-        if stored_sha is None:
-            backfill_sha = gates.gate_sha("render", ep)
-            if backfill_sha is not None:
-                con.execute("UPDATE approval SET content_sha=? WHERE id=?",
-                            (backfill_sha, approval_id))
-                out["content_sha_backfilled"] += 1
-                changed = True
-        if _render_is_stale(con, cid, ep):
-            n = con.execute(
-                "DELETE FROM approval WHERE gate='render' AND chapter_id=?",
-                (cid,)).rowcount
-            out["render_approval_cleared"] = n
-            changed = changed or bool(n)
+    if _reconcile_gate_approval(con, "render", cid, ep, out,
+                                "render_approval_cleared"):
+        changed = True
 
     # 4. voice approval mirrors the render rule above (backfill a legacy NULL
     #    sha once, clear when stale) but for the PRE-voice gate, which approves
     #    the SCRIPT rather than the rendered video. Reconcile only REPAIRS
     #    state: clearing a stale voice approval must never enqueue anything —
     #    it just stops the UI/worker from treating drifted content as approved.
-    voice_row = con.execute(
-        "SELECT id, content_sha FROM approval WHERE gate='voice' AND "
-        "chapter_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
-    if voice_row is not None:
-        voice_approval_id, voice_stored_sha = voice_row
-        if voice_stored_sha is None:
-            voice_backfill_sha = gates.gate_sha("voice", ep)
-            if voice_backfill_sha is not None:
-                con.execute("UPDATE approval SET content_sha=? WHERE id=?",
-                            (voice_backfill_sha, voice_approval_id))
-                out["content_sha_backfilled"] += 1
-                changed = True
-        if _voice_is_stale(con, cid, ep):
-            n = con.execute(
-                "DELETE FROM approval WHERE gate='voice' AND chapter_id=?",
-                (cid,)).rowcount
-            out["voice_approval_cleared"] = n
-            changed = changed or bool(n)
+    if _reconcile_gate_approval(con, "voice", cid, ep, out,
+                                "voice_approval_cleared"):
+        changed = True
 
     if changed:
         con.commit()

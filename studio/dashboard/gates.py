@@ -41,6 +41,15 @@ def _sha_file(path: Path) -> Optional[str]:
         return None
 
 
+def chapter_ep_dir(con: sqlite3.Connection, chapter_id: int) -> Optional[str]:
+    """ep_dir for a chapter id, None-safe. Shared by call sites that need
+    ep_dir before deciding whether a full chapter row is even required — a
+    gate check must tolerate a bad/missing chapter_id, not raise."""
+    row = con.execute("SELECT ep_dir FROM chapter WHERE id=?",
+                      (chapter_id,)).fetchone()
+    return row[0] if row else None
+
+
 def approve(con: sqlite3.Connection, gate: str, *,
             series_id: Optional[int] = None, chapter_id: Optional[int] = None,
             bundle_id: Optional[int] = None, note: str = "",

@@ -2,8 +2,8 @@
 
 Pins: (1) internal consistency (every input is a known artifact, order is the
 canonical STATUS_ORDER + prepped), (2) the derived freshness DAG is a strict
-SUPERSET of the legacy hand-maintained MANIFEST_DAG (nothing that was checked
-stops being checked), (3) artifacts_beyond closures per rewind target, and
+SUPERSET of the legacy hand-maintained graph (LEGACY_GRAPH below; nothing that
+was checked stops being checked), (3) artifacts_beyond closures per rewind target, and
 (4) end-to-end equivalence: a synthetic chapter with a stale edge flags via
 manifest_freshness exactly as it did pre-derivation.
 """
@@ -22,8 +22,9 @@ _SPEC = importlib.util.spec_from_file_location(
 mf = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(mf)  # type: ignore[union-attr]
 
-# manifest_freshness.MANIFEST_DAG as hand-maintained before Task 8 — the
-# floor the derived DAG must never drop below.
+# The freshness graph as hand-maintained before Task 8 (manifest_freshness no
+# longer keeps this legacy-shaped view) — the floor the derived DAG must
+# never drop below.
 LEGACY_GRAPH = {
     "manifest.groups.json":   {"manifest.panels.understood.json"},
     "manifest.story.json":    {"manifest.panels.understood.json"},

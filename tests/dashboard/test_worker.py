@@ -1,5 +1,6 @@
 """Worker: claims serially, logs, enforces gates, records stage timings."""
 import time
+import types
 
 from studio.catalog.db import connect
 from studio.dashboard import gates, jobs
@@ -8,6 +9,22 @@ from studio import worker
 
 def _con(tmp_path):
     return connect(tmp_path / "s.db")
+
+
+def _fake_cfg(**overrides):
+    """Cfg double for _h_teaser's config surface (mirrors the factory of the
+    same name in tests/test_teaser_worker.py). Callers override only what
+    they care about."""
+    base = dict(
+        beats_backend="ollama", beats_model="gemma", teaser_model="gemma",
+        teaser_max_hook_scan_chapters=3, teaser_shortlist_n=4,
+        teaser_min_panels=4, teaser_max_hook_panels=10,
+        teaser_payoff_tail_frac=0.2, teaser_max_seconds=90,
+        narration_sanitize=False,
+        script_model="gpt", tts_backend="kokoro", tts_voice_ref=None,
+        tts_kokoro_voice=None, tts_python=None)
+    base.update(overrides)
+    return types.SimpleNamespace(**base)
 
 
 def test_run_once_executes_and_logs(tmp_path):
@@ -905,16 +922,7 @@ def test_teaser_auto_mode_approves_and_enqueues_concat(tmp_path, monkeypatch):
     (tdir / "render").mkdir(parents=True)
     (tdir / "manifest.teaser.json").write_text("{}")
     (tdir / "render" / "segment_none.mp4").write_text("v")
-    import types
-    fake_cfg = types.SimpleNamespace(
-        beats_backend="ollama", beats_model="gemma", teaser_model="gemma",
-        teaser_max_hook_scan_chapters=3, teaser_shortlist_n=4,
-        teaser_min_panels=4, teaser_max_hook_panels=10,
-        teaser_payoff_tail_frac=0.2, teaser_max_seconds=90,
-        narration_sanitize=False,
-        script_model="gpt", tts_backend="kokoro", tts_voice_ref=None,
-        tts_kokoro_voice=None, tts_python=None)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (fake_cfg, "proj", "loc"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_fake_cfg(), "proj", "loc"))
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     import studio.pipeline as _pl
     monkeypatch.setattr(_pl, "_run_tool", lambda *a, **k: 0, raising=False)
@@ -940,16 +948,7 @@ def test_teaser_manual_mode_parks_for_review(tmp_path, monkeypatch):
     (tdir / "render").mkdir(parents=True)
     (tdir / "manifest.teaser.json").write_text("{}")
     (tdir / "render" / "segment_none.mp4").write_text("v")
-    import types
-    fake_cfg = types.SimpleNamespace(
-        beats_backend="ollama", beats_model="gemma", teaser_model="gemma",
-        teaser_max_hook_scan_chapters=3, teaser_shortlist_n=4,
-        teaser_min_panels=4, teaser_max_hook_panels=10,
-        teaser_payoff_tail_frac=0.2, teaser_max_seconds=90,
-        narration_sanitize=False,
-        script_model="gpt", tts_backend="kokoro", tts_voice_ref=None,
-        tts_kokoro_voice=None, tts_python=None)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (fake_cfg, "proj", "loc"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_fake_cfg(), "proj", "loc"))
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     import studio.pipeline as _pl
     monkeypatch.setattr(_pl, "_run_tool", lambda *a, **k: 0, raising=False)

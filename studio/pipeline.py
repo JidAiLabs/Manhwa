@@ -436,6 +436,32 @@ def _read_sanitize_unresolved(marker_path: Path) -> list:
     return [b for b in (data.get("unresolved_blocks") or []) if isinstance(b, dict)]
 
 
+def _tts_dispatch(cfg: Config, script_path: Path, tts_dir: Path) -> None:
+    """TTS backend dispatch shared by _stage_voiced and worker._h_teaser: any
+    local backend (chatterbox[-turbo]/kokoro) runs free with no credential;
+    'elevenlabs' is credential-checked. Both call sites build the same argv
+    shape from a Config and a script/out-dir pair — only the paths differ."""
+    backend = (cfg.tts_backend or "elevenlabs").lower()
+    if backend != "elevenlabs":   # any local backend (chatterbox[-turbo]/kokoro)
+        # Free local TTS — no credential needed. Same tts_index.json contract.
+        args = ["--script", str(script_path), "--out-dir", str(tts_dir),
+                "--backend", backend]
+        if cfg.tts_voice_ref:
+            args += ["--voice-ref", cfg.tts_voice_ref]
+        if float(getattr(cfg, "tts_speed", 1.0) or 1.0) != 1.0:
+            args += ["--speed", str(cfg.tts_speed)]
+        if backend == "kokoro" and cfg.tts_kokoro_voice:
+            args += ["--kokoro-voice", cfg.tts_kokoro_voice]
+        # Local TTS deps (torch 2.6) conflict with YOLO's torch, so run it in its
+        # own venv when configured (config.tts_python); falls back to ours.
+        _run_tool("local_tts_from_manifest.py", args, python_exe=cfg.tts_python)
+    else:
+        _check_elevenlabs()
+        voice = os.environ.get("ELEVENLABS_VOICE_ID", "")
+        _run_tool("elevenlabs_tts_from_manifest.py",
+                  ["--script", str(script_path), "--out-dir", str(tts_dir), "--voice-id", voice])
+
+
 def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
     p = _ep_paths(ep_dir)
     # ADVERTISER-SAFETY GATE: refuse to spend TTS on a chapter whose narration
@@ -469,25 +495,7 @@ def _stage_voiced(ep_dir: Path, cfg: Config) -> None:
                 f"voiced blocked: narration sanitize left {len(unresolved)} "
                 f"unresolved advertiser-safety BLOCK(s) [{preview}] — "
                 f"see {marker_path}")
-    backend = (cfg.tts_backend or "elevenlabs").lower()
-    if backend != "elevenlabs":   # any local backend (chatterbox[-turbo]/kokoro)
-        # Free local TTS — no credential needed. Same tts_index.json contract.
-        args = ["--script", str(p["script"]), "--out-dir", str(p["tts_dir"]),
-                "--backend", backend]
-        if cfg.tts_voice_ref:
-            args += ["--voice-ref", cfg.tts_voice_ref]
-        if float(getattr(cfg, "tts_speed", 1.0) or 1.0) != 1.0:
-            args += ["--speed", str(cfg.tts_speed)]
-        if backend == "kokoro" and cfg.tts_kokoro_voice:
-            args += ["--kokoro-voice", cfg.tts_kokoro_voice]
-        # Local TTS deps (torch 2.6) conflict with YOLO's torch, so run it in its
-        # own venv when configured (config.tts_python); falls back to ours.
-        _run_tool("local_tts_from_manifest.py", args, python_exe=cfg.tts_python)
-    else:
-        _check_elevenlabs()
-        voice = os.environ.get("ELEVENLABS_VOICE_ID", "")
-        _run_tool("elevenlabs_tts_from_manifest.py",
-                  ["--script", str(p["script"]), "--out-dir", str(p["tts_dir"]), "--voice-id", voice])
+    _tts_dispatch(cfg, p["script"], p["tts_dir"])
 
 
 def _stage_planned(ep_dir: Path, cfg: Config) -> None:

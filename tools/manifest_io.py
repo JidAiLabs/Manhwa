@@ -43,6 +43,17 @@ def input_sha(path: PathLike) -> str:
     return h.hexdigest()
 
 
+def prior_inputs_extra_meta(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """extra_meta override for in-place rewriters (narration_sanitize_pass,
+    narration_punchup, ...): carries the ORIGINAL upstream _meta.inputs
+    forward onto the rewritten manifest. Needed when a rewrite writes back to
+    the same path it read from — write_manifest's own inputs=(path,) would
+    otherwise hash the file's pre-write bytes as a fake self-referential
+    "input", clobbering the real stamp and degrading freshness to mtime."""
+    prior_inputs = (obj.get("_meta") or {}).get("inputs") or {}
+    return {"inputs": prior_inputs} if prior_inputs else None
+
+
 def read_manifest(path: PathLike, *, required_keys: Tuple[str, ...] = ()) -> Dict[str, Any]:
     spath = os.fspath(path)
     if not os.path.isfile(spath):

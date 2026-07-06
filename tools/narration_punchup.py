@@ -41,7 +41,10 @@ from beats_segments import (  # noqa: E402
 )
 from narration_consistency import strip_chrome_opener  # noqa: E402
 from niche_modules import register_block  # noqa: E402
-from manifest_io import write_manifest  # noqa: E402
+from manifest_io import (  # noqa: E402
+    prior_inputs_extra_meta as _prior_inputs_extra_meta,
+    write_manifest,
+)
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     dedupe_consecutive_panel_lines,
@@ -772,18 +775,6 @@ def apply_post_punchup_backstop(
     stats["consecutive_dups_merged"] = n_dups
     return {"identity_reveals_neutralized": n_ident,
             "consecutive_dups_merged": n_dups}
-
-
-def _prior_inputs_extra_meta(beats_obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """extra_meta override for the in-place beats rewrite: carries the
-    ORIGINAL _meta.inputs (stamped by gemini_narrative_pass from
-    manifest.groups.json/manifest.cast.json) forward onto the punched-up
-    write. Needed because args.out == args.beats — write_manifest's own
-    inputs=(args.beats,) would otherwise hash the file's pre-write bytes as a
-    fake self-referential "input", clobbering the real stamp and degrading
-    beats<-groups freshness to mtime (mirrors narration_sanitize_pass.py)."""
-    prior_inputs = (beats_obj.get("_meta") or {}).get("inputs") or {}
-    return {"inputs": prior_inputs} if prior_inputs else None
 
 
 def main() -> int:
