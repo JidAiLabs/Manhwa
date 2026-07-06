@@ -61,6 +61,7 @@ from recap_style import (
     analyze_recap_style,
     is_shot_description,
     mentions_image_file,
+    mentions_impact_marker,
 )
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
@@ -945,30 +946,96 @@ def filename_in_narration_flags(beats_obj: Any) -> List[Dict[str, Any]]:
     return flags
 
 
+def impact_marker_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """A VOICED line that echoes the writer-input impact-SFX bracket marker
+    ("[IMPACT SFX on panel]", stamped into the payload by
+    tools/gemini_narrative_pass.py's _pack_group_payload) is pipeline
+    bookkeeping read aloud — the SAME leak channel as
+    filename_in_narration_flags (scene_file names are also fed to the writer
+    as bracket/tag context that can echo back verbatim instead of being
+    converted into prose). Deterministic substring match; fires regardless of
+    whether the line ALSO happens to carry an impact lexeme — a leaked marker
+    is unshippable either way, lexicon or not."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            if line and mentions_impact_marker(line):
+                flags.append(_flag(
+                    "impact_marker_leak", ERROR,
+                    f"narration echoes the impact-SFX bracket marker "
+                    f"verbatim: {line[:80]!r} — describe the strike/stab/"
+                    "blow itself, never the bracket tag",
+                    scene=str((s["span"] or [""])[0]),
+                    segment_id=seg))
+    return flags
+
+
 # --- impact_mismatch (eyes wave) ---------------------------------------------
-# Impact-class lexicon — a DATA constant, deliberately crude: word STEMS
-# matched at word START, case-insensitive ("stab" covers stabs/stabbing;
-# "pierc" covers pierce/piercing). It catches "peaceful vibes over a stab
-# panel", not poetry. Over-matching (e.g. "cut" also matching "cute") can only
-# SUPPRESS a flag, never create one — the safe direction for a blocking gate.
-# The trigger side is the deterministic impact-SFX detector's stamp
-# (impact_sfx.present in manifest.panels.understood.json), never a model claim.
+# Impact-class lexicon — a DATA constant, deliberately crude: full inflected
+# word FORMS (not bare stems), matched at BOTH a leading and trailing word
+# boundary, case-insensitive. It catches "peaceful vibes over a stab panel",
+# not poetry. A leading-boundary-ONLY match (the prior version) let "stab"
+# swallow "stable" and "cut" swallow "cutlery" — enumerating real inflections
+# with \b on both ends fixes that without losing the "catch every form of the
+# same verb" intent. Loose multi-word phrases that collide with mundane
+# senses ("ran through the market" = ran on foot, not a blade) are NOT
+# included — "run/runs/ran through" was removed for exactly that reason.
+# Over-matching can only SUPPRESS a flag, never create one — the safe
+# direction for a blocking gate. The trigger side is the deterministic
+# impact-SFX detector's stamp (impact_sfx.present in
+# manifest.panels.understood.json), never a model claim.
 _IMPACT_LEXEMES = frozenset({
-    "strik", "struck", "stab", "pierc", "slash", "blow", "hit", "smash",
-    "crash", "impact", "plung", "thrust", "impal", "skewer", "slam", "punch",
-    "kick", "clash", "shatter", "burst", "explo", "gash", "wound", "blood",
-    "bleed", "cut", "sever", "cleav", "bash", "pummel",
+    "strike", "strikes", "striking", "struck",
+    "stab", "stabs", "stabbed", "stabbing",
+    "pierce", "pierces", "pierced", "piercing",
+    "slash", "slashes", "slashed", "slashing",
+    "blow", "blows",
+    "hit", "hits", "hitting",
+    "smash", "smashes", "smashed", "smashing",
+    "crash", "crashes", "crashed", "crashing",
+    "impact", "impacts", "impacted", "impacting",
+    "plunge", "plunges", "plunged", "plunging",
+    "thrust", "thrusts", "thrusting",
+    "impale", "impales", "impaled", "impaling",
+    "skewer", "skewers", "skewered", "skewering",
+    "slam", "slams", "slammed", "slamming",
+    "punch", "punches", "punched", "punching",
+    "kick", "kicks", "kicked", "kicking",
+    "clash", "clashes", "clashed", "clashing",
+    "shatter", "shatters", "shattered", "shattering",
+    "burst", "bursts", "bursting",
+    "explode", "explodes", "exploded", "exploding", "explosion", "explosive",
+    "gash", "gashes", "gashed", "gashing",
+    "wound", "wounds", "wounded", "wounding",
+    "blood", "bloody", "bloodied",
+    "bleed", "bleeds", "bleeding", "bled",
+    "cut", "cuts", "cutting",
+    "sever", "severs", "severed", "severing",
+    "cleave", "cleaves", "cleaved", "cleaving", "cleft",
+    "bash", "bashes", "bashed", "bashing",
+    "pummel", "pummels", "pummeled", "pummelling", "pummeling",
     "drive the blade", "drives the blade", "drove the blade",
-    "run through", "runs through", "ran through",
 })
 _IMPACT_LEXEME_RE = re.compile(
-    r"\b(?:" + "|".join(sorted(re.escape(w) for w in _IMPACT_LEXEMES)) + r")",
+    r"\b(?:" + "|".join(sorted(re.escape(w) for w in _IMPACT_LEXEMES)) + r")\b",
     re.IGNORECASE)
 
 
 def has_impact_lexeme(line: str) -> bool:
-    """True when the narration line carries ANY impact-class word stem."""
+    """True when the narration line carries ANY impact-class word form."""
     return bool(_IMPACT_LEXEME_RE.search(str(line or "")))
+
+
+# Panel kinds exempt from the impact trigger set: understanding may correctly
+# classify a stamped red banner as UI chrome / an in-world system card / a
+# caption rather than a story panel — the detector has no panel_kind concept
+# (pure CV over pixels), so this is the QA-side second layer that keeps a
+# non-story red stamp from ever reaching the blocking gate.
+_IMPACT_EXEMPT_KINDS = frozenset({"system", "chrome", "caption"})
 
 
 def impact_mismatch_flags(beats_obj: Any, understood_obj: Any
@@ -978,16 +1045,21 @@ def impact_mismatch_flags(beats_obj: Any, understood_obj: Any
     (impact_sfx.present, stamped by panel_understand from the impact-SFX
     lettering detector) must carry at least one impact-class lexeme. A stab
     panel narrated as a peaceful stroll is exactly the mismatch class the
-    grounding judge scores too softly (WARN) to gate on. Healable: the heal
-    loop re-narrates the group, whose writer payload now carries the
-    [IMPACT SFX on panel] marker. Same _base_scene normalization as
-    span_cover_flags so render-split halves trace back to the understood
+    grounding judge scores too softly (WARN) to gate on. Panels whose
+    understood panel_kind is system/chrome/caption are excluded from the
+    trigger set — the detector has no panel_kind filter of its own, so a
+    stamped red UI banner or in-world system card can never fire this gate.
+    Healable: the heal loop re-narrates the group, whose writer payload now
+    carries the [IMPACT SFX on panel] marker. Same _base_scene normalization
+    as span_cover_flags so render-split halves trace back to the understood
     panel. Silent on legacy understanding (no impact_sfx stamps)."""
     flags: List[Dict[str, Any]] = []
     impact_files = {
         _base_scene(os.path.basename(str(p.get("scene_file") or "")))
         for p in ((understood_obj or {}).get("panels") or [])
-        if isinstance(p, dict) and (p.get("impact_sfx") or {}).get("present")}
+        if isinstance(p, dict) and (p.get("impact_sfx") or {}).get("present")
+        and str(p.get("panel_kind") or "").strip().lower()
+        not in _IMPACT_EXEMPT_KINDS}
     if not impact_files or not isinstance(beats_obj, dict):
         return flags
     for b in beats_obj.get("beats") or []:
@@ -2019,6 +2091,7 @@ def main() -> int:
     flags.extend(raw_caps_voiced_flags(script_obj))
     flags.extend(shot_description_flags(beats_obj))
     flags.extend(filename_in_narration_flags(beats_obj))
+    flags.extend(impact_marker_leak_flags(beats_obj))
     flags.extend(story_flags(plan, beats_obj, vitems))
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))

@@ -10,6 +10,12 @@ tests/fixtures/sfx/, max width 480 q70):
     reddish fabric next to dialogue, no SFX lettering).
 p000034 (whitish/outline slash SFX) is deliberately NOT gated — v1 catches
 saturated painted lettering only; see the ceiling comment in the module.
+
+The hue gate (eyes-wave review fix) additionally requires: saturated bold
+lettering of ANY OTHER color (tests/fixtures/sfx/synthetic_* — blue "LEVEL",
+green "POISON", purple "BONUS", yellow "SWOOSH") MUST stay silent even though
+it clears every other gate (S/V, area-band, edge-density); only a red synthetic
+banner ("FINALE") may still stamp.
 """
 import os
 import sys
@@ -19,6 +25,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 
+import impact_lettering as il  # noqa: E402
 from impact_lettering import detect_impact_lettering  # noqa: E402
 
 _FIX = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -77,3 +84,56 @@ def test_flat_red_wash_is_not_lettering():
 def test_detector_is_deterministic(rel):
     img = _load(rel)
     assert detect_impact_lettering(img) == detect_impact_lettering(img)
+
+
+# --- hue gate (eyes-wave review fix) -----------------------------------------
+# Without a color gate, the detector fires on ANY bold saturated lettering —
+# each synthetic banner below clears S/V, the area band, AND edge-density
+# (verified while building the fixtures: every non-red banner has 1+ component
+# that passes all three of those gates) — only the hue check tells a red stab
+# SFX apart from a blue "LEVEL UP" / green "POISON" / purple "BONUS" / yellow
+# "SWOOSH" status banner.
+
+@pytest.mark.parametrize("rel", [
+    "sfx/synthetic_blue_level.jpg",
+    "sfx/synthetic_green_poison.jpg",
+    "sfx/synthetic_purple_bonus.jpg",
+    "sfx/synthetic_yellow_swoosh.jpg",
+])
+def test_hue_gate_rejects_non_red_saturated_banners(rel):
+    assert detect_impact_lettering(_load(rel)) == []
+
+
+def test_hue_gate_allows_red_banner_to_stamp():
+    # the ONE color the domain actually cares about may still fire.
+    regions = detect_impact_lettering(_load("sfx/synthetic_red_finale.jpg"))
+    assert regions, "a red synthetic banner must still be detectable"
+    for r in regions:
+        assert il._hue_in_band(r["mean_hue_deg"])
+
+
+# --- SAT_MIN safety-band sweep (minor 4) -------------------------------------
+
+@pytest.mark.parametrize("sat_min", [95, 100, 105, 110, 115, 120, 125, 130])
+def test_sat_min_sweep_holds_detection_on_real_fixture(monkeypatch, sat_min):
+    # sweep-verified band from the module's SAT_MIN comment: every S in
+    # [95, 130] must still fire on the real red stab SFX panel.
+    monkeypatch.setattr(il, "SAT_MIN", sat_min)
+    assert il.detect_impact_lettering(_load("sfx/p000036.jpg"))
+
+
+# --- oversized-blob / AREA_FRAC_MAX (minor 4) --------------------------------
+
+def test_oversized_within_hue_red_blob_rejected_by_area_ceiling():
+    # Horizontal red stripes over a large region: plenty of internal Canny
+    # edges (clears EDGE_DENSITY_MIN) and a pure red hue (clears the new hue
+    # gate) — but the component covers ~39% of the panel, so AREA_FRAC_MAX
+    # (0.20) must be the gate that rejects it, not edge density or hue.
+    import numpy as np
+    img = np.full((480, 480, 3), (15, 15, 15), dtype=np.uint8)
+    y = 90
+    stripe, gap = 6, 2
+    while y + stripe <= 390:
+        img[y:y + stripe, 90:390] = (20, 20, 230)  # BGR: saturated red
+        y += stripe + gap
+    assert detect_impact_lettering(img) == []

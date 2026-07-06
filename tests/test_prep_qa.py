@@ -1488,6 +1488,47 @@ def test_filename_in_narration_flags_clean_on_story_lines():
     assert pq.filename_in_narration_flags(beats) == []
 
 
+def test_impact_marker_leak_flags_catches_the_bracket_echo():
+    # the writer's payload carries "[IMPACT SFX on panel]" as a per-panel tag
+    # (tools/gemini_narrative_pass.py's _pack_group_payload) — the SAME leak
+    # channel as a scene_file tag: it can get echoed back verbatim instead of
+    # being converted into narration of the strike itself.
+    beats = {"beats": [{
+        "group_id": 9,
+        "segments": [
+            {"span": ["p000010.jpg"],
+             "line": "He steadies himself before the fight."},
+            {"span": ["p000011.jpg"],
+             "line": "[IMPACT SFX on panel] as he falls."},
+        ],
+    }]}
+    fl = pq.impact_marker_leak_flags(beats)
+    assert [f["code"] for f in fl] == ["impact_marker_leak"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0009"
+    assert fl[0]["scene"] == "p000011.jpg"
+
+
+def test_impact_marker_leak_flags_fires_regardless_of_impact_lexicon():
+    # a leaked marker is unshippable bookkeeping whether or not the line ALSO
+    # happens to carry an impact-class word — has_impact_lexeme must not be
+    # the only thing standing between this leak and a green QA report.
+    line = "[IMPACT SFX on panel] as the blade strikes true."
+    assert pq.has_impact_lexeme(line)  # carries a lexeme too...
+    beats = {"beats": [{"group_id": 2, "segments": [
+        {"span": ["a.jpg"], "line": line}]}]}
+    fl = pq.impact_marker_leak_flags(beats)
+    assert [f["code"] for f in fl] == ["impact_marker_leak"]  # ...net still fires
+
+
+def test_impact_marker_leak_flags_clean_on_story_lines():
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["a.jpg"], "line": "He draws the blade and lunges."},
+        {"span": ["b.jpg"], "line": "Steel meets steel in the dark."},
+    ]}]}
+    assert pq.impact_marker_leak_flags(beats) == []
+
+
 def test_cut_gap_is_error_not_warn():
     # D1-backstop: a residual render-plan time-hole (black screen) must BLOCK
     # autopilot, not ship silently as a WARN.

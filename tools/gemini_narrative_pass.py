@@ -43,6 +43,7 @@ from recap_style import (  # noqa: E402
     dedupe_consecutive_panel_lines,
     is_shot_description,
     mentions_image_file,
+    mentions_impact_marker,
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
@@ -1300,6 +1301,10 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
             errors.append(f"segment {i}: line names an image file — file "
                           "names are tags, never narration; narrate what "
                           "HAPPENS across these panels instead")
+        if mentions_impact_marker(line):
+            errors.append(f"segment {i}: line echoes the impact-SFX bracket "
+                          "marker verbatim — describe the strike/stab/blow "
+                          "itself, never the bracket tag")
         if is_shot_description(line):
             # same detector prep_qa ERRORs on — enforcing it here turns a
             # multi-cycle heal burn into one cheap repair re-ask at source

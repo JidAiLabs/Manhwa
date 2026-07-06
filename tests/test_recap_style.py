@@ -590,6 +590,19 @@ def test_mentions_image_file_catches_filename_leaks():
     assert not rs.mentions_image_file(None)
 
 
+def test_mentions_impact_marker_catches_the_bracket_echo():
+    # the impact-SFX detector's writer-input marker ("[IMPACT SFX on panel]")
+    # is a bracket TAG fed to the model as context — the SAME leak channel as
+    # the scene_file tags above.
+    assert rs.mentions_impact_marker(
+        "[IMPACT SFX on panel] as the blade comes down.")
+    assert rs.mentions_impact_marker(
+        "He staggers back, [Impact SFX on panel], and falls.")  # case-insensitive
+    assert not rs.mentions_impact_marker("The blade strikes true.")
+    assert not rs.mentions_impact_marker("")
+    assert not rs.mentions_impact_marker(None)
+
+
 def test_is_shot_description_catches_montage_meta_filler():
     # the small-model punt on a dense action run: narrate the MEDIUM (camera,
     # shots, sequence) instead of the story. Real Nano ch1 group 7 (2026-07-04)

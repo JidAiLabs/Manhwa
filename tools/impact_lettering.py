@@ -19,12 +19,24 @@ Recipe (tuned on tests/fixtures/sfx/ — see tests/test_impact_lettering.py):
      display lettering, small enough to not be a red wash / clothing;
   4. AND whose bbox interior Canny edge density is stroke-like: painted
      lettering is full of stroke edges (measured 0.10-0.18 on the real 푹/!),
-     while blood pools and flat fabric are smooth (measured 0.00-0.05).
+     while blood pools and flat fabric are smooth (measured 0.00-0.05);
+  5. AND whose circular-mean hue falls in the red-orange band (wraps 330-360/
+     0-25 deg) — gates 1-4 alone fire on ANY bold saturated lettering
+     regardless of color (a blue "LEVEL", green "POISON", purple "BONUS", or
+     yellow "SWOOSH" banner clears them just as easily as a real stab SFX;
+     see tests/fixtures/sfx/synthetic_*). The domain signal IS red/orange.
 
-ponytail: v1 ceiling — this catches SATURATED painted lettering only. The
-whitish / dark-outline slash SFX (p000034's 스윽) has no saturation to mask on
-and needs a separate edge-cluster pass later; do NOT loosen the saturation
-gate to chase it (that reopens the red-cloak/blood false-positive door).
+ponytail: v1 ceiling — this catches SATURATED RED/ORANGE painted lettering
+only. Other saturated bold lettering (blue/green/purple/yellow banners, UI
+callouts, etc.) is rejected by the hue gate — that is domain-correct, not a
+false negative to chase. A RED title card/stamp can still pass this detector;
+tools/prep_qa.py's impact_mismatch gate is the SECOND layer (it excludes
+panels whose understood panel_kind is system/chrome/caption from the trigger
+set), so a stamped red banner that understanding correctly classifies as UI
+chrome can never block on it. The whitish / dark-outline slash SFX (p000034's
+스윽) has no saturation to mask on and needs a separate edge-cluster pass
+later; do NOT loosen the saturation gate to chase it (that reopens the
+red-cloak/blood false-positive door).
 """
 from __future__ import annotations
 
@@ -54,6 +66,20 @@ AREA_PX_MIN = 64
 EDGE_DENSITY_MIN = 0.06
 _CANNY_LO, _CANNY_HI = 60, 160
 _CLOSE_KERNEL = 5
+# Hue gate: impact SFX in THIS domain is specifically red/orange painted
+# lettering. Without it, gates above fire on ANY bold saturated lettering —
+# blue/green/purple/yellow banners all measured false-positive (see
+# tests/fixtures/sfx/synthetic_*). Expressed in degrees (matching
+# _circular_mean_hue_deg's output) rather than a single cv2 0-179 range
+# because the band wraps the 0/360 seam. Real p000036 measured 348-357 deg.
+HUE_MIN_DEG = 330.0
+HUE_MAX_DEG = 25.0
+
+
+def _hue_in_band(mean_hue_deg: float) -> bool:
+    """True when a circular-mean hue (degrees) is red-orange, wrapping the
+    0/360 seam (e.g. both 350 and 10 qualify; 90 (green) does not)."""
+    return mean_hue_deg >= HUE_MIN_DEG or mean_hue_deg <= HUE_MAX_DEG
 
 
 def _circular_mean_hue_deg(hue_u8: np.ndarray) -> float:
@@ -106,11 +132,13 @@ def detect_impact_lettering(img_bgr: Any) -> List[Dict[str, Any]]:
         edge_density = float((box_edges > 0).mean()) if box_edges.size else 0.0
         if edge_density < EDGE_DENSITY_MIN:
             continue
+        mean_hue = _circular_mean_hue_deg(hsv[y:y + bh, x:x + bw, 0])
+        if not _hue_in_band(mean_hue):
+            continue
         regions.append({
             "bbox": [x, y, bw, bh],
             "area_frac": round(area_frac, 6),
-            "mean_hue_deg": round(
-                _circular_mean_hue_deg(hsv[y:y + bh, x:x + bw, 0]), 1),
+            "mean_hue_deg": round(mean_hue, 1),
         })
     regions.sort(key=lambda r: (-r["area_frac"], r["bbox"][1], r["bbox"][0]))
     return regions

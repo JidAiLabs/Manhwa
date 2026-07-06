@@ -73,6 +73,22 @@ def test_filename_in_narration_is_healable_error():
     assert "file" in note and "happens" in note
 
 
+def test_impact_marker_leak_is_healable_error():
+    # a voiced line echoing the impact-SFX bracket marker ("[IMPACT SFX on
+    # panel]") verbatim is bookkeeping, never story — the SAME leak class as
+    # filename_in_narration; heal re-narrates the group.
+    assert "impact_marker_leak" in nh.HEALABLE
+    rep = {"flags": [_flag("impact_marker_leak", "ERROR",
+                           "narration echoes the impact-SFX bracket marker "
+                           "verbatim: '[IMPACT SFX on panel] as he falls.'",
+                           "g0006")]}
+    corr = nh.corrections_from_qa(rep)
+    assert set(corr) == {6}
+    note = corr[6].lower()
+    assert "bracket" in note or "marker" in note
+    assert "strike" in note or "stab" in note or "blow" in note
+
+
 def test_shot_description_is_healable_error():
     # D4: a line that names the camera/shot OR the artwork's rendering / a visual
     # effect (motion blur, speed lines, "is depicted") must heal (re-narrate the

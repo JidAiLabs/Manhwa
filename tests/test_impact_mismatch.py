@@ -97,6 +97,20 @@ def test_legacy_understood_without_impact_stamp_is_silent():
     assert pq.impact_mismatch_flags(beats, legacy) == []
 
 
+@pytest.mark.parametrize("kind", ["system", "chrome", "caption"])
+def test_exempt_panel_kinds_never_fire_the_gate(kind):
+    # The detector is pure CV with no panel_kind concept — it will happily
+    # stamp a red UI banner / in-world system card / caption. Understanding
+    # frequently classifies exactly that correctly as non-story, so this QA
+    # gate must never block on it regardless of the (calm) narration line.
+    understood = {"panels": [{"scene_file": "p1.jpg", "description": "x",
+                              "action": "y", "panel_kind": kind,
+                              "intensity": "tense",
+                              "impact_sfx": {"present": True, "regions": 1}}]}
+    beats = {"beats": [_beat(1, [(["p1.jpg"], CALM_LINE)])]}
+    assert pq.impact_mismatch_flags(beats, understood) == []
+
+
 def test_missing_inputs_are_silent():
     assert pq.impact_mismatch_flags({}, {}) == []
     assert pq.impact_mismatch_flags(None, None) == []
@@ -112,3 +126,25 @@ def test_lexeme_matching_is_word_start_anchored():
     assert not pq.has_impact_lexeme("a white robe in the wind")
     assert not pq.has_impact_lexeme("sails billow over calm water")
     assert not pq.has_impact_lexeme("")
+
+
+@pytest.mark.parametrize("line", [
+    "The kingdom remains stable despite the chaos.",   # 'stab' swallowed 'stable'
+    "The knight polished the cutlery before dinner.",  # 'cut' swallowed 'cutlery'
+    "They ran through the empty market square.",       # loose phrase collision
+])
+def test_lexeme_matching_requires_trailing_boundary_too(line):
+    # A leading-boundary-ONLY match let a stem swallow a longer unrelated
+    # word ('stab' in 'stable', 'cut' in 'cutlery'); a bare phrase entry
+    # ('ran through') collided with ordinary foot-travel. All three must be
+    # false-suppression-free, i.e. carry NO impact lexeme.
+    assert not pq.has_impact_lexeme(line), line
+
+
+@pytest.mark.parametrize("line", [
+    "Steel flashes in a lethal strike.",
+    "He stabbed him without hesitation.",
+    "Blood sprays across the stone floor.",
+])
+def test_lexeme_matching_still_catches_genuine_impact_lines(line):
+    assert pq.has_impact_lexeme(line), line

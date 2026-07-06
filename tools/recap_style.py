@@ -247,6 +247,22 @@ def mentions_image_file(text: str) -> bool:
     return bool(_IMAGE_FILE_RE.search(s) or _PANEL_ID_RE.search(s))
 
 
+# The impact-SFX detector's writer-input marker is a bracket TAG injected into
+# the payload ("[IMPACT SFX on panel]", tools/gemini_narrative_pass.py's
+# _pack_group_payload) — the SAME leak channel as the scene_file tags above: a
+# bracket marker fed to the model as context can get echoed back verbatim
+# ("...[IMPACT SFX on panel] as he falls.") instead of being converted into an
+# actual description of the strike. Substring match, case-insensitive — the
+# marker is fixed text, not a lexicon.
+_IMPACT_MARKER_RE = re.compile(r"\[impact sfx", re.I)
+
+
+def mentions_impact_marker(text: str) -> bool:
+    """True when a narration line echoes the writer-input impact-SFX bracket
+    marker ('[IMPACT SFX on panel]') instead of narrating the strike itself."""
+    return bool(_IMPACT_MARKER_RE.search(str(text or "")))
+
+
 def _words(text: str) -> List[str]:
     return _WORD_RE.findall(_TAG_RE.sub("", str(text or "")))
 

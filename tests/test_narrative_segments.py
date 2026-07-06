@@ -134,6 +134,18 @@ def test_filename_leak_in_line_flagged():
     assert any("image file" in e for e in errs)
 
 
+def test_impact_marker_leak_in_line_flagged():
+    # the writer's payload carries "[IMPACT SFX on panel]" as a per-panel tag
+    # (gemini_narrative_pass._pack_group_payload) — an echoed bracket marker
+    # must fail validation exactly like a leaked scene_file tag (the SAME
+    # leak channel: bracket/tag context fed to the model, echoed verbatim).
+    segs = [{"span": ["p1.jpg", "p2.jpg"],
+             "line": "[IMPACT SFX on panel] as the blade comes down hard."},
+            {"span": ["p3.jpg"], "line": _words(8)}]
+    errs = gnp.validate_segments(segs, FILES, KINDS)
+    assert any("bracket" in e and "marker" in e for e in errs)
+
+
 def test_empty_line_and_mood_prefix_flagged():
     segs = [{"span": ["p1.jpg"], "line": ""},
             {"span": ["p2.jpg"], "line": "[tense] " + _words(8)},
