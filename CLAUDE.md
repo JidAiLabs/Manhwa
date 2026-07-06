@@ -6,7 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A **manhwa/webtoon → narrated video** pipeline for the YouTube channel **OriginPower Manhwa Recap**. It fetches manhwa chapters, slices them into panels/scenes (trained YOLO), extracts OCR (Google Vision), writes narrative beats (Gemini) + a recap script (OpenAI), voices it (ElevenLabs), plans a timeline, and renders in Blender VSE. The `tools/` scripts are the pipeline stages (manifest-in → manifest-out); the **`studio/` package is the orchestrated front-end** that drives them.
 
-> **USE `studio/` — don't run `tools/` by hand.** There's a working CLI + SQLite catalog. See "studio/ — the front-end" below. Git repo on `main`. Tests: `.eval_venv/bin/python -m pytest -q` (170 passing). Use the existing venv `.eval_venv/` (Python 3.12 + torch/ultralytics/cv2/openai/google-genai/google-cloud-vision/gallery-dl).
+> **USE `studio/` — don't run `tools/` by hand.** There's a working CLI + SQLite catalog. See "studio/ — the front-end" below. Git repo on `main`. Tests: `.eval_venv/bin/python -m pytest -q` (~1554 passing). Use the existing venv `.eval_venv/` (Python 3.12 + torch/ultralytics/cv2/openai/google-genai/google-cloud-vision/gallery-dl).
+
+### Dependency model (2026-07-06 refactor — the single invalidation authority)
+
+- **`studio/deps.py` is THE artifact dependency table** (artifact → producer stage → inputs, `sha_only`/optional flags). Freshness (`tools/manifest_freshness.py`), rewind delete-lists (`studio/catalog/reset.py`), reconcile marker validation, and `studio/pipeline.py` skip-iff-fresh guards all DERIVE from it — never hand-edit those lists; change the table.
+- **Manifests are written atomically with provenance** via `tools/manifest_io.py` (`_meta = {schema, written_at, tool, inputs:{basename: sha1}}`). In-place rewriters (sanitize, punchup) carry upstream `_meta.inputs` forward. Freshness compares shas when both sides are stamped; mtime is only the legacy fallback.
+- **QA is fail-closed**: `worker._qa_verdict` requires a fresh, parseable `prep_qa.json` (missing/corrupt/stale → blocking `qa_report_invalid`). Structural codes (`cut_gap`, `panel_uncovered`, `panel_double_covered`, `audio_failed`) block; `STUDIO_QA_NONBLOCKING` (csv env) demotes codes without a deploy. Autopilot consumes the in-memory verdict, never re-reads disk.
+- **Approvals are content-bound** (`approval.content_sha` via `gates.gate_sha`); auto-advance flows use `gates.ensure_approval` (invalid = absent). **Render is pinned to the QA'd plan sha** — matching sha skips render_prep entirely; drift fails the job. One chapter = one running job (lease in `jobs.claim_next`); worker restarts reap orphan children by persisted pgid before requeue.
+- TTS reuse keys include backend/voice_ref sha; `panel_understand --resume` keys on `scene_sha` + `PROMPT_VERSION` (a prompt change = bump the const; no more manual `understood.json` deletion).
 
 ## studio/ — the front-end (SP1, shipped)
 

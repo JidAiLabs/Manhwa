@@ -1,5 +1,7 @@
 # Teaser Planner Implementation Plan
 
+> **2026-07-06 NOTE:** `gates.teaser_allowed` described below was deleted (dead API — concat gating is `bundle.teaser_state` + the concat approval). Teaser config is now fully wired (spoiler `payoff_tail_frac`, min/max panels, `--max-seconds`, TTS backend dispatch + speed) and the teaser script is sanitize-gated with a marker-freshness guard. See the 2026-07 dependency-authority refactor.
+
 > **For agentic workers:** REQUIRED: Use subagent-driven-development (if subagents available) or executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a bundle-level arc teaser — a high-stakes window selected per-manhwa from the chapters in a bundle, rendered as a short `teaser.mp4` and prepended to the bundle concat.
