@@ -38,6 +38,13 @@ HEALABLE = {
     # also in the worker's _CRITICAL_QA_CODES, so blocking only survives when
     # healing can't clear it.
     "impact_mismatch",
+    # a line fits a +-1-shifted panel window better than its own span (the
+    # one-panel lead/lag class from the 2026-07-06 vision review) — a group
+    # re-roll re-derives spans (unpinned) or re-writes each line against its
+    # pinned span; either way the re-roll goes through span_align_pass /
+    # per-span writing, which is the fix. NOT in the worker blocking set yet
+    # (first run measures precision).
+    "narration_offset",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -86,6 +93,13 @@ def _note_for(code: str, detail: str) -> str:
                 "misses it entirely. Re-narrate the physical impact "
                 "explicitly: who strikes, what lands, the force and the "
                 "damage. Never describe this panel as calm or uneventful.")
+    if code == "narration_offset":
+        return ("This line describes the NEIGHBORING panel's moment, not its "
+                "own — a one-panel lead/lag (e.g. narrating the impact while "
+                "the pre-impact panel is on screen). Re-narrate the group so "
+                "every line describes exactly the panel(s) it is voiced over: "
+                "the strike lands when the strike panel shows, the reaction "
+                "when the reaction panel shows.")
     if code in ("beats_incomplete", "empty_item", "silent_group"):
         return ("The narration is empty — describe what actually happens in this "
                 "panel (and cover any on-panel caption).")

@@ -63,6 +63,13 @@ from recap_style import (
     mentions_image_file,
     mentions_impact_marker,
 )
+from span_align import (  # single authority: lexicon + line<->span affinity
+    _IMPACT_LEXEMES,          # noqa: F401  (re-export; tests use pq._IMPACT_LEXEMES)
+    _IMPACT_LEXEME_RE,        # noqa: F401
+    SPAN_ALIGN_MARGIN,
+    has_impact_lexeme,
+    window_affinities,
+)
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
@@ -988,46 +995,13 @@ def impact_marker_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
 # direction for a blocking gate. The trigger side is the deterministic
 # impact-SFX detector's stamp (impact_sfx.present in
 # manifest.panels.understood.json), never a model claim.
-_IMPACT_LEXEMES = frozenset({
-    "strike", "strikes", "striking", "struck",
-    "stab", "stabs", "stabbed", "stabbing",
-    "pierce", "pierces", "pierced", "piercing",
-    "slash", "slashes", "slashed", "slashing",
-    "blow", "blows",
-    "hit", "hits", "hitting",
-    "smash", "smashes", "smashed", "smashing",
-    "crash", "crashes", "crashed", "crashing",
-    "impact", "impacts", "impacted", "impacting",
-    "plunge", "plunges", "plunged", "plunging",
-    "thrust", "thrusts", "thrusting",
-    "impale", "impales", "impaled", "impaling",
-    "skewer", "skewers", "skewered", "skewering",
-    "slam", "slams", "slammed", "slamming",
-    "punch", "punches", "punched", "punching",
-    "kick", "kicks", "kicked", "kicking",
-    "clash", "clashes", "clashed", "clashing",
-    "shatter", "shatters", "shattered", "shattering",
-    "burst", "bursts", "bursting",
-    "explode", "explodes", "exploded", "exploding", "explosion", "explosive",
-    "gash", "gashes", "gashed", "gashing",
-    "wound", "wounds", "wounded", "wounding",
-    "blood", "bloody", "bloodied",
-    "bleed", "bleeds", "bleeding", "bled",
-    "cut", "cuts", "cutting",
-    "sever", "severs", "severed", "severing",
-    "cleave", "cleaves", "cleaved", "cleaving", "cleft",
-    "bash", "bashes", "bashed", "bashing",
-    "pummel", "pummels", "pummeled", "pummelling", "pummeling",
-    "drive the blade", "drives the blade", "drove the blade",
-})
-_IMPACT_LEXEME_RE = re.compile(
-    r"\b(?:" + "|".join(sorted(re.escape(w) for w in _IMPACT_LEXEMES)) + r")\b",
-    re.IGNORECASE)
-
-
-def has_impact_lexeme(line: str) -> bool:
-    """True when the narration line carries ANY impact-class word form."""
-    return bool(_IMPACT_LEXEME_RE.search(str(line or "")))
+#
+# The lexicon LIVES in span_align (the narration<->span affinity authority
+# also needs it, and prep_qa imports span_align — this direction avoids the
+# circular import). Re-exported here so every existing consumer/test keeps
+# its prep_qa.has_impact_lexeme / pq._IMPACT_LEXEMES spelling.
+# (imported from span_align at the top of this file — the affinity authority
+# needs the same lexicon, and prep_qa -> span_align is the acyclic direction.)
 
 
 # Panel kinds exempt from the impact trigger set: understanding may correctly
@@ -1074,6 +1048,58 @@ def impact_mismatch_flags(beats_obj: Any, understood_obj: Any
                     f"narration has no impact wording: {line[:80]!r} — "
                     "re-narrate the strike/stab/blow explicitly",
                     scene=str(hits[0]), segment_id=seg))
+    return flags
+
+
+def narration_offset_flags(beats_obj: Any, understood_obj: Any
+                           ) -> List[Dict[str, Any]]:
+    """ONE-PANEL OFFSET tripwire (ERROR, heal-target, deliberately NOT in the
+    worker blocking set — the first production run measures its precision):
+    the dominant defect class of the 2026-07-06 Nano ch1 human vision review
+    (~10/27 findings) was a line leading/lagging its span by one panel in an
+    action run (the impact line voiced over the pre-impact panel; the
+    "eyes widen" line one panel after the eyes). Fires when the segment
+    line's affinity to a NEIGHBOR window (same size, shifted +-1 panel)
+    beats its own span's by >= SPAN_ALIGN_MARGIN — the SAME shared scoring
+    (span_align.window_affinities) the splitter's span_align_pass shifts on,
+    so QA and the splitter can never disagree. Silent without understanding
+    records (the affinity has nothing to score against)."""
+    flags: List[Dict[str, Any]] = []
+    u_by_file: Dict[str, Dict[str, Any]] = {}
+    for p in ((understood_obj or {}).get("panels") or []):
+        if isinstance(p, dict) and p.get("scene_file"):
+            u_by_file[os.path.basename(str(p["scene_file"]))] = p
+    if not u_by_file or not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg_tag = f"g{int(b.get('group_id') or 0):04d}"
+        segs = beat_segments(b)
+        files = [f for s in segs for f in s["span"]]
+        if not files:
+            continue
+        # split render halves (p0098_a.jpg) trace back to the understood parent
+        u_local = {f: (u_by_file.get(f) or u_by_file.get(_base_scene(f)) or {})
+                   for f in files}
+        kinds = {f: str(u_local[f].get("panel_kind") or "") for f in files}
+        for i, s in enumerate(segs):
+            if not s["line"]:
+                continue
+            own, minus, plus = window_affinities(segs, i, files, kinds,
+                                                 u_local)
+            cands = [(v, d) for v, d in ((minus, "-1"), (plus, "+1"))
+                     if v is not None]
+            if not cands:
+                continue
+            best, direction = max(cands)
+            if best > 0 and best - own >= SPAN_ALIGN_MARGIN:
+                flags.append(_flag(
+                    "narration_offset", ERROR,
+                    f"line fits the {direction}-shifted panel window better "
+                    f"than its own span (affinity {own:.2f} vs {best:.2f}): "
+                    f"{s['line'][:80]!r} — one-panel lead/lag; re-narrate "
+                    "this group so each line lands on the panels it "
+                    "describes", scene=str((s["span"] or [""])[0]),
+                    segment_id=seg_tag))
     return flags
 
 
@@ -2096,6 +2122,7 @@ def main() -> int:
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))
     flags.extend(impact_mismatch_flags(beats_obj, understood_obj))
+    flags.extend(narration_offset_flags(beats_obj, understood_obj))
 
     recap_style = analyze_recap_style(
         script_obj, beats_obj, story_obj, cast_obj, vitems)

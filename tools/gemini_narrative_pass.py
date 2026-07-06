@@ -52,6 +52,7 @@ from beats_segments import (  # noqa: E402
     has_native_segments,
     write_segment_lines,
 )
+from span_align import span_align_pass  # noqa: E402
 
 # --- adaptive flow segments (spec 2026-07-02) ---------------------------------
 # The writer emits beats[].segments[] = [{"span": [scene_files...], "line": ...}]
@@ -1408,7 +1409,7 @@ def enforce_pinned_spans(beat, prev_beat, gid):
 
 def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                            reask_fn=None, allow_flow_nudge=True,
-                           derive_fn=None):
+                           derive_fn=None, allow_span_align=True):
     """Adaptive mode: normalize + validate the model's segments; on failure do
     ONE repair re-ask (reask_fn(errors) -> repaired beat or None); still failing
     -> fall back to align_panel_narration singleton spans (never block the
@@ -1483,6 +1484,19 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         # span comparison alone can't tell fallback pads from a real rewrite
         # (this poisoned 6 healed ch1 beats with "The moment holds.").
         beat["_segments_fallback"] = True
+    if not errors and allow_span_align:
+        # ONE-PANEL OFFSET post-pass (2026-07-06 review, dominant class): fix
+        # a line leading/lagging its art by one panel by shifting span
+        # boundaries — conservative margin, invariants revalidated by the
+        # SAME validator, and OFF on span-pinned regens (allow_span_align is
+        # False there: a shifted span would only be rejected by the pin).
+        aligned, shifts = span_align_pass(
+            segs, surviving, kinds, u_by_file, span_cap=SPAN_CAP,
+            validate=lambda s: validate_segments(s, surviving, kinds))
+        if shifts:
+            for msg in shifts:
+                print(f"[span_align] g{gid:04d}: {msg}")
+            segs = aligned
     beat.pop("panel_narration", None)
     beat.pop("sentences", None)   # authoring scaffolding — segments are the contract
     beat["segments"] = segs
@@ -2061,7 +2075,10 @@ def main() -> int:
                 # authors flow in the passage itself, and a pinned nudge
                 # re-split would only be rejected by enforce_pinned_spans
                 allow_flow_nudge=False,
-                derive_fn=_derive)
+                derive_fn=_derive,
+                # a span-pinned heal may change LINES only — an offset shift
+                # would re-split and be rejected wholesale by the pin
+                allow_span_align=pin_prev is None)
 
         # Corrections regen of a native-segments beat: adopt the rewrite ONLY
         # if it kept the pinned spans AND is a real rewrite; a validation
