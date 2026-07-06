@@ -1072,6 +1072,8 @@ def dead_box_recrop(
     *,
     max_blank_frac: float = 0.35,
     min_h: int = 120,
+    midtone_min: float = 0.15,
+    chroma_min: float = 5.0,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Crop away large now-blank caption/bubble boxes that dominate a panel.
 
@@ -1122,18 +1124,71 @@ def dead_box_recrop(
         band = gray[a:b]
         midtone = float(((band > 60) & (band < 200)).mean())
         chroma_ok = True
-        if img.ndim == 3:
+        if img.ndim == 3 and chroma_min > 0.0:
             sub = img[a:b].astype(int)
             chroma = float(np.maximum(
                 np.maximum(np.abs(sub[..., 0] - sub[..., 1]),
                            np.abs(sub[..., 1] - sub[..., 2])),
                 np.abs(sub[..., 0] - sub[..., 2])).mean())
-            chroma_ok = chroma >= 5.0
-        if midtone >= 0.15 and chroma_ok:
+            chroma_ok = chroma >= chroma_min
+        if midtone >= midtone_min and chroma_ok:
             info["recropped"] = True
             info["band"] = (a, b)
             return img[a:b], info
     return img, info
+
+
+def husk_recrop_decision(
+    img: np.ndarray,
+    boxes: Sequence[Tuple[int, int, int, int]],
+    *,
+    display_sec: float,
+    max_hold_sec: float,
+    neighbor_crops: Sequence[Tuple[str, Optional[np.ndarray]]] = (),
+    blank_frac_min: float = 0.40,
+    ham_max: int = 8,
+    min_h: int = 120,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """V3 husk-crop policy: the cleaner blanked bubbles covering more than
+    *blank_frac_min* of a CHOSEN crop AND that crop will hold the screen past
+    max_hold_sec/2 (the 22.8s eye whose lower half was one huge cleaned-empty
+    bubble) -> re-crop to the art band, excluding the dead bubble region
+    (dead_box_recrop's band logic with its color guards relaxed — BW/line-art
+    holds fail the chroma gate by construction, midtone floor kept low) —
+    UNLESS the re-crop would become a shown-crop dhash twin (ham <= *ham_max*)
+    of a neighbor's crop within the 3-cut window (*neighbor_crops* — that is
+    exactly how the p090/p095 manufactured-twin was born), in which case the
+    full crop is kept and the V1/V2 ken variety carries the watchability.
+
+    Returns (crop, info): info.husk_recropped True with info.band=(y0,y1) in
+    input coords on success; info.refused_twin=(neighbor, ham) when the twin
+    guard vetoed; blank_frac always measured. Never touches doc/system panels
+    upstream (their cleaned path emits no boxes, so this no-ops)."""
+    info: Dict[str, Any] = {"husk_recropped": False, "blank_frac": 0.0,
+                            "refused_twin": None, "band": None}
+    if img is None or img.size == 0 or not boxes:
+        return img, info
+    info["blank_frac"] = bubble_coverage(img.shape, boxes)
+    if info["blank_frac"] <= blank_frac_min:
+        return img, info
+    if display_sec <= max_hold_sec / 2.0:
+        return img, info
+    img2, dead = dead_box_recrop(img, boxes, max_blank_frac=blank_frac_min,
+                                 min_h=min_h, midtone_min=0.05,
+                                 chroma_min=0.0)
+    if not dead.get("recropped"):
+        return img, info
+    h2 = _dhash8_bgr(img2)
+    for nf, nimg in neighbor_crops:
+        if nimg is None or nimg.size == 0:
+            continue
+        ham = (h2 ^ _dhash8_bgr(nimg)).bit_count()
+        if ham <= ham_max:
+            info["refused_twin"] = (str(nf), int(ham))
+            return img, info
+    info["husk_recropped"] = True
+    info["band"] = dead.get("band")
+    return img2, info
 
 
 def select_panel_crops(
@@ -1803,14 +1858,311 @@ def _kenburns_slice(f0: float, f1: float,
     }
 
 
+# ---------------------------------------------------------------------------
+# V1/V2 ken variety: long static holds + perceptual echoes (2026-07 review)
+# ---------------------------------------------------------------------------
+
+# Renderer branch thresholds — parity with remotion/src/plan.ts. Wide/tall
+# panels take Cut.tsx branches with a BUILT-IN per-cut drift that ignores the
+# motion dict, so ken variety can't reach them (and they are never "static").
+_WIDE_COVER_MIN_ASPECT = 1.3
+_TALL_SCROLL_MIN_ASPECT = 2.0
+
+_KV_STRENGTH = 0.8          # pan strength for variety sub-cuts
+_KV_SPLIT3_FACTOR = 1.5     # display > 1.5x cap -> 3 sub-cuts, else 2
+_KV_WEIGHTS = {2: (0.45, 0.55), 3: (0.35, 0.35, 0.30)}
+_KV_MIN_SUBCUT_SEC = 2.0    # never manufacture a flash_cut
+
+
+def _motion_honored_dims(dims_entry: Optional[Dict[str, Any]]) -> bool:
+    """True when Cut.tsx's DEFAULT contain branch renders this file — the only
+    branch that honors zoom/bias, i.e. where ken variety is expressible. doc
+    panels render contain but must stay still (text); wide/tall run their own
+    built-in drift. Missing dims -> assume default branch (fail toward the fix;
+    prep_qa missing_dims blocks separately)."""
+    d = dims_entry or {}
+    if d.get("doc"):
+        return False
+    w, h = float(d.get("w") or 0.0), float(d.get("h") or 0.0)
+    if h > 0 and w / h >= _WIDE_COVER_MIN_ASPECT:
+        return False
+    if w > 0 and h / w >= _TALL_SCROLL_MIN_ASPECT:
+        return False
+    return True
+
+
+def focal_point_for_crop(
+    img: Optional[np.ndarray],
+    dead_boxes: Sequence[Tuple[int, int, int, int]] = (),
+    face_center: Optional[Tuple[float, float]] = None,
+) -> Tuple[float, float, str]:
+    """Deterministic focal point (fx, fy in 0..1, + source tag) for a SHOWN
+    crop. Priority: a known FACE center (vision targets, largest face) -> the
+    densest ART cell of a 4x4 edge-energy grid with dead regions suppressed:
+    the blanked bubble/word boxes the cleaner computed (*dead_boxes*, crop
+    coords) are zeroed, and near-flat white/black pixels (a blanked bubble the
+    boxes missed) carry no energy by construction. Ties keep the first cell in
+    top-left scan order; unreadable/blank crops fall back to upper-middle
+    (0.5, 0.4) — the same "manhwa subjects sit high" default the planner
+    uses."""
+    if face_center is not None:
+        fx = min(max(float(face_center[0]), 0.0), 1.0)
+        fy = min(max(float(face_center[1]), 0.0), 1.0)
+        return fx, fy, "face"
+    if img is None or img.size == 0 or min(img.shape[:2]) < 8:
+        return 0.5, 0.4, "default"
+    h, w = img.shape[:2]
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    energy = np.abs(cv2.Laplacian(g.astype(np.float32), cv2.CV_32F, ksize=3))
+    energy[(g > 235) | (g < 20)] = 0.0
+    for (x1, y1, x2, y2) in dead_boxes:
+        x1, y1 = max(0, int(x1) - 4), max(0, int(y1) - 4)
+        x2, y2 = min(w, int(x2) + 4), min(h, int(y2) + 4)
+        if x2 > x1 and y2 > y1:
+            energy[y1:y2, x1:x2] = 0.0
+    n = 4
+    best, bfx, bfy = 0.0, 0.5, 0.4
+    for gy in range(n):
+        for gx in range(n):
+            y0, y1 = (h * gy) // n, (h * (gy + 1)) // n
+            x0, x1 = (w * gx) // n, (w * (gx + 1)) // n
+            if y1 <= y0 or x1 <= x0:
+                continue
+            s = float(energy[y0:y1, x0:x1].mean())
+            if s > best + 1e-9:
+                best = s
+                bfx = (x0 + x1) / 2.0 / w
+                bfy = (y0 + y1) / 2.0 / h
+    if best <= 0.0:
+        return 0.5, 0.4, "default"
+    return float(bfx), float(bfy), "art"
+
+
+def _focal_pan_bias(fx: float, fy: float) -> Dict[str, float]:
+    """Pan bias landing the focal point centered — the same translate
+    convention as timeline_planner.face_end_bias (verified against Cut.tsx
+    biasOffset): a focal RIGHT of center needs a NEGATIVE x bias; BELOW center
+    a POSITIVE y bias (Cut.tsx negates y)."""
+    bx = max(-1.0, min(1.0, -(fx - 0.5) / 0.5))
+    by = max(-1.0, min(1.0, (fy - 0.5) / 0.5))
+    return {"x": round(bx, 3), "y": round(by, 3)}
+
+
+def _scaled_bias(b: Dict[str, float], k: float) -> Dict[str, float]:
+    return {"x": round(b["x"] * k, 3), "y": round(b["y"] * k, 3)}
+
+
+def ken_variety_motions(n: int, fx: float, fy: float) -> List[Dict[str, Any]]:
+    """2-3 DISTINCT ken/motion regions over ONE panel, in the exact schema
+    Cut.tsx consumes (mode/strength/ease/start_bias/end_bias/zoom, focus_y for
+    the tall branch): WIDE establish (whole frame, gentle drift toward the
+    focal) -> TIGHT push onto the focal band (zoom-in) -> (n==3) PULL back out
+    to the counter band (zoom-out). Zooms stay inside Cut.tsx's clamp
+    [1.0, MAX_ZOOM_CAP=1.35]; the sub-cuts differ by zoom LEVEL and DIRECTION
+    even when the focal point is dead-center (bias degenerates to 0)."""
+    fb = _focal_pan_bias(fx, fy)
+    fy01 = min(max(float(fy), 0.0), 1.0)
+    wide = {"mode": "kenburns", "strength": _KV_STRENGTH, "ease": "ease_in",
+            "start_bias": {"x": 0.0, "y": 0.0},
+            "end_bias": _scaled_bias(fb, 0.35),
+            "zoom": {"start": 1.02, "end": 1.09},
+            "focus_y": 0.5, "ken_region": "wide"}
+    tight = {"mode": "kenburns", "strength": _KV_STRENGTH,
+             "ease": "ease_out" if n <= 2 else "linear",
+             "start_bias": _scaled_bias(fb, 0.7), "end_bias": fb,
+             "zoom": {"start": 1.18, "end": 1.32},
+             "focus_y": round(fy01, 3), "ken_region": "tight"}
+    if n <= 2:
+        return [wide, tight]
+    pull = {"mode": "kenburns", "strength": _KV_STRENGTH, "ease": "ease_out",
+            "start_bias": _scaled_bias(fb, 0.8),
+            "end_bias": _scaled_bias(fb, -0.45),
+            "zoom": {"start": 1.24, "end": 1.05},
+            "focus_y": round(1.0 - fy01, 3), "ken_region": "pull"}
+    return [wide, tight, pull]
+
+
+def split_long_hold_cuts(
+    plan: Dict[str, Any],
+    *,
+    max_hold_sec: float,
+    focal_for_file,
+    skip_files: Optional[set] = None,
+) -> Tuple[Dict[str, Any], List[Tuple[str, str, float, int, str]]]:
+    """V1 fix: ONE cut displaying one file statically past
+    [render].max_same_image_hold_sec is unwatchable even when the panel
+    legitimately OWNS its narration (the 22.8s eye + cleaned-empty bubble;
+    16.5s two-blank-bubble panel). Split that display into 2-3 sub-cuts of the
+    SAME file with DIFFERENT ken/motion regions (deterministic focal via
+    *focal_for_file*(f) -> (fx, fy, source)); durations split proportionally
+    and sum EXACTLY to the original — audio/timing/ownership untouched,
+    nothing dropped or merged.
+
+    MUST run AFTER merge_consecutive_same_image_cuts / the twin-invariant
+    re-merge: those passes collapse same-image runs and would fold the
+    sub-cuts straight back into one cut (they now also guard on ken_variety,
+    defensively). Skips: branding, split2 (file2/layout), stamped system cards
+    (*skip_files* — their on-screen text needs stillness) and files whose
+    renderer branch ignores the motion dict (_motion_honored_dims: doc, wide
+    cover-drift, tall scroll). Sub-cuts carry ken_variety=True — prep_qa
+    exempts them from repeat_cut/held_repeat, and the long_hold static
+    ceiling keys on their absence."""
+    skip = skip_files or set()
+    dims = (plan or {}).get("scene_dims") or {}
+    logs: List[Tuple[str, str, float, int, str]] = []
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        cuts = item.get("cuts") or []
+        if not cuts:
+            continue
+        out_cuts: List[Dict[str, Any]] = []
+        changed = False
+        for c in cuts:
+            f = str(c.get("file") or "")
+            dur = float(c.get("dur") or 0.0)
+            if (not f or c.get("file2") or c.get("layout")
+                    or c.get("ken_variety") or dur <= max_hold_sec
+                    or f in skip or not _motion_honored_dims(dims.get(f))):
+                out_cuts.append(c)
+                continue
+            n = 3 if dur > _KV_SPLIT3_FACTOR * max_hold_sec else 2
+            while n >= 2 and dur * min(_KV_WEIGHTS[n]) < _KV_MIN_SUBCUT_SEC:
+                n -= 1
+            if n < 2:
+                out_cuts.append(c)      # cap too small to split safely
+                continue
+            fx, fy, src = focal_for_file(f)
+            motions = ken_variety_motions(n, fx, fy)
+            start = float(c.get("start") or 0.0)
+            acc = 0.0
+            for k, (wgt, m) in enumerate(zip(_KV_WEIGHTS[n], motions)):
+                d_k = (round(dur - acc, 4) if k == n - 1
+                       else round(dur * wgt, 4))
+                out_cuts.append({**c, "start": round(start + acc, 4),
+                                 "dur": d_k, "motion": m,
+                                 "ken_variety": True})
+                acc = round(acc + d_k, 4)
+            changed = True
+            logs.append((str(item.get("segment_id") or ""), f, dur, n, src))
+        if changed:
+            item["cuts"] = out_cuts
+    return plan, logs
+
+
+def ken_differentiate_echo_pairs(
+    plan: Dict[str, Any],
+    get_img,
+    get_boxes,
+    get_raw_img,
+    get_raw_boxes,
+    *,
+    focal_for_file,
+    skip_files: Optional[set] = None,
+    window: int = 3,
+    ham_max: int = 8,
+) -> Tuple[Dict[str, Any], List[Tuple[str, str, str, str, int, int]]]:
+    """V2 fix: two nearby shown cuts whose SHOWN CROPS are bubble-masked
+    dhash twins (ham <= *ham_max*) while their RAW panels are NOT (raw masked
+    ham > *ham_max*) — the artist zoom-echo (p000044 re-crops p000043's lower
+    half) and the husk re-crop class. The masked-RAW invariant correctly keeps
+    them as distinct panels; the viewer reads a stutter. Give the pair
+    DIFFERENT ken regions via the V1 focal machinery (earlier cut WIDE, later
+    cut TIGHT on its own focal) so the repeat reads as intentional emphasis.
+    NEVER drops, NEVER merges narration — motion only; ownership absolute.
+
+    A member is only re-aimed when its motion is actually expressible: sole
+    display of its file (not part of a same-image run whose continuous slices
+    would stutter), default renderer branch (_motion_honored_dims), not
+    already ken_variety/differentiated. System cards (*skip_files*) exempt as
+    usual. Pairs compared within a sliding *window* of shown cuts; split
+    halves (no raw image) are skipped — raw-distinctness can't be proven."""
+    skip = skip_files or set()
+    dims = (plan or {}).get("scene_dims") or {}
+    ent: List[Tuple[str, Dict[str, Any]]] = []      # (segment_id, cut ref)
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        for c in item.get("cuts") or []:
+            f = str(c.get("file") or "")
+            if f and not c.get("file2") and not c.get("layout"):
+                ent.append((str(item.get("segment_id") or ""), c))
+
+    counts: Dict[str, int] = {}
+    for _seg, c in ent:
+        counts[str(c["file"])] = counts.get(str(c["file"]), 0) + 1
+
+    ch: Dict[str, Optional[int]] = {}
+    rh: Dict[str, Optional[int]] = {}
+
+    def _ch(f: str) -> Optional[int]:
+        if f not in ch:
+            img = get_img(f)
+            ch[f] = None if img is None else _dhash8_bgr(img, get_boxes(f))
+        return ch[f]
+
+    def _rh(f: str) -> Optional[int]:
+        if f not in rh:
+            img = get_raw_img(f)
+            rh[f] = None if img is None else _dhash8_bgr(img, get_raw_boxes(f))
+        return rh[f]
+
+    def _modifiable(f: str, c: Dict[str, Any]) -> bool:
+        return (counts.get(f, 0) == 1 and not c.get("ken_variety")
+                and not c.get("echo_differentiated")
+                and _motion_honored_dims(dims.get(f)))
+
+    logs: List[Tuple[str, str, str, str, int, int]] = []
+    seen_pairs: set = set()
+    for j in range(len(ent)):
+        seg_j, cj = ent[j]
+        fj = str(cj["file"])
+        if fj in skip:
+            continue
+        for i in range(max(0, j - (window - 1)), j):
+            seg_i, ci = ent[i]
+            fi = str(ci["file"])
+            if not fi or fi == fj or fi in skip:
+                continue
+            key = tuple(sorted((fi, fj)))
+            if key in seen_pairs:
+                continue
+            if _ch(fi) is None or _ch(fj) is None:
+                continue
+            sham = (_ch(fi) ^ _ch(fj)).bit_count()   # type: ignore[operator]
+            if sham > ham_max:
+                continue
+            if _rh(fi) is None or _rh(fj) is None:
+                continue                             # can't prove raw-distinct
+            rham = (_rh(fi) ^ _rh(fj)).bit_count()   # type: ignore[operator]
+            if rham <= ham_max:
+                continue                             # raw twins: invariant's job
+            seen_pairs.add(key)
+            if _modifiable(fi, ci):
+                fx, fy, _s = focal_for_file(fi)
+                ci["motion"] = {**ken_variety_motions(2, fx, fy)[0],
+                                "echo_pair": fj}
+                ci["echo_differentiated"] = True
+            if _modifiable(fj, cj):
+                fx, fy, _s = focal_for_file(fj)
+                cj["motion"] = {**ken_variety_motions(2, fx, fy)[1],
+                                "echo_pair": fi}
+                cj["echo_differentiated"] = True
+            logs.append((seg_i, fi, seg_j, fj, sham, rham))
+    return plan, logs
+
+
 def _item_sole_image(item: Dict[str, Any]) -> Optional[str]:
     """The single source image an item shows end-to-end, or None when the item is
-    branding, has no cuts, shows a split (file2/layout), or shows more than one
-    image — none of those can join a cross-item same-image run."""
+    branding, has no cuts, shows a split (file2/layout), carries a V1
+    ken-variety split (deliberate distinct regions — folding them into one
+    continuous slice would undo the fix), or shows more than one image — none
+    of those can join a cross-item same-image run."""
     if item.get("branding"):
         return None
     cuts = item.get("cuts") or []
-    if not cuts or any(c.get("file2") or c.get("layout") for c in cuts):
+    if not cuts or any(c.get("file2") or c.get("layout")
+                       or c.get("ken_variety") for c in cuts):
         return None
     files = {str(c.get("file") or "") for c in cuts}
     files.discard("")
@@ -1827,13 +2179,16 @@ def _collapse_same_image_cuts_within_item(cuts: List[Dict[str, Any]]) -> List[Di
     while i < n:
         c = cuts[i]
         f = str(c.get("file") or "")
-        if not f or c.get("file2") or c.get("layout"):
+        if not f or c.get("file2") or c.get("layout") or c.get("ken_variety"):
+            # ken_variety sub-cuts are DELIBERATE distinct regions over one
+            # image (V1) — collapsing them back would undo the fix
             out.append(c)
             i += 1
             continue
         j = i + 1
         while (j < n and str(cuts[j].get("file") or "") == f
-               and not cuts[j].get("file2") and not cuts[j].get("layout")):
+               and not cuts[j].get("file2") and not cuts[j].get("layout")
+               and not cuts[j].get("ken_variety")):
             j += 1
         run = cuts[i:j]
         if len(run) >= 2:
@@ -2270,6 +2625,11 @@ def main() -> int:
     ap.add_argument("--min-art-score", type=float, default=0.012,
                     help="cuts whose CLEANED panel has less edge detail than "
                          "this are dropped (empty-bubble husks)")
+    ap.add_argument("--max-hold-sec", type=float, default=10.0,
+                    help="[render].max_same_image_hold_sec — one file shown "
+                         "statically past this is split into ken-varied "
+                         "sub-cuts (V1); half of it gates the husk re-crop "
+                         "(V3)")
     ap.add_argument("--panel-weights",
                     default=os.path.join(os.path.dirname(os.path.dirname(
                         os.path.abspath(__file__))), "assets", "models",
@@ -2328,6 +2688,25 @@ def main() -> int:
                         for b in [wd.get("bbox") or []]
                         if len(b) == 4
                     ]
+                    # largest FACE target (px, original scene coords) — the V1
+                    # ken-variety focal prefers it (same pick as the planner's
+                    # pick_face_target: largest, tie toward frame center)
+                    best = None
+                    for t in (it.get("targets") or []):
+                        if not isinstance(t, dict) or t.get("type") != "face":
+                            continue
+                        bb = t.get("bbox") or []
+                        if len(bb) != 4:
+                            continue
+                        area = max(0.0, float(bb[2]) - float(bb[0])) * \
+                            max(0.0, float(bb[3]) - float(bb[1]))
+                        cx = (float(bb[0]) + float(bb[2])) / 2.0
+                        cy = (float(bb[1]) + float(bb[3])) / 2.0
+                        cen = (cx - 0.5) ** 2 + (cy - 0.5) ** 2
+                        if best is None or (-area, cen) < (best[0], best[1]):
+                            best = (-area, cen, (cx * w, cy * h))
+                    if best is not None:
+                        vision_item[sf]["face_px"] = best[2]
 
     beats_path = os.path.join(args.episode_dir, "manifest.beats.json")
     speech_files: set = set()
@@ -2748,6 +3127,60 @@ def main() -> int:
 
     shown = sorted({c["file"] for cs in cuts_by_segment.values() for c in cs})
 
+    # V1/V3 display accounting: max CONSECUTIVE on-screen seconds per file at
+    # this point in the ladder (holds are added later, so this is a floor of
+    # the final hold length) + each file's neighbours within the 3-cut window
+    # (the V3 husk re-crop twin guard).
+    _seq_files: List[Tuple[str, float]] = []
+    for _seg in order:
+        for c in cuts_by_segment.get(_seg) or []:
+            _seq_files.append((str(c.get("file") or ""),
+                               float(c.get("dur") or 0.0)))
+    disp_sec: Dict[str, float] = {}
+    _si = 0
+    while _si < len(_seq_files):
+        _sj, _tot = _si, _seq_files[_si][1]
+        while (_sj + 1 < len(_seq_files)
+               and _seq_files[_sj + 1][0] == _seq_files[_si][0]):
+            _sj += 1
+            _tot += _seq_files[_sj][1]
+        _f0 = _seq_files[_si][0]
+        disp_sec[_f0] = max(disp_sec.get(_f0, 0.0), _tot)
+        _si = _sj + 1
+    neigh: Dict[str, set] = {}
+    _files_only = [f for f, _d in _seq_files]
+    for _idx, _f0 in enumerate(_files_only):
+        for _k in range(max(0, _idx - 2), min(len(_files_only), _idx + 3)):
+            _g = _files_only[_k]
+            if _g and _f0 and _g != _f0:
+                neigh.setdefault(_f0, set()).add(_g)
+
+    pre_crop_cache: Dict[str, Optional[np.ndarray]] = {}
+
+    def _pre_crop(g: str) -> Optional[np.ndarray]:
+        """A neighbour's chosen crop BEFORE the V3 husk policy — what the twin
+        guard compares against. Deterministic + order-independent (comparing
+        against post-V3 crops would make outcomes depend on the processing
+        order of `shown`)."""
+        if g not in pre_crop_cache:
+            im, bx = _cleaned(g)
+            if im is None:
+                pre_crop_cache[g] = None
+            elif g in force_full_panel:
+                pre_crop_cache[g] = im
+            else:
+                try:
+                    prt, _pi = select_panel_crops(
+                        im.copy(), bx, text_rich=_text_rich(g),
+                        no_split=args.no_split)
+                    pre_crop_cache[g] = prt[0]
+                except Exception:
+                    pre_crop_cache[g] = im
+        return pre_crop_cache[g]
+
+    def _husk_neighbors(fname: str) -> List[Tuple[str, Optional[np.ndarray]]]:
+        return [(g, _pre_crop(g)) for g in sorted(neigh.get(fname, ()))]
+
     # 2+3. clean + trim shown scenes into scenes_clean/
     clean_dir = os.path.join(args.episode_dir, "scenes_clean")
     os.makedirs(clean_dir, exist_ok=True)
@@ -2755,9 +3188,21 @@ def main() -> int:
     scene_dims: Dict[str, Dict[str, int]] = {}
     split_map: Dict[str, Tuple[str, str]] = {}
     bubbles_cleaned = 0
+    # shown-space geometry for the V1 focal machinery + V2 echo hashing, all
+    # in the WRITTEN crop's coordinates: bubble boxes (hash masking), bubble+
+    # word dead regions and face centers (focal selection). Only paths whose
+    # geometry is known pass them; others rely on the focal's flat-region
+    # suppression fallback.
+    shown_bubble_boxes: Dict[str, List[Tuple[int, int, int, int]]] = {}
+    shown_dead_boxes: Dict[str, List[Tuple[int, int, int, int]]] = {}
+    shown_face: Dict[str, Tuple[float, float]] = {}
 
     def _write_part(name: str, part: np.ndarray, doc: bool = False,
-                    sys_panel: bool = False, blanked: bool = False) -> None:
+                    sys_panel: bool = False, blanked: bool = False,
+                    part_bubbles: Sequence[Tuple[int, int, int, int]] = (),
+                    part_words: Sequence[Tuple[int, int, int, int]] = (),
+                    part_face: Optional[Tuple[float, float]] = None) -> None:
+        tx1 = ty1 = 0
         if not args.no_trim:
             tx1, ty1, tx2, ty2 = content_bbox(part)
             part = part[ty1:ty2, tx1:tx2]
@@ -2770,6 +3215,27 @@ def main() -> int:
         # design; blanked panels had bubble text removed (narration replaces it)
         scene_dims[name] = {"w": int(pw), "h": int(ph), "doc": bool(doc),
                             "sys": bool(sys_panel), "blanked": bool(blanked)}
+
+        def _remap(bxs):
+            out = []
+            for (bx1, by1, bx2, by2) in bxs:
+                x1c, y1c = max(0, int(bx1) - tx1), max(0, int(by1) - ty1)
+                x2c, y2c = min(pw, int(bx2) - tx1), min(ph, int(by2) - ty1)
+                if x2c > x1c and y2c > y1c:
+                    out.append((x1c, y1c, x2c, y2c))
+            return out
+
+        shown_bubble_boxes[name] = _remap(part_bubbles)
+        shown_dead_boxes[name] = _remap(part_bubbles) + _remap(part_words)
+        if part_face is not None and pw > 0 and ph > 0:
+            fxp, fyp = float(part_face[0]) - tx1, float(part_face[1]) - ty1
+            if 0.0 <= fxp < pw and 0.0 <= fyp < ph:
+                shown_face[name] = (fxp / pw, fyp / ph)
+
+    def _band_remap(bxs, a2, b2):
+        return [(bx1, max(0, by1 - a2), bx2, min(b2 - a2, by2 - a2))
+                for (bx1, by1, bx2, by2) in bxs
+                if min(by2, b2) - max(by1, a2) > 0]
 
     for fname in shown:
         img, boxes = _cleaned(fname)
@@ -2792,11 +3258,43 @@ def main() -> int:
                     or _panel_kind(fname) == "system")   # sys cards are protected
         blanked = bool(boxes) or (not rich and not sysf
                                   and bool(word_boxes_by_file.get(fname)))
+        face_px = (vision_item.get(fname) or {}).get("face_px")
+        words = word_boxes_by_file.get(fname) or []
+
+        def _husk_pass(chosen):
+            """V3: re-crop a blank-bubble-dominated crop that will hold the
+            screen long, unless it would twin a 3-cut-window neighbour.
+            Returns (crop, bubbles, words, face) in the crop's coords."""
+            part2, hinfo = husk_recrop_decision(
+                chosen, boxes, display_sec=disp_sec.get(fname, 0.0),
+                max_hold_sec=args.max_hold_sec,
+                neighbor_crops=_husk_neighbors(fname))
+            if hinfo.get("husk_recropped"):
+                a2, b2 = hinfo["band"]
+                print(f"[ok] {fname}: HUSK re-crop "
+                      f"blank_frac={hinfo['blank_frac']:.2f} "
+                      f"display={disp_sec.get(fname, 0.0):.1f}s "
+                      f"band=({a2},{b2})")
+                f2 = None
+                if face_px is not None and a2 <= face_px[1] < b2:
+                    f2 = (face_px[0], face_px[1] - a2)
+                return (part2, _band_remap(boxes, a2, b2),
+                        _band_remap(words, a2, b2), f2)
+            if hinfo.get("refused_twin"):
+                nf, hv = hinfo["refused_twin"]
+                print(f"[ok] {fname}: husk re-crop REFUSED — would twin "
+                      f"neighbour {nf} (ham={hv}); keeping full crop "
+                      "(ken variety covers the hold)")
+            return chosen, boxes, words, face_px
+
         if fname in force_full_panel:
             # manufactured-twin guard: the aggressive recrop turned this panel
             # into a hash-twin of a DISTINCT neighbour — write it whole (border
-            # trim only, in _write_part) so its real art is what ships.
-            _write_part(fname, img, doc=rich, sys_panel=sysf, blanked=blanked)
+            # trim only, in _write_part) so its real art is what ships. V3 may
+            # still re-crop the husk when the band clears the twin guard.
+            part, pbub, pwords, pface = _husk_pass(img)
+            _write_part(fname, part, doc=rich, sys_panel=sysf, blanked=blanked,
+                        part_bubbles=pbub, part_words=pwords, part_face=pface)
             print(f"[ok] {fname}: FULL-PANEL rewrite (dedup-guard) -> "
                   f"{scene_dims[fname]['w']}x{scene_dims[fname]['h']}")
             continue
@@ -2814,7 +3312,19 @@ def main() -> int:
             print(f"[ok] {fname}: SPLIT -> {names[0]} + {names[1]} (split2)")
             continue
 
-        _write_part(fname, parts[0], doc=rich, sys_panel=sysf, blanked=blanked)
+        if (not pinfo.get("recropped")
+                and parts[0].shape[:2] == img.shape[:2]):
+            # geometry unchanged — boxes/words/face are valid in crop coords;
+            # the V3 husk policy applies to exactly this surviving-husk case
+            part, pbub, pwords, pface = _husk_pass(parts[0])
+            _write_part(fname, part, doc=rich, sys_panel=sysf, blanked=blanked,
+                        part_bubbles=pbub, part_words=pwords, part_face=pface)
+        else:
+            # select_panel_crops already re-cropped/split geometry — the dead
+            # region is gone; shown-space geometry unknown (focal falls back
+            # to flat-region suppression)
+            _write_part(fname, parts[0], doc=rich, sys_panel=sysf,
+                        blanked=blanked)
         print(f"[ok] {fname}: bubbles={len(boxes)} -> "
               f"{scene_dims[fname]['w']}x{scene_dims[fname]['h']}")
 
@@ -2962,6 +3472,43 @@ def main() -> int:
               f"(masked ham={ham_v}, containment={contained})")
     if twin_folds:
         out_plan = merge_consecutive_same_image_cuts(out_plan)
+
+    # V1: a single static display longer than the cap is unwatchable even on
+    # a panel that OWNS its narration (the 22.8s eye + cleaned-empty bubble)
+    # — split it into 2-3 ken-varied sub-cuts. MUST run after the same-image
+    # merges above (they would collapse the sub-cuts back into one).
+    _shown_cache: Dict[str, Optional[np.ndarray]] = {}
+
+    def _shown_clean_file(f: str) -> Optional[np.ndarray]:
+        if f not in _shown_cache:
+            _shown_cache[f] = cv2.imread(os.path.join(clean_dir, f))
+        return _shown_cache[f]
+
+    def _focal(f: str) -> Tuple[float, float, str]:
+        return focal_point_for_crop(
+            _shown_clean_file(f),
+            dead_boxes=shown_dead_boxes.get(f, ()),
+            face_center=shown_face.get(f))
+
+    out_plan, kv_logs = split_long_hold_cuts(
+        out_plan, max_hold_sec=args.max_hold_sec, focal_for_file=_focal,
+        skip_files=system_files)
+    for seg, f, dur, n_sub, src in kv_logs:
+        print(f"[ok] {seg}: ken-variety split {f} ({dur:.1f}s static > "
+              f"{args.max_hold_sec:.1f}s cap) -> {n_sub} sub-cuts "
+              f"(focal={src})")
+
+    # V2: shown-crop echo pairs (crop twins whose RAW panels are distinct —
+    # the artist zoom-echo / husk re-crop class) get DIFFERENT ken regions so
+    # the repeat reads as intentional emphasis, never a stutter. Motion only;
+    # nothing dropped, no narration merged.
+    out_plan, echo_logs = ken_differentiate_echo_pairs(
+        out_plan, _shown_clean_file,
+        lambda f: shown_bubble_boxes.get(f, ()),
+        _img, _boxes, focal_for_file=_focal, skip_files=system_files)
+    for seg_i, fi, seg_j, fj, sham, rham in echo_logs:
+        print(f"[ok] {seg_j}: perceptual echo {fj} ~ {fi} ({seg_i}) "
+              f"crop_ham={sham} raw_ham={rham} -> ken differentiation")
 
     which = "none" if args.no_branding else args.branding
     if which != "none":

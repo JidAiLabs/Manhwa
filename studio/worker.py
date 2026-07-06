@@ -400,13 +400,18 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
     stale-narration codes instead of failing the job outright."""
     ep = Path(ch["ep_dir"] or "")
     title = _series_title(con, ch["series_id"])
+    from studio.config import load as _load_cfg
+    cfg = _load_cfg()
     with record_stage(con, chapter_id=ch["id"], stage="prepped",
                       series_id=ch["series_id"]):
         prep_args = [PY, str(REPO / "tools" / "render_prep.py"),
                      "--plan", str(ep / "render.plan.json"),
                      "--scenes-manifest", str(ep / "manifest.scenes.json"),
                      "--episode-dir", str(ep), "--series-title", title,
-                     "--branding", branding]
+                     "--branding", branding,
+                     # ken-variety split (V1) + husk re-crop gate (V3) key on
+                     # the same cap prep_qa's long_hold enforces
+                     "--max-hold-sec", str(cfg.max_same_image_hold_sec)]
         if reuse_clean:
             # heal cycle: panels are unchanged, only narration moved — reuse the
             # cached per-cut visual-judge verdicts instead of re-paying the Gemma
@@ -418,8 +423,6 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
     t0 = time.time()
     qa_args = [PY, str(REPO / "tools" / "prep_qa.py"),
                "--episode-dir", str(ep), "--series-title", title]
-    from studio.config import load as _load_cfg
-    cfg = _load_cfg()
     qa_args += ["--max-hold-sec", str(cfg.max_same_image_hold_sec)]
     if semantic:
         qa_args.append("--semantic")
@@ -1096,6 +1099,7 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
         else:
             log.write("[render] no QA'd plan_sha on record (legacy chapter) "
                       "— running render_prep with --reuse-clean\n")
+            from studio.config import load as _load_cfg
             rc = _stream([PY, str(REPO / "tools" / "render_prep.py"),
                           "--plan", str(ep / "render.plan.json"),
                           "--scenes-manifest",
@@ -1103,7 +1107,9 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
                           "--episode-dir", str(ep),
                           "--series-title",
                           _series_title(con, ch["series_id"]),
-                          "--branding", branding, "--reuse-clean"], log)
+                          "--branding", branding, "--reuse-clean",
+                          "--max-hold-sec",
+                          str(_load_cfg().max_same_image_hold_sec)], log)
             if rc != 0:
                 raise RuntimeError(f"render_prep exited {rc}")
         out = ep / "render" / f"segment_{branding}.mp4"

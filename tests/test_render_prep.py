@@ -17,6 +17,7 @@ renderer. Three user-reported defects from the first watch-through of ch1:
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import cv2
@@ -2002,3 +2003,275 @@ def test_canonicalize_still_folds_true_raw_twins():
     assert canon == [("g18", "eye1.jpg", "eye0.jpg")]
     assert recropped == [] and dropped == []
     assert [c["file"] for c in out["g18"]] == ["eye0.jpg"]
+
+
+# ---- V1/V2/V3 (2026-07 73-segment visual review): ken variety + husk policy --
+# V1: unwatchable STATIC holds on a panel that legitimately OWNS its narration
+# (22.8s g0020_p01 eye + cleaned-empty bubble) -> split_long_hold_cuts breaks
+# the display into 2-3 sub-cuts of the SAME file with DIFFERENT ken regions.
+# V2: perceptual echoes (shown-crop twins whose RAW panels are distinct — the
+# p000090/p000095 eye-husk pair) -> ken_differentiate_echo_pairs re-aims the
+# pair at different regions. V3: husk_recrop_decision re-crops blank-bubble-
+# dominated crops that hold the screen long, unless the re-crop would twin a
+# neighbour within the 3-cut window.
+
+def _art_noise(h, w, seed=7, lo=40, hi=210):
+    rng = np.random.default_rng(seed)
+    return rng.integers(lo, hi, (h, w, 3), dtype=np.uint8)
+
+
+def test_focal_point_prefers_face_then_art_and_avoids_dead_regions():
+    # art (noise) in the lower-left quadrant, flat white elsewhere
+    img = np.full((400, 400, 3), 255, np.uint8)
+    img[200:400, 0:200] = _art_noise(200, 200)
+    fx, fy, src = rp.focal_point_for_crop(img)
+    assert src == "art" and fx < 0.5 and fy > 0.5
+    # a known face center wins outright
+    fx, fy, src = rp.focal_point_for_crop(img, face_center=(0.9, 0.1))
+    assert (fx, fy, src) == (0.9, 0.1, "face")
+    # art-looking texture INSIDE a dead (blanked-bubble/word) box is ignored
+    img2 = img.copy()
+    img2[0:150, 200:400] = _art_noise(150, 200, seed=9)
+    fx2, fy2, src2 = rp.focal_point_for_crop(
+        img2, dead_boxes=[(200, 0, 400, 150)])
+    assert src2 == "art" and fx2 < 0.5 and fy2 > 0.5
+    # unreadable / fully flat crop falls back to upper-middle
+    assert rp.focal_point_for_crop(None) == (0.5, 0.4, "default")
+    flat = np.full((300, 300, 3), 255, np.uint8)
+    assert rp.focal_point_for_crop(flat) == (0.5, 0.4, "default")
+
+
+def test_ken_variety_motions_valid_schema_and_distinct_regions():
+    # exactly the schema Cut.tsx consumes; zooms inside [1.0, 1.35]; the 2-3
+    # sub-moves must differ from each other even at a dead-center focal
+    for n in (2, 3):
+        for fx, fy in ((0.7, 0.3), (0.5, 0.5)):
+            motions = rp.ken_variety_motions(n, fx, fy)
+            assert len(motions) == n
+            sigs = set()
+            for m in motions:
+                assert m["mode"] == "kenburns"
+                assert 0.0 < m["strength"] <= 1.0
+                assert m["ease"] in ("ease_in", "ease_out", "linear",
+                                     "ease_in_out")
+                for k in ("start_bias", "end_bias"):
+                    assert -1.0 <= m[k]["x"] <= 1.0
+                    assert -1.0 <= m[k]["y"] <= 1.0
+                assert 1.0 <= m["zoom"]["start"] <= 1.35
+                assert 1.0 <= m["zoom"]["end"] <= 1.35
+                assert 0.0 <= m["focus_y"] <= 1.0     # tall-branch variety
+                sigs.add((m["zoom"]["start"], m["zoom"]["end"],
+                          m["start_bias"]["x"], m["start_bias"]["y"],
+                          m["end_bias"]["x"], m["end_bias"]["y"]))
+            assert len(sigs) == n                     # pairwise distinct
+
+
+def test_split_long_hold_20s_single_cut_into_three_ken_varied_subcuts():
+    plan = {"scene_dims": {"a.jpg": {"w": 795, "h": 832, "doc": False,
+                                     "sys": True}},   # pixel-sys must NOT skip
+            "timeline": [{"segment_id": "g0020_p01", "duration_sec": 20.0,
+                          "cuts": [{"file": "a.jpg", "start": 0.0,
+                                    "dur": 20.0,
+                                    "motion": {"mode": "tilt_down"}}]}]}
+    out, logs = rp.split_long_hold_cuts(
+        plan, max_hold_sec=10.0, focal_for_file=lambda f: (0.7, 0.3, "art"))
+    cuts = out["timeline"][0]["cuts"]
+    assert logs == [("g0020_p01", "a.jpg", 20.0, 3, "art")]
+    assert len(cuts) == 3 and all(c["file"] == "a.jpg" for c in cuts)
+    assert all(c.get("ken_variety") is True for c in cuts)
+    # durations sum EXACTLY to the original; starts contiguous; no flash cuts
+    assert abs(sum(c["dur"] for c in cuts) - 20.0) < 1e-9
+    assert [c["start"] for c in cuts] == [0.0, 7.0, 14.0]
+    assert all(c["dur"] >= 2.0 for c in cuts)
+    # valid, DISTINCT motion dicts (the whole point)
+    regions = [c["motion"]["ken_region"] for c in cuts]
+    assert regions == ["wide", "tight", "pull"]
+    assert len({json.dumps(c["motion"], sort_keys=True) for c in cuts}) == 3
+
+
+def test_split_long_hold_two_way_and_untouched_cases():
+    dims = {"a.jpg": {"w": 795, "h": 832},
+            "wide.jpg": {"w": 1300, "h": 900},        # w/h>=1.3: cover drift
+            "tall.jpg": {"w": 400, "h": 900},         # h/w>=2.0: scroll
+            "doc.jpg": {"w": 795, "h": 832, "doc": True},
+            "sys.jpg": {"w": 795, "h": 832}}
+
+    def _one(f, dur):
+        return {"scene_dims": dims,
+                "timeline": [{"segment_id": "s", "duration_sec": dur,
+                              "cuts": [{"file": f, "start": 0.0,
+                                        "dur": dur}]}]}
+    foc = lambda f: (0.5, 0.5, "default")
+    # 12s -> 2 sub-cuts (<= 1.5x cap)
+    out, logs = rp.split_long_hold_cuts(_one("a.jpg", 12.0),
+                                        max_hold_sec=10.0,
+                                        focal_for_file=foc)
+    assert len(out["timeline"][0]["cuts"]) == 2 and logs[0][3] == 2
+    assert abs(sum(c["dur"] for c in out["timeline"][0]["cuts"]) - 12.0) < 1e-9
+    # under the cap: untouched
+    out, logs = rp.split_long_hold_cuts(_one("a.jpg", 9.0),
+                                        max_hold_sec=10.0,
+                                        focal_for_file=foc)
+    assert len(out["timeline"][0]["cuts"]) == 1 and logs == []
+    # wide / tall (renderer ignores the motion dict — built-in drift) and doc
+    # (text needs stillness): untouched
+    for f in ("wide.jpg", "tall.jpg", "doc.jpg"):
+        out, logs = rp.split_long_hold_cuts(_one(f, 20.0),
+                                            max_hold_sec=10.0,
+                                            focal_for_file=foc)
+        assert len(out["timeline"][0]["cuts"]) == 1 and logs == []
+    # stamped system cards: exempt from everything as usual
+    out, logs = rp.split_long_hold_cuts(_one("sys.jpg", 20.0),
+                                        max_hold_sec=10.0,
+                                        focal_for_file=foc,
+                                        skip_files={"sys.jpg"})
+    assert len(out["timeline"][0]["cuts"]) == 1 and logs == []
+    # a tiny cap can never manufacture a flash cut: 3.5s over a 3.0 cap would
+    # split into <2s sub-cuts -> stays whole
+    out, logs = rp.split_long_hold_cuts(_one("a.jpg", 3.5),
+                                        max_hold_sec=3.0,
+                                        focal_for_file=foc)
+    assert len(out["timeline"][0]["cuts"]) == 1 and logs == []
+
+
+def test_merge_passes_never_collapse_ken_variety_subcuts():
+    # the same-image merge would fold the split straight back into one cut —
+    # the guards on _collapse/_item_sole_image must leave V1 sub-cuts alone
+    plan = {"scene_dims": {"a.jpg": {"w": 795, "h": 832}},
+            "timeline": [{"segment_id": "s", "duration_sec": 20.0,
+                          "cuts": [{"file": "a.jpg", "start": 0.0,
+                                    "dur": 20.0}]}]}
+    out, _ = rp.split_long_hold_cuts(
+        plan, max_hold_sec=10.0, focal_for_file=lambda f: (0.5, 0.4, "art"))
+    before = [json.dumps(c, sort_keys=True)
+              for c in out["timeline"][0]["cuts"]]
+    merged = rp.merge_consecutive_same_image_cuts(out)
+    after = [json.dumps(c, sort_keys=True)
+             for c in merged["timeline"][0]["cuts"]]
+    assert after == before
+
+
+def test_echo_pair_p90_p95_gets_distinct_ken_regions():
+    # the REAL eye-husk pair: p000095's SHIPPED crop hash-twinned p000090
+    # (production dhash 3) while the raws are distinct (masked ham 22). The
+    # fixture JPGs are downscaled q65 re-encodes, so the shipped crop is
+    # reconstructed from p000090's art region; the RAW predicate runs on the
+    # real fixture panels.
+    p90 = _fiximg("p000090.jpg")
+    p95 = _fiximg("p000095.jpg")
+    crop95 = p90[5:225, 5:395]
+    plan = {"scene_dims": {"p000090.jpg": {"w": 795, "h": 832},
+                           "p000095.jpg": {"w": 795, "h": 832}},
+            "timeline": [
+                {"segment_id": "g0019_p00", "tts_text": "a",
+                 "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 5.0}]},
+                {"segment_id": "g0020_p01", "tts_text": "b",
+                 "cuts": [{"file": "p000095.jpg", "start": 0.0, "dur": 6.0}]},
+            ]}
+    clean = {"p000090.jpg": p90, "p000095.jpg": crop95}
+    raw = {"p000090.jpg": p90, "p000095.jpg": p95}
+    out, logs = rp.ken_differentiate_echo_pairs(
+        plan, lambda f: clean.get(f), lambda f: [],
+        lambda f: raw.get(f), lambda f: _FIX_BOXES.get(f, []),
+        focal_for_file=lambda f: (0.5, 0.4, "art"))
+    assert len(logs) == 1
+    seg_i, fi, seg_j, fj, sham, rham = logs[0]
+    assert (fi, fj) == ("p000090.jpg", "p000095.jpg")
+    assert sham <= 8 < rham
+    c0 = out["timeline"][0]["cuts"][0]
+    c1 = out["timeline"][1]["cuts"][0]
+    # both re-aimed, visibly different regions, files/durs untouched
+    assert c0["echo_differentiated"] and c1["echo_differentiated"]
+    assert c0["motion"]["ken_region"] == "wide"
+    assert c1["motion"]["ken_region"] == "tight"
+    assert c0["motion"] != c1["motion"]
+    assert (c0["file"], c0["dur"]) == ("p000090.jpg", 5.0)
+    assert (c1["file"], c1["dur"]) == ("p000095.jpg", 6.0)
+
+
+def test_echo_differentiation_ignores_distinct_panels_and_raw_twins():
+    p90 = _fiximg("p000090.jpg")
+    p54 = _fiximg("p000054.jpg")
+    # genuinely different panels: never an echo
+    plan = {"scene_dims": {}, "timeline": [
+        {"segment_id": "a", "cuts": [{"file": "p000054.jpg",
+                                      "start": 0.0, "dur": 4.0}]},
+        {"segment_id": "b", "cuts": [{"file": "p000090.jpg",
+                                      "start": 0.0, "dur": 4.0}]}]}
+    imgs = {"p000054.jpg": p54, "p000090.jpg": p90}
+    out, logs = rp.ken_differentiate_echo_pairs(
+        plan, lambda f: imgs.get(f), lambda f: [],
+        lambda f: imgs.get(f), lambda f: [],
+        focal_for_file=lambda f: (0.5, 0.4, "art"))
+    assert logs == []
+    # crop twins whose RAWS are twins too: the dedup invariant's domain (a
+    # genuine duplicate), NOT an echo — leave it to dup_shown/fold
+    crop_a, crop_b = p90, p90[5:225, 5:395]
+    plan2 = {"scene_dims": {}, "timeline": [
+        {"segment_id": "a", "cuts": [{"file": "x.jpg",
+                                      "start": 0.0, "dur": 4.0}]},
+        {"segment_id": "b", "cuts": [{"file": "y.jpg",
+                                      "start": 0.0, "dur": 4.0}]}]}
+    clean2 = {"x.jpg": crop_a, "y.jpg": crop_b}
+    raw2 = {"x.jpg": p90, "y.jpg": p90}
+    out2, logs2 = rp.ken_differentiate_echo_pairs(
+        plan2, lambda f: clean2.get(f), lambda f: [],
+        lambda f: raw2.get(f), lambda f: [],
+        focal_for_file=lambda f: (0.5, 0.4, "art"))
+    assert logs2 == []
+
+
+def _husk_panel(h=800, w=600, bubble_frac=0.45):
+    """Flat-white blanked-bubble band on top (bubble_frac of the area), real
+    art below — the post-clean husk shape (p000095's lower-bubble mirrored)."""
+    img = np.full((h, w, 3), 255, np.uint8)
+    cut = int(h * bubble_frac)
+    img[cut:h] = _art_noise(h - cut, w, seed=3, lo=30, hi=220)
+    return img, (0, 0, w, cut)
+
+
+def test_husk_recrop_drops_dead_bubble_band_for_long_display():
+    img, box = _husk_panel()
+    out, info = rp.husk_recrop_decision(
+        img, [box], display_sec=6.0, max_hold_sec=10.0, neighbor_crops=[])
+    assert info["blank_frac"] > 0.40
+    assert info["husk_recropped"] and info["band"] is not None
+    a, b = info["band"]
+    # the surviving crop is the art band: strictly smaller, excludes the
+    # bubble region (band starts at/after the bubble's bottom, minus pad)
+    assert out.shape[0] < img.shape[0]
+    assert a >= box[3] - 40
+    # log contract: caller prints one line per husk re-crop off this info
+
+
+def test_husk_recrop_refuses_when_recrop_would_twin_a_neighbor():
+    img, box = _husk_panel()
+    band_img, info0 = rp.husk_recrop_decision(
+        img, [box], display_sec=6.0, max_hold_sec=10.0, neighbor_crops=[])
+    assert info0["husk_recropped"]
+    # neighbour within the 3-cut window already shows (essentially) that band
+    out, info = rp.husk_recrop_decision(
+        img, [box], display_sec=6.0, max_hold_sec=10.0,
+        neighbor_crops=[("p000090.jpg", band_img)])
+    assert not info["husk_recropped"]
+    assert info["refused_twin"] is not None
+    nf, ham = info["refused_twin"]
+    assert nf == "p000090.jpg" and ham <= 8
+    assert out.shape == img.shape                     # full crop kept
+
+
+def test_husk_recrop_duration_and_coverage_gates():
+    img, box = _husk_panel()
+    # short display: watchable as-is, keep the full crop
+    out, info = rp.husk_recrop_decision(
+        img, [box], display_sec=3.0, max_hold_sec=10.0, neighbor_crops=[])
+    assert not info["husk_recropped"] and out.shape == img.shape
+    # bubbles under the 40% coverage gate: keep the full crop
+    img2, box2 = _husk_panel(bubble_frac=0.25)
+    out2, info2 = rp.husk_recrop_decision(
+        img2, [box2], display_sec=6.0, max_hold_sec=10.0, neighbor_crops=[])
+    assert not info2["husk_recropped"] and out2.shape == img2.shape
+    # no boxes at all: no-op
+    out3, info3 = rp.husk_recrop_decision(
+        img, [], display_sec=6.0, max_hold_sec=10.0, neighbor_crops=[])
+    assert not info3["husk_recropped"] and info3["blank_frac"] == 0.0
