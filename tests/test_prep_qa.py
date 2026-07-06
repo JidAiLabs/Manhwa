@@ -1664,12 +1664,29 @@ def test_long_hold_blocks_substituted_only():
     assert lh and all(f["severity"] == pq.ERROR for f in lh)
     assert lh[0]["scene"] == "p000090.jpg"
     # the SAME 24s span on a panel that genuinely owns both segments' narration
-    # (no substitution) is content-driven pacing -> stays legal.
+    # (no substitution): ownership clears the STAND-IN clause, but 24s with NO
+    # ken variation (identical/absent motions) is past the unconditional
+    # STATIC ceiling (V1, 2026-07 review — the 22.8s own-panel eye was
+    # unwatchable), so it still fires...
     beats_own = _beats([
         {"group_id": 19, "scene_files": ["p000090.jpg"]},
         {"group_id": 20, "scene_files": ["p000090.jpg"]},
     ])
-    assert pq.long_hold_flags(plan, beats_own, max_hold_sec=10.0) == []
+    own = pq.long_hold_flags(plan, beats_own, max_hold_sec=10.0)
+    assert [f["code"] for f in own] == ["long_hold"]
+    assert "STATIC" in own[0]["detail"] and "stand" not in own[0]["detail"]
+    # ...while the production shape — the same 24s run carrying the merge
+    # pass's continuous kenburns slices (VARIED motions) — stays legal:
+    # content-driven pacing with a moving display.
+    varied = {"timeline": [
+        {"segment_id": "g0019_p00", "tts_text": "a", "duration_sec": 12.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 12.0,
+                   "motion": {"ease": "ease_in", "zoom": {"start": 1.0}}}]},
+        {"segment_id": "g0020_p01", "tts_text": "b", "duration_sec": 12.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 12.0,
+                   "motion": {"ease": "ease_out", "zoom": {"start": 1.05}}}]},
+    ]}
+    assert pq.long_hold_flags(varied, beats_own, max_hold_sec=10.0) == []
     # under the cap: quiet even when substituted
     short = {"timeline": [
         {"segment_id": "g0019_p00", "tts_text": "a", "duration_sec": 4.0,
@@ -1790,3 +1807,117 @@ def test_nano_ch1_sweep_flags_exactly_five_pinned_segments():
     assert len(hits) == 5, "collateral or a missed hit -- see pinned ids"
     pins = {pin_by_scene.get(f["scene"]) for f in hits}
     assert pins == _NANO_EXPECTED_PINS
+
+
+# ---- V1 tripwire (2026-07 review): long_hold unconditional STATIC ceiling ----
+# Own-panel ownership stays exempt from the STAND-IN clause, but one file
+# continuously STATIC (single cut / identical motions — no ken variation) past
+# 1.5x the cap is unwatchable regardless (the 22.8s g0020_p01 eye). With
+# render_prep.split_long_hold_cuts in place this should never fire — tripwire.
+
+def test_long_hold_unconditional_static_ceiling():
+    beats_own = _beats([{"group_id": 20, "scene_files": ["p000095.jpg"]}])
+    static20 = {"timeline": [
+        {"segment_id": "g0020_p01", "tts_text": "b", "duration_sec": 20.0,
+         "cuts": [{"file": "p000095.jpg", "start": 0.0, "dur": 20.0,
+                   "motion": {"mode": "tilt_down"}}]},
+    ]}
+    fl = pq.long_hold_flags(static20, beats_own, max_hold_sec=10.0)
+    assert [f["code"] for f in fl] == ["long_hold"]
+    assert fl[0]["severity"] == pq.ERROR
+    assert fl[0]["scene"] == "p000095.jpg"
+    assert "STATIC" in fl[0]["detail"]
+    # same blocking membership as the stand-in clause (same code)
+    from studio.worker import _CRITICAL_QA_CODES
+    assert "long_hold" in _CRITICAL_QA_CODES
+    # the ken-varied split render_prep emits for the same display: silent
+    varied = {"timeline": [
+        {"segment_id": "g0020_p01", "tts_text": "b", "duration_sec": 20.0,
+         "cuts": [
+             {"file": "p000095.jpg", "start": 0.0, "dur": 7.0,
+              "motion": {"ken_region": "wide"}, "ken_variety": True},
+             {"file": "p000095.jpg", "start": 7.0, "dur": 7.0,
+              "motion": {"ken_region": "tight"}, "ken_variety": True},
+             {"file": "p000095.jpg", "start": 14.0, "dur": 6.0,
+              "motion": {"ken_region": "pull"}, "ken_variety": True},
+         ]},
+    ]}
+    assert pq.long_hold_flags(varied, beats_own, max_hold_sec=10.0) == []
+    # own-panel display over the cap but UNDER the ceiling: content-driven
+    # pacing, still legal
+    static12 = {"timeline": [
+        {"segment_id": "g0020_p01", "tts_text": "b", "duration_sec": 12.0,
+         "cuts": [{"file": "p000095.jpg", "start": 0.0, "dur": 12.0}]},
+    ]}
+    assert pq.long_hold_flags(static12, beats_own, max_hold_sec=10.0) == []
+    # exempt files (wide/tall renderer drift, doc/system stillness) never fire
+    assert pq.long_hold_flags(static20, beats_own, max_hold_sec=10.0,
+                              is_exempt=lambda f: True) == []
+    # the STAND-IN clause outranks the ceiling (one flag per run, stand-in
+    # wording — heal routing depends on it)
+    beats_sub = _beats([{"group_id": 20, "scene_files": ["pXXX.jpg"]}])
+    fl2 = pq.long_hold_flags(static20, beats_sub, max_hold_sec=10.0)
+    assert len(fl2) == 1 and "standing in" in fl2[0]["detail"]
+
+
+def test_long_hold_ceiling_identical_motion_run_is_static():
+    # a multi-cut same-file run with IDENTICAL motion dicts is still "no ken
+    # variation" (a restarting loop); the merge pass's continuous slices
+    # (different f0/f1 per cut) are variation and stay legal
+    beats_own = _beats([
+        {"group_id": 19, "scene_files": ["p000090.jpg"]},
+        {"group_id": 20, "scene_files": ["p000090.jpg"]},
+    ])
+    same_motion = {"mode": "kenburns", "zoom": {"start": 1.0, "end": 1.1}}
+    frozen = {"timeline": [
+        {"segment_id": "g0019_p00", "tts_text": "a", "duration_sec": 8.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 8.0,
+                   "motion": dict(same_motion)}]},
+        {"segment_id": "g0020_p01", "tts_text": "b", "duration_sec": 8.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 8.0,
+                   "motion": dict(same_motion)}]},
+    ]}
+    fl = pq.long_hold_flags(frozen, beats_own, max_hold_sec=10.0)
+    assert [f["code"] for f in fl] == ["long_hold"]
+    assert "STATIC" in fl[0]["detail"]
+    sliced = {"timeline": [
+        {"segment_id": "g0019_p00", "tts_text": "a", "duration_sec": 8.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 8.0,
+                   "motion": {"ease": "ease_in",
+                              "zoom": {"start": 1.0, "end": 1.05}}}]},
+        {"segment_id": "g0020_p01", "tts_text": "b", "duration_sec": 8.0,
+         "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 8.0,
+                   "motion": {"ease": "ease_out",
+                              "zoom": {"start": 1.05, "end": 1.1}}}]},
+    ]}
+    assert pq.long_hold_flags(sliced, beats_own, max_hold_sec=10.0) == []
+
+
+def test_held_repeat_and_repeat_cut_exempt_ken_variety_subcuts():
+    # V1 sub-cuts deliberately repeat one file with DIFFERENT ken regions —
+    # neither a frozen/looping repeat (held_repeat) nor an accidental
+    # consecutive repeat (repeat_cut)
+    sub = [{"file": "p000095.jpg", "start": 0.0, "dur": 7.0,
+            "motion": {"ken_region": "wide"}, "ken_variety": True},
+           {"file": "p000095.jpg", "start": 7.0, "dur": 7.0,
+            "motion": {"ken_region": "tight"}, "ken_variety": True},
+           {"file": "p000095.jpg", "start": 14.0, "dur": 6.0,
+            "motion": {"ken_region": "pull"}, "ken_variety": True}]
+    plan = {"timeline": [{"segment_id": "g0020_p01", "tts_text": "b",
+                          "duration_sec": 20.0, "cuts": sub}],
+            "scene_dims": {"p000095.jpg": {"w": 795, "h": 832,
+                                           "doc": False}}}
+    assert pq.held_repeat_flags(plan) == []
+    fl = pq.plan_flags(plan, clean_files={"p000095.jpg"},
+                       audio_exists=lambda p: True)
+    assert "repeat_cut" not in [f["code"] for f in fl]
+    # sanity contrast: the SAME shape without the marker still trips both
+    bare = {"timeline": [{"segment_id": "g0020_p01", "tts_text": "b",
+                          "duration_sec": 20.0,
+                          "cuts": [{k: v for k, v in c.items()
+                                    if k != "ken_variety"} for c in sub]}],
+            "scene_dims": plan["scene_dims"]}
+    assert [f["code"] for f in pq.held_repeat_flags(bare)] == ["held_repeat"]
+    fl2 = pq.plan_flags(bare, clean_files={"p000095.jpg"},
+                        audio_exists=lambda p: True)
+    assert "repeat_cut" in [f["code"] for f in fl2]

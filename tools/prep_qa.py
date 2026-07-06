@@ -1216,6 +1216,11 @@ def held_repeat_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
         if it.get("branding"):
             continue
         for c in it.get("cuts") or []:
+            if c.get("ken_variety"):
+                # V1 sub-cuts: deliberate DIFFERENT ken regions over one
+                # panel (split_long_hold_cuts) — not a frozen/looping repeat;
+                # the long_hold static ceiling governs that display instead
+                continue
             f = str(c.get("file") or "")
             if f:
                 seq.append((f, str(it.get("segment_id") or "")))
@@ -1238,7 +1243,9 @@ def held_repeat_flags(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def long_hold_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any], *,
-                    max_hold_sec: float = 10.0) -> List[Dict[str, Any]]:
+                    max_hold_sec: float = 10.0,
+                    static_ceiling_factor: float = 1.5,
+                    is_exempt=None) -> List[Dict[str, Any]]:
     """One FILE on screen continuously for > *max_hold_sec*
     ([render].max_same_image_hold_sec) while STANDING IN for art it does not
     own — the p000090 eye held ~24s because p000095 was canonicalized away and
@@ -1262,9 +1269,18 @@ def long_hold_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any], *,
 
     A long single-image span on a panel that GENUINELY owns that narration
     (its file is among the beat's scene_files, no substitution) is
-    content-driven pacing by design and stays legal at any length. BLOCKING:
-    heal re-writes narration, it cannot restore a swapped-away panel — the
-    chapter must go back through prepare."""
+    content-driven pacing by design — legal at any length WHEN the display
+    varies. UNCONDITIONAL STATIC CEILING (V1 tripwire, 2026-07 review): one
+    file continuously STATIC — a single cut, or a same-file run with NO ken
+    variation (identical motion dicts) — past *static_ceiling_factor* x the
+    cap fires ERROR regardless of stand-in/ownership (the 22.8s own-panel eye
+    was unwatchable). render_prep's ken-variety split (split_long_hold_cuts)
+    breaks any such display into varied sub-cuts, so this should never fire
+    in practice. *is_exempt*(file) excuses panels whose renderer branch is
+    never static (wide cover-drift / tall scroll — Cut.tsx animates those per
+    cut) and text panels that need stillness (doc, stamped system cards).
+    BLOCKING: heal re-writes narration, it cannot restore a swapped-away
+    panel or re-cut a plan — the chapter must go back through prepare."""
     bfiles: Dict[int, set] = {}
     for b in (beats_obj or {}).get("beats") or []:
         try:
@@ -1273,8 +1289,10 @@ def long_hold_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any], *,
             continue
         bfiles[gid] = {str(f) for f in (b.get("scene_files") or [])}
 
-    # flatten to (file, dur, segment, standin) per shown cut; None breaks runs
-    seq: List[Optional[Tuple[str, float, str, bool]]] = []
+    # flatten to (file, dur, segment, standin, motion_sig) per shown cut;
+    # None breaks runs. motion_sig detects "no ken variation" for the ceiling.
+    exempt = is_exempt or (lambda f: False)
+    seq: List[Optional[Tuple[str, float, str, bool, str]]] = []
     for it in (plan or {}).get("timeline") or []:
         if it.get("branding"):
             seq.append(None)
@@ -1290,8 +1308,10 @@ def long_hold_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any], *,
             # per-CUT stand-in test (see docstring): a sibling cut in this
             # same segment being genuine does NOT clear this one.
             standin = bool(intended) and _base_scene(f) not in intended
-            seq.append((f, float(c.get("dur") or 0.0), seg, standin))
+            msig = json.dumps(c.get("motion"), sort_keys=True, default=str)
+            seq.append((f, float(c.get("dur") or 0.0), seg, standin, msig))
 
+    ceiling = static_ceiling_factor * max_hold_sec
     flags: List[Dict[str, Any]] = []
     i, n = 0, len(seq)
     while i < n:
@@ -1312,6 +1332,19 @@ def long_hold_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any], *,
                 f"{max_hold_sec:.1f}s cap) while standing in for "
                 f"{first_sub[2]}'s intended art — a swapped/held stand-in, "
                 "not content-driven pacing",
+                scene=run[0][0], segment_id=run[0][2]))
+        elif (total > ceiling
+              and (len(run) == 1 or len({r[4] for r in run}) == 1)
+              and not exempt(run[0][0])):
+            # unconditional STATIC ceiling: single cut / identical motions =
+            # no ken variation; ownership does not excuse unwatchability
+            flags.append(_flag(
+                "long_hold", ERROR,
+                f"panel {run[0][0]} shown {total:.1f}s continuously STATIC "
+                f"(single cut, no ken variation) — past the unconditional "
+                f"{ceiling:.1f}s ceiling ({static_ceiling_factor:.1f}x cap); "
+                "render_prep's ken-variety split should have varied it "
+                "(own-panel ownership does not exempt watchability)",
                 scene=run[0][0], segment_id=run[0][2]))
         i = j + 1
     return flags
@@ -1804,7 +1837,10 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                                    f"{dur:.2f}s",
                                    scene=str(c.get("file") or ""),
                                    segment_id=seg))
-            if c.get("file") == prev_file and not c.get("held"):
+            if (c.get("file") == prev_file and not c.get("held")
+                    and not c.get("ken_variety")):
+                # ken_variety sub-cuts (V1) deliberately repeat the file with
+                # DIFFERENT ken regions — not an accidental repeat
                 flags.append(_flag("repeat_cut", WARN,
                                    "same file in consecutive cuts",
                                    scene=str(c.get("file")), segment_id=seg))
@@ -2137,8 +2173,29 @@ def main() -> int:
     flags.extend(montage_flags(plan))
     flags.extend(page_floor_flags(ep))
     flags.extend(held_repeat_flags(plan))
+
+    def _static_ceiling_exempt(f: str) -> bool:
+        """Files the unconditional long_hold static ceiling excuses: renderer
+        branches that are never static (Cut.tsx wide cover-drift w/h>=1.3,
+        tall scroll h/w>=2.0 — parity with remotion/src/plan.ts) and text
+        panels that NEED stillness to read (doc, stamped panel_kind=='system'
+        — NOT scene_dims' pixel-level 'sys', which the system-box YOLO trips
+        on mere SFX text: the 22.8s review holds all carried sys:True)."""
+        d = dims.get(f) or {}
+        if d.get("doc"):
+            return True
+        w, h = float(d.get("w") or 0.0), float(d.get("h") or 0.0)
+        if h > 0 and w / h >= 1.3:      # WIDE_COVER_MIN_ASPECT
+            return True
+        if w > 0 and h / w >= 2.0:      # TALL_SCROLL_MIN_ASPECT
+            return True
+        pk = str((vitems.get(parent_scene(f)) or vitems.get(f)
+                  or {}).get("panel_kind") or "").strip().lower()
+        return pk == "system"
+
     flags.extend(long_hold_flags(plan, beats_obj,
-                                 max_hold_sec=args.max_hold_sec))
+                                 max_hold_sec=args.max_hold_sec,
+                                 is_exempt=_static_ceiling_exempt))
     flags.extend(sfx_voiced_flags(script_obj))
     flags.extend(raw_caps_voiced_flags(script_obj))
     flags.extend(shot_description_flags(beats_obj))
