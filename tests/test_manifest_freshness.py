@@ -27,8 +27,12 @@ _SPEC.loader.exec_module(mf)  # type: ignore[union-attr]
 # ---------------------------------------------------------------------------
 
 def _touch(path: Path, mtime: float) -> None:
-    """Create a file and set its mtime."""
-    path.write_bytes(b"")
+    """Create a (valid, empty-object) manifest and set its mtime.
+
+    Writes b"{}" rather than b"": since the corrupt_manifest check landed, a
+    0-byte required manifest is a flagged ERROR by design, and these tests
+    exercise mtime/sha relationships on otherwise-healthy files."""
+    path.write_bytes(b"{}")
     os.utime(str(path), (mtime, mtime))
 
 
@@ -361,3 +365,105 @@ def test_stale_video_plan_absent(tmp_path):
     issues = mf.verify_chapter(str(tmp_path))
     stale = [i for i in issues if i["code"] == "stale_video"]
     assert stale == [], f"absent plan must not produce stale_video: {issues}"
+
+
+# ---------------------------------------------------------------------------
+# _meta input-sha stamps (Task 7) upgrade the edge compare (Task 8)
+# ---------------------------------------------------------------------------
+
+_IO_SPEC = importlib.util.spec_from_file_location(
+    "manifest_io",
+    Path(__file__).resolve().parent.parent / "tools" / "manifest_io.py")
+mio = importlib.util.module_from_spec(_IO_SPEC)
+_IO_SPEC.loader.exec_module(mio)  # type: ignore[union-attr]
+
+
+def _base_chain(tmp_path, base=1_000_000.0):
+    _touch(tmp_path / "manifest.vision.json",            base)
+    _touch(tmp_path / "manifest.panels.understood.json", base + 1)
+    _touch(tmp_path / "manifest.groups.json",            base + 2)
+
+
+def test_sha_inputs_beat_mtime(tmp_path):
+    """When output and input both carry _meta stamps, the sha comparison rules
+    the edge and mtime is IGNORED both ways:
+      - input re-touched newer with the SAME bytes → fresh (mtime would flag);
+      - input rewritten with DIFFERENT bytes but an OLDER mtime → stale
+        (mtime would miss it — the restored-from-backup case)."""
+    base = 1_000_000.0
+    _base_chain(tmp_path, base)
+    beats = tmp_path / "manifest.beats.json"
+    script = tmp_path / "manifest.script.json"
+    mio.write_manifest(beats, {"beats": [1]}, tool="test")
+    mio.write_manifest(script, {"sections": []}, inputs=(beats,), tool="test")
+    os.utime(str(script), (base + 10, base + 10))
+
+    # same bytes, newer mtime → sha match → NO stale for script
+    os.utime(str(beats), (base + 100, base + 100))
+    issues = mf.verify_chapter(str(tmp_path), status="scripted")
+    stale = [i for i in issues if i["code"] == "stale_manifest"
+             and i["file"] == "manifest.script.json"]
+    assert stale == [], f"sha-matched edge must beat a newer mtime: {issues}"
+
+    # different bytes, OLDER mtime than script → sha mismatch → stale
+    mio.write_manifest(beats, {"beats": [1, 2]}, tool="test")
+    os.utime(str(beats), (base + 5, base + 5))    # older than script (base+10)
+    issues = mf.verify_chapter(str(tmp_path), status="scripted")
+    stale = [i for i in issues if i["code"] == "stale_manifest"
+             and i["file"] == "manifest.script.json"]
+    assert len(stale) == 1, f"sha mismatch must flag despite fresh mtime: {issues}"
+    assert "manifest.beats.json" in stale[0]["detail"]
+
+
+def test_sha_only_edge_skips_unstamped_legacy(tmp_path):
+    """understood←vision is sha_only. Unstamped legacy files (no _meta) must
+    NEVER be mtime-compared on that edge (vision is legitimately newer —
+    panel_understand re-stamps it). With stamps on both sides, a sha mismatch
+    must flag even though understood's mtime looks fresh."""
+    base = 1_000_000.0
+    # legacy: plain files, vision NEWER than understood (production inversion)
+    _touch(tmp_path / "manifest.panels.understood.json", base)
+    _touch(tmp_path / "manifest.vision.json",            base + 50)
+    _touch(tmp_path / "manifest.groups.json",            base + 60)
+    issues = mf.verify_chapter(str(tmp_path), status="grouped")
+    stale = [i for i in issues if i["code"] == "stale_manifest"
+             and i["file"] == "manifest.panels.understood.json"]
+    assert stale == [], f"unstamped sha_only edge must be skipped: {issues}"
+
+    # stamped both sides, then vision rewritten with different content →
+    # the recorded input sha no longer matches → stale, mtime irrelevant
+    vision = tmp_path / "manifest.vision.json"
+    understood = tmp_path / "manifest.panels.understood.json"
+    mio.write_manifest(vision, {"items": [1]}, tool="test")
+    mio.write_manifest(understood, {"panels": []}, inputs=(vision,), tool="test")
+    mio.write_manifest(vision, {"items": [1, 2]}, tool="test")
+    os.utime(str(vision), (base + 70, base + 70))
+    os.utime(str(understood), (base + 80, base + 80))   # understood mtime newer
+    os.utime(str(tmp_path / "manifest.groups.json"), (base + 90, base + 90))
+    issues = mf.verify_chapter(str(tmp_path), status="grouped")
+    stale = [i for i in issues if i["code"] == "stale_manifest"
+             and i["file"] == "manifest.panels.understood.json"]
+    assert len(stale) == 1, f"stamped sha mismatch must flag: {issues}"
+    assert "manifest.vision.json" in stale[0]["detail"]
+
+
+def test_corrupt_manifest_flagged(tmp_path):
+    """An existing-but-unparseable (0-byte or garbage) REQUIRED manifest is a
+    corrupt_manifest ERROR — presence alone must never count as complete."""
+    (tmp_path / "manifest.vision.json").write_bytes(b"")          # 0-byte
+    issues = mf.verify_chapter(str(tmp_path), status="visioned")
+    corrupt = [i for i in issues if i["code"] == "corrupt_manifest"]
+    assert len(corrupt) == 1, f"0-byte required manifest must flag: {issues}"
+    assert corrupt[0]["severity"] == "ERROR"
+    assert corrupt[0]["file"] == "manifest.vision.json"
+    assert set(corrupt[0]) == {"code", "severity", "file", "detail"}
+    # and no missing_manifest double-report for the same file
+    assert not any(i["code"] == "missing_manifest" for i in issues)
+
+    (tmp_path / "manifest.vision.json").write_bytes(b"{not json")  # garbage
+    issues = mf.verify_chapter(str(tmp_path), status="visioned")
+    assert any(i["code"] == "corrupt_manifest" for i in issues)
+
+    (tmp_path / "manifest.vision.json").write_bytes(b"{}")         # healthy
+    issues = mf.verify_chapter(str(tmp_path), status="visioned")
+    assert issues == []
