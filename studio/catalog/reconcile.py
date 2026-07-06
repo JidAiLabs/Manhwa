@@ -11,17 +11,22 @@ artifacts actually exist and repairs status + prunes lying stage_run rows +
 clears a render approval that outlived its video, so the UI can never show a
 state the files contradict.
 
-Read-only-first + cheap (stat calls) + idempotent — safe to run on every
-dashboard load. It never deletes an artifact and never touches a chapter the
-worker is actively running (that state is legitimately transitional) or one left
-in a ``*_failed`` status (preserve the error for the operator).
+Read-only-first + idempotent — safe to run on every dashboard load. Cheap by
+construction: every call stats the marker (never avoidable — that is how
+existence/size/mtime are known), but a ``.json`` marker's content is only
+``json.load``ed once per distinct (mtime, size); repeat validation of an
+unchanged multi-MB manifest (e.g. ``vision.json``) across chapters/series on
+the same load costs a stat, not a re-parse (see ``_VALID_CACHE``). It never
+deletes an artifact and never touches a chapter the worker is actively
+running (that state is legitimately transitional) or one left in a
+``*_failed`` status (preserve the error for the operator).
 """
 from __future__ import annotations
 
 import json
 import os
 import sqlite3
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from studio import paths
 
@@ -58,22 +63,42 @@ _STAGE_ARTIFACT = {
 
 _PAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
+# path -> (mtime, size, verdict) the last time _valid actually parsed it. The
+# working set is every marker path of every chapter ever reconciled in this
+# process — bounded by chapter count (thousands, not unbounded), so no
+# eviction policy is needed (ponytail: don't build an LRU for a dict this small).
+_VALID_CACHE: Dict[str, Tuple[float, int, bool]] = {}
+
 
 def _valid(ep: str, rel: str) -> bool:
     """A marker proves its stage only if it is USABLE: .json markers must
     exist AND parse (a torn/0-byte manifest must never promote a status);
-    non-JSON markers (mp4, dirs) keep exists-only semantics."""
+    non-JSON markers (mp4, dirs) keep exists-only semantics.
+
+    Stats the file on every call (unavoidable — that's how mtime/size are
+    known), but only json.load's a .json marker when its (mtime, size) has
+    changed since the last check; an unchanged file hits _VALID_CACHE instead
+    of being re-parsed."""
     path = os.path.join(ep, rel)
-    if not os.path.exists(path):
+    try:
+        st = os.stat(path)
+    except OSError:
         return False
     if not rel.endswith(".json"):
         return True
+    if st.st_size == 0:
+        return False  # short-circuit: a 0-byte file is never valid, no parse needed
+    cached = _VALID_CACHE.get(path)
+    if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        return cached[2]
     try:
         with open(path, "r", encoding="utf-8") as f:
             json.load(f)
-        return True
+        verdict = True
     except (ValueError, OSError):
-        return False
+        verdict = False
+    _VALID_CACHE[path] = (st.st_mtime, st.st_size, verdict)
+    return verdict
 
 
 def _has_active_job(con: sqlite3.Connection, chapter_id: int) -> bool:

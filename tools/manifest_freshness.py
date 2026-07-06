@@ -173,8 +173,14 @@ def verify_chapter(ep_dir: str,
     """Return a list of issue dicts: {code, severity, file, detail}.
 
     missing_manifest (ERROR): an expected manifest for `status` is absent.
-    stale_manifest   (ERROR): a derived manifest exists but is OLDER (mtime)
-        than one of its declared upstream inputs.
+    corrupt_manifest (ERROR): a required manifest exists but is 0-byte or
+        unparseable JSON.
+    stale_manifest   (ERROR): a derived manifest exists but predates one of
+        its declared upstream inputs. When both the output and the input
+        carry manifest_io _meta input-sha stamps, the sha compare RULES
+        (content-precise, mtime ignored for that edge); only an unstamped
+        edge falls back to mtime, and a sha_only edge is skipped entirely
+        without stamps rather than falling back.
 
     `status` None → infer the deepest stage whose sentinel output exists, then
     check the full required chain up to that stage.

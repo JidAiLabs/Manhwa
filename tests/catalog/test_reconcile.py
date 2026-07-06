@@ -196,3 +196,43 @@ def test_reconcile_series_totals(tmp_path):
     totals = reconcile.reconcile_series(con, 1)
     assert totals["chapters_repaired"] == 1
     assert totals["stage_runs_pruned"] == 1                # render_segment row
+
+
+# ---- _valid memo cache --------------------------------------------------------
+
+def test_valid_rewrite_with_new_size_is_not_masked_by_the_cache(tmp_path):
+    # A corrupt marker is invalid; fixing its content changes its size, so the
+    # (mtime, size) cache key naturally misses and the repaired file is
+    # re-parsed instead of being stuck on the stale corrupt verdict.
+    reconcile._VALID_CACHE.clear()
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    marker = ep / "manifest.beats.json"
+    marker.write_text("{not json")
+    assert reconcile._valid(str(ep), "manifest.beats.json") is False
+    marker.write_text(json.dumps({"beats": []}))
+    assert reconcile._valid(str(ep), "manifest.beats.json") is True
+
+
+def test_valid_caches_unchanged_file_skips_reparse(tmp_path, monkeypatch):
+    # An untouched file's second _valid() call must hit the (mtime, size)
+    # memo instead of re-parsing — the whole point of the cache, since a
+    # dashboard load re-validates the same markers across every chapter.
+    reconcile._VALID_CACHE.clear()
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    marker = ep / "manifest.beats.json"
+    marker.write_text(json.dumps({"beats": []}))
+
+    calls = {"n": 0}
+    real_load = json.load
+
+    def counting_load(f):
+        calls["n"] += 1
+        return real_load(f)
+
+    monkeypatch.setattr(reconcile.json, "load", counting_load)
+
+    assert reconcile._valid(str(ep), "manifest.beats.json") is True
+    assert reconcile._valid(str(ep), "manifest.beats.json") is True
+    assert calls["n"] == 1                     # second call hit the cache, no re-parse

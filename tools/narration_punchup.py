@@ -774,6 +774,18 @@ def apply_post_punchup_backstop(
             "consecutive_dups_merged": n_dups}
 
 
+def _prior_inputs_extra_meta(beats_obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """extra_meta override for the in-place beats rewrite: carries the
+    ORIGINAL _meta.inputs (stamped by gemini_narrative_pass from
+    manifest.groups.json/manifest.cast.json) forward onto the punched-up
+    write. Needed because args.out == args.beats — write_manifest's own
+    inputs=(args.beats,) would otherwise hash the file's pre-write bytes as a
+    fake self-referential "input", clobbering the real stamp and degrading
+    beats<-groups freshness to mtime (mirrors narration_sanitize_pass.py)."""
+    prior_inputs = (beats_obj.get("_meta") or {}).get("inputs") or {}
+    return {"inputs": prior_inputs} if prior_inputs else None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--beats", required=True)
@@ -935,7 +947,8 @@ def main() -> int:
         _vision_by_file(args.episode_dir),
         _understood_by_file(args.episode_dir))
 
-    write_manifest(args.out, out, inputs=(args.beats,), tool="narration_punchup")
+    write_manifest(args.out, out, tool="narration_punchup",
+                   extra_meta=_prior_inputs_extra_meta(beats_obj))
     print(f"[ok] wrote={args.out} punched={applied}/{len(lines)} "
           f"(rejected lines keep the grounded original)")
     return 0

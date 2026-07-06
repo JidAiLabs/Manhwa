@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -578,3 +579,39 @@ def test_span_budget_constants_match_the_writer_validator():
     assert npu._SPAN_WPM == gnp.WPM
     assert npu._SPAN_MIN_SEC_PER_PANEL == gnp._SEG_MIN_SEC_PER_PANEL
     assert npu._SPAN_MAX_SEC_PER_PANEL == gnp._SEG_MAX_SEC_PER_PANEL
+
+
+# ---- upstream provenance survives the in-place beats rewrite -------------
+
+def test_prior_inputs_extra_meta_carries_upstream_stamp_forward():
+    # gemini_narrative_pass stamps beats._meta.inputs from groups/cast; the
+    # punchup rewrite (args.out == args.beats) must carry that stamp forward
+    # instead of letting write_manifest hash the file's own pre-write bytes.
+    beats_obj = {"_meta": {"inputs": {"manifest.groups.json": "abc"}}}
+    assert npu._prior_inputs_extra_meta(beats_obj) == {
+        "inputs": {"manifest.groups.json": "abc"}}
+
+
+def test_prior_inputs_extra_meta_none_when_beats_unstamped():
+    assert npu._prior_inputs_extra_meta({}) is None
+    assert npu._prior_inputs_extra_meta({"_meta": {}}) is None
+    assert npu._prior_inputs_extra_meta({"_meta": {"inputs": {}}}) is None
+
+
+def test_rewrite_path_preserves_prior_inputs_meta(tmp_path):
+    # Full "run the rewrite path" check: seed a beats manifest stamped with an
+    # upstream groups.json sha, write it back through the exact write_manifest
+    # call shape main() uses (target == source path), and assert the stamp
+    # survives instead of being replaced by a self-referential beats.json sha.
+    beats_path = tmp_path / "manifest.beats.json"
+    beats_path.write_text(json.dumps(
+        {"beats": [], "_meta": {"inputs": {"manifest.groups.json": "abc"}}}))
+
+    loaded = json.loads(beats_path.read_text())         # beats_obj = json.load(open(args.beats))
+    out = {"beats": loaded.get("beats") or []}           # the punched-up object main() builds
+    npu.write_manifest(str(beats_path), out, tool="narration_punchup",
+                       extra_meta=npu._prior_inputs_extra_meta(loaded))
+
+    written = json.loads(beats_path.read_text())
+    assert written["_meta"]["inputs"] == {"manifest.groups.json": "abc"}
+    assert written["_meta"]["tool"] == "narration_punchup"

@@ -13,7 +13,7 @@ manifest_freshness and reconcile._STAGE_ARTIFACT already use).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Tuple
 
 from studio.catalog.models import STATUS_ORDER
