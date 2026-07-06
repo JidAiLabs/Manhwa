@@ -1496,15 +1496,17 @@ def test_error_codes_from_report_rejects_non_list_flags():
     assert worker._error_codes_from_report({"flags": "oops"}) == set()
 
 
-def test_qa_verdict_survives_json_array_report_file(tmp_path):
+def test_qa_verdict_wrong_shape_report_blocks(tmp_path):
     """End-to-end: prep_qa.json on disk is a bare JSON array (valid JSON, wrong
-    top-level shape) -- _qa_verdict must not propagate the AttributeError
-    _error_codes_from_report used to raise on a non-dict report."""
+    top-level shape) -- _qa_verdict must fail CLOSED (the same qa_report_invalid
+    path as a corrupt/missing report), not read as a clean pass just because
+    _error_codes_from_report tolerantly returns an empty set for a non-dict
+    report (that tolerance is for the heal-loop caller, not this gate)."""
     import json
     (tmp_path / "prep_qa.json").write_text(json.dumps([1, 2, 3]))
     v = worker._qa_verdict(tmp_path, started_at=time.time())
-    assert v.codes == set()
-    assert v.blocking == set()
+    assert v.ok is False and v.blocking == {"qa_report_invalid"}
+    assert v.report is None
 
 
 # ---------------------------------------------------------------------------

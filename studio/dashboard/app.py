@@ -803,8 +803,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                         (cid,)).fetchone()
         gates.ensure_approval(c, "voice", chapter_id=cid,
                               ep_dir=row[0] if row else None, note="re-voice")
+        # dedupe=False: operator intent carries a payload; the chapter lease
+        # serializes the duplicate and resume-by-status makes it cheap.
         jobs.enqueue(c, "voiceover", chapter_id=cid,
-                     payload={"auto_to": "video"}, priority=50)
+                     payload={"auto_to": "video"}, priority=50, dedupe=False)
         return RedirectResponse(f"/chapter/{cid}", status_code=303)
 
     @app.post("/chapter/{cid}/reload")
@@ -816,8 +818,11 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         r = c.execute("SELECT series_id FROM chapter WHERE id=?", (cid,)).fetchone()
         sid = r[0] if r else None
         front = int(os.environ.get("STUDIO_RETRY_PRIORITY", "1"))
+        # dedupe=False: operator intent carries a payload; the chapter lease
+        # serializes the duplicate and resume-by-status makes it cheap.
         jobs.enqueue(c, "prepare", chapter_id=cid, series_id=sid,
-                     payload={"auto_to": "video"}, priority=front)
+                     payload={"auto_to": "video"}, priority=front,
+                     dedupe=False)
         return RedirectResponse(f"/series/{sid}" if sid else "/",
                                 status_code=303)
 

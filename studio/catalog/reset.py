@@ -21,6 +21,10 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 # Series/bundle stages (series_thumbnail, plan_teaser, concat) are untouched.
 _NARRATION_STAGES = ("chain:scripted", "prepped", "qa_scan", "planned",
                      "voiced", "render_segment")
+# "scripted" deliberately omits planned/prepped/qa_scan below: the rewind
+# deletes their plan FILES (render.plan*.json) but keeps those stage_run
+# rows; reconcile owns DB<->FS drift and prunes them on next load — do not
+# widen this list (whole-branch review 2026-07-06).
 _STAGES_BEYOND: Dict[str, tuple] = {
     "scripted": ("voiced", "render_segment"),
     "grouped": _NARRATION_STAGES,

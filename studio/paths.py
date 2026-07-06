@@ -32,6 +32,10 @@ def find_segment_mp4(ep_dir) -> Optional[Path]:
     (``sorted(rdir.glob("segment_*.mp4")) or sorted(rdir.glob("*.mp4"))``)
     but picks the NEWEST match instead of the alphabetically-first one — a
     stale earlier-lettered file must never win over a fresh render.
+
+    A candidate deleted between the glob() and the mtime stat (a concurrent
+    rewind/cleanup) is skipped rather than raising — this runs inside
+    _h_concat, which must not crash on a benign race.
     """
     ep_dir = Path(ep_dir)
     canonical = ep_dir / SEGMENT_MP4
@@ -39,8 +43,16 @@ def find_segment_mp4(ep_dir) -> Optional[Path]:
         return canonical
     rdir = ep_dir / "render"
     for pattern in ("segment_*.mp4", "*.mp4"):
-        found = sorted(rdir.glob(pattern), key=lambda p: p.stat().st_mtime,
-                       reverse=True)
-        if found:
-            return found[0]
+        candidates = []
+        for p in rdir.glob(pattern):
+            if not p.exists():
+                continue
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            candidates.append((mtime, p))
+        if candidates:
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            return candidates[0][1]
     return None

@@ -94,6 +94,53 @@ def test_post_revoice_restamps_stale_voice_approval(client, tmp_path):
                        "AND chapter_id=1").fetchone()[0] == 1
 
 
+def test_post_revoice_does_not_fold_onto_plain_queued_voiceover(client, tmp_path):
+    """post_revoice enqueues with payload {"auto_to": "video"} -- operator
+    intent to drive all the way to render. jobs.enqueue's default dedupe
+    folds same (type, chapter) rows together regardless of payload, which
+    would silently drop that intent onto a plain queued voiceover (e.g. from
+    an earlier auto-chain step). The endpoint must pass dedupe=False so its
+    own row always lands."""
+    c, con = client
+    from studio.dashboard import gates, jobs
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    (ep / "manifest.script.json").write_text('{"paragraphs": ["original"]}')
+    con.execute("UPDATE chapter SET ep_dir=?, status='voiced' WHERE id=1",
+               (str(ep),))
+    gates.approve(con, "voice", chapter_id=1,
+                 content_sha=gates.gate_sha("voice", ep))
+    plain_id = jobs.enqueue(con, "voiceover", chapter_id=1)   # pre-existing plain row
+    con.commit()
+    c.post("/chapter/1/revoice", follow_redirects=False)
+    rows = con.execute("SELECT id, payload_json FROM job WHERE "
+                       "type='voiceover' AND chapter_id=1").fetchall()
+    assert len(rows) == 2
+    ids = {r[0] for r in rows}
+    assert plain_id in ids
+    payloads = {r[1] for r in rows}
+    assert '{}' in payloads
+    assert any("auto_to" in p for p in payloads)
+
+
+def test_post_reload_does_not_fold_onto_plain_queued_prepare(client):
+    """post_reload enqueues with payload {"auto_to": "video"} -- same operator
+    -intent concern as revoice above, for the reload/dead-letter path."""
+    c, con = client
+    from studio.dashboard import jobs
+    plain_id = jobs.enqueue(con, "prepare", chapter_id=1)   # pre-existing plain row
+    con.commit()
+    c.post("/chapter/1/reload", follow_redirects=False)
+    rows = con.execute("SELECT id, payload_json FROM job WHERE "
+                       "type='prepare' AND chapter_id=1").fetchall()
+    assert len(rows) == 2
+    ids = {r[0] for r in rows}
+    assert plain_id in ids
+    payloads = {r[1] for r in rows}
+    assert '{}' in payloads
+    assert any("auto_to" in p for p in payloads)
+
+
 def test_series_thumbnail_job_and_approval_flow(client, tmp_path, monkeypatch):
     """The series page is where the one-per-manhwa thumbnail is generated and
     approved (answers 'where will I see it to approve it'). Generate enqueues a

@@ -324,6 +324,9 @@ def _qa_verdict(ep: Path, *, started_at: float,
         report = json.loads(raw)
     except Exception as exc:
         return _invalid(f"prep_qa.json failed to parse: {exc}")
+    if not isinstance(report, dict):
+        return _invalid("prep_qa.json has wrong top-level shape: "
+                        f"{type(report).__name__} instead of an object")
     try:
         mtime = report_path.stat().st_mtime
     except OSError as exc:
@@ -338,6 +341,22 @@ def _qa_verdict(ep: Path, *, started_at: float,
                      report=report,
                      reason="" if not blocking
                      else f"blocking QA codes: {sorted(blocking)}")
+
+
+def _stamp_plan_sha(ep: Path, verdict: QAVerdict) -> "str | None":
+    """sha256 of render.plan.clean.json's bytes, iff `verdict` isn't blocking
+    and the file exists — shared by every qa_scan stage_run writer so a
+    dashboard-triggered re-scan (_h_qa_scan) stamps the same proof a
+    pipeline-triggered one does (_run_prep_and_qa). _last_qa_plan_sha only
+    reads the NEWEST passing row, so a writer that skips this stamp masks the
+    prepare-time sha and pushes a later render into the legacy re-render
+    path."""
+    if verdict.blocking:
+        return None
+    plan_clean = Path(ep) / "render.plan.clean.json"
+    if plan_clean.exists():
+        return hashlib.sha256(plan_clean.read_bytes()).hexdigest()
+    return None
 
 
 def _autopilot_clean(con: sqlite3.Connection, ch: Dict[str, Any],
@@ -395,11 +414,7 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
     # rc is captured for the failure message only; the VERDICT (not the
     # exit code) is the gate: a crashed/skipped QA must never read as green.
     verdict = _qa_verdict(ep, started_at=t0)
-    plan_sha = None
-    if not verdict.blocking:
-        plan_clean = ep / "render.plan.clean.json"
-        if plan_clean.exists():
-            plan_sha = hashlib.sha256(plan_clean.read_bytes()).hexdigest()
+    plan_sha = _stamp_plan_sha(ep, verdict)
     # qa_scan 'ok' gates the render — it's ok when no BLOCKING code remains;
     # cosmetic ERRORs (fragment_dangle, caption_unvoiced, …) don't fail it.
     con.execute(
@@ -417,10 +432,12 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
 
 
 def _last_qa_plan_sha(con: sqlite3.Connection, chapter_id: int) -> "str | None":
-    """The plan_sha _run_prep_and_qa stamped into the most recent PASSING
+    """The plan_sha _stamp_plan_sha wrote into the most recent PASSING
     qa_scan stage_run for this chapter — proof (for a later consumer) that
-    render.plan.clean.json hasn't drifted since QA blessed it. None if no
-    passing scan ever stamped one (older row, or the plan file didn't exist)."""
+    render.plan.clean.json hasn't drifted since QA blessed it, whether that
+    scan ran inside the prepare/voiceover gate (_run_prep_and_qa) or as a
+    standalone dashboard re-scan (_h_qa_scan). None if no passing scan ever
+    stamped one (older row, or the plan file didn't exist)."""
     row = con.execute(
         "SELECT json_extract(meta_json, '$.plan_sha') FROM stage_run "
         "WHERE chapter_id=? AND stage='qa_scan' AND ok=1 "
@@ -999,11 +1016,13 @@ def _h_qa_scan(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
                   "--episode-dir", str(ep),
                   "--series-title", title], log)
     verdict = _qa_verdict(ep, started_at=started_at)
+    plan_sha = _stamp_plan_sha(ep, verdict)
     con.execute(
         "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
-        "meta_json) VALUES (?,?,?,?, json_object('series_id', ?))",
+        "meta_json) VALUES (?,?,?,?, json_object('series_id', ?, "
+        "'plan_sha', ?))",
         (ch["id"], "qa_scan", round(time.time() - started_at, 2),
-         0 if verdict.blocking else 1, ch["series_id"]))
+         0 if verdict.blocking else 1, ch["series_id"], plan_sha))
     con.commit()
     cosmetic = verdict.codes - verdict.blocking
     if cosmetic:

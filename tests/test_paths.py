@@ -51,3 +51,33 @@ def test_find_segment_mp4_none_when_nothing_rendered(tmp_path):
     assert paths.find_segment_mp4(tmp_path) is None         # no render/ dir
     (tmp_path / "render").mkdir()
     assert paths.find_segment_mp4(tmp_path) is None         # empty render/
+
+
+def test_find_segment_mp4_skips_candidate_whose_stat_races_away(tmp_path, monkeypatch):
+    """A file that vanishes in the gap between the p.exists() filter and the
+    mtime stat (deleted by a concurrent rewind/cleanup) must be skipped, not
+    raise OSError out of find_segment_mp4 into its caller (_h_concat). The
+    first stat() (inside p.exists()) is left to succeed -- only the second
+    (the explicit mtime read) is made to fail, isolating the guarded-stat
+    code path from the p.exists() pre-filter."""
+    from pathlib import Path
+
+    rdir = tmp_path / "render"
+    rdir.mkdir()
+    now = time.time()
+    gone = rdir / "segment_gone.mp4"
+    _touch(gone, now + 100)          # newer mtime, but its 2nd stat() will raise
+    _touch(rdir / "segment_ok.mp4", now)
+
+    real_stat = Path.stat
+    calls = {"gone": 0}
+
+    def flaky_stat(self, *args, **kwargs):
+        if self.name == "segment_gone.mp4":
+            calls["gone"] += 1
+            if calls["gone"] > 1:
+                raise OSError("vanished mid-race")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    assert paths.find_segment_mp4(tmp_path) == rdir / "segment_ok.mp4"
