@@ -892,6 +892,28 @@ def test_sfs_system_card_without_sentence_gets_grounded_pad_and_split():
     assert gnp.validate_segments(out, FILES, kinds) == []
 
 
+def test_sfs_dangling_system_sentence_does_not_swallow_next_story_sentence():
+    # 2026-07-07 review: the rejoin guard was one-directional -- it stopped a
+    # system card's OWN sentence from being swallowed BY a dangling
+    # predecessor, but not the reverse: a non-terminal sentence that itself
+    # tags exactly one system card would swallow the FOLLOWING story
+    # sentence, leaving the card with a fallback pad and the story panel
+    # with an unpunctuated concatenation. System solos must be a wall in
+    # BOTH directions; the fragment net period-closes the dangling card line
+    # on its own later.
+    kinds = {"p1.jpg": "story", "p2.jpg": "system", "p3.jpg": "story"}
+    out = _sfs([{"text": "He staggers upright.", "panels": ["p1.jpg"]},
+                {"text": "Nano machine activation initializing",  # no period
+                 "panels": ["p2.jpg"]},
+                {"text": "He turns to face the threat.", "panels": ["p3.jpg"]}],
+               kinds=kinds)
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg"], ["p3.jpg"]]
+    assert out[0]["line"] == "He staggers upright."
+    assert out[1]["line"] == "Nano machine activation initializing"
+    assert out[2]["line"] == "He turns to face the threat."
+    assert gnp.validate_segments(out, FILES, kinds) == []
+
+
 def test_sfs_cap_overflow_rides_the_next_sentence_span():
     files6 = [f"r{i}.jpg" for i in range(1, 7)]
     kinds6 = {f: "story" for f in files6}

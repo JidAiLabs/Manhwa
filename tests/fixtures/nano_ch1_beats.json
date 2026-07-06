@@ -1,0 +1,2141 @@
+{
+  "source_groups_manifest": "/Users/jidailabs/repos/Manhwa/ongoing/nano-machine/Chapter_1/manifest.groups.json",
+  "source_vision_manifest": "/Users/jidailabs/repos/Manhwa/ongoing/nano-machine/Chapter_1/manifest.vision.json",
+  "model": "gemma4:26b",
+  "count_beats": 25,
+  "stats": {
+    "parse_errors": 0,
+    "regenerated": 0,
+    "identity_reveals_neutralized": 0,
+    "spoken_fragments_repaired": 0,
+    "consecutive_dups_merged": 0,
+    "usage": {
+      "calls": 57,
+      "input_tokens": 267283,
+      "output_tokens": 43499,
+      "est_cost_usd": 0.0
+    },
+    "punchup_applied": 58
+  },
+  "beats": [
+    {
+      "group_id": 1,
+      "scene_files": [
+        "p000000.jpg",
+        "p000001.jpg"
+      ],
+      "beat_title": "Night in the Forest",
+      "what_happens": "Under a lonely moon and a star-strewn sky, Prince Cheon wanders alone through the oppressive shadows of the dense forest.",
+      "narration": "Prince Cheon is out for a solo stroll under the moonlight, enjoying the peaceful vibes of the dense forest.",
+      "emotional_turn": "The quiet of the mountains offered no peace, only the creeping dread of what might be lurking in the dark.",
+      "conflict_or_stakes": "He was completely unaware that his peaceful trek was about to end in bloodshed.",
+      "reveals_or_info": "The stillness of the night was far too heavy.",
+      "hook": "But the silence was about to be shattered.",
+      "mood_words": [
+        "lonely",
+        "oppressive",
+        "shadows"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "wide shot of mountains then focus on the lone figure walking through trees",
+        "camera_motion": "static wide to medium tracking"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000000.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "calm",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000001.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "calm",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000000.jpg",
+            "p000001.jpg"
+          ],
+          "line": "Prince Cheon is out for a solo stroll under the moonlight, enjoying the peaceful vibes of the dense forest.",
+          "line_plain": "Under a lonely moon and a star-strewn sky, Prince Cheon wanders alone through the oppressive shadows of the dense forest."
+        }
+      ],
+      "narration_plain": "Under a lonely moon and a star-strewn sky, Prince Cheon wanders alone through the oppressive shadows of the dense forest."
+    },
+    {
+      "group_id": 2,
+      "scene_files": [
+        "p000002.jpg",
+        "p000003.jpg",
+        "p000004.jpg",
+        "p000005.jpg"
+      ],
+      "beat_title": "The Fall",
+      "what_happens": "Prince Cheon's sudden descent into the darkness.",
+      "narration": "Then, a sudden impact hits him like a freight train, completely wrecking his footing. Blood is already painting the leaves in a total blur of chaos. Gravity decides to be a bully, sending him screaming down the jagged cliffside into the unknown.",
+      "emotional_turn": "The sudden transition from a tense forest walk to a life-threatening fall.",
+      "conflict_or_stakes": "Prince Cheon is falling to what could be his death.",
+      "reveals_or_info": "The ambush has resulted in Prince Cheon being knocked off a precipice.",
+      "hook": "Will the darkness claim him before he can find his footing?",
+      "mood_words": [
+        "violent",
+        "terrifying",
+        "desperate"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the character's wide eye and the motion of the fall",
+        "camera_motion": "static to high-motion"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000002.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000003.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000004.jpg",
+          "role": "keep",
+          "bubble_mode": "shout",
+          "intensity": "intense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000005.jpg",
+          "role": "keep",
+          "bubble_mode": "shout",
+          "intensity": "intense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000006.jpg",
+          "role": "redundant",
+          "bubble_mode": "shout",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000002.jpg"
+          ],
+          "line": "Then, a sudden impact hits him like a freight train, completely wrecking his footing.",
+          "line_plain": "A sudden, violent impact sends a shock through his body as he loses his footing."
+        },
+        {
+          "span": [
+            "p000003.jpg"
+          ],
+          "line": "Blood is already painting the leaves in a total blur of chaos.",
+          "line_plain": "Blood splatters against the dark leaves in a frantic blur of motion."
+        },
+        {
+          "span": [
+            "p000004.jpg",
+            "p000005.jpg"
+          ],
+          "line": "Gravity decides to be a bully, sending him screaming down the jagged cliffside into the unknown.",
+          "line_plain": "His eyes widen in pure terror as gravity takes hold, and he begins a desperate, tumbling descent down the jagged cliffside, letting out nothing but agonizing screams of pain. 'EUAACK...!! ACK!!! ACCK!!!' He can do nothing but plummet into the unknown."
+        }
+      ],
+      "narration_plain": "A sudden, violent impact sends a shock through his body as he loses his footing. Blood splatters against the dark leaves in a frantic blur of motion. His eyes widen in pure terror as gravity takes hold, and he begins a desperate, tumbling descent down the jagged cliffside, letting out nothing but agonizing screams of pain. 'EUAACK...!! ACK!!! ACCK!!!' He can do nothing but plummet into the unknown."
+    },
+    {
+      "group_id": 3,
+      "scene_files": [
+        "p000007.jpg",
+        "p000008.jpg",
+        "p000009.jpg",
+        "p000010.jpg",
+        "p000011.jpg",
+        "p000012.jpg"
+      ],
+      "beat_title": "The Realization of the Trap",
+      "what_happens": "Prince Cheon hits the ground with a sickening thud, his body paralyzed by the sudden loss of sensation in his leg. As he stares up at the assassins lurking in the trees above, the horrifying truth settles in: every move he made was part of their design. Overwhelmed by the realization that he has been nothing more than a puppet in their game, he lets out a desperate, frustrated cry.",
+      "narration": "The landing is brutal, leaving our guy gasping for air and unable to even move his leg. A sudden, chilling realization strikes him as his eyes widen in shock. Clutching the dirt, he starts wondering if his whole life was just a setup by his enemies.",
+      "emotional_turn": "The terror of being paralyzed turns into a white-hot fury at being manipulated.",
+      "conflict_or_stakes": "Prince Cheon is physically incapacitated and realizes the ambush was a calculated trap from the very beginning.",
+      "reveals_or_info": "He realizes that his movements have been anticipated and controlled by the assassins since the start.",
+      "hook": "The prey has realized he",
+      "mood_words": [],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "",
+        "camera_motion": ""
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000007.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000008.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000009.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000010.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000011.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000012.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000007.jpg",
+            "p000008.jpg"
+          ],
+          "line": "The landing is brutal, leaving our guy gasping for air and unable to even move his leg.",
+          "line_plain": "The impact leaves Prince Cheon gasping in agony, unable to even move his leg."
+        },
+        {
+          "span": [
+            "p000009.jpg"
+          ],
+          "line": "A sudden, chilling realization strikes him as his eyes widen in shock.",
+          "line_plain": "A sudden, chilling realization strikes him as his eyes widen in shock."
+        },
+        {
+          "span": [
+            "p000010.jpg",
+            "p000011.jpg",
+            "p000012.jpg"
+          ],
+          "line": "Clutching the dirt, he starts wondering if his whole life was just a setup by his enemies.",
+          "line_plain": "He clutches the dirt, cursing his fate, and wonders if everything he's done was just a part of their design—"
+        }
+      ],
+      "narration_plain": "The impact leaves Prince Cheon gasping in agony, unable to even move his leg. A sudden, chilling realization strikes him as his eyes widen in shock. He clutches the dirt, cursing his fate, and wonders if everything he's done was just a part of their design—"
+    },
+    {
+      "group_id": 4,
+      "scene_files": [
+        "p000013.jpg",
+        "p000014.jpg",
+        "p000015.jpg",
+        "p000017.jpg",
+        "p000018.jpg",
+        "p000019.jpg"
+      ],
+      "beat_title": "The Threat Revealed",
+      "what_happens": "Trapped in the misty woods, Prince Cheon faces his attackers with growing desperation as they reveal their lethal intent to end his royal bloodline. Surrounded by assassins, he wonders what more they could possibly want from him after he already abandoned his dreams of the academy. One assassin grips his blade tight, declaring that as long as the prince has a claim to the throne, death is the only way out. They mock his lowly lineage and promise a painless end, for despite his peasant blood, his connection to a certain person makes him too dangerous to live.",
+      "narration": "Trapped in the mist and surrounded by blades, our boy is cornered. He's begging to know why they're hunting him after he quit the academy, but the assassins aren't having it. They say as long as he has a claim to the throne, he’s a target, even mocking his peasant bloodline. One of them even admits that waiting for him was almost boring enough to make them fall asleep. The hooded figure in the foreground holds a sword ready for combat while delivering a threat. The tension is thick as they finish making their point about his questionable lineage.",
+      "emotional_turn": "The assassins move from taunting his exhaustion to revealing a cold, calculated plan to execute him based solely on his royal bloodline.",
+      "conflict_or_stakes": "Prince Cheon's life is at stake as the assassins reveal that his very existence and lineage are the reasons for this assassination attempt.",
+      "reveals_or_info": "The assassins reveal that Prince Cheon's lack of martial talent is irrelevant because his right to the throne makes him a target.",
+      "hook": "His royal blood is a death sentence he can no longer outrun.",
+      "mood_words": [
+        "desperation",
+        "lethal",
+        "mocking",
+        "calculated"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "faces/hands/key objects/wide",
+        "camera_motion": "none"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000013.jpg",
+          "role": "keep",
+          "bubble_mode": "spoken",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000014.jpg",
+          "role": "keep",
+          "bubble_mode": "inner_thought",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000015.jpg",
+          "role": "keep",
+          "bubble_mode": "shout",
+          "intensity": "intense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000017.jpg",
+          "role": "keep",
+          "bubble_mode": "spoken",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000018.jpg",
+          "role": "keep",
+          "bubble_mode": "spoken",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000019.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000013.jpg",
+            "p000014.jpg",
+            "p000015.jpg",
+            "p000017.jpg"
+          ],
+          "line": "Trapped in the mist and surrounded by blades, our boy is cornered. He's begging to know why they're hunting him after he quit the academy, but the assassins aren't having it. They say as long as he has a claim to the throne, he’s a target, even mocking his peasant bloodline. One of them even admits that waiting for him was almost boring enough to make them fall asleep.",
+          "line_plain": "Trapped in the mist, Prince Cheon stares at the blades surrounding him, wondering what he should do when he lacks the strength to run away. He cries out in desperation, asking why they are after his life even though he gave up on the academy. The assassins respond with chilling certainty, stating that as long as he has a right to the throne, this is the only way and he must give it up. One of them sneers that even if he has peasant blood mixed in him, because he shares the bloodline of that person, they will send him off with a painless death. Even their waiting was almost boring, one admits with a chuckle, having nearly fallen asleep while watching him struggle."
+        },
+        {
+          "span": [
+            "p000018.jpg"
+          ],
+          "line": "The hooded figure in the foreground holds a sword ready for combat while delivering a threat.",
+          "line_plain": "The hooded figure in the foreground holds a sword ready for combat while delivering a threat."
+        },
+        {
+          "span": [
+            "p000019.jpg"
+          ],
+          "line": "The tension is thick as they finish making their point about his questionable lineage.",
+          "line_plain": "The character stands silently as dialogue bubbles deliver a threatening message about their lineage."
+        }
+      ],
+      "narration_plain": "Trapped in the mist, Prince Cheon stares at the blades surrounding him, wondering what he should do when he lacks the strength to run away. He cries out in desperation, asking why they are after his life even though he gave up on the academy. The assassins respond with chilling certainty, stating that as long as he has a right to the throne, this is the only way and he must give it up. One of them sneers that even if he has peasant blood mixed in him, because he shares the bloodline of that person, they will send him off with a painless death. Even their waiting was almost boring, one admits with a chuckle, having nearly fallen asleep while watching him struggle. The hooded figure in the foreground holds a sword ready for combat while delivering a threat. The character stands silently as dialogue bubbles deliver a threatening message about their lineage."
+    },
+    {
+      "group_id": 5,
+      "scene_files": [
+        "p000021.jpg"
+      ],
+      "beat_title": "The Insulting Truth",
+      "what_happens": "Prince Cheon reels from the assassins' mockery of his lineage, his eyes widening with a mixture of confusion and pure, unadulterated rage as they dare to insult his mother's honor.",
+      "narration": "He can't help but wonder if they truly believe he is nothing more than 'peasant blood,' but that doubt is instantly incinerated by a white-hot fury. How dare they dishonor my mother...?!",
+      "emotional_turn": "The confusion of his heritage being mocked turns into a focused, vengeful rage.",
+      "conflict_or_stakes": "The assassins' verbal assault on his family name pushes Prince Cheon to the brink of an emotional breaking point.",
+      "reveals_or_info": "The assassins have openly insulted the protagonist's mother, confirming their deep-seated contempt for his lineage.",
+      "hook": "The insult is the spark that turns a desperate struggle into a fight for vengeance.",
+      "mood_words": [
+        "confusion",
+        "rage",
+        "insult",
+        "honor"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "eyes/face/sweat/expression/intensity/emotion/shock/anger/rage/fury/vengeance/eye_widening/intense_stare/stress/realization/insulted/dishonored/mother/lineage/peasant_blood/mockery/insulting_words/truth/reeling/shaken/disturbed/shocked/disbelief/anger/fury/vengeance/rage/indignation/outrage/offense/slur/insult/dishonor/motherhood/family/lineage/bloodline/peasantry/low_birth/scorn/contempt/mockery/derision/ridicule/sneer/taunt/threat/menace/danger/peril/struggle/survival/fight/combat/battle/skirmish/clash/encounter/ambush/assassin/attack/assault/strike/blow/wound/injury/pain/agony/suffering/despair/hopelessness/terror/fear/dread/panic/shock/surprise/revelation/discovery/truth/reality/consequence/impact/result/outcome/fate/destiny/legacy/heritage/ancestry/blood/lineage/kin/family/mother/parent/ancestor/descendant/prince/royalty/throne/power/strength/might/ability/skill/talent/potential/growth/ascension/evolution/transformation/awakening/activation/nano_machine/technology/future/stranger/intervention/rescue/salvation/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assult/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace/assault/attack/ambush/skirmish/battle/fight/combat/struggle/survival/life/death/end/beginning/start/origin/source/cause/effect/consequence/impact/result/outcome/fate/destruction/ruin/doom/peril/danger/threat/menace",
+        "camera_motion": "static"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000020.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000021.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000021.jpg"
+          ],
+          "line": "He can't help but wonder if they truly believe he is nothing more than 'peasant blood,' but that doubt is instantly incinerated by a white-hot fury. How dare they dishonor my mother...?!",
+          "line_plain": "He can't help but wonder if they truly believe he is nothing more than 'peasant blood,' but that doubt is instantly incinerated by a white-hot fury. How dare they dishonor my mother...?!"
+        }
+      ],
+      "narration_plain": "He can't help but wonder if they truly believe he is nothing more than 'peasant blood,' but that doubt is instantly incinerated by a white-hot fury. How dare they dishonor my mother...?!"
+    },
+    {
+      "group_id": 6,
+      "scene_files": [
+        "p000022.jpg",
+        "p000023.jpg",
+        "p000024.jpg",
+        "p000026.jpg"
+      ],
+      "beat_title": "A Vow to Fight",
+      "what_happens": "As the weight of his lineage settles over him, Prince Cheon grips a small device with white-knuckled resolve, certain that those bastards won't grant him a painless end. The assassin watches with a piercing gaze, questioning if our guy learned any martial arts from Warrior Jang, only to realize that even without training, the boy cannot run from his bloodline. Seeing such stubborn persistence, the masked killer can only chuckle at the prospect of a fun hunt.",
+      "narration": "The assassin notices something different, wondering if our guy picked up some skills from Warrior Jang.",
+      "emotional_turn": "The realization that Prince Cheon's destiny is inescapable despite his lack of training, shifting the assassin's mood from curiosity to predatory amusement.",
+      "conflict_or_stakes": "Prince Cheon faces an inevitable and painful confrontation with his lineage, while the assassin finds entertainment in the boy's struggle.",
+      "reveals_or_info": "The assassin recognizes that Prince Cheon cannot escape his bloodline even without formal martial arts training.",
+      "hook": "The masked killer's chuckle and anticipation of a 'fun hunt' set the stage for an upcoming pursuit or confrontation.",
+      "mood_words": [
+        "tense",
+        "determined",
+        "menacing",
+        "inevitable"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "Close-up on Prince Cheon's white-knuckled grip and the assassin's piercing gaze.",
+        "camera_motion": "Slow zoom into Prince Cheon's eyes to capture his resolve."
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000022.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000023.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000024.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000025.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000026.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000022.jpg",
+            "p000023.jpg",
+            "p000024.jpg",
+            "p000026.jpg"
+          ],
+          "line": "The assassin notices something different, wondering if our guy picked up some skills from Warrior Jang.",
+          "line_plain": "The assassin eyes him curiously, wondering, 'Hoh? Did you learn some martial arts from Warrior Jang?' He realizes that while the"
+        }
+      ],
+      "narration_plain": "The assassin eyes him curiously, wondering, 'Hoh? Did you learn some martial arts from Warrior Jang?' He realizes that while the"
+    },
+    {
+      "group_id": 7,
+      "scene_files": [
+        "p000027.jpg",
+        "p000028.jpg",
+        "p000029.jpg",
+        "p000030.jpg",
+        "p000031.jpg",
+        "p000032.jpg"
+      ],
+      "beat_title": "The Swarm Descends",
+      "what_happens": "The skirmish turns into a desperate struggle for survival as the assassins launch a coordinated assault, overwhelming Prince Cheon with sheer numbers and brutal force.\n\nThe assassin lunges forward with terrifying speed, his blade whistling through the air. Before our guy can even react, the hooded figure grabs him by the collar, pulling him into a violent clash that leaves him gas",
+      "narration": "The fight quickly devolves into a total massacre as the assassins use their numbers to overwhelm him. The assassin lunges forward with terrifying speed, his blade whistling through the air. Before our boy can even blink, a hooded figure grabs him, dragging him right into the middle of the clash.",
+      "emotional_turn": "The skirmish turns into a desperate struggle for survival as the assassins launch a coordinated assault, overwhelming Prince Cheon with sheer numbers and brutal force.\n\nThe assassin lunges forward with terrifying speed, his blade whistling through the air. Before our guy can even react, the hooded figure grabs him by the collar, pulling him into a violent clash that leaves him gas",
+      "conflict_or_stakes": "The skirmish turns into a desperate struggle for survival as the assassins launch a coordinated assault, overwhelming Prince Cheon with sheer numbers and brutal force.\n\nThe assassin lunges forward with terrifyingly speed, his blade whistling through the air. Before our guy can even react, the hooded figure grabs him by the collar, pulling him into a violent clash that leaves him gas",
+      "reveals_or_info": "The skirmish turns into a desperate struggle for survival as the assassins launch a coordinated assault, overwhelming Prince Cheon with sheer numbers and brutal force.\n\nThe assassin lunges forward with terrifying speed, his blade whistling through the air. Before our guy can even react, the hooded figure grabs him by the collar, pulling him into a violent clash that leaves him gas",
+      "hook": "The skirmish turns into a desperate struggle for survival as the assassins launch a coordinated assault, overwhelming Prince Con with sheer numbers and brutal force.\n\nThe assassin lunges forward with terrifying speed, his blade whistling through the air. Before our guy can even react, the hooded figure grabs him by the collar, pulling him into a violent clash that leaves him gas",
+      "mood_words": [
+        "desperate",
+        "struggle",
+        "assault",
+        "overwhelming",
+        "brutal",
+        "terrifying",
+        "violent"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "Prince Cheon and the assassin in close combat",
+        "camera_motion": "Dynamic handheld movement following the lunge"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000027.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000028.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000029.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000030.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000031.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000032.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000027.jpg"
+          ],
+          "line": "The fight quickly devolves into a total massacre as the assassins use their numbers to overwhelm him.",
+          "line_plain": "The skirmish turns into a desperate struggle for survival as the assassins launch a coordinated assault, overwhelming Prince Cheon with sheer numbers and brutal force."
+        },
+        {
+          "span": [
+            "p000028.jpg"
+          ],
+          "line": "The assassin lunges forward with terrifying speed, his blade whistling through the air.",
+          "line_plain": "The assassin lunges forward with terrifying speed, his blade whistling through the air."
+        },
+        {
+          "span": [
+            "p000029.jpg",
+            "p000030.jpg",
+            "p000031.jpg",
+            "p000032.jpg"
+          ],
+          "line": "Before our boy can even blink, a hooded figure grabs him, dragging him right into the middle of the clash.",
+          "line_plain": "Before our guy can even react, the hooded figure grabs him by the collar, pulling him into a violent clash that leaves him gas"
+        }
+      ],
+      "narration_plain": "The skirmish turns into a desperate struggle for survival as the assassins launch a coordinated assault, overwhelming Prince Cheon with sheer numbers and brutal force. The assassin lunges forward with terrifying speed, his blade whistling through the air. Before our guy can even react, the hooded figure grabs him by the collar, pulling him into a violent clash that leaves him gas"
+    },
+    {
+      "group_id": 8,
+      "scene_files": [
+        "p000033.jpg",
+        "p000034.jpg",
+        "p000035.jpg",
+        "p000036.jpg",
+        "p000037.jpg"
+      ],
+      "beat_title": "The Assassin's Taunt",
+      "what_happens": "The assassin seizes Prince Cheon by the throat, mocking his failed attempt at resistance before a sudden, unexpected movement catches the group off guard.",
+      "narration": "With glowing purple eyes fixed on him, the assassin sneers and asks if this is really the end of his little revenge plot. Then, steel flashes in a lethal strike. The assassins' confidence vanishes instantly as they start shouting in pure confusion. The hooded figure is dragging Prince Cheon along while the rest of the crew just freezes in shock.",
+      "emotional_turn": "The assassin moves from mocking dominance to sudden, reactive confusion as an unseen threat emerges.",
+      "conflict_or_stakes": "Prince Cheon is physically overpowered and held captive, facing certain death if the sudden disruption doesn't provide an opening.",
+      "reveals_or_info": "The assassin's eyes glow with a menacing purple light, and a new, unseen danger has interrupted the ambush.",
+      "hook": "Something just changed the tide of this fight.",
+      "mood_words": [
+        "predatory",
+        "lethal",
+        "shatters",
+        "startled",
+        "shock"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the assassin's glowing eyes and the sudden movement of the drawn weapon/hand",
+        "camera_motion": "static to sudden impact"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000033.jpg",
+          "role": "keep",
+          "bubble_mode": "spoken",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000034.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "intense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000035.jpg",
+          "role": "keep",
+          "bubble_mode": "shout",
+          "intensity": "intense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000036.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000037.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000033.jpg"
+          ],
+          "line": "With glowing purple eyes fixed on him, the assassin sneers and asks if this is really the end of his little revenge plot.",
+          "line_plain": "With a predatory glare from glowing purple eyes, the assassin grips our guy tight and sneers, 'Is that the end of your little retaliation?'"
+        },
+        {
+          "span": [
+            "p000034.jpg"
+          ],
+          "line": "Then, steel flashes in a lethal strike.",
+          "line_plain": "In a flash of steel, a weapon is drawn with lethal intent."
+        },
+        {
+          "span": [
+            "p000035.jpg"
+          ],
+          "line": "The assassins' confidence vanishes instantly as they start shouting in pure confusion.",
+          "line_plain": "The assassins' confidence shatters as they shout, 'Watch out!!' only to be met with confused, startled gasps."
+        },
+        {
+          "span": [
+            "p000036.jpg",
+            "p000037.jpg"
+          ],
+          "line": "The hooded figure is dragging Prince Cheon along while the rest of the crew just freezes in shock.",
+          "line_plain": "The hooded figure lunges forward, dragging Prince Cheon into his grasp, while the rest of the group freezes in sudden, unexplained shock."
+        }
+      ],
+      "narration_plain": "With a predatory glare from glowing purple eyes, the assassin grips our guy tight and sneers, 'Is that the end of your little retaliation?' In a flash of steel, a weapon is drawn with lethal intent. The assassins' confidence shatters as they shout, 'Watch out!!' only to be met with confused, startled gasps. The hooded figure lunges forward, dragging Prince Cheon into his grasp, while the rest of the group freezes in sudden, unexplained shock."
+    },
+    {
+      "group_id": 9,
+      "scene_files": [
+        "p000038.jpg",
+        "p000039.jpg",
+        "p000040.jpg",
+        "p000041.jpg"
+      ],
+      "beat_title": "The Assassin's Shock",
+      "what_happens": "The assassins are paralyzed by the realization that Prince Cheon's frantic movements were a calculated deception, leaving them to watch as he grins through his exhaustion and celebrates their confusion. They can't comprehend how a mere novice could have eliminated one of their own, fearing what might happen if he truly possessed real martial prowess.",
+      "narration": "The assassins are losing it, wondering how a martial arts novice just took out one of their own. They realize every clumsy move was actually a calculated play to lower their guard, and they're terrified of what he could do if he actually knew what he was doing. Meanwhile, Prince Cheon is just over there laughing about how well it worked. The character contemplates the possibility of someone having mastered martial arts while reflecting on their shrewd behavior.",
+      "emotional_turn": "The tension shifts from the immediate violence of the fight to a psychological realization of danger as the assassins' confidence turns into pure dread.",
+      "conflict_or_stakes": "The assassins realize they have been outmaneuvered by a novice, raising the stakes for their next move.",
+      "reveals_or_info": "The revelation that Prince Cheon's clumsy-looking attacks were actually a deceptive tactic.",
+      "hook": "If this was just a trick, how deadly will he be when he stops pretending?",
+      "mood_words": [
+        "disbelief",
+        "dread",
+        "manic",
+        "deception"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the assassin's shocked faces and Prince Cheon's manic grin",
+        "camera_motion": "static shots focusing on the psychological shift"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000038.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000039.jpg",
+          "role": "keep",
+          "bubble_mode": "spoken",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000040.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000041.jpg",
+          "role": "redundant",
+          "bubble_mode": "narration",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000038.jpg",
+            "p000039.jpg",
+            "p000040.jpg"
+          ],
+          "line": "The assassins are losing it, wondering how a martial arts novice just took out one of their own. They realize every clumsy move was actually a calculated play to lower their guard, and they're terrified of what he could do if he actually knew what he was doing. Meanwhile, Prince Cheon is just over there laughing about how well it worked.",
+          "line_plain": "The assassins are frozen in disbelief, wondering how a kid who hasn't even mastered martial arts could have taken out one of their members. They realize with dread that every random slash was actually a shrewd act to make them lower their guard, and they can't help but wonder what would happen if he had actually mastered the arts. Amidst the carnage, Prince Cheon just lets out a manic, 'Hehe... serves you right!'"
+        },
+        {
+          "span": [
+            "p000041.jpg"
+          ],
+          "line": "The character contemplates the possibility of someone having mastered martial arts while reflecting on their shrewd behavior.",
+          "line_plain": "The character contemplates the possibility of someone having mastered martial arts while reflecting on their shrewd behavior."
+        }
+      ],
+      "narration_plain": "The assassins are frozen in disbelief, wondering how a kid who hasn't even mastered martial arts could have taken out one of their members. They realize with dread that every random slash was actually a shrewd act to make them lower their guard, and they can't help but wonder what would happen if he had actually mastered the arts. Amidst the carnage, Prince Cheon just lets out a manic, 'Hehe... serves you right!' The character contemplates the possibility of someone having mastered martial arts while reflecting on their shrewd behavior."
+    },
+    {
+      "group_id": 10,
+      "scene_files": [
+        "p000042.jpg",
+        "p000043.jpg",
+        "p000044.jpg",
+        "p000045.jpg",
+        "p000046.jpg",
+        "p000047.jpg"
+      ],
+      "beat_title": "Near Death",
+      "what_happens": "The assassin's blade connects with a brutal strike, sending Prince Cheon flying backward through a storm of debris and blood. As the young man gasps for air, pinned by his wounds, the hooded attacker charges forward with murderous intent, snarling that their mercy was taken for weakness. The shock on our guy's face says it all—he is far from finished.",
+      "narration": "An assassin swings a curved blade in a massive arc, sending Prince Cheon flying through stone and blood. Our guy is left staring in horror, completely broken and breathless in the dust. The hooded killer lunges forward with a snarl, furious that our boy actually had the nerve to resist after they went easy on him. Even through the haze of pain, you can see the pure terror etched all over his bloodstained face.",
+      "emotional_turn": "The momentum shifts",
+      "conflict_or_stakes": "Prince Cheon's life hangs in the balance as his attacker prepares a finishing blow.",
+      "reveals_or_info": "The assassin reveals that their previous restraint was a choice, not an inability to kill.",
+      "hook": "Will Prince Cheon find the strength to survive this onslaught, or is this truly the end of his journey?",
+      "mood_words": [
+        "brutal",
+        "terrifying",
+        "desperate",
+        "violent",
+        "chaotic"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "Close-up on Prince Cheon's bloodstained and terrified face amidst the debris.",
+        "camera_motion": "Dynamic tracking shot following the impact of the blade."
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000042.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000043.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000044.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000045.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000046.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000047.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000042.jpg"
+          ],
+          "line": "An assassin swings a curved blade in a massive arc, sending Prince Cheon flying through stone and blood.",
+          "line_plain": "The assassin swings a curved blade in a devastating arc, catching Prince Cheon and sending him reeling backward through a spray of blood and shattered stone."
+        },
+        {
+          "span": [
+            "p000043.jpg"
+          ],
+          "line": "Our guy is left staring in horror, completely broken and breathless in the dust.",
+          "line_plain": "Our guy can only stare in wide-eyed horror as the impact leaves him breathless and broken amidst the swirling dust."
+        },
+        {
+          "span": [
+            "p000044.jpg",
+            "p000045.jpg"
+          ],
+          "line": "The hooded killer lunges forward with a snarl, furious that our boy actually had the nerve to resist after they went easy on him.",
+          "line_plain": "Seeing his opening, the hooded killer lunges forward with a snarl, shouting, 'You damned brat!' The attacker's eyes burn with rage as he declares that just because they went easy on him, he dares to resist."
+        },
+        {
+          "span": [
+            "p000046.jpg",
+            "p000047.jpg"
+          ],
+          "line": "Even through the haze of pain, you can see the pure terror etched all over his bloodstained face.",
+          "line_plain": "Even through the haze of pain, the sheer terror of the moment is etched into Prince Cheon's bloodstained face."
+        }
+      ],
+      "narration_plain": "The assassin swings a curved blade in a devastating arc, catching Prince Cheon and sending him reeling backward through a spray of blood and shattered stone. Our guy can only stare in wide-eyed horror as the impact leaves him breathless and broken amidst the swirling dust. Seeing his opening, the hooded killer lunges forward with a snarl, shouting, 'You damned brat!' The attacker's eyes burn with rage as he declares that just because they went easy on him, he dares to resist. Even through the haze of pain, the sheer terror of the moment is etched into Prince Cheon's bloodstained face."
+    },
+    {
+      "group_id": 11,
+      "scene_files": [
+        "p000048.jpg",
+        "p000049.jpg",
+        "p000050.jpg",
+        "p000051.jpg",
+        "p000052.jpg"
+      ],
+      "beat_title": "The Price of Defiance",
+      "what_happens": "Under the cold gaze of a full moon, Prince Cheon's victory turns into a nightmare as he gasps through the agony of a fresh wound. The assassin looms over him, taunting him with the sensation of having a hole in his stomach while our guy screams in pure torment. Clutching his bloodied chest, Cheon realizes his desperate gambit failed and that he can't outsmart these killers twice, yet he finds a grim comfort in the fact that at least one bastard didn't make it out alive. But the attacker isn't finished, demanding that Cheon suffer an excruciating death.",
+      "narration": "Under the cold gaze of a full moon, Prince Cheon's desperate gamble falls apart as he gasps through the agony of a fresh wound. The assassin looms over him, making sure he feels the blade sinking into his core. As blood soaks through his clothes, our boy realizes his tricks are officially out of supply, though at least one enemy is down. But there is no mercy to be found, only the",
+      "emotional_turn": "The scene shifts from the triumph of victory to the visceral agony of betrayal and physical vulnerability, moving from a sense of survival to the realization of impending doom.",
+      "conflict_or_stakes": "Prince Cheon's life is at stake as he faces a lethal wound and an unrelenting assassin, with his previous tactical advantage completely neutralized.",
+      "reveals_or_info": "The failure of Cheon's desperate gambit is revealed, along with the fact that despite his victory over one attacker, he remains trapped and vulnerable to another.",
+      "hook": "The sight of a once-victorious prince reduced to screaming in agony under the moonlight, facing an executioner who refuses to let him die quickly.",
+      "mood_words": [
+        "agonizing",
+        "visceral",
+        "grim",
+        "vulnerable",
+        "menacing"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "Close-up on Cheon's face expressing agony and the assassin's menacing silhouette against the full moon.",
+        "camera_motion": "Slow zoom into Cheon's bloodied hands clutching his chest."
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000048.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000049.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000050.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000051.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000052.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000048.jpg"
+          ],
+          "line": "Under the cold gaze of a full moon, Prince Cheon's desperate gamble falls apart as he gasps through the agony of a fresh wound.",
+          "line_plain": "Under the cold gaze of a full moon, Prince Cheon's desperate gamble falls apart as he gasps through the agony of a fresh wound."
+        },
+        {
+          "span": [
+            "p000049.jpg"
+          ],
+          "line": "The assassin looms over him, making sure he feels the blade sinking into his core.",
+          "line_plain": "The assassin looms over him, taunting him with the sensation of the blade piercing his very core."
+        },
+        {
+          "span": [
+            "p000050.jpg",
+            "p000051.jpg"
+          ],
+          "line": "As blood soaks through his clothes, our boy realizes his tricks are officially out of supply, though at least one enemy is down.",
+          "line_plain": "As blood soaks through his clothes, our guy realizes his tricks won't work a second time, yet he finds a grim comfort in the fact that one enemy has already fallen."
+        },
+        {
+          "span": [
+            "p000052.jpg"
+          ],
+          "line": "But there is no mercy to be found, only the",
+          "line_plain": "But there is no mercy to be found, only the"
+        }
+      ],
+      "narration_plain": "Under the cold gaze of a full moon, Prince Cheon's desperate gamble falls apart as he gasps through the agony of a fresh wound. The assassin looms over him, taunting him with the sensation of the blade piercing his very core. As blood soaks through his clothes, our guy realizes his tricks won't work a second time, yet he finds a grim comfort in the fact that one enemy has already fallen. But there is no mercy to be found, only the"
+    },
+    {
+      "group_id": 12,
+      "scene_files": [
+        "p000053.jpg",
+        "p000054.jpg",
+        "p000055.jpg"
+      ],
+      "beat_title": "The Assassin's Resolve",
+      "what_happens": "The assassin stands over the fallen Prince Cheon, his blade poised for a final strike. As he stares down at the wounded boy, the killer reflects on the loss of his fellow comrade, realizing that despite his usual methods, he has no choice but to finish this fight. With a heavy sigh, he accepts the grim necessity of the kill.",
+      "narration": "The clearing goes silent, save for heavy breathing, as an assassin holds a sword to the boy's throat. He hates doing this, but with their comrade dead, he feels like he doesn't have much of a choice.",
+      "emotional_turn": "The assassin moves from cold calculation to a grim acceptance of duty.",
+      "conflict_or_stakes": "Prince Cheon is at the mercy of an assassin who has lost all restraint due to grief.",
+      "reveals_or_info": "The assassin reveals that the death of his comrade has stripped away his usual hesitation.",
+      "hook": "The blade is ready, and the time for mercy has passed.",
+      "mood_words": [
+        "heavy",
+        "grim",
+        "leveled",
+        "silence"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the assassin's eyes and the sword tip near the protagonist's neck/chest area, wide shot of the standoff, close up on the masked face during the sighing moment",
+        "camera_motion": "static to slow zoom on the mask"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000053.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000054.jpg",
+          "role": "keep",
+          "bubble_mode": "inner_thought",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000055.jpg",
+          "role": "redundant",
+          "bubble_mode": "inner_thought",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000053.jpg"
+          ],
+          "line": "The clearing goes silent, save for heavy breathing, as an assassin holds a sword to the boy's throat.",
+          "line_plain": "The silence of the clearing is broken only by the heavy breathing of the wounded. The assassin looms over the stranger, his sword leveled at the boy's throat."
+        },
+        {
+          "span": [
+            "p000054.jpg",
+            "p000055.jpg"
+          ],
+          "line": "He hates doing this, but with their comrade dead, he feels like he doesn't have much of a choice.",
+          "line_plain": "He thinks to himself that doing something like that isn't his style at all, but since their comrade died, he guesses there isn't a choice."
+        }
+      ],
+      "narration_plain": "The silence of the clearing is broken only by the heavy breathing of the wounded. The assassin looms over the stranger, his sword leveled at the boy's throat. He thinks to himself that doing something like that isn't his style at all, but since their comrade died, he guesses there isn't a choice."
+    },
+    {
+      "group_id": 13,
+      "scene_files": [
+        "p000056.jpg",
+        "p000057.jpg",
+        "p000058.jpg",
+        "p000059.jpg",
+        "p000060.jpg",
+        "p000061.jpg"
+      ],
+      "beat_title": "The Mysterious Light",
+      "what_happens": "Suddenly, a blinding flash of light erupts from nowhere, catching the assassin's eyes in a state of pure shock. The explosion tears through the battlefield, spraying blood and debris as the remaining assassins watch in confusion. Amidst the swirling smoke and flying embers, our guy remembers it clearly—just now, something like a beam of white light descended upon them.",
+      "narration": "Suddenly, a blinding flash of light erupts out of nowhere, catching the assassin completely off guard. The explosion tears through the battlefield, leaving the remaining assassins watching the chaos in total confusion. Amidst the smoke and embers, our guy remembers seeing something like a beam of white light descend on them.",
+      "emotional_turn": "The suddenness of the light breaks the tension of the execution, replacing dread with pure bewilderment.",
+      "conflict_or_stakes": "The unexpected arrival of this light disrupts the assassins' planned kill, leaving the fate of Prince Cheon hanging in a",
+      "reveals_or_info": "",
+      "hook": "",
+      "mood_words": [],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "The blinding flash of light and the reaction of the assassins.",
+        "camera_motion": "Static or slight zoom out to capture the scale of the explosion."
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000056.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000057.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000058.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000059.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000060.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000061.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000056.jpg"
+          ],
+          "line": "Suddenly, a blinding flash of light erupts out of nowhere, catching the assassin completely off guard.",
+          "line_plain": "Suddenly, a blinding flash of light erupts from nowhere, catching the assassin's eyes in a state of pure shock."
+        },
+        {
+          "span": [
+            "p000057.jpg",
+            "p000058.jpg"
+          ],
+          "line": "The explosion tears through the battlefield, leaving the remaining assassins watching the chaos in total confusion.",
+          "line_plain": "The explosion tears through the battlefield, spraying blood and debris as the remaining assassins watch in confusion."
+        },
+        {
+          "span": [
+            "p000059.jpg",
+            "p000060.jpg",
+            "p000061.jpg"
+          ],
+          "line": "Amidst the smoke and embers, our guy remembers seeing something like a beam of white light descend on them.",
+          "line_plain": "Amidst the swirling smoke and flying embers, our guy remembers it clearly—just now, something like a beam of white light descended upon them."
+        }
+      ],
+      "narration_plain": "Suddenly, a blinding flash of light erupts from nowhere, catching the assassin's eyes in a state of pure shock. The explosion tears through the battlefield, spraying blood and debris as the remaining assassins watch in confusion. Amidst the swirling smoke and flying embers, our guy remembers it clearly—just now, something like a beam of white light descended upon them."
+    },
+    {
+      "group_id": 14,
+      "scene_files": [
+        "p000062.jpg",
+        "p000063.jpg",
+        "p000064.jpg",
+        "p000065.jpg",
+        "p000066.jpg",
+        "p000067.jpg"
+      ],
+      "beat_title": "The Arrival of the Stranger",
+      "what_happens": "A blue and white sneaker strikes the ground with sudden, electric force, leaving glowing trails in its wake. The assassins freeze, eyes widening in pure terror as they realize they are no longer the hunters. One of them points frantically toward the center of the clearing, screaming, 'He's behind us!!!' Amidst the misty trees, a small, blue silhouette flickers between the armed figures. This stranger stands perfectly still, arms crossed and gaze hidden beneath a visor, as crackling blue lightning surges around his body, signaling that the tide of battle has just shifted.",
+      "narration": "A blue and white sneaker hits the ground with an electric impact, leaving glowing trails in its wake. The assassins freeze, eyes widening in pure terror at what they've just witnessed. One of them points frantically into the clearing, screaming that he's right behind them! A small, blue silhouette flickers through the misty trees. The stranger stands perfectly still, arms crossed and eyes hidden behind a visor. As crackling blue lightning surges around his body, signaling that the tide of battle has just shifted.",
+      "emotional_turn": "The sudden appearance of this electrified newcomer turns the assassins' predatory confidence into sheer panic.",
+      "conflict_or_stakes": "The assassins are no longer facing a wounded prince, but an unknown entity crackling with unstable energy.",
+      "reveals_or_info": "The arrival of a powerful, unidentified figure with electrical abilities changes the power dynamic of the encounter.",
+      "hook": "A blue and white sneaker strikes the ground with sudden, electric force, leaving glowing trails in its wake.",
+      "mood_words": [
+        "tense",
+        "electrifying",
+        "terrifying",
+        "mysterious"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "The blue silhouette and the crackling lightning around the stranger.",
+        "camera_motion": "Slow zoom into the eyes of the terrified assassin, then a quick pan to the mysterious figure."
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000062.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000063.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000064.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000065.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000066.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000067.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000062.jpg"
+          ],
+          "line": "A blue and white sneaker hits the ground with an electric impact, leaving glowing trails in its wake.",
+          "line_plain": "A blue and white sneaker strikes the ground with sudden, electric force, leaving glowing trails in its unseen wake."
+        },
+        {
+          "span": [
+            "p000063.jpg"
+          ],
+          "line": "The assassins freeze, eyes widening in pure terror at what they've just witnessed.",
+          "line_plain": "The assassins freeze, eyes widening in pure terror at what they've just witnessed."
+        },
+        {
+          "span": [
+            "p000064.jpg"
+          ],
+          "line": "One of them points frantically into the clearing, screaming that he's right behind them!",
+          "line_plain": "One of them points frantically toward the center of the clearing, screaming, 'He's behind us!!!'"
+        },
+        {
+          "span": [
+            "p000065.jpg"
+          ],
+          "line": "A small, blue silhouette flickers through the misty trees.",
+          "line_plain": "Amidst the misty trees, a small, blue silhouette flickers between the armed figures."
+        },
+        {
+          "span": [
+            "p000066.jpg"
+          ],
+          "line": "The stranger stands perfectly still, arms crossed and eyes hidden behind a visor.",
+          "line_plain": "This stranger stands perfectly still, arms crossed and gaze hidden beneath a visor."
+        },
+        {
+          "span": [
+            "p000067.jpg"
+          ],
+          "line": "As crackling blue lightning surges around his body, signaling that the tide of battle has just shifted.",
+          "line_plain": "As crackling blue lightning surges around his body, signaling that the tide of battle has just shifted."
+        }
+      ],
+      "narration_plain": "A blue and white sneaker strikes the ground with sudden, electric force, leaving glowing trails in its unseen wake. The assassins freeze, eyes widening in pure terror at what they've just witnessed. One of them points frantically toward the center of the clearing, screaming, 'He's behind us!!!' Amidst the misty trees, a small, blue silhouette flickers between the armed figures. This stranger stands perfectly still, arms crossed and gaze hidden beneath a visor. As crackling blue lightning surges around his body, signaling that the tide of battle has just shifted."
+    },
+    {
+      "group_id": 15,
+      "scene_files": [
+        "p000068.jpg",
+        "p000069.jpg",
+        "p000070.jpg",
+        "p000071.jpg",
+        "p000072.jpg"
+      ],
+      "beat_title": "The Stranger's Arrival",
+      "what_happens": "As the stranger stands enveloped in crackling blue electricity within the misty woods, the assassin lunges forward with a desperate shout of 'Who are you!', eyes wide with suspicion as he stares at the unfamiliar sight. The man in the blue and white hoodie remains unmoved, his lower face set in a calm expression while arcs of energy surge around his jawline, leaving the attacker wondering, 'What is that...? I've never seen clothing like that before...?'",
+      "narration": "As the stranger stands enveloped in electricity, a desperate assassin lunges forward, demanding to know who he is. The man in the blue hoodie doesn't even flinch, leaving the attacker wondering what kind of weird clothing that even is.",
+      "emotional_turn": "The tension shifts from the chaos of battle to a heavy, confused dread as an unknown power enters the fray.",
+      "conflict_or_stakes": "The arrival of this technologically advanced stranger threatens to upend the established power dynamics of the forest ambush.",
+      "reveals_or_info": "The assassin recognizes that the stranger's clothing and energy are unlike anything in his world.",
+      "hook": "A new player has entered the game, and he brings lightning with him.",
+      "mood_words": [
+        "unmoved",
+        "suspicion",
+        "anomaly",
+        "defies"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the assassin's eyes and the stranger's electrified jawline",
+        "camera_motion": "static shots with high-energy electrical overlays"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000068.jpg",
+          "role": "keep",
+          "bubble_mode": "inner_thought",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000069.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000070.jpg",
+          "role": "keep",
+          "bubble_mode": "shout",
+          "intensity": "intense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000071.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000072.jpg",
+          "role": "redundant",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000068.jpg",
+            "p000069.jpg",
+            "p000070.jpg"
+          ],
+          "line": "As the stranger stands enveloped in electricity, a desperate assassin lunges forward, demanding to know who he is.",
+          "line_plain": "As the stranger stands enveloped in crackling blue electricity within the misty woods, the assassin lung ands forward with a desperate shout of 'Who are you!', eyes wide with suspicion as he stares at the unfamiliar sight."
+        },
+        {
+          "span": [
+            "p000071.jpg",
+            "p000072.jpg"
+          ],
+          "line": "The man in the blue hoodie doesn't even flinch, leaving the attacker wondering what kind of weird clothing that even is.",
+          "line_plain": "The man in the blue and white hoodie remains unmoved, his lower face set in a calm expression while arcs of energy surge around his jawline, leaving the attacker wondering, 'What is that...? I've never seen clothing like that before...?' This presence is an anomaly that defies everything the assassin knows."
+        }
+      ],
+      "narration_plain": "As the stranger stands enveloped in crackling blue electricity within the misty woods, the assassin lung ands forward with a desperate shout of 'Who are you!', eyes wide with suspicion as he stares at the unfamiliar sight. The man in the blue and white hoodie remains unmoved, his lower face set in a calm expression while arcs of energy surge around his jawline, leaving the attacker wondering, 'What is that...? I've never seen clothing like that before...?' This presence is an anomaly that defies everything the assassin knows."
+    },
+    {
+      "group_id": 16,
+      "scene_files": [
+        "p000073.jpg",
+        "p000075.jpg",
+        "p000076.jpg",
+        "p000077.jpg",
+        "p000078.jpg",
+        "p000079.jpg"
+      ],
+      "beat_title": "The Vanishing Act",
+      "what_happens": "A blinding explosion of golden light erupts, tearing through the battlefield and leaving the armored figures caught in",
+      "narration": "A blinding explosion of golden light rips through the battlefield. An armored figure is left standing amidst the swirling shadows and debris. The character reacts in pure shock as blood splatters across their face. Electrical energy begins to surge around a glowing, obscured figure. A character vanishes into the rapid motion, leaving their onlooker completely stunned. A character shouts out in alarm during a scene of destruction.",
+      "emotional_turn": "A blinding explosion of golden light erupts, tearing through the battlefield and leaving the armored figures caught in",
+      "conflict_or_stakes": "A blinding explosion of golden light erupts, tearing through the battlefield and leaving the armored figures caught in",
+      "reveals_or_info": "A blinding explosion of golden light erupts, tearing through the battlefield and leaving the armored figures caught in",
+      "hook": "A blinding explosion of golden light erupts, tearing through the battlefield and leaving the armored figures caught in",
+      "mood_words": [
+        "blinding",
+        "explosion",
+        "golden",
+        "tearing",
+        "battlefield"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "the explosion of golden light and the armored figures",
+        "camera_motion": "static or slight zoom out to reveal the scale of the explosion"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000073.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000075.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000076.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000077.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000078.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000079.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000073.jpg"
+          ],
+          "line": "A blinding explosion of golden light rips through the battlefield.",
+          "line_plain": "A blinding explosion of golden light erupts, tearing through the battlefield and leaving the armored figures caught in"
+        },
+        {
+          "span": [
+            "p000075.jpg"
+          ],
+          "line": "An armored figure is left standing amidst the swirling shadows and debris.",
+          "line_plain": "The armored figure stands amidst swirling shadows and flying fragments."
+        },
+        {
+          "span": [
+            "p000076.jpg"
+          ],
+          "line": "The character reacts in pure shock as blood splatters across their face.",
+          "line_plain": "The character reacts in shock as blood splatters across their face."
+        },
+        {
+          "span": [
+            "p000077.jpg"
+          ],
+          "line": "Electrical energy begins to surge around a glowing, obscured figure.",
+          "line_plain": "Electrical energy surges around a luminous, obscured figure."
+        },
+        {
+          "span": [
+            "p000078.jpg"
+          ],
+          "line": "A character vanishes into the rapid motion, leaving their onlooker completely stunned.",
+          "line_plain": "A character appears to vanish or become invisible amidst rapid motion effects, causing shock in an onlooker."
+        },
+        {
+          "span": [
+            "p000079.jpg"
+          ],
+          "line": "A character shouts out in alarm during a scene of destruction.",
+          "line_plain": "A character shouts out in alarm during a scene of destruction."
+        }
+      ],
+      "narration_plain": "A blinding explosion of golden light erupts, tearing through the battlefield and leaving the armored figures caught in The armored figure stands amidst swirling shadows and flying fragments. The character reacts in shock as blood splatters across their face. Electrical energy surges around a luminous, obscured figure. A character appears to vanish or become invisible amidst rapid motion effects, causing shock in an onlooker. A character shouts out in alarm during a scene of destruction."
+    },
+    {
+      "group_id": 17,
+      "scene_files": [
+        "p000080.jpg",
+        "p000081.jpg",
+        "p000082.jpg",
+        "p000083.jpg"
+      ],
+      "beat_title": "The Assassin's Shock",
+      "what_happens": "A sudden, blinding flash of energy streaks across the battlefield, leaving the assassin reeling in confusion as he wonders if he is witnessing the true power of a high-level master.",
+      "narration": "Seriously, what even is that light?! As he lunges forward with a desperate strike, the assassin wonders if he's just encountered a top-tier master.",
+      "emotional_turn": "The assassin's confusion turns into a paralyzing realization of the gap between them.",
+      "conflict_or_stakes": "The assassin is facing an unknown power that could easily end his life.",
+      "reveals_or_info": "The sudden appearance of intense light suggests a massive surge of energy or a high-level technique being unleashed.",
+      "hook": "Is this the strength of a legend, or something far more dangerous?",
+      "mood_words": [
+        "blinding",
+        "terror",
+        "phenomenon",
+        "paralyzing"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the assassin's wide eyes and the motion of the sword strike/light streaks",
+        "camera_motion": "static close-up to high-speed motion"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000080.jpg",
+          "role": "keep",
+          "bubble_mode": "shout",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000081.jpg",
+          "role": "keep",
+          "bubble_mode": "inner_thought",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000082.jpg",
+          "role": "redundant",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000083.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "intense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000080.jpg"
+          ],
+          "line": "Seriously, what even is that light?!",
+          "line_plain": "Exactly what is that light?!"
+        },
+        {
+          "span": [
+            "p000081.jpg",
+            "p000082.jpg",
+            "p000083.jpg"
+          ],
+          "line": "As he lunges forward with a desperate strike, the assassin wonders if he's just encountered a top-tier master.",
+          "line_plain": "As his blade lunges forward in a desperate strike, his eyes widen in pure terror at the sheer scale of the phenomenon, wondering if he has just encountered the power of a master who's risen to the highest level?!"
+        }
+      ],
+      "narration_plain": "Exactly what is that light?! As his blade lunges forward in a desperate strike, his eyes widen in pure terror at the sheer scale of the phenomenon, wondering if he has just encountered the power of a master who's risen to the highest level?!"
+    },
+    {
+      "group_id": 18,
+      "scene_files": [
+        "p000084.jpg",
+        "p000085.jpg",
+        "p000086.jpg",
+        "p000087.jpg",
+        "p000088.jpg",
+        "p000089.jpg"
+      ],
+      "beat_title": "The Assassin's Retreat",
+      "what_happens": "",
+      "narration": "The wounded character is clearly in a bad way, looking like he's on the brink of death. Someone is shouting for a retreat as everything moves too fast to track. A cloaked figure drifts through the moonlit sky. An electrified hand reaches out toward the viewer. A sudden force strikes a character, sending blood and dark matter spraying everywhere. The character stares up, trying to get a word in.",
+      "emotional_turn": "",
+      "conflict_or_stakes": "",
+      "reveals_or_info": "",
+      "hook": "",
+      "mood_words": [],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "",
+        "camera_motion": ""
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000084.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000085.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000086.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000087.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000088.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000089.jpg",
+          "role": "keep",
+          "bubble_mode": "unknown",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000084.jpg"
+          ],
+          "line": "The wounded character is clearly in a bad way, looking like he's on the brink of death.",
+          "line_plain": "The wounded character appears to be in physical agony or near death."
+        },
+        {
+          "span": [
+            "p000085.jpg"
+          ],
+          "line": "Someone is shouting for a retreat as everything moves too fast to track.",
+          "line_plain": "A character is shouting for a retreat amidst rapid movement."
+        },
+        {
+          "span": [
+            "p000086.jpg"
+          ],
+          "line": "A cloaked figure drifts through the moonlit sky.",
+          "line_plain": "A cloaked character is seen mid-air against a moonlit, cloudy sky."
+        },
+        {
+          "span": [
+            "p000087.jpg"
+          ],
+          "line": "An electrified hand reaches out toward the viewer.",
+          "line_plain": "A luminous, electrified hand extends toward the viewer."
+        },
+        {
+          "span": [
+            "p000088.jpg"
+          ],
+          "line": "A sudden force strikes a character, sending blood and dark matter spraying everywhere.",
+          "line_plain": "A character's body appears to be bursting or being struck by an unseen force, causing dark matter and droplets to spray outward."
+        },
+        {
+          "span": [
+            "p000089.jpg"
+          ],
+          "line": "The character stares up, trying to get a word in.",
+          "line_plain": "The character stares up while speaking a line of dialogue."
+        }
+      ],
+      "narration_plain": "The wounded character appears to be in physical agony or near death. A character is shouting for a retreat amidst rapid movement. A cloaked character is seen mid-air against a moonlit, cloudy sky. A luminous, electrified hand extends toward the viewer. A character's body appears to be bursting or being struck by an unseen force, causing dark matter and droplets to spray outward. The character stares up while speaking a line of dialogue."
+    },
+    {
+      "group_id": 19,
+      "scene_files": [
+        "p000090.jpg"
+      ],
+      "beat_title": "A Gaze of Terror",
+      "what_happens": "Through the strands of his matted hair, Prince Cheon's eye remains fixed in a wide, trembling stare.",
+      "narration": "Through his matted hair, Prince Cheon's eye is fixed in a wide, trembling stare.",
+      "emotional_turn": "The battle has ended, but the horror is far from over.",
+      "conflict_or_stakes": "He can only watch, paralyzed by what he has witnessed.",
+      "reveals_or_info": "His gaze captures the lingering shock of the encounter.",
+      "hook": "But even in the silence, the dread remains.",
+      "mood_words": [
+        "trembling",
+        "fixed",
+        "shock"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "eye and hair strands",
+        "camera_motion": "static close-up"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000090.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000090.jpg"
+          ],
+          "line": "Through his matted hair, Prince Cheon's eye is fixed in a wide, trembling stare.",
+          "line_plain": "Through the strands of his matted hair, Prince Cheon's eye remains fixed in a wide, trembling stare."
+        }
+      ],
+      "narration_plain": "Through the strands of his matted hair, Prince Cheon's eye remains fixed in a wide, trembling stare."
+    },
+    {
+      "group_id": 20,
+      "scene_files": [
+        "p000095.jpg"
+      ],
+      "beat_title": "Confusion and Dread",
+      "what_happens": "A sudden, strange exclamation breaks the tension as Prince Cheon stares upward, his eye wide with confusion. He can't comprehend the nonsense being spouted by this newcomer, especially since the Ancestor seems strangely cheerful despite being on his deathbed.",
+      "narration": "The air is filled with a bizarre, echoing 'Wow~~', leaving everything in disarray. It looks like our Ancestor is in a happy mood even though he's at his deathbed? Prince Cheon can only mutter, 'Ancestor...?' as he stares upward through the strands of his hair, wondering who this newcomer is and what kind of nonsense he is spouting after appearing all of a sudden.",
+      "emotional_turn": "The confusion shifts from pure shock to a deep sense of dread regarding the stranger's true intentions.",
+      "conflict_or_stakes": "Prince Cheon is left vulnerable and mentally unsettled by the arrival of an unpredictable force during a moment of extreme crisis.",
+      "reveals_or_info": "The Ancestor appears unexpectedly calm despite his terminal state, adding to the surreal nature of the encounter.",
+      "hook": "But this stranger's arrival is far from a simple rescue.",
+      "mood_words": [
+        "bizarre",
+        "disarray",
+        "unpredictable",
+        "surreal"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the character's intense eye and the suddenness of the dialogue bubbles",
+        "camera_motion": "static close-up"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000091.jpg",
+          "role": "redundant",
+          "bubble_mode": "none",
+          "intensity": "calm",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000092.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "calm",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000093.jpg",
+          "role": "redundant",
+          "bubble_mode": "spoken",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000094.jpg",
+          "role": "redundant",
+          "bubble_mode": "spoken",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000095.jpg",
+          "role": "keep",
+          "bubble_mode": "inner_thought",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000095.jpg"
+          ],
+          "line": "The air is filled with a bizarre, echoing 'Wow~~', leaving everything in disarray. It looks like our Ancestor is in a happy mood even though he's at his deathbed? Prince Cheon can only mutter, 'Ancestor...?' as he stares upward through the strands of his hair, wondering who this newcomer is and what kind of nonsense he is spouting after appearing all of a sudden.",
+          "line_plain": "The air is filled with a bizarre, echoing 'Wow~~', leaving everything in disarray. It looks like our Ancestor is in a happy mood even though he's at his deathbed? Prince Cheon can only mutter, 'Ancestor...?' as he stares upward through the strands of his hair, wondering who this newcomer is and what kind of nonsense he is spouting after appearing all of a sudden."
+        }
+      ],
+      "narration_plain": "The air is filled with a bizarre, echoing 'Wow~~', leaving everything in disarray. It looks like our Ancestor is in a happy mood even though he's at his deathbed? Prince Cheon can only mutter, 'Ancestor...?' as he stares upward through the strands of his hair, wondering who this newcomer is and what kind of nonsense he is spouting after appearing all of a sudden."
+    },
+    {
+      "group_id": 21,
+      "scene_files": [
+        "p000096.jpg",
+        "p000097.jpg",
+        "p000098.jpg",
+        "p000099.jpg",
+        "p000100.jpg"
+      ],
+      "beat_title": "The Stranger's Intervention",
+      "what_happens": "As the world fades to black, Prince Cheon can only wonder if this is truly how his journey ends. Nearby, the stranger checks a device on his wrist, wondering if the assassins have already tracked him down. He mutters that he should hurry since death is so close, and prepares to use an improvised method to intervene.",
+      "narration": "Vision is blurring and a deadly chill is setting in, leaving our guy wondering if this is really how it ends. The stranger watches the dying boy and checks his wrist device, worried they've been spotted. He mutters that he has no choice but to improvise with a flashlight, even though he wanted to teach the kid how to use his gear properly later. He shines the light right on the wounded face and coldly notes that they need to hurry since the boy is clearly about to kick the bucket.",
+      "emotional_turn": "The despair of Prince Cheon's near-death state meets the cold, calculated pragmatism of the stranger's arrival.",
+      "conflict_or_stakes": "Prince Cheon is on the brink of death from his wounds, while the stranger must act quickly before the assassins close in.",
+      "reveals_or_info": "The stranger possesses advanced technology and has been planning to meet the prince earlier.",
+      "hook": "A desperate end might be about to receive a very modern solution.",
+      "mood_words": [
+        "fading",
+        "despair",
+        "improvising",
+        "encroaching"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "The contrast between the prince's fading consciousness and the stranger's glowing wrist device.",
+        "camera_motion": "Slow zoom into the stranger's face as he adjusts his tool."
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000096.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000097.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000098.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000099.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000100.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000096.jpg"
+          ],
+          "line": "Vision is blurring and a deadly chill is setting in, leaving our guy wondering if this is really how it ends.",
+          "line_plain": "Prince Cheon's vision begins to blur and a deadly chill settles into his bones, leaving him to wonder, 'Am... I going to die like this?'"
+        },
+        {
+          "span": [
+            "p000097.jpg"
+          ],
+          "line": "The stranger watches the dying boy and checks his wrist device, worried they've been spotted.",
+          "line_plain": "The stranger watches the dying boy, glancing at the device on his wrist as he wonders if they've been discovered."
+        },
+        {
+          "span": [
+            "p000098.jpg"
+          ],
+          "line": "He mutters that he has no choice but to improvise with a flashlight, even though he wanted to teach the kid how to use his gear properly later.",
+          "line_plain": "'Shit! I guess there is no choice,' he mutters, deciding to improvise with a flashlight even though he intended to teach the boy how to use his gear later."
+        },
+        {
+          "span": [
+            "p000099.jpg",
+            "p000100.jpg"
+          ],
+          "line": "He shines the light right on the wounded face and coldly notes that they need to hurry since the boy is clearly about to kick the bucket.",
+          "line_plain": "He shines the light directly onto the wounded face, coldly noting, 'I should hurry, huh. Since you're right about to die.'"
+        }
+      ],
+      "narration_plain": "Prince Cheon's vision begins to blur and a deadly chill settles into his bones, leaving him to wonder, 'Am... I going to die like this?' The stranger watches the dying boy, glancing at the device on his wrist as he wonders if they've been discovered. 'Shit! I guess there is no choice,' he mutters, deciding to improvise with a flashlight even though he intended to teach the boy how to use his gear later. He shines the light directly onto the wounded face, coldly noting, 'I should hurry, huh. Since you're right about to die.'"
+    },
+    {
+      "group_id": 22,
+      "scene_files": [
+        "p000101.jpg",
+        "p000102.jpg"
+      ],
+      "beat_title": "The Injection",
+      "what_happens": "The stranger prepares to inject the device into Prince Cheon's leg, even as he finds the whole process awkward, before finally completing the task with a satisfied smirk.",
+      "narration": "As the stranger readies an injector against the boy's leg, even he finds the whole process a little cringeworthy. With one final press of the device, he looks up and announces that it's done.",
+      "emotional_turn": "The tension of the medical procedure gives way to a moment of completed action.",
+      "conflict_or_stakes": "The stranger must successfully administer the injection to save Prince Cheon's life.",
+      "reveals_or_info": "The stranger is performing a medical procedure using advanced technology on the wounded prince.",
+      "hook": "But this sudden aid comes with a mysterious cost.",
+      "mood_words": [
+        "awkward",
+        "satisfaction",
+        "completion"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the injector and the stranger's expression",
+        "camera_motion": "static"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000101.jpg",
+          "role": "keep",
+          "bubble_mode": "inner_thought",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000102.jpg",
+          "role": "keep",
+          "bubble_mode": "spoken",
+          "intensity": "calm",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000101.jpg"
+          ],
+          "line": "As the stranger readies an injector against the boy's leg, even he finds the whole process a little cringeworthy.",
+          "line_plain": "As the stranger readies the injector against the boy's thigh, he can't help but think that even though he's the one doing the injecting, the whole thing is making him cringe."
+        },
+        {
+          "span": [
+            "p000102.jpg"
+          ],
+          "line": "With one final press of the device, he looks up and announces that it's done.",
+          "line_plain": "With a final press of the device, he looks up and mutters, 'Alright—done.'"
+        }
+      ],
+      "narration_plain": "As the stranger readies the injector against the boy's thigh, he can't help but think that even though he's the one doing the injecting, the whole thing is making him cringe. With a final press of the device, he looks up and mutters, 'Alright—done.'"
+    },
+    {
+      "group_id": 23,
+      "scene_files": [
+        "p000103.jpg",
+        "p000104.jpg",
+        "p000105.jpg"
+      ],
+      "beat_title": "A Final Request",
+      "what_happens": "The stranger kneels over the dying Prince Cheon, calling out to him with a desperate 'Hey, Ancestor nim?' as the boy's eyes flutter toward the sky. Through the haze of pain and blood, the Prince offers one last, trembling plea: 'Please make sure to succeed and make this descendant's life easier, okay?'",
+      "narration": "The stranger kneels beside the broken body, calling out with a frantic, 'Hey, Ancestor nim?' as he checks on the dying boy. Through the blood and agony, the Prince makes one last plea for his descendant's future to be easier.",
+      "emotional_turn": "The stranger's clinical detachment falters for a moment as he faces the weight of the dying man's last wish.",
+      "conflict_or_stakes": "The Prince is on the verge of death, leaving his legacy and survival in the hands of a complete stranger.",
+      "reveals_or_info": "The Prince identifies himself as the descendant of the Ancestor, establishing a blood connection to the man he's addressing.",
+      "hook": "But even with the injection, the weight of that dying wish hangs heavy in the air.",
+      "mood_words": [
+        "desperate",
+        "trembling",
+        "agony",
+        "heavy"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "The bloodied face of the Prince and the stranger's reaction.",
+        "camera_motion": "Static close-ups to emphasize the intimacy of the deathbed plea."
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000103.jpg",
+          "role": "keep",
+          "bubble_mode": "spoken",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000104.jpg",
+          "role": "redundant",
+          "bubble_mode": "narration",
+          "intensity": "tense",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000105.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "tense",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000103.jpg"
+          ],
+          "line": "The stranger kneels beside the broken body, calling out with a frantic, 'Hey, Ancestor nim?' as he checks on the dying boy.",
+          "line_plain": "The stranger kneels beside the broken body, calling out with a frantic, 'Hey, Ancestor nim?' as he checks on the dying boy."
+        },
+        {
+          "span": [
+            "p000104.jpg",
+            "p000105.jpg"
+          ],
+          "line": "Through the blood and agony, the Prince makes one last plea for his descendant's future to be easier.",
+          "line_plain": "Through the blood and the haze of agony, the Prince offers one final, trembling plea, begging him to please make sure to succeed and make this descendant's life easier, okay?"
+        }
+      ],
+      "narration_plain": "The stranger kneels beside the broken body, calling out with a frantic, 'Hey, Ancestor nim?' as he checks on the dying boy. Through the blood and the haze of agony, the Prince offers one final, trembling plea, begging him to please make sure to succeed and make this descendant's life easier, okay?"
+    },
+    {
+      "group_id": 24,
+      "scene_files": [
+        "p000106.jpg",
+        "p000107.jpg",
+        "p000108.jpg",
+        "p000109.jpg",
+        "p000110.jpg",
+        "p000111.jpg"
+      ],
+      "beat_title": "Activation of the Nano Machine",
+      "what_happens": "A bolt of blue energy strikes down toward the fallen Prince Cheon as the stranger stands over him, casually remarking that this latest version of his nano machine should be simple enough to operate, though he wishes our guy luck learning how to use it. As the light descends, the Prince wakes in a daze, blood dripping from his lips and wondering what kind of nonsense that strange guy has been blabbering about. Suddenly, a string of numbers flashes before his eyes followed by a terrifying realization: there's a strange voice inside his head, reciting a serial number for Sky Corporation.",
+      "narration": "A bolt of blue energy strikes down toward the fallen Prince Cheon as the stranger stands over him, casually remarking that this latest version of his nano machine should be simple enough to operate, though he wishes our guy luck learning how to use it. As the light descends, the Prince wakes up in a daze, wondering what kind of nonsense this guy is even talking about. Suddenly, numbers flash before his eyes followed by a terrifying realization: there's a voice in his head reciting a serial number for Sky Corporation. The text is displayed as a standalone caption. The character reacts in total shock to the sudden internal stimulus. The text is displayed as a title or organizational name card.",
+      "emotional_turn": "The sudden intrusion of an artificial voice into the Prince's",
+      "conflict_or_stakes": "The Prince's physical vulnerability and the mysterious, potentially invasive presence of the nano machine within his mind.",
+      "reveals_or_info": "The activation of a nano machine and the realization that a voice is reciting a Sky Corporation serial number inside his head.",
+      "hook": "A strange voice inside his head, reciting a serial number for Sky Corporation.",
+      "mood_words": [
+        "mysterious",
+        "intense",
+        "technological",
+        "disorienting"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": false,
+        "preferred_focus": "The blue energy strike and the Prince's disoriented expression.",
+        "camera_motion": "Static or slow zoom into the Prince's eyes as the numbers flash."
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000106.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000107.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000108.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000109.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000110.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        },
+        {
+          "scene_file": "p000111.jpg",
+          "role": "keep",
+          "bubble_mode": "narration",
+          "intensity": "unknown",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000106.jpg"
+          ],
+          "line": "A bolt of blue energy strikes down toward the fallen Prince Cheon as the stranger stands over him, casually remarking that this latest version of his nano machine should be simple enough to operate, though he wishes our guy luck learning how to use it.",
+          "line_plain": "A bolt of blue energy strikes down toward the fallen Prince Cheon as the stranger stands over him, casually remarking that this latest version of his nano machine should be simple enough to operate, though he wishes our guy luck learning how to use it."
+        },
+        {
+          "span": [
+            "p000107.jpg"
+          ],
+          "line": "As the light descends, the Prince wakes up in a daze, wondering what kind of nonsense this guy is even talking about.",
+          "line_plain": "As the light descends, the Prince wakes in a daze, blood dripping from his lips and wondering what kind of nonsense that strange guy has been blabbering about."
+        },
+        {
+          "span": [
+            "p000108.jpg"
+          ],
+          "line": "Suddenly, numbers flash before his eyes followed by a terrifying realization: there's a voice in his head reciting a serial number for Sky Corporation.",
+          "line_plain": "Suddenly, a string of numbers flashes before his eyes followed by a terrifying realization: there's a strange voice inside his head, reciting a serial number for Sky Corporation."
+        },
+        {
+          "span": [
+            "p000109.jpg"
+          ],
+          "line": "The text is displayed as a standalone caption.",
+          "line_plain": "The text is displayed as a standalone caption."
+        },
+        {
+          "span": [
+            "p000110.jpg"
+          ],
+          "line": "The character reacts in total shock to the sudden internal stimulus.",
+          "line_plain": "The character reacts with shock to an internal sensation or external stimulus."
+        },
+        {
+          "span": [
+            "p000111.jpg"
+          ],
+          "line": "The text is displayed as a title or organizational name card.",
+          "line_plain": "The text is displayed as a title or organizational name card."
+        }
+      ],
+      "narration_plain": "A bolt of blue energy strikes down toward the fallen Prince Cheon as the stranger stands over him, casually remarking that this latest version of his nano machine should be simple enough to operate, though he wishes our guy luck learning how to use it. As the light descends, the Prince wakes in a daze, blood dripping from his lips and wondering what kind of nonsense that strange guy has been blabbering about. Suddenly, a string of numbers flashes before his eyes followed by a terrifying realization: there's a strange voice inside his head, reciting a serial number for Sky Corporation. The text is displayed as a standalone caption. The character reacts with shock to an internal sensation or external stimulus. The text is displayed as a title or organizational name card."
+    },
+    {
+      "group_id": 25,
+      "scene_files": [
+        "p000112.jpg"
+      ],
+      "beat_title": "Activation of the Nano Machine",
+      "what_happens": "A system notification announces the activation of the 7th generation nano machine.",
+      "narration": "A mechanical voice drones on, announcing that the 7th generation nano machine activation has officially begun.",
+      "emotional_turn": "The sudden, cold precision of the announcement signals a permanent change to the Prince's reality.",
+      "conflict_or_stakes": "The activation of this advanced technology marks the beginning of an era where the Prince's survival depends on a power he doesn't yet understand.",
+      "reveals_or_info": "The 7th generation nano machine is officially initializing within the Prince.",
+      "hook": "But as the process begins, there is no turning back.",
+      "mood_words": [
+        "mechanical",
+        "cold",
+        "precision"
+      ],
+      "rendering_hints": {
+        "avoid_text_zoom": true,
+        "preferred_focus": "the text itself as a system notification screen",
+        "camera_motion": "static"
+      },
+      "scene_selection": [
+        {
+          "scene_file": "p000112.jpg",
+          "role": "keep",
+          "bubble_mode": "none",
+          "intensity": "calm",
+          "reason": ""
+        }
+      ],
+      "segments": [
+        {
+          "span": [
+            "p000112.jpg"
+          ],
+          "line": "A mechanical voice drones on, announcing that the 7th generation nano machine activation has officially begun.",
+          "line_plain": "The mechanical voice drones on, announcing that the 7th generation nano machine is starting its activation."
+        }
+      ],
+      "narration_plain": "The mechanical voice drones on, announcing that the 7th generation nano machine is starting its activation."
+    }
+  ],
+  "_meta": {
+    "schema": 1,
+    "written_at": "2026-07-06T08:33:09Z",
+    "tool": "narration_punchup",
+    "inputs": {
+      "manifest.groups.json": "4c584bacb901bd7c1af75e1e658abdbc5af359da",
+      "manifest.cast.json": "c892bcd9b9520fa86d8a4bf303d1e09bf95a47f0"
+    }
+  }
+}

@@ -122,11 +122,16 @@ def _chapter_spine_issue(value: Any, *, parsed: Any = None, raw: Any = None) -> 
     no chapter object to inspect because generation was almost certainly
     truncated mid-JSON by the context/output budget (ORV ep1/2: raw responses
     captured cut ~4-5KB in, mid-string). See build_grouping_payload's gist
-    shrink + call_fn's shrink-retry, which target this directly."""
+    shrink + call_fn's shrink-retry, which target this directly. When raw
+    ALSO came back empty (no text at all, not even a truncated fragment), say
+    that too instead of the same misleading blank-spine text — a true empty
+    response and a parsed-but-blank chapter are different failures."""
     raw_str = str(raw or "")
     if parsed is None and raw_str.strip():
         return ("response failed to parse (likely truncated mid-generation — "
                  f"context/output budget); raw length={len(raw_str)}")
+    if parsed is None:
+        return "model returned an empty response"
     if not _chapter_spine_complete(value):
         return "chapter logline/premise is blank"
     return ""

@@ -1114,10 +1114,17 @@ def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
     rejoined: List[Dict[str, Any]] = []
     for s in sents:
         pure_sys = not s["tags"] and len(s["sys"]) == 1
-        # never fold a system card's OWN line into a dangling predecessor —
-        # the card would lose its dedicated line to a pad
+        prev_pure_sys = bool(rejoined) and not rejoined[-1]["tags"] and (
+            len(rejoined[-1]["sys"]) == 1)
+        # never fold a system card's OWN line into a dangling predecessor (the
+        # card would lose its dedicated line to a pad) — and never fold the
+        # NEXT sentence into a dangling system-card line either (the card
+        # would swallow a story sentence, leaving an unpunctuated
+        # concatenation on the card and no line at all for the story panel).
+        # System solos are a wall in both directions; a dangling pure-sys
+        # sentence is left for the fragment net to period-close on its own.
         if (rejoined and not ends_terminal(rejoined[-1]["text"])
-                and not pure_sys):
+                and not pure_sys and not prev_pure_sys):
             prev = rejoined[-1]
             prev["text"] = (prev["text"] + " " + s["text"]).strip()
             prev["tags"] = sorted(set(prev["tags"]) | set(s["tags"]))

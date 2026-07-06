@@ -527,6 +527,51 @@ def test_parse_failure_error_message_names_truncation_not_blank_spine(tmp_path, 
     assert data["raw_response"] == raw_truncated and data["parsed_obj"] is None
 
 
+def test_empty_response_error_message_is_truthful_not_blank_spine(tmp_path,
+                                                                   monkeypatch):
+    """TRUTHFULNESS EDGE (2026-07-07 review): when the grouping response
+    parses to NOTHING and raw comes back EMPTY too (no text at all, not even
+    a truncated fragment), the spine-guard message must say exactly that --
+    "chapter logline/premise is blank" implies a chapter object existed with
+    blank fields, which is misleading when there was no response whatsoever.
+    Distinct from the truncated-mid-generation case above (needs non-empty
+    raw); the raw capture-to-disk behavior must still fire."""
+    import json
+    import sys as _sys
+
+    import pytest
+
+    understood = {"panels": [{
+        "scene_file": "p0.jpg", "description": "A man walks the ridge line.",
+        "action": "he walks on", "subjects": ["a man"],
+        "panel_kind": "story", "intensity": "calm"}]}
+    vision = {"items": [{"scene_file": "p0.jpg"}]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps(understood))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    out = tmp_path / "manifest.groups.json"
+
+    def fake_call(**kw):
+        return None, "", {}                       # truly empty response
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up),
+        "--vision-manifest", str(vp), "--out", str(out)])
+    with pytest.raises(SystemExit) as ei:
+        sg.main()
+    msg = str(ei.value)
+    assert "model returned an empty response" in msg
+    assert "logline/premise is blank" not in msg
+    assert "failed to parse" not in msg
+    dumps = sorted(tmp_path.glob(".story_group_raw-*.json"))
+    assert len(dumps) == 1, "raw capture file must exist beside the manifests"
+    data = json.loads(dumps[0].read_text())
+    assert data["raw_response"] == "" and data["parsed_obj"] is None
+
+
 def test_shrink_retry_succeeds_after_one_harder_shrink(tmp_path, monkeypatch):
     """DEFENSIVE RETRY (context/output budget): a parse failure (not a bad
     spine) gets exactly ONE extra attempt with descriptions hard-capped to 80

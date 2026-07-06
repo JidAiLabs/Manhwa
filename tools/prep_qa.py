@@ -1028,8 +1028,6 @@ def impact_marker_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
 # also needs it, and prep_qa imports span_align — this direction avoids the
 # circular import). Re-exported here so every existing consumer/test keeps
 # its prep_qa.has_impact_lexeme / pq._IMPACT_LEXEMES spelling.
-# (imported from span_align at the top of this file — the affinity authority
-# needs the same lexicon, and prep_qa -> span_align is the acyclic direction.)
 
 
 # Panel kinds exempt from the impact trigger set: understanding may correctly

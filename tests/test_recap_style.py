@@ -710,6 +710,31 @@ def test_repair_closes_complete_clause_and_leaves_bare_stub():
             == "He turns toward the sound of")
 
 
+def test_repair_does_not_amputate_a_complete_clause_ending_on_a_function_word():
+    # 2026-07-07 review: the old {0,4}-word tail window amputated up to 5
+    # words after the last clause separator whenever the sentence ended on a
+    # function word -- silently deleting a complete, meaningful clause just
+    # because it happened to end on "is" ("In the end, he knows what this
+    # is" -> "In the end."). Tightening the window to <=2 trailing words
+    # means only a genuinely SHORT stub gets cut; a real clause now survives
+    # unchanged (it still fails ends_terminal, so truncated_line/heal catches
+    # it with a real re-write instead of silently mangling it).
+    line = "In the end, he knows what this is"
+    assert not rs.ends_terminal(line)
+    assert rs.repair_spoken_line(line) == line
+
+    # the real stub (a 2-word tail) must still repair -- the tightened window
+    # must not regress the case it was built for
+    assert (rs.repair_spoken_line(
+        "But there is no mercy to be found, only the")
+        == "But there is no mercy to be found.")
+
+
+def test_repair_spoken_line_leaves_short_complete_lines_untouched():
+    assert rs.repair_spoken_line("No.") == "No."
+    assert rs.repair_spoken_line("Run!") == "Run!"
+
+
 def test_repair_spoken_fragments_amputates_truncated_segment_line():
     beats = {"beats": [{"group_id": 11, "segments": [
         {"span": ["p000052.jpg"],

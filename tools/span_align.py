@@ -197,6 +197,16 @@ def _window(files: List[str], start: int, n: int, sys_set: set
     return win
 
 
+def _system_files(files: Sequence[str], kinds: Dict[str, Any]) -> set:
+    """Files whose understanding panel_kind is 'system' — the SINGLE
+    authority for span_align's system-wall checks. window_affinities' ±1
+    window gate and _package's cascade wall (system spans are never crossed,
+    however far the deficit rotates past that immediate window) both call
+    this so they can never disagree about which files are cards."""
+    return {f for f in files
+            if str((kinds or {}).get(f) or "").lower() == "system"}
+
+
 def window_affinities(segments: Sequence[Dict[str, Any]], i: int,
                       files: List[str], kinds: Dict[str, Any],
                       u_by_file: Dict[str, Dict[str, Any]]
@@ -206,8 +216,7 @@ def window_affinities(segments: Sequence[Dict[str, Any]], i: int,
     use, so they can never disagree. ``files`` is the beat's ordered panel
     list (the concatenation of its spans). A system-solo segment scores
     (own, None, None) — cards never move."""
-    sys_set = {f for f in files
-               if str((kinds or {}).get(f) or "").lower() == "system"}
+    sys_set = _system_files(files, kinds)
     span = [str(f) for f in (segments[i].get("span") or [])]
     line = str(segments[i].get("line") or "")
     own = affinity(line, span, u_by_file)
@@ -246,23 +255,29 @@ def _invariants_ok(spans: List[List[str]], files: List[str],
     return True
 
 
-def _package(spans: List[List[str]], i: int, direction: int,
-             span_cap: int) -> Optional[List[List[str]]]:
+def _package(spans: List[List[str]], i: int, direction: int, span_cap: int,
+             kinds: Dict[str, Any]) -> Optional[List[List[str]]]:
     """Candidate spans after a one-panel boundary shift at segment ``i``.
 
     direction +1: seg i absorbs the NEXT segment's head panel (the voice keeps
     speaking while the art advances one panel sooner); the deficit cascades
     right through singleton neighbors until a multi-panel span absorbs it.
     direction -1: mirror image toward the run start. None when the cascade
-    runs off the end, or the grown span would exceed the cap."""
+    runs off the end, the grown span would exceed the cap, OR the cascade
+    would touch a system-card span — system solos are WALLS in the cascade,
+    never crossed however far the deficit rotates past the immediate ±1
+    window that window_affinities checks."""
     out = [list(s) for s in spans]
     if direction not in (-1, 1) or not (0 <= i < len(out)):
         return None
     if len(out[i]) + 1 > span_cap:
         return None
+    sys_set = _system_files([f for s in spans for f in s], kinds)
+    if any(f in sys_set for f in out[i]):
+        return None
     if direction == 1:
         j = i + 1
-        if j >= len(out):
+        if j >= len(out) or any(f in sys_set for f in out[j]):
             return None
         out[i].append(out[j][0])
         while j < len(out):
@@ -271,11 +286,13 @@ def _package(spans: List[List[str]], i: int, direction: int,
                 return out
             if j + 1 >= len(out):
                 return None                      # singleton at the run end
+            if any(f in sys_set for f in out[j + 1]):
+                return None                       # system wall — never crossed
             out[j] = [out[j + 1][0]]
             j += 1
         return None
     j = i - 1
-    if j < 0:
+    if j < 0 or any(f in sys_set for f in out[j]):
         return None
     out[i].insert(0, out[j][-1])
     while j >= 0:
@@ -284,6 +301,8 @@ def _package(spans: List[List[str]], i: int, direction: int,
             return out
         if j - 1 < 0:
             return None
+        if any(f in sys_set for f in out[j - 1]):
+            return None                           # system wall — never crossed
         out[j] = [out[j - 1][-1]]
         j -= 1
     return None
@@ -333,7 +352,7 @@ def span_align_pass(segments: List[Dict[str, Any]], files: Sequence[str],
             i += 1
             continue
         old_spans = [s["span"] for s in segs]
-        new_spans = _package(old_spans, i, best_dir, span_cap)
+        new_spans = _package(old_spans, i, best_dir, span_cap, kinds)
         if new_spans is None or not _invariants_ok(new_spans, files, kinds,
                                                    span_cap):
             i += 1

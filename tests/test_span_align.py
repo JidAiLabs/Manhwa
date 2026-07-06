@@ -239,6 +239,40 @@ def test_system_solo_is_a_wall_and_never_moves():
     assert [s["span"] for s in aligned] == [s["span"] for s in segs]
     assert logs == []
 
+    # 2026-07-07 review: the case above only proves the ±1 window IN FRONT of
+    # the trigger is gated. The cascade _package rotates through singleton
+    # neighbors can reach a system card further down the chain, past that
+    # immediate window — the reviewer's live repro: a strong +1 trigger at
+    # segment 0, a zero-affinity "pad" at segment 1, and the system card two
+    # hops away at segment 2. Without a wall check INSIDE the cascade, the
+    # card's own panel gets handed to the pad segment and the card's line is
+    # displaced onto segment 3's art — the neighbor non-worsening check
+    # passes trivially (0 >= 0 ties), so only a cascade-aware wall stops it.
+    files5 = ["p1.jpg", "p2.jpg", "p3.jpg", "p4.jpg", "p5.jpg"]
+    kinds5 = {"p1.jpg": "story", "p2.jpg": "story", "p3.jpg": "system",
+              "p4.jpg": "story", "p5.jpg": "story"}
+    u5 = {
+        "p1.jpg": _u("he walks through the forest", "walking", ["forest"]),
+        "p2.jpg": _u("a strike slams into him", "striking", ["blood"],
+                     impact=True),
+        "p3.jpg": _u("status window", "", [], kind="system"),
+        "p4.jpg": _u("he stumbles back and gathers himself", "stumbling",
+                     ["ground"]),
+        "p5.jpg": _u("he steadies his footing", "steadying", ["ground"]),
+    }
+    segs5 = [
+        {"span": ["p1.jpg"],
+         "line": "A sudden strike slams into him, blood everywhere."},
+        {"span": ["p2.jpg"],
+         "line": "Meanwhile, something else happens quietly."},
+        {"span": ["p3.jpg"], "line": "The system activates."},
+        {"span": ["p4.jpg", "p5.jpg"],
+         "line": "Time passes quietly in the clearing."},
+    ]
+    aligned5, logs5 = sa.span_align_pass(segs5, files5, kinds5, u5)
+    assert [s["span"] for s in aligned5] == [s["span"] for s in segs5]
+    assert logs5 == []
+
 
 def test_span_cap_vetoes_a_grow_beyond_cap():
     files = [f"p{i}.jpg" for i in range(1, 7)]
@@ -262,6 +296,51 @@ def test_caller_validator_veto_is_honored():
         G2_SEGS, G2_FILES, G2_KINDS, G2_U, validate=lambda s: ["nope"])
     assert [s["span"] for s in aligned] == [s["span"] for s in G2_SEGS]
     assert logs == []
+
+
+def test_margin_knife_edge_gap_and_tie_both_refuse_to_shift():
+    # 2026-07-07 review: pin the boundary conditions in the >= / > comparisons
+    # so a future refactor of either operator regresses loudly.
+
+    # (a) gap just under the margin (margin - epsilon): the shifted window
+    # genuinely beats the assigned one, but not by enough -- no shift. A
+    # control run at margin - epsilon (below the SAME gap) DOES shift this
+    # exact fixture, proving the margin comparison -- not some other veto --
+    # is what's live here.
+    files = ["a1.jpg", "a2.jpg", "a3.jpg"]
+    kinds = {f: "story" for f in files}
+    u = {
+        "a1.jpg": _u("zzone zztwo zzthree"),
+        "a2.jpg": _u("zzalpha zzten zzeleven"),
+        "a3.jpg": _u("zzabsorber content only"),
+    }
+    segs = [
+        {"span": ["a1.jpg"], "line": "zzalpha zzbeta zzgamma"},
+        {"span": ["a2.jpg", "a3.jpg"], "line": "filler content here"},
+    ]
+    gap = 1 / 3          # affinity("zzalpha zzbeta zzgamma", ["a2.jpg"])
+    aligned, logs = sa.span_align_pass(segs, files, kinds, u,
+                                       margin=gap + 0.001)
+    assert [s["span"] for s in aligned] == [s["span"] for s in segs]
+    assert logs == []
+
+    # (b) shifted -1 and shifted +1 score EXACTLY the same: neither direction
+    # strictly beats the other, so the tie-break refuses both.
+    files_b = ["b1.jpg", "b2.jpg", "b3.jpg"]
+    kinds_b = {f: "story" for f in files_b}
+    u_b = {
+        "b1.jpg": _u("zzshared"),
+        "b2.jpg": _u("zznothing"),
+        "b3.jpg": _u("zzshared"),
+    }
+    segs_b = [
+        {"span": ["b1.jpg"], "line": "filler-one"},
+        {"span": ["b2.jpg"], "line": "zzshared"},
+        {"span": ["b3.jpg"], "line": "filler-two"},
+    ]
+    aligned_b, logs_b = sa.span_align_pass(segs_b, files_b, kinds_b, u_b)
+    assert [s["span"] for s in aligned_b] == [s["span"] for s in segs_b]
+    assert logs_b == []
 
 
 # ---------------------------------------------------------------------------

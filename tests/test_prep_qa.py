@@ -11,6 +11,7 @@ consistency, plan integrity (missing files/dims/audio, flash cuts, cold open).
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import cv2
@@ -1753,3 +1754,39 @@ def test_display_meta_and_camera_pov_fire_shot_description_flags():
     fl = pq.shot_description_flags(beats)
     assert [f["segment_id"] for f in fl] == ["g0024", "g0024", "g0018"]
     assert all(f["code"] == "shot_description" for f in fl)
+
+
+# ---------------------------------------------------------------------------
+# Wave-A minor #4 (2026-07-07): real-manifest sweep regression. The vendored
+# 73-segment Nano ch1 beats manifest (tests/fixtures/nano_ch1_beats.json) is
+# the exact evidence the 2026-07-06 review scored by hand. The display-meta/
+# camera-POV detector (shot_description_flags) and the truncation detector
+# (truncated_line_flags) must fire on EXACTLY the 5 reviewer-confirmed lines
+# and nothing else -- zero collateral across the other 68 -- pinned by
+# segment id so a future regression names the segment that broke instead of
+# just a changed count.
+# ---------------------------------------------------------------------------
+_NANO_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "nano_ch1_beats.json"
+_NANO_EXPECTED_PINS = frozenset({
+    "g0004_p01", "g0011_p03", "g0018_p03", "g0024_p03", "g0024_p05",
+})
+
+
+def test_nano_ch1_sweep_flags_exactly_five_pinned_segments():
+    from tools.beats_segments import beat_segments
+    beats = json.loads(_NANO_FIXTURE.read_text())
+
+    pin_by_scene = {}
+    total = 0
+    for b in beats.get("beats") or []:
+        gid = int(b.get("group_id") or 0)
+        for i, s in enumerate(beat_segments(b)):
+            total += 1
+            head = str((s.get("span") or [""])[0])
+            pin_by_scene[head] = f"g{gid:04d}_p{i:02d}"
+    assert total == 73, "fixture must be the full 73-segment evidence manifest"
+
+    hits = pq.shot_description_flags(beats) + pq.truncated_line_flags(beats)
+    assert len(hits) == 5, "collateral or a missed hit -- see pinned ids"
+    pins = {pin_by_scene.get(f["scene"]) for f in hits}
+    assert pins == _NANO_EXPECTED_PINS

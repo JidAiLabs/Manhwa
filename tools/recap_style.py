@@ -386,12 +386,17 @@ def repair_spoken_line(text: str) -> str:
     if s and not ends_terminal(s):
         last = s.split()[-1].rstrip(_TRAILING_CLOSERS).lower()
         if last in _FUNCTION_TAIL_WORDS:
-            # writer-truncated tail ("...to be found, only the"): amputate
-            # the dangling stub after the last clause separator — keeps
-            # every complete clause, adds no invented facts. With no
-            # separator to cut at, leave it: the truncated_line QA flag
-            # heals it with a real re-write instead.
-            m = re.match(r"^(.*[,;:—–])\s+\S+(?:\s+\S+){0,4}$", s)
+            # writer-truncated tail ("...to be found, only the"): amputate a
+            # SHORT (<=2-word) dangling stub after the last clause separator
+            # — keeps every complete clause, adds no invented facts. A wider
+            # window used to eat whole trailing clauses that merely ENDED on
+            # a function word ("In the end, he knows what this is" ->
+            # wrongly amputated to "In the end."); capping the tail at 2
+            # words means a real clause survives and only a genuine short
+            # stub gets cut. With no separator to cut at (or the tail is too
+            # long to be a stub), leave it: the truncated_line QA flag heals
+            # it with a real re-write instead.
+            m = re.match(r"^(.*[,;:—–])\s+\S+(?:\s+\S+){0,1}$", s)
             if m and m.group(1).rstrip(",;:—– ").strip():
                 s = m.group(1).rstrip(",;:—– ").strip() + "."
         else:
