@@ -384,6 +384,58 @@ def test_default_cap_is_tighter():
     assert sg.DEFAULT_MAX_BEAT_LEN == 6
 
 
+def test_gist_truncates_at_word_boundary_with_ellipsis():
+    assert sg._gist("short text", 160) == "short text"          # under limit -> untouched
+    long = "one two three four five six seven eight nine ten " * 5   # 250+ chars
+    g = sg._gist(long, 20)
+    assert len(g) <= 21 and g.endswith("…") and not g[:-1].endswith(" ")
+    assert long.startswith(g[:-1].rstrip())                      # cut at a real word boundary
+    # no space anywhere in the window -> hard cut, still ellipsis-marked
+    assert sg._gist("x" * 300, 20) == "x" * 20 + "…"
+    assert sg._gist("", 160) == "" and sg._gist(None, 160) == ""
+
+
+def test_build_grouping_payload_shrinks_description_to_a_gist_under_budget():
+    """REGRESSION (context/output budget): Omniscient Reader Episode 1's ~96
+    panels of rich pu_v2 descriptions built a grouping payload large enough to
+    starve the model's context/output budget — generation truncated mid-JSON at
+    ~4-5KB of output on every retry (three captured raw responses, all
+    Unterminated string / Expecting value). Grouping only needs a gist plus
+    subjects/panel_kind to tell panels apart, not full prose; shrinking
+    `description` to ~160 chars measurably shrinks the whole-chapter payload."""
+    import json
+    panels = [{
+        "scene_file": f"p{i:03d}.jpg",
+        "description": ("A very long and detailed panel description of the "
+                        "action taking place here. " * 10)[:400],
+        "panel_kind": "story",
+        "subjects": ["a man"],
+        "intensity": "calm",
+    } for i in range(100)]
+    built = sg.build_grouping_payload(panels)
+    ellipsis_len = len("…")
+    for p in built["panels"]:
+        assert len(p["description"]) <= 160 + ellipsis_len
+        assert p["panel_kind"] == "story" and p["subjects"] == ["a man"]   # kept intact
+        assert p["intensity"] == "calm"
+    # MEASURED: this synthetic 100-panel/400-char-description chapter serializes
+    # to 42202 bytes under the old [:300]-slice payload vs 33202 bytes here —
+    # keep comfortably under a budget that separates the two.
+    total_bytes = len(json.dumps(built).encode("utf-8"))
+    assert total_bytes < 38_000, f"grouping payload too large: {total_bytes} bytes"
+
+
+def test_shrink_payload_re_gists_an_already_built_payload_harder():
+    built = sg.build_grouping_payload([{
+        "scene_file": "p0.jpg",
+        "description": "one two three four five six seven eight nine ten " * 5,
+        "panel_kind": "story", "subjects": ["a man"], "intensity": "calm"}])
+    shrunk = sg._shrink_payload(built, 80)
+    assert len(shrunk["panels"][0]["description"]) <= 80 + len("…")
+    assert shrunk["panels"][0]["panel_kind"] == "story"          # other fields untouched
+    assert built["panels"][0]["description"] != shrunk["panels"][0]["description"]
+
+
 def test_unsafe_spine_dumps_raw_response_before_raising(tmp_path, monkeypatch):
     """Diagnosability (eyes wave): when spine validation rejects the grouping
     ("unsafe chapter story spine"), the raw model response is atomically
@@ -426,3 +478,98 @@ def test_unsafe_spine_dumps_raw_response_before_raising(tmp_path, monkeypatch):
     assert data["parsed_obj"]["chapter"]["premise"] == ""
     assert data["model"] and data["ts"]
     assert dumps[0].name in msg               # the raise names the capture
+
+
+def test_parse_failure_error_message_names_truncation_not_blank_spine(tmp_path, monkeypatch):
+    """BETTER ERROR (context/output budget): when the grouping response never
+    parses into a dict at ALL (raw non-empty), the spine-guard message must say
+    so -- "logline/premise is blank" is misleading when there was no chapter
+    object to inspect in the first place. This is exactly what the three ORV
+    ep1/2 raw captures showed: Unterminated string / Expecting value, parsed
+    None, and the old message blamed a spine the parser never reached. The raw
+    capture-to-disk behavior (test above) must still fire."""
+    import json
+    import sys as _sys
+
+    import pytest
+
+    understood = {"panels": [{
+        "scene_file": "p0.jpg", "description": "A man walks the ridge line.",
+        "action": "he walks on", "subjects": ["a man"],
+        "panel_kind": "story", "intensity": "calm"}]}
+    vision = {"items": [{"scene_file": "p0.jpg"}]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps(understood))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    out = tmp_path / "manifest.groups.json"
+
+    raw_truncated = '{"chapter": {"logline": "A ridge walk", "premise": "He walks'  # unterminated
+
+    def fake_call(**kw):
+        return None, raw_truncated, {}          # parse failure on every attempt
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up),
+        "--vision-manifest", str(vp), "--out", str(out)])
+    with pytest.raises(SystemExit) as ei:
+        sg.main()
+    msg = str(ei.value)
+    assert "failed to parse" in msg
+    assert "logline/premise is blank" not in msg   # the old, misleading message
+    assert f"raw length={len(raw_truncated)}" in msg
+    dumps = sorted(tmp_path.glob(".story_group_raw-*.json"))
+    assert len(dumps) == 1, "raw capture file must exist beside the manifests"
+    assert dumps[0].name in msg
+    data = json.loads(dumps[0].read_text())
+    assert data["raw_response"] == raw_truncated and data["parsed_obj"] is None
+
+
+def test_shrink_retry_succeeds_after_one_harder_shrink(tmp_path, monkeypatch):
+    """DEFENSIVE RETRY (context/output budget): a parse failure (not a bad
+    spine) gets exactly ONE extra attempt with descriptions hard-capped to 80
+    chars before giving up -- a smaller prompt frees context/output headroom
+    for the model to finish valid JSON. Must engage the shrink immediately, not
+    burn an attempt on the generic REPAIR text first (that targets a valid-but-
+    incomplete spine, a different failure mode)."""
+    import json
+    import sys as _sys
+
+    understood = {"panels": [{
+        "scene_file": "p0.jpg",
+        "description": "a very long panel description " * 20,   # > 160 chars
+        "action": "he walks on", "subjects": ["a man"],
+        "panel_kind": "story", "intensity": "calm"}]}
+    vision = {"items": [{"scene_file": "p0.jpg"}]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps(understood))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    out = tmp_path / "manifest.groups.json"
+
+    calls = []
+
+    def fake_call(**kw):
+        payload = kw["user_payload"]
+        calls.append(payload)
+        desc = payload["panels"][0]["description"]
+        # threshold sits well clear of both sides: a normal 160-gist lands near
+        # 160 chars, a hard-shrunk 80-gist near 80 (+1 for a possible ellipsis)
+        if len(desc) > 120:                       # first attempt: normal 160-gist
+            return None, "TRUNCATED_MID_STR_HERE", {}
+        return ({"chapter": {"logline": "A ridge walk.", "premise": "He walks alone."},
+                  "beats": [{"scene_files": ["p0.jpg"]}]}, "OK_RAW", {})
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up),
+        "--vision-manifest", str(vp), "--out", str(out)])
+    assert sg.main() == 0
+    assert len(calls) == 2, "exactly one retry: normal gist, then the hard shrink"
+    assert len(calls[0]["panels"][0]["description"]) > 80     # attempt 1: unshrunk gist
+    assert len(calls[1]["panels"][0]["description"]) <= 80 + len("…")   # attempt 2: shrunk
+    written = json.loads(out.read_text())
+    assert written["shots"] and written["shots"][0]["scene_files"] == ["p0.jpg"]

@@ -114,8 +114,19 @@ def _chapter_spine_complete(value: Any) -> bool:
                 and str(value.get("premise") or "").strip())
 
 
-def _chapter_spine_issue(value: Any, payload: Dict[str, Any]) -> str:
-    """Return why the spine is unsafe, or empty string when it is usable."""
+def _chapter_spine_issue(value: Any, *, parsed: Any = None, raw: Any = None) -> str:
+    """Return why the spine is unsafe, or empty string when it is usable.
+
+    When the response never parsed into a dict at all (raw non-empty), say so
+    explicitly instead of the misleading "logline/premise is blank" — there was
+    no chapter object to inspect because generation was almost certainly
+    truncated mid-JSON by the context/output budget (ORV ep1/2: raw responses
+    captured cut ~4-5KB in, mid-string). See build_grouping_payload's gist
+    shrink + call_fn's shrink-retry, which target this directly."""
+    raw_str = str(raw or "")
+    if parsed is None and raw_str.strip():
+        return ("response failed to parse (likely truncated mid-generation — "
+                 f"context/output budget); raw length={len(raw_str)}")
     if not _chapter_spine_complete(value):
         return "chapter logline/premise is blank"
     return ""
@@ -149,17 +160,48 @@ def _normalized_group_num_ctx(value: Any) -> int:
     return max(12288, n)
 
 
+def _gist(text: Any, limit: int = 160) -> str:
+    """Word-boundary truncation to a short GIST, ellipsis-marked when cut. A rich
+    chapter's full-prose panel descriptions made build_grouping_payload's output
+    large enough to starve the model's context/output budget and truncate
+    generation mid-JSON (ORV ep1/2: raw responses cut ~4-5KB in). Grouping only
+    needs enough prose to tell panels apart — subjects/panel_kind carry the
+    concrete signal — so a gist is enough; the beats/narration writer keeps the
+    untruncated description elsewhere."""
+    s = str(text or "").strip()
+    if len(s) <= limit:
+        return s
+    cut = s[:limit].rsplit(" ", 1)[0].rstrip()
+    return (cut or s[:limit].rstrip()) + "…"
+
+
 def build_grouping_payload(panels: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Pure: the numbered, ordered description sequence the grouper reasons over."""
+    """Pure: the numbered, ordered description sequence the grouper reasons
+    over. `description` is shrunk to a GIST (not full prose) FOR THIS PAYLOAD
+    ONLY — grouping needs subjects/panel_kind/gist to tell panels apart, not
+    prose; the beats writer elsewhere keeps the full description. panel_kind/
+    subjects/intensity stay intact (already short + categorical)."""
     return {"panels": [{
         "n": i,
         "scene_file": p.get("scene_file"),
-        "description": (p.get("description") or "")[:300],
+        "description": _gist(p.get("description"), 160),
         "action": (p.get("action") or "")[:160],
         "setting": (p.get("setting") or "")[:80],
         "dialogue": (p.get("dialogue") or "")[:160],
+        "panel_kind": p.get("panel_kind") or "",
+        "subjects": list(p.get("subjects") or []),
         "intensity": p.get("intensity") or "",
     } for i, p in enumerate(panels)]}
+
+
+def _shrink_payload(payload: Dict[str, Any], limit: int) -> Dict[str, Any]:
+    """Defensive-retry helper: re-gist an already-built payload's descriptions to
+    a HARDER cap. Used only when a response failed to parse at all (near-
+    certainly truncated mid-generation) — a smaller prompt leaves the model more
+    context/output headroom to finish valid JSON on the next attempt."""
+    return {**payload, "panels": [
+        {**p, "description": _gist(p.get("description"), limit)}
+        for p in (payload.get("panels") or [])]}
 
 
 def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
@@ -557,24 +599,34 @@ def main() -> int:
 
     def call_fn(payload: Dict[str, Any]):
         parsed = None
+        raw = ""
         issue = ""
         for attempt in range(2):
             instruction = SYSTEM
-            if attempt:
+            cur_payload = payload
+            if attempt and parsed is None:
+                # DEFENSIVE RETRY: the previous attempt failed to parse AT ALL
+                # (near-certainly truncated mid-generation, not a bad spine) —
+                # ONE harder shrink (80-char descriptions) frees context/output
+                # headroom instead of repeating the same oversized prompt.
+                cur_payload = _shrink_payload(payload, 80)
+                print(f"[story_group] parse failure (raw len={len(raw)}); "
+                      "shrink-retry engaged (descriptions capped to 80 chars)")
+            elif attempt:
                 instruction += (
                     "\n\nREPAIR: the previous chapter story spine was invalid: "
                     + issue + ". Return the complete grouping again with a "
                     "specific, source-grounded logline and premise. Do not "
                     "use placeholders or fuse separate facts into a new cause.")
-            parsed, _raw, _usage = _call_model_with_backoff(
+            parsed, raw, _usage = _call_model_with_backoff(
                 client=client, model=model, system_instruction=instruction,
-                user_payload=payload, image_paths=[], response_schema=GROUP_SCHEMA,
+                user_payload=cur_payload, image_paths=[], response_schema=GROUP_SCHEMA,
                 max_output_tokens=3000, temperature=args.temperature,
                 backoff_max=60.0, backend=args.backend)
-            last_call["raw"], last_call["parsed"] = _raw, parsed
+            last_call["raw"], last_call["parsed"] = raw, parsed
             issue = _chapter_spine_issue(
                 (parsed or {}).get("chapter") if isinstance(parsed, dict) else None,
-                payload)
+                parsed=parsed, raw=raw)
             if isinstance(parsed, dict) and not issue:
                 return parsed
         return parsed
@@ -588,7 +640,8 @@ def main() -> int:
     shots, chapter = group_panels(story, call_fn, max_beat_len=mbl)
     logline = str((chapter or {}).get("logline") or "").strip()
     premise = str((chapter or {}).get("premise") or "").strip()
-    spine_issue = _chapter_spine_issue(chapter, build_grouping_payload(story))
+    spine_issue = _chapter_spine_issue(
+        chapter, parsed=last_call["parsed"], raw=last_call["raw"])
     if spine_issue:
         dump = _dump_story_group_raw(
             os.path.dirname(os.path.abspath(args.out)),
