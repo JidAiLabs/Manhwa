@@ -207,3 +207,51 @@ def test_assemble_record_keeps_real_story_scene():
         "subjects": ["man"], "dialogue": "It's over.",
         "action": "he speaks", "intensity": "tense", "panel_kind": "story"})
     assert rec["panel_kind"] == "story"
+
+
+# --- vision write-back ordering (the mtime-inversion root fix, Task 8) --------
+
+def test_writeback_before_understood_dump_mtime_order(tmp_path, monkeypatch):
+    """The panel_kind/subjects write-back onto manifest.vision.json must land
+    BEFORE the understood.json dump, so (a) vision.mtime <= understood.mtime
+    always holds going forward (no more mtime inversion) and (b) understood's
+    _meta input-sha stamp hashes the FINAL vision bytes — the sha_only
+    understood<-vision freshness edge matches on a healthy chapter."""
+    import hashlib
+    import json
+    import os
+    import sys
+
+    vision_path = tmp_path / "manifest.vision.json"
+    out_path = tmp_path / "manifest.panels.understood.json"
+    vision_path.write_text(json.dumps({
+        "items": [{"scene_file": "p0.jpg",
+                   "scene_path": str(tmp_path / "p0.jpg")}]}))
+
+    def fake_call(**kwargs):
+        # panel_kind 'story' differs from the vision item's (absent) kind, so
+        # the write-back fires (changed=True); no detector candidates.
+        return ({"description": "a scene", "subjects": ["man"], "action": "x",
+                 "intensity": "calm", "panel_kind": "story"}, "", None)
+
+    monkeypatch.setattr(pu, "_call_model_with_backoff",
+                        lambda **kw: fake_call(**kw))
+    monkeypatch.setattr(sys, "argv", [
+        "panel_understand.py", "--vision-manifest", str(vision_path),
+        "--out", str(out_path), "--backend", "ollama", "--concurrency", "1",
+        "--panel-weights", str(tmp_path / "missing.pt")])   # fail-soft: no YOLO
+    assert pu.main() == 0
+
+    assert os.path.getmtime(vision_path) <= os.path.getmtime(out_path), (
+        "vision was rewritten AFTER understood.json — the write-back must "
+        "come first")
+    understood = json.loads(out_path.read_text())
+    stamped = understood["_meta"]["inputs"]["manifest.vision.json"]
+    current = hashlib.sha1(vision_path.read_bytes()).hexdigest()
+    assert stamped == current, (
+        "understood stamped a pre-write-back vision sha — the sha_only "
+        "freshness edge would false-flag every fresh run")
+    # and the write-back content itself is preserved
+    vision = json.loads(vision_path.read_text())
+    assert vision["items"][0]["panel_kind"] == "story"
+    assert vision["items"][0]["subjects"] == ["man"]

@@ -634,15 +634,14 @@ def main() -> int:
         log=lambda m: print(m, flush=True))
     if sysn:
         print(f"[ok] system-card override: {sysn} caption/empty->system")
-    write_manifest(args.out, {
-        "source_vision_manifest": os.path.abspath(args.vision_manifest),
-        "model": model, "count": len(panels), "panels": panels},
-        inputs=(args.vision_manifest,), tool="panel_understand")
-
     # Centralize the chrome/story verdict: stamp panel_kind back onto the vision
     # manifest so the SINGLE chrome chokepoint (scene_chrome.is_chrome_scene —
     # used by story_group, render_prep AND prep_qa) defers to the understanding
     # everywhere. No downstream module re-derives chrome from OCR and disagrees.
+    # ORDER MATTERS: this write-back runs BEFORE the understood.json dump so
+    # vision.mtime <= understood.mtime always holds (the historical inversion —
+    # vision re-stamped ~0.03s AFTER understood — false-flagged freshness) and
+    # the understood dump's _meta input-sha hashes the FINAL vision bytes.
     by_file = {p.get("scene_file"): p for p in panels if p.get("scene_file")}
     changed = False
     for it in (vision.get("items") or []):
@@ -662,11 +661,16 @@ def main() -> int:
             it["subjects"] = subj
             changed = True
     if changed:
-        # Task 8 reorders this write-back; for now it stays a plain rewrite of
-        # vision's own content, just made atomic (no declared inputs — it is
-        # not derived FROM another manifest, it is patched in place).
+        # A plain rewrite of vision's own content, made atomic (no declared
+        # inputs — it is not derived FROM another manifest, it is patched in
+        # place).
         write_manifest(args.vision_manifest, vision, inputs=(), tool="panel_understand")
         print(f"[ok] stamped panel_kind + subjects onto {os.path.basename(args.vision_manifest)}")
+
+    write_manifest(args.out, {
+        "source_vision_manifest": os.path.abspath(args.vision_manifest),
+        "model": model, "count": len(panels), "panels": panels},
+        inputs=(args.vision_manifest,), tool="panel_understand")
 
     ok = sum(1 for p in panels if p.get("description") and not p.get("error"))
     print(f"[ok] wrote={args.out} panels={len(panels)} understood={ok}")
