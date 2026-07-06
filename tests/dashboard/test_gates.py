@@ -88,6 +88,66 @@ def test_voice_gate_requires_narration_approval(tmp_path):
     assert gates.voice_allowed(con, 1) == (True, "")
 
 
+def test_voice_approval_invalidated_by_script_edit(tmp_path):
+    """content_sha binds the approval to the SCRIPT BYTES: healing/rewriting
+    the narration after approval must invalidate the old approval."""
+    con = _con(tmp_path)
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    script = ep / "manifest.script.json"
+    script.write_text('{"paragraphs": ["original line"]}')
+    gates.approve(con, "voice", chapter_id=1,
+                 content_sha=gates.gate_sha("voice", ep))
+    assert gates.voice_allowed(con, 1, ep) == (True, "")
+    script.write_text('{"paragraphs": ["healed line"]}')   # re-narrated
+    allowed, why = gates.voice_allowed(con, 1, ep)
+    assert not allowed and "narration" in why
+
+
+def test_render_sha_roundtrip(tmp_path):
+    """content_sha binds the render approval to plan+tts_index BYTES together:
+    approve with the current sha -> allowed; regenerate either file -> not."""
+    con = _con(tmp_path)
+    _qa(con, 1, ok=True)
+    ep = tmp_path / "ep"
+    (ep / "tts").mkdir(parents=True)
+    (ep / "render.plan.clean.json").write_text('{"cuts": []}')
+    (ep / "tts" / "tts_index.json").write_text('{"clips": []}')
+    gates.approve(con, "render", chapter_id=1,
+                 content_sha=gates.gate_sha("render", ep))
+    assert gates.render_allowed(con, 1, ep) == (True, "")
+    (ep / "tts" / "tts_index.json").write_text('{"clips": ["new"]}')  # re-voiced
+    allowed, why = gates.render_allowed(con, 1, ep)
+    assert not allowed and "approval" in why
+
+
+def test_legacy_null_sha_approval_allowed_even_with_real_content(tmp_path):
+    """An approval predating content_sha (stored NULL) is grandfathered valid
+    even when the gate's subject file exists and hashes to something real —
+    NULL means 'trust it', not 'compare it'."""
+    con = _con(tmp_path)
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    (ep / "manifest.script.json").write_text('{"paragraphs": ["line"]}')
+    gates.approve(con, "voice", chapter_id=1)          # no content_sha -> NULL
+    assert gates.voice_allowed(con, 1, ep) == (True, "")
+
+
+def test_approval_with_sha_invalid_when_subject_file_deleted(tmp_path):
+    """A row that DOES carry a sha requires the content to still be there —
+    a deleted script is not the content that was approved."""
+    con = _con(tmp_path)
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    script = ep / "manifest.script.json"
+    script.write_text('{"paragraphs": ["line"]}')
+    gates.approve(con, "voice", chapter_id=1,
+                 content_sha=gates.gate_sha("voice", ep))
+    script.unlink()                                     # approved content gone
+    allowed, why = gates.voice_allowed(con, 1, ep)
+    assert not allowed and "narration" in why
+
+
 def test_thumbnail_approval_is_series_scoped(tmp_path):
     """One thumbnail per manhwa — approved at the SERIES level, not chapter or
     bundle. Other series stay unapproved, and same-id chapter/bundle approvals

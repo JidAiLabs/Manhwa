@@ -160,14 +160,47 @@ def test_keeps_fresh_render_approval(tmp_path):
     assert _n_approvals(con, "render") == 1
 
 
-def test_clears_render_approval_when_video_older_than_plan(tmp_path):
+def test_legacy_null_sha_approval_is_backfilled_on_reconcile(tmp_path):
+    """A pre-content_sha approval row (content_sha IS NULL) is grandfathered
+    valid, but reconcile stamps it with TODAY's sha (one-time) so future
+    drift becomes detectable instead of the row staying eternally NULL."""
+    from studio.dashboard import gates
+    con, ep = _mk_chapter(tmp_path, status="rendered")   # approval row is NULL
+    reconcile.reconcile_chapter(con, _ch(con))
+    stored = con.execute("SELECT content_sha FROM approval WHERE gate='render' "
+                         "AND chapter_id=310").fetchone()[0]
+    assert stored is not None
+    assert stored == gates.gate_sha("render", str(ep))
+
+
+def test_clears_render_approval_when_sha_drifts(tmp_path):
+    """Replaces the old mtime-based staleness check (video older than plan),
+    which raced under concurrent writes. A healed script / regenerated plan
+    changes render.plan.clean.json or tts/tts_index.json BYTES -> the stored
+    content_sha no longer matches -> reconcile clears the stale approval."""
+    from studio.dashboard import gates
     con, ep = _mk_chapter(tmp_path, status="rendered")
-    import os
-    # make the clean plan newer than the rendered mp4 (a stale render)
-    os.utime(ep / "render" / "segment_both.mp4", (1, 1))
+    current = gates.gate_sha("render", str(ep))
+    con.execute("UPDATE approval SET content_sha=? WHERE gate='render' "
+                "AND chapter_id=310", (current,))
+    con.commit()
+    (ep / "tts" / "tts_index.json").write_text('{"changed": true}')  # re-voiced
     out = reconcile.reconcile_chapter(con, _ch(con))
     assert out["render_approval_cleared"] == 1
     assert _n_approvals(con, "render") == 0
+
+
+def test_keeps_render_approval_when_video_merely_older_than_plan(tmp_path):
+    """mtime alone is no longer a staleness signal (it raced under concurrent
+    writes) — only a missing mp4 or a content_sha mismatch clears the
+    approval now, so an mp4 that's simply OLDER than the plan (content
+    unchanged) is NOT cleared."""
+    con, ep = _mk_chapter(tmp_path, status="rendered")
+    import os
+    os.utime(ep / "render" / "segment_both.mp4", (1, 1))
+    out = reconcile.reconcile_chapter(con, _ch(con))
+    assert out["render_approval_cleared"] == 0
+    assert _n_approvals(con, "render") == 1
 
 
 def test_skips_chapter_with_active_job(tmp_path):

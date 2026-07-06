@@ -565,6 +565,25 @@ def test_autopilot_clean_report_advances_to_voice(tmp_path, monkeypatch):
     assert (n_appr, n_jobs) == (1, 1)
 
 
+def test_autopilot_voice_approval_stores_content_sha(tmp_path, monkeypatch):
+    """The autopilot voice approval must bind to the script CONTENT, not just
+    insert a checkbox row — content_sha has to be the real gate_sha."""
+    con = _con(tmp_path)
+    ep = _autopilot_series(con, tmp_path, flags=[
+        {"code": "ghost_text", "severity": "WARN"}])
+    (ep / "manifest.script.json").write_text('{"paragraphs": ["line"]}')
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    stored = con.execute("SELECT content_sha FROM approval WHERE gate='voice' "
+                         "AND chapter_id=5 AND note='autopilot'").fetchone()[0]
+    assert stored is not None
+    assert stored == gates.gate_sha("voice", ep)
+
+
 def test_autopilot_blocked_by_semantic_mismatch(tmp_path, monkeypatch):
     con = _con(tmp_path)
     _autopilot_series(con, tmp_path, flags=[
@@ -647,6 +666,30 @@ def test_autopilot_voiceover_advances_to_render(tmp_path, monkeypatch):
     n_jobs = con.execute("SELECT COUNT(*) FROM job WHERE "
                          "type='render_segment'").fetchone()[0]
     assert (n_appr, n_jobs) == (1, 1)
+
+
+def test_autopilot_render_approval_stores_content_sha(tmp_path, monkeypatch):
+    """Same binding requirement as the voice autopilot approval, but for the
+    render gate's two-file sha (plan.clean + tts_index)."""
+    con = _con(tmp_path)
+    ep = _autopilot_series(con, tmp_path, flags=[])
+    from studio.dashboard import gates as g
+    g.approve(con, "voice", chapter_id=5, note="autopilot")
+    (ep / "tts").mkdir(parents=True, exist_ok=True)
+    (ep / "render.plan.clean.json").write_text('{"cuts": []}')
+    (ep / "tts" / "tts_index.json").write_text('{"clips": []}')
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: worker.QAVerdict(
+                            ok=True, blocking=set(), codes=set(),
+                            report={"flags": []}, reason=""))
+    jobs.enqueue(con, "voiceover", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    stored = con.execute("SELECT content_sha FROM approval WHERE gate='render' "
+                         "AND chapter_id=5 AND note='autopilot'").fetchone()[0]
+    assert stored is not None
+    assert stored == g.gate_sha("render", ep)
 
 
 # --- last-resort visual heal must BLOCK when it can't actually drop the panel ---

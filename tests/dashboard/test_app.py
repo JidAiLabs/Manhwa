@@ -49,6 +49,25 @@ def test_approve_and_chapter_lock_state(client):
                        ).fetchone()[0] == 1
 
 
+def test_approve_endpoint_stores_content_sha(client, tmp_path):
+    """The /approve endpoint binds the row to the CONTENT it approved, not
+    just a checkbox: it must stamp content_sha from the files on disk."""
+    c, con = client
+    from studio.dashboard import gates
+    ep = tmp_path / "ep"
+    (ep / "tts").mkdir(parents=True)
+    (ep / "render.plan.clean.json").write_text('{"cuts": []}')
+    (ep / "tts" / "tts_index.json").write_text('{"clips": []}')
+    con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
+    con.commit()
+    c.post("/approve", data={"gate": "render", "chapter_id": 1},
+           follow_redirects=False)
+    stored = con.execute("SELECT content_sha FROM approval WHERE gate='render' "
+                         "AND chapter_id=1").fetchone()[0]
+    assert stored is not None
+    assert stored == gates.gate_sha("render", ep)
+
+
 def test_series_thumbnail_job_and_approval_flow(client, tmp_path, monkeypatch):
     """The series page is where the one-per-manhwa thumbnail is generated and
     approved (answers 'where will I see it to approve it'). Generate enqueues a

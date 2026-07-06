@@ -777,14 +777,16 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     if auto_to in ("voice", "video") and not gates._has_approval(
             con, "voice", chapter_id=ch["id"]):
         log.write(f"[bulk] auto_to={auto_to}: QA green -> voiceover queued\n")
-        gates.approve(con, "voice", chapter_id=ch["id"], note="bulk")
+        gates.approve(con, "voice", chapter_id=ch["id"], note="bulk",
+                     content_sha=gates.gate_sha("voice", ch["ep_dir"]))
         jobs.enqueue(con, "voiceover", chapter_id=ch["id"],
                      payload={"auto_to": auto_to})
     elif _autopilot_clean(con, ch, verdict) and not gates._has_approval(
             con, "voice", chapter_id=ch["id"]):
         log.write("[autopilot] QA spotless → story auto-approved, "
                   "voiceover queued\n")
-        gates.approve(con, "voice", chapter_id=ch["id"], note="autopilot")
+        gates.approve(con, "voice", chapter_id=ch["id"], note="autopilot",
+                     content_sha=gates.gate_sha("voice", ch["ep_dir"]))
         jobs.enqueue(con, "voiceover", chapter_id=ch["id"])
 
 
@@ -794,7 +796,13 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
     audio timing, re-prep, machine-re-scan QA (must stay green), and build a
     listenable preview. The user then approves the VOICEOVER, which triggers
     the render."""
-    allowed, why = gates.voice_allowed(con, job["chapter_id"])
+    # gate check first (no chapter row required) so a bad chapter_id still
+    # fails with the gate's reason, matching _h_render_segment's ordering —
+    # NOT "chapter not in catalog" from the row-required _chapter() below.
+    ep_row = con.execute("SELECT ep_dir FROM chapter WHERE id=?",
+                         (job["chapter_id"],)).fetchone()
+    allowed, why = gates.voice_allowed(con, job["chapter_id"],
+                                       ep_row[0] if ep_row else None)
     if not allowed:
         raise RuntimeError(f"voiceover blocked: {why}")
     ch = _chapter(con, job["chapter_id"])
@@ -866,13 +874,15 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
     if auto_to == "video" and not gates._has_approval(
             con, "render", chapter_id=ch["id"]):
         log.write("[bulk] auto_to=video: voiced QA green -> render queued\n")
-        gates.approve(con, "render", chapter_id=ch["id"], note="bulk")
+        gates.approve(con, "render", chapter_id=ch["id"], note="bulk",
+                     content_sha=gates.gate_sha("render", ch["ep_dir"]))
         jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
                      payload={"branding": "both"})
     elif _autopilot_clean(con, ch, verdict) and not gates._has_approval(
             con, "render", chapter_id=ch["id"]):
         log.write("[autopilot] voiced QA spotless → render queued\n")
-        gates.approve(con, "render", chapter_id=ch["id"], note="autopilot")
+        gates.approve(con, "render", chapter_id=ch["id"], note="autopilot",
+                     content_sha=gates.gate_sha("render", ch["ep_dir"]))
         jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
                      payload={"branding": "both"})
 
@@ -952,7 +962,7 @@ def _h_chain(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
     except ValueError:
         crosses_voice = True   # unknown target: fail safe, require approval
     if crosses_voice:
-        allowed, why = gates.voice_allowed(con, ch["id"])
+        allowed, why = gates.voice_allowed(con, ch["id"], ch["ep_dir"])
         if not allowed:
             raise RuntimeError(f"voiceover blocked: {why}")
     with record_stage(con, chapter_id=ch["id"], stage=f"chain:{target}",
@@ -996,7 +1006,13 @@ def _h_qa_scan(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
 
 def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
                       log: TextIO) -> None:
-    allowed, why = gates.render_allowed(con, job["chapter_id"])
+    # gate check first (no chapter row required) so a bad chapter_id still
+    # fails with the gate's reason (test_render_segment_gate_refusal), not
+    # "chapter not in catalog" from the row-required _chapter() below.
+    ep_row = con.execute("SELECT ep_dir FROM chapter WHERE id=?",
+                         (job["chapter_id"],)).fetchone()
+    allowed, why = gates.render_allowed(con, job["chapter_id"],
+                                        ep_row[0] if ep_row else None)
     if not allowed:
         raise RuntimeError(f"render blocked: {why}")
     ch = _chapter(con, job["chapter_id"])

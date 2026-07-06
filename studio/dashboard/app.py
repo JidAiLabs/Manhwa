@@ -184,7 +184,7 @@ def _stage_timeline(con: sqlite3.Connection, ch: Dict[str, Any]) -> List[Dict[st
             "dur": runs.get(s),
             "eta": None if is_done else eta.stage_eta(con, s, ch["series_id"]),
             "locked": s == "render_segment"
-                      and not gates.render_allowed(con, ch["id"])[0],
+                      and not gates.render_allowed(con, ch["id"], ch["ep_dir"])[0],
         })
     return rows
 
@@ -425,8 +425,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                            (ch["series_id"],)).fetchone() or ["?"])[0]
         ep_rel = (Path(ch["ep_dir"]).resolve().relative_to(
             (REPO / "ongoing").resolve()) if ch["ep_dir"] else None)
-        allowed, why = gates.render_allowed(c, cid)
-        v_allowed, v_why = gates.voice_allowed(c, cid)
+        allowed, why = gates.render_allowed(c, cid, ch["ep_dir"])
+        v_allowed, v_why = gates.voice_allowed(c, cid, ch["ep_dir"])
         # the chapter's live job, if any — approving a gate kicks off work the
         # operator could previously only find on the queue page or in the logs
         aj = c.execute(
@@ -684,8 +684,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                      series_id: Optional[int] = Form(None),
                      note: str = Form("")):
         c = con()
+        ep_dir = None
+        if chapter_id:
+            row = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
+                            (chapter_id,)).fetchone()
+            ep_dir = row[0] if row else None
         gates.approve(c, gate, series_id=series_id, chapter_id=chapter_id,
-                      bundle_id=bundle_id, note=note)
+                      bundle_id=bundle_id, note=note,
+                      content_sha=gates.gate_sha(gate, ep_dir))
         # auto-advance: an approval IS the trigger for the next step
         # (the worker still re-checks every gate before doing anything)
         if gate == "voice" and chapter_id:
@@ -788,7 +794,11 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         reset.rewind_chapter(c, cid, "scripted", clear_approvals=("render",))
         # narration stays approved; auto_to=video re-approves render after QA
         if not gates._has_approval(c, "voice", chapter_id=cid):
-            gates.approve(c, "voice", chapter_id=cid, note="re-voice")
+            row = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
+                            (cid,)).fetchone()
+            gates.approve(c, "voice", chapter_id=cid, note="re-voice",
+                          content_sha=gates.gate_sha(
+                              "voice", row[0] if row else None))
         jobs.enqueue(c, "voiceover", chapter_id=cid,
                      payload={"auto_to": "video"}, priority=50)
         return RedirectResponse(f"/chapter/{cid}", status_code=303)

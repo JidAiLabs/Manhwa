@@ -133,5 +133,11 @@ def connect(path: Path | str) -> sqlite3.Connection:
         # blind UPDATE that lets the old child and the fresh retry both write
         # the same chapter's artifacts at once.
         con.execute("ALTER TABLE job ADD COLUMN pgid INTEGER")
+    acols = {r[1] for r in con.execute("PRAGMA table_info(approval)")}
+    if "content_sha" not in acols:
+        # bind an approval to the CONTENT it approved (script bytes / plan+
+        # tts_index bytes), not just a checkbox; NULL = legacy row, grandfathered
+        # valid until reconciled — see studio/dashboard/gates.py:_approval_valid
+        con.execute("ALTER TABLE approval ADD COLUMN content_sha TEXT")
     con.commit()
     return con

@@ -133,14 +133,17 @@ def derive_status(ep: str) -> Optional[str]:
     return None
 
 
-def _render_is_stale(ep: str) -> bool:
-    """A render approval outlived its video: no mp4, or the mp4 is older than the
-    clean plan it should have been rendered from."""
+def _render_is_stale(con: sqlite3.Connection, cid: int, ep: str) -> bool:
+    """A render approval outlived its rendered content: no mp4, or the
+    approval's content_sha no longer matches what render.plan.clean.json +
+    tts/tts_index.json hash to NOW. sha comparison (not mtime) — mtime races
+    under concurrent writes."""
     mp4 = os.path.join(ep, paths.SEGMENT_MP4)
-    plan = os.path.join(ep, "render.plan.clean.json")
     if not os.path.exists(mp4):
         return True
-    return os.path.exists(plan) and os.path.getmtime(mp4) < os.path.getmtime(plan)
+    from studio.dashboard import gates  # lazy: dashboard imports catalog
+    return not gates._approval_valid(
+        con, "render", chapter_id=cid, current_sha=gates.gate_sha("render", ep))
 
 
 def reconcile_chapter(con: sqlite3.Connection,
@@ -178,14 +181,30 @@ def reconcile_chapter(con: sqlite3.Connection,
             out["stage_runs_pruned"] += n
             changed = changed or bool(n)
 
-    # 3. a render approval that outlived its video -> clear it, else auto_to=video
-    #    silently skips the re-render (the worker gate reads "not approved")
+    # 3. render approval must match the CONTENT it was approved for, not just
+    #    exist. A legacy NULL-sha row is grandfathered by stamping it with
+    #    TODAY's sha, one time, so future drift is actually detectable; a row
+    #    that already carries a sha and no longer matches (or the video is
+    #    gone) -> clear it, else auto_to=video silently skips the re-render
+    #    (the worker gate would otherwise read "already approved").
     from studio.dashboard import gates  # lazy: dashboard imports catalog
-    if gates._has_approval(con, "render", chapter_id=cid) and _render_is_stale(ep):
-        n = con.execute("DELETE FROM approval WHERE gate='render' AND chapter_id=?",
-                        (cid,)).rowcount
-        out["render_approval_cleared"] = n
-        changed = changed or bool(n)
+    approval_row = con.execute(
+        "SELECT id, content_sha FROM approval WHERE gate='render' AND "
+        "chapter_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+    if approval_row is not None:
+        approval_id, stored_sha = approval_row
+        if stored_sha is None:
+            backfill_sha = gates.gate_sha("render", ep)
+            if backfill_sha is not None:
+                con.execute("UPDATE approval SET content_sha=? WHERE id=?",
+                            (backfill_sha, approval_id))
+                changed = True
+        if _render_is_stale(con, cid, ep):
+            n = con.execute(
+                "DELETE FROM approval WHERE gate='render' AND chapter_id=?",
+                (cid,)).rowcount
+            out["render_approval_cleared"] = n
+            changed = changed or bool(n)
 
     if changed:
         con.commit()

@@ -38,3 +38,16 @@ def test_job_pgid_column_added(tmp_path):
     con2 = connect(p)
     cols2 = {r[1] for r in con2.execute("PRAGMA table_info(job)")}
     assert "pgid" in cols2
+
+
+def test_approval_content_sha_column_added(tmp_path):
+    """content_sha (additive, nullable) binds an approval to the content it
+    approved — see studio/dashboard/gates.py:gate_sha/_approval_valid."""
+    p = tmp_path / "s.db"
+    con = connect(p)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(approval)")}
+    assert "content_sha" in cols
+    # re-connecting must not error (same additive-migration guard as pgid)
+    con2 = connect(p)
+    cols2 = {r[1] for r in con2.execute("PRAGMA table_info(approval)")}
+    assert "content_sha" in cols2
