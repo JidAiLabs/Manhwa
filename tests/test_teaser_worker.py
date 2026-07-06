@@ -77,6 +77,8 @@ def test_h_teaser_plans_and_sets_state(tmp_path, monkeypatch):
     con = connect(tmp_path / "s.db")
     _sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)        # hermetic dist/
+    monkeypatch.setattr(w, "_beats_cfg", lambda: (
+        _fake_cfg(), "proj", "loc"))
     out_dir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
 
     stream_calls: list = []
@@ -374,3 +376,56 @@ def test_autostart_intro_skipped_when_teaser_disabled(tmp_path, monkeypatch):
     jobs.enqueue(con, "plan_teaser", bundle_id=bid, payload={})
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' "
                        "AND bundle_id=?", (bid,)).fetchone()[0] == 1
+
+
+def test_h_teaser_sanitize_marker_must_be_fresh_this_run(tmp_path, monkeypatch):
+    """After _run_sanitize returns, the marker file must have been written
+    THIS run (mtime >= run_started - 1.0 second). A stale pre-existing marker
+    (e.g., from a prior incomplete run) must be detected and rejected before
+    voicing — this prevents a sanitizer tool that exits cleanly but writes
+    nothing from silently passing a stale "clean" verdict."""
+    import json
+    import os
+    import pytest
+    import time as time_module
+    import studio.worker as w
+    import studio.pipeline as pl
+
+    con = connect(tmp_path / "s.db")
+    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    monkeypatch.setattr(w, "_beats_cfg", lambda: (
+        _fake_cfg(narration_sanitize=True), "proj", "loc"))
+
+    out_dir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+
+    def fake_stream(argv, log, **k):
+        sargv = [str(a) for a in argv]
+        if any("teaser_planner.py" in a for a in sargv):
+            od = Path(sargv[sargv.index("--out-dir") + 1])
+            od.mkdir(parents=True, exist_ok=True)
+            (od / "manifest.teaser.json").write_text("{}")
+        # The sanitize tool runs but writes NOTHING (or leaves a stale marker)
+        # — the marker pre-exists with an old mtime, simulating an incomplete
+        # prior run.
+        if any("narration_sanitize_pass.py" in a for a in sargv):
+            return 0  # tool "succeeds" but doesn't write marker
+        return 0
+
+    monkeypatch.setattr(w, "_stream", fake_stream)
+    monkeypatch.setattr(pl, "_run_tool", lambda script, args, **k: None)
+
+    # Pre-populate a stale marker (from a prior run) with old mtime
+    marker = out_dir / "manifest.sanitize.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"unresolved_blocks": []}))
+    # Set mtime to 10 seconds in the past
+    stale_time = time_module.time() - 10.0
+    os.utime(marker, (stale_time, stale_time))
+
+    with pytest.raises(RuntimeError, match="marker missing/stale after run"):
+        w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+
+    # No TTS call was recorded (job failed before reaching TTS)
+    # This is implicitly verified by the exception — the teaser handler
+    # should never reach the TTS dispatch code.

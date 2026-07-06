@@ -1192,9 +1192,14 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
         # lives right here: unresolved blocks FAIL this job outright (never
         # voice unsanitized).
         if cfg.narration_sanitize:
+            run_started = time.time()
             _run_sanitize(out_dir, log)
-            unresolved = _pl._read_sanitize_unresolved(
-                out_dir / "manifest.sanitize.json")
+            marker = out_dir / "manifest.sanitize.json"
+            if not marker.exists() or marker.stat().st_mtime < run_started - 1.0:
+                raise RuntimeError(
+                    "teaser sanitize marker missing/stale after run — "
+                    "refusing to voice")
+            unresolved = _pl._read_sanitize_unresolved(marker)
             if unresolved:
                 preview = ", ".join(
                     f"{b.get('segment_id', '?')}:'{b.get('matched', '')}'"
@@ -1202,8 +1207,7 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
                 raise RuntimeError(
                     f"teaser blocked: narration sanitize left "
                     f"{len(unresolved)} unresolved advertiser-safety "
-                    f"BLOCK(s) [{preview}] — see "
-                    f"{out_dir / 'manifest.sanitize.json'}")
+                    f"BLOCK(s) [{preview}] — see {marker}")
         # TTS backend dispatch — mirrors pipeline._stage_voiced exactly (local
         # backends here always went through the local CLI; the bug was
         # unconditionally doing that even when cfg.tts_backend=="elevenlabs",
