@@ -18,6 +18,7 @@ in a ``*_failed`` status (preserve the error for the operator).
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from typing import Any, Dict, Mapping, Optional
@@ -58,8 +59,21 @@ _STAGE_ARTIFACT = {
 _PAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 
-def _exists(ep: str, rel: str) -> bool:
-    return os.path.exists(os.path.join(ep, rel))
+def _valid(ep: str, rel: str) -> bool:
+    """A marker proves its stage only if it is USABLE: .json markers must
+    exist AND parse (a torn/0-byte manifest must never promote a status);
+    non-JSON markers (mp4, dirs) keep exists-only semantics."""
+    path = os.path.join(ep, rel)
+    if not os.path.exists(path):
+        return False
+    if not rel.endswith(".json"):
+        return True
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            json.load(f)
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def _has_active_job(con: sqlite3.Connection, chapter_id: int) -> bool:
@@ -69,19 +83,19 @@ def _has_active_job(con: sqlite3.Connection, chapter_id: int) -> bool:
 
 
 def derive_status(ep: str) -> Optional[str]:
-    """TRUE status = the highest stage whose marker exists on disk. Returns None
+    """TRUE status = the highest stage whose marker is valid on disk. Returns None
     when nothing is derivable (leave the DB status untouched rather than guess —
     e.g. a chapter with neither manifests nor source pages)."""
     if not ep or not os.path.isdir(ep):
         return None
     for status, marker in _STATUS_MARKERS:
-        if not _exists(ep, marker):
+        if not _valid(ep, marker):
             continue
         # render.plan.json is ALSO written as an ESTIMATED preview during the
         # 'prepare' stage (before voicing — the estimate_plan QA flags), so it must
         # not outrank 'voiced': only count 'planned' once the real voiced audio
         # exists, else a scripted-awaiting-review chapter would be advanced.
-        if status == "planned" and not _exists(ep, "tts/tts_index.json"):
+        if status == "planned" and not _valid(ep, "tts/tts_index.json"):
             continue
         return status
     # no derived manifest, but raw source pages present -> downloaded
@@ -133,7 +147,7 @@ def reconcile_chapter(con: sqlite3.Connection,
             "SELECT DISTINCT stage FROM stage_run WHERE chapter_id=?",
             (cid,)).fetchall():
         marker = _STAGE_ARTIFACT.get(stage)
-        if marker and not _exists(ep, marker):
+        if marker and not _valid(ep, marker):
             n = con.execute("DELETE FROM stage_run WHERE chapter_id=? AND stage=?",
                             (cid, stage)).rowcount
             out["stage_runs_pruned"] += n

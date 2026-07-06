@@ -123,6 +123,59 @@ def test_rewind_unknown_target_or_chapter_raises(tmp_path):
         reset.rewind_chapter(con, 999, "grouped")
 
 
+def test_derived_lists_match_legacy():
+    """Migration safety: the deps-derived per-target delete lists must be a
+    SUPERSET of the hand-maintained literals they replace (nothing silently
+    drops out), and every addition is pinned here so drift is loud.
+
+    The additions are the stale-survivor bug this refactor kills: a detected
+    rewind used to leave understood/groups/story/cast/vision/scenes.json
+    behind describing scenes about to be re-materialized."""
+    legacy_voice = {"tts", "render"}
+    legacy_narration = {
+        "manifest.beats.json", "manifest.script.json", "manifest.sanitize.json",
+        "render.plan.json", "render.plan.clean.json",
+        "prep_qa.json", "prep_qa.html", "heal_corrections.json",
+        "manifest.beats.preheal.json"}
+    legacy_visual = {
+        "manifest.stitch.json", "manifest.panels.json",
+        "manifest.panels.expanded.json", "manifest.scenes.json",
+        "manifest.vision.json", "manifest.panels.understood.json",
+        "manifest.groups.json", "manifest.story.json", "manifest.cast.json",
+        "stitch_chunks", "scenes", "scenes_clean",
+        ".cut_judge_cache.json", "manual_drops.json"}
+    legacy = {
+        "scripted":   legacy_voice,
+        "grouped":    legacy_voice | legacy_narration,
+        "detected":   legacy_voice | legacy_narration | {".cut_judge_cache.json"},
+        "downloaded": legacy_voice | legacy_narration | legacy_visual,
+    }
+    expected_additions = {
+        # plans embed the voiced clip timings; after tts/ dies they are stale
+        # survivors — the voiced->planned->prepped re-run rebuilds both
+        "scripted": {"tts/tts_index.json", "render.plan.json",
+                     "render.plan.clean.json"},
+        # tts_index was only ever deleted via the tts/ dir; now explicit
+        "grouped": {"tts/tts_index.json"},
+        # THE bug: everything derived from re-materialized scenes must die
+        "detected": {"tts/tts_index.json", "manifest.scenes.json",
+                     "manifest.vision.json", "manifest.panels.understood.json",
+                     "manifest.groups.json", "manifest.story.json",
+                     "manifest.cast.json"},
+        "downloaded": {"tts/tts_index.json"},
+    }
+    for target, legacy_set in legacy.items():
+        derived = set(reset.artifacts_for(target))
+        assert derived >= legacy_set, (
+            f"{target}: derived list dropped legacy entries "
+            f"{legacy_set - derived}")
+        assert derived - legacy_set == expected_additions[target], (
+            f"{target}: additions drifted — got {derived - legacy_set}")
+    # cast survives a grouped rewind: its inputs (groups, vision) survive, so
+    # it is still fresh; _stage_beated's staleness guard owns the rebuild
+    assert "manifest.cast.json" not in reset.artifacts_for("grouped")
+
+
 def test_rewind_survives_missing_ep_dir(tmp_path):
     con, ep = _mk_chapter(tmp_path)
     import shutil

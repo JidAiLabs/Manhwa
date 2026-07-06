@@ -549,6 +549,14 @@ class TestBeatedCastWiring:
 
         con = connect(tmp_path / "test.db")
         chapter = _chapter_at(con, ep_dir, "grouped", _GROUPED_MARKERS)
+        if pre_cast:
+            # the pre-existing cast must be FRESH (newer than the groups/vision
+            # it was built from) — the skip guard is now skip-iff-fresh, and a
+            # cast predating its inputs is legitimately rebuilt (see
+            # TestCastStaleness for the stale path)
+            import os, time
+            now = time.time() + 60
+            os.utime(ep_dir / "manifest.cast.json", (now, now))
         pipeline_mod.run_chapter(con, chapter, _make_cfg(tmp_path), now_fn=_now)
         return stub, repo.get_chapter(con, chapter.id), ep_dir
 
@@ -573,6 +581,48 @@ class TestBeatedCastWiring:
         assert "cast_builder.py" not in names
         gem_args = next(a for n, a in stub.calls if n == "gemini_narrative_pass.py")
         assert "--cast" in gem_args
+
+
+class TestCastStaleness:
+    """_stage_beated's cast guard is skip-iff-FRESH (Task 8): a cast whose
+    deps-declared inputs (groups/vision) changed after it was built is
+    rebuilt, not silently reused (the stale-names bug after a re-group)."""
+
+    def _run_beated(self, tmp_path, monkeypatch, *, cast_mtime, groups_mtime):
+        import os
+        import studio.pipeline as pipeline_mod
+        ep_dir = tmp_path / "ep"
+        ep_dir.mkdir()
+        base = 1_000_000.0
+        for name, mt in (("manifest.vision.json", base),
+                         ("manifest.panels.understood.json", base + 1),
+                         ("manifest.groups.json", groups_mtime),
+                         ("manifest.story.json", base + 3),
+                         ("manifest.cast.json", cast_mtime)):
+            (ep_dir / name).write_text("{}")
+            os.utime(ep_dir / name, (mt, mt))
+        monkeypatch.setattr(pipeline_mod, "_REPO_ROOT",
+                            _fake_repo_root_with_key(tmp_path))
+        stub = _capturing_stub(ep_dir)
+        monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
+        cfg = replace(_make_cfg(tmp_path), punchup="off")
+        pipeline_mod._stage_beated(ep_dir, cfg)
+        return [n for n, _ in stub.calls]
+
+    def test_cast_rebuilt_when_stale(self, tmp_path, monkeypatch):
+        base = 1_000_000.0
+        # groups regenerated AFTER cast was built -> cast is stale -> rebuild
+        names = self._run_beated(tmp_path, monkeypatch,
+                                 cast_mtime=base + 2, groups_mtime=base + 100)
+        assert "cast_builder.py" in names, names
+
+    def test_cast_reused_when_fresh(self, tmp_path, monkeypatch):
+        base = 1_000_000.0
+        # cast newer than its groups/vision inputs -> the paid call is skipped
+        names = self._run_beated(tmp_path, monkeypatch,
+                                 cast_mtime=base + 50, groups_mtime=base + 2)
+        assert "cast_builder.py" not in names, names
+        assert "gemini_narrative_pass.py" in names   # beats still regenerate
 
 
 class TestScriptedNarrationSource:

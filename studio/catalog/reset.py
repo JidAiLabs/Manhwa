@@ -28,23 +28,46 @@ _STAGES_BEYOND: Dict[str, tuple] = {
     "downloaded": _NARRATION_STAGES,
 }
 
-# Derived artifacts per target, relative to ep_dir. Sources (page jpgs) are
-# never touched; scenes + understanding survive anything above 'downloaded'.
-_VOICE_ARTIFACTS = ("tts", "render")
-_NARRATION_ARTIFACTS = (
-    "manifest.beats.json", "manifest.script.json", "manifest.sanitize.json",
-    "render.plan.json", "render.plan.clean.json",
-    "prep_qa.json", "prep_qa.html", "heal_corrections.json",
-    "manifest.beats.preheal.json",
-)
-_VISUAL_ARTIFACTS = (
-    "manifest.stitch.json", "manifest.panels.json",
-    "manifest.panels.expanded.json", "manifest.scenes.json",
-    "manifest.vision.json", "manifest.panels.understood.json",
-    "manifest.groups.json", "manifest.story.json", "manifest.cast.json",
-    "stitch_chunks", "scenes", "scenes_clean",
-    ".cut_judge_cache.json", "manual_drops.json",
-)
+# Per-target delete lists are DERIVED from studio/deps.py (the one dependency
+# table): every pipeline manifest produced by a stage strictly beyond the
+# rewind target dies with the rewind, so no stale survivor can poison the
+# re-run (the old literals left understood/groups/story/cast behind on a
+# 'detected' rewind, describing scenes about to be re-materialized).
+# Sources (page jpgs) and manifest.series.json are never touched.
+
+# Kept despite being beyond the target: their inputs SURVIVE the rewind, so
+# they are still fresh. cast (groups+vision survive a 'grouped' rewind) is a
+# paid Gemini call the beated retry must not re-buy; _stage_beated's
+# deps-staleness guard owns the rebuild if that ever stops holding.
+_KEEP: Dict[str, tuple] = {"grouped": ("manifest.cast.json",)}
+
+# Non-manifest extras (dirs, QA/heal byproducts, caches) that the deps table
+# does not track — mirrors the old literals exactly; nothing dropped out.
+# (.grounding_cache.json is deliberately NOT here: it is content-addressed,
+# so it stays valid across rewinds by design.)
+_VOICE_EXTRAS = ("tts", "render")
+_NARRATION_EXTRAS = ("prep_qa.json", "prep_qa.html", "heal_corrections.json",
+                     "manifest.beats.preheal.json")
+_VISUAL_EXTRAS = ("stitch_chunks", "scenes", "scenes_clean",
+                  ".cut_judge_cache.json", "manual_drops.json")
+
+
+def artifacts_for(target: str) -> tuple:
+    """Everything a rewind to *target* deletes (relative to ep_dir), derived
+    from deps.artifacts_beyond(target) + the non-manifest extras. keep_base
+    and the .narration_keepbase marker are handled by rewind_chapter itself."""
+    from studio import deps
+    rels = [a for a in deps.artifacts_beyond(target)
+            if a not in _KEEP.get(target, ())]
+    rels += _VOICE_EXTRAS
+    if target != "scripted":
+        rels += _NARRATION_EXTRAS
+    if target == "downloaded":
+        rels += _VISUAL_EXTRAS
+    elif target == "detected":
+        # scenes re-materialize -> per-panel visual verdicts go stale
+        rels += (".cut_judge_cache.json",)
+    return tuple(dict.fromkeys(rels))
 
 
 def _rm(ep_dir: Path, rel: str, deleted: list) -> None:
@@ -98,19 +121,10 @@ def rewind_chapter(
         if to != "scripted" and beats.exists():
             backup = f"manifest.beats.rewind-{time.strftime('%Y%m%d-%H%M%S')}-BAK.json"
             shutil.copy2(beats, ep_dir / backup)
-        for rel in _VOICE_ARTIFACTS:
+        for rel in artifacts_for(to):
             _rm(ep_dir, rel, deleted)
-        if to != "scripted":
-            for rel in _NARRATION_ARTIFACTS:
-                _rm(ep_dir, rel, deleted)
-            if not keep_base:
-                _rm(ep_dir, ".narration_keepbase", deleted)
-        if to == "downloaded":
-            for rel in _VISUAL_ARTIFACTS:
-                _rm(ep_dir, rel, deleted)
-        elif to == "detected":
-            # scenes re-materialize -> per-panel visual verdicts go stale
-            _rm(ep_dir, ".cut_judge_cache.json", deleted)
+        if to != "scripted" and not keep_base:
+            _rm(ep_dir, ".narration_keepbase", deleted)
 
     stages = _STAGES_BEYOND[to]
     cur = con.execute(

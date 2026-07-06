@@ -92,6 +92,25 @@ def _check_elevenlabs() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Derived-manifest staleness (studio/deps.py via manifest_freshness)
+# ---------------------------------------------------------------------------
+
+def _artifact_is_stale(ep_dir: Path, artifact: str) -> bool:
+    """True iff *artifact* exists but is stale per its deps-declared inputs.
+
+    The edge compare (sha stamps > mtime fallback) lives in ONE place —
+    tools/manifest_freshness.artifact_is_stale — and is reused here, not
+    duplicated. tools/ is not a package, so shim it onto sys.path the way
+    studio/dashboard/app.py does (computed from __file__, deliberately NOT
+    _REPO_ROOT, which tests monkeypatch to a nonexistent root)."""
+    tools_dir = str(Path(__file__).resolve().parent.parent / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    from manifest_freshness import artifact_is_stale
+    return artifact_is_stale(str(ep_dir), artifact)
+
+
+# ---------------------------------------------------------------------------
 # Stage table
 # ---------------------------------------------------------------------------
 # Each entry: (stage_name, runner_fn, output_marker_relative, next_status_str)
@@ -255,10 +274,18 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         print(f"[beated] keep-base marker present -> reuse {p['beats'].name}, "
               "skipping cast + beats regeneration")
     else:
-        if not p["cast"].exists():
+        cast_stale = (p["cast"].exists()
+                      and _artifact_is_stale(ep_dir, "manifest.cast.json"))
+        if cast_stale:
+            print("[beated] manifest.cast.json predates its groups/vision "
+                  "inputs -> rebuilding cast (stale names would leak into "
+                  "the narration)")
+        if not p["cast"].exists() or cast_stale:
             # One Gemini call → chapter cast registry (manifest.cast.json) so the
             # narration names the same character consistently. Skipped when the
-            # file exists, so a beated retry never re-pays for it.
+            # file exists AND is fresh w.r.t. its deps-declared inputs, so a
+            # beated retry never re-pays for it — but a re-grouped chapter
+            # never reuses a cast built from the old grouping.
             cast_args = ["--groups-manifest", str(p["groups"]),
                          "--vision-manifest", str(p["vision"]),
                          "--out", str(p["cast"]),

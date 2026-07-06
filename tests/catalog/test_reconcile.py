@@ -103,6 +103,20 @@ def test_derive_status_estimated_plan_is_scripted_not_planned(tmp_path):
     assert reconcile.derive_status(str(ep)) == "scripted"
 
 
+def test_zero_byte_marker_not_promoted(tmp_path):
+    # a torn write leaves a 0-byte/garbage .json marker; existence alone must
+    # not promote the status (the 0-byte-manifest status promotion bug)
+    _con, ep = _mk_chapter(tmp_path)
+    (ep / "render" / "segment_both.mp4").unlink()      # walk below 'rendered'
+    (ep / "render.plan.json").write_bytes(b"")         # torn planned marker
+    assert reconcile.derive_status(str(ep)) == "voiced"
+    (ep / "tts" / "tts_index.json").write_text("{not json")   # torn voiced too
+    assert reconcile.derive_status(str(ep)) == "scripted"
+    # non-JSON markers keep exists-only semantics: a 0-byte mp4 still counts
+    (ep / "render" / "segment_both.mp4").write_bytes(b"")
+    assert reconcile.derive_status(str(ep)) == "rendered"
+
+
 # ---- reconcile_chapter -------------------------------------------------------
 
 def test_consistent_chapter_is_a_noop(tmp_path):
