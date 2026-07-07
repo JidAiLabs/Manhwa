@@ -173,6 +173,39 @@ def test_empty_line_and_mood_prefix_flagged():
     assert any("mood" in e or "bracket" in e for e in errs)
 
 
+@pytest.mark.parametrize("leaked_line", [
+    # real round-3 Nano ch1 shapes (18 segments: 15 "Dramatic:", 3 "Comic:")
+    "Dramatic: He’s tumbling down a massive cliff, screaming his lungs "
+    "out while plummeting into the abyss.",
+    "Dramatic: Suddenly, a blinding flash of light erupts out of nowhere.",
+    "Comic: The masked guy grabs him by the throat and asks if that was "
+    "his big attempt at revenge.",
+    "Dramatic He's free-falling down a rocky cliff, screaming his lungs out.",
+])
+def test_mood_tag_leak_in_line_flagged(leaked_line):
+    # a BARE (unbracketed) mood/tone word opening a line is the SAME leak
+    # channel as a bracket-mood prefix — the packer adds moods, the writer
+    # never should, bracketed or not.
+    segs = [{"span": ["p1.jpg"], "line": leaked_line},
+            {"span": ["p2.jpg", "p3.jpg"], "line": _words(18)}]
+    errs = gnp.validate_segments(segs, FILES, KINDS)
+    assert any("mood" in e or "tone" in e for e in errs), errs
+
+
+def test_mood_tag_leak_silent_on_ordinary_lines():
+    # a real sentence that only happens to OPEN with one of these words as an
+    # adjective, continuing in lowercase, must never trip this net. (A
+    # bracket-mood prefix in the WRITER's own line is separately — and
+    # already — rejected by _MOOD_PREFIX_RE regardless of this check: see
+    # test_empty_line_and_mood_prefix_flagged.)
+    segs = [{"span": ["p1.jpg"],
+             "line": "Dramatic reveals stay restrained even here."},
+            {"span": ["p2.jpg"],
+             "line": "He's tumbling down a massive cliff, screaming."},
+            {"span": ["p3.jpg"], "line": _words(8)}]
+    assert gnp.validate_segments(segs, FILES, KINDS) == []
+
+
 def test_validator_reports_multiple_errors():
     segs = [{"span": ["p1.jpg"], "line": _words(2)},
             {"span": ["p3.jpg"], "line": _words(8)}]          # thin + skips p2

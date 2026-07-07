@@ -17,6 +17,11 @@ from beats_segments import (  # noqa: E402
     has_native_segments,
     write_segment_lines,
 )
+# single authority for "recognized mood/tone words" — see local_tts_from_
+# manifest.MOOD_KEYWORDS docstring; imported here so the generation-time +
+# QA leak-net (mentions_mood_tag_leak, below) never drifts from the TTS-side
+# stripper that consumes the same tuple.
+from local_tts_from_manifest import MOOD_KEYWORDS  # noqa: E402
 
 
 RECAP_STYLE_RULES = """RECAP-CHANNEL WRITING RULES — apply these while preserving
@@ -333,6 +338,34 @@ def mentions_figures_leak(text: str) -> bool:
     phrasing. A resolved cast name used in narration is sanctioned and never
     matches — only the raw evidence-wrapper format is a leak."""
     return bool(_FIGURES_LEAK_RE.search(str(text or "")))
+
+
+# The round-3 Nano ch1 regression: the writer's free-authored passage
+# self-labels a sentence with a bare mood/tone word ("DRAMATIC: He's tumbling
+# down…", normalize_caps_for_tts sentence-cases the shout-caps label to
+# "Dramatic: …") instead of the ONE sanctioned form, a bracketed tag added
+# separately by the packer ("[dramatic] He's…"). It is the SAME leak channel
+# as the impact-SFX/figures markers above — pipeline/authoring vocabulary
+# spoken aloud instead of story — just missing its brackets, so it slips past
+# every bracket-only sanitizer (_MOOD_PREFIX_RE in gemini_narrative_pass.py,
+# the leading-tag strip in prep_qa.py, local_tts_from_manifest.strip_bracket_
+# tags's old behavior). Word list is MOOD_KEYWORDS (single authority — add a
+# keyword there, not here). An optional ':'/',' plus a following CAPITALIZED
+# word gates the match so ordinary prose that merely STARTS with one of these
+# words as a real adjective ("Dramatic reveals stay restrained…", "Serious
+# injuries mount…") is left alone: the second word almost never capitalizes
+# in a genuine sentence, only when the model is actually opening a NEW
+# sentence right after its own dangling label.
+_MOOD_TAG_LEAK_RE = re.compile(
+    r"^\s*(?i:%s)\b[:,]?\s+[A-Z]" % "|".join(re.escape(w) for w in MOOD_KEYWORDS)
+)
+
+
+def mentions_mood_tag_leak(text: str) -> bool:
+    """True when a line OPENS with a bare (unbracketed) mood/tone word
+    immediately followed by a fresh capitalized sentence start — the leaked
+    label shape, never a legitimate bracketed tag or ordinary prose."""
+    return bool(_MOOD_TAG_LEAK_RE.match(str(text or "")))
 
 
 def _words(text: str) -> List[str]:

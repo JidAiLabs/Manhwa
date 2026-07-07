@@ -89,6 +89,24 @@ def test_impact_marker_leak_is_healable_error():
     assert "strike" in note or "stab" in note or "blow" in note
 
 
+def test_mood_tag_leak_is_healable_error():
+    # a voiced line opening with a bare (unbracketed) mood/tone word
+    # ("Dramatic: He's tumbling…") is bookkeeping, never story — the SAME
+    # leak class as impact_marker_leak/figures_leak; heal re-narrates the
+    # group without the label.
+    assert "mood_tag_leak" in nh.HEALABLE
+    rep = {"flags": [_flag("mood_tag_leak", "ERROR",
+                           "narration opens with a bare mood/tone word "
+                           "verbatim: 'Dramatic: He's tumbling down a "
+                           "massive cliff.'",
+                           "g0004")]}
+    corr = nh.corrections_from_qa(rep)
+    assert set(corr) == {4}
+    note = corr[4].lower()
+    assert "mood" in note or "tone" in note
+    assert "bracket" in note
+
+
 def test_shot_description_is_healable_error():
     # D4: a line that names the camera/shot OR the artwork's rendering / a visual
     # effect (motion blur, speed lines, "is depicted") must heal (re-narrate the

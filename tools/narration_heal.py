@@ -32,6 +32,11 @@ HEALABLE = {
     "empty_item", "silent_group", "grounding_weak",
     "shot_description", "filename_in_narration", "impact_marker_leak",
     "figures_leak",
+    # a voiced line opens with a bare (unbracketed) mood/tone word before its
+    # real sentence ("Dramatic: He's tumbling…") — pipeline/authoring
+    # vocabulary read aloud, the SAME leak channel as figures_leak/
+    # impact_marker_leak; the re-roll simply never writes the label.
+    "mood_tag_leak",
     # detector-verified impact SFX on a span panel but no impact wording in
     # the line — re-narration IS the fix: the regenerated group's writer
     # payload carries the [IMPACT SFX on panel] marker, so the re-roll sees
@@ -109,6 +114,14 @@ def _note_for(code: str, detail: str) -> str:
                 "man in the hood); a RESOLVED cast name is fine to say, "
                 "just never the raw evidence text or the word 'unknown' "
                 "followed by a parenthesis.")
+    if code == "mood_tag_leak":
+        return ("This line opens with a bare mood/tone word read aloud "
+                "(e.g. 'Dramatic: He's tumbling…', 'Comic: The masked "
+                "guy…') — that is pipeline bookkeeping, never story. A mood "
+                "tag is ALWAYS bracketed ([dramatic]) and added by the "
+                "pipeline automatically; never type a mood/tone label into "
+                "the narration itself. Re-narrate starting directly with "
+                "the real sentence.")
     if code == "impact_mismatch":
         return ("Painted IMPACT-SFX lettering is on this panel — a strike, "
                 "stab, blow, or crash is landing HERE, and the current line "

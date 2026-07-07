@@ -46,6 +46,7 @@ from recap_style import (  # noqa: E402
     mentions_figures_leak,
     mentions_image_file,
     mentions_impact_marker,
+    mentions_mood_tag_leak,
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
 )
@@ -1308,7 +1309,9 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
          own clip; `kinds` maps scene_file -> panel_kind);
       4. duration-aware word budget: N*2.0s <= words/(wpm/60) <= N*6.0s per
          segment (N = span size) — reject too-thin AND too-fat lines;
-      5. every line non-empty, no bracket-mood prefix (the packer adds moods).
+      5. every line non-empty, no bracket-mood prefix (the packer adds moods)
+         and no BARE mood-word prefix either (e.g. "Dramatic: He's…" — the
+         round-3 leak; the packer adds moods, the writer never should).
     """
     errors: List[str] = []
     segs = segments if isinstance(segments, list) else []
@@ -1340,6 +1343,12 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
         if _MOOD_PREFIX_RE.match(line):
             errors.append(f"segment {i}: line must not start with a bracket "
                           "mood tag")
+        if mentions_mood_tag_leak(line):
+            leak_word = line.split()[0] if line.split() else ""
+            errors.append(f"segment {i}: line opens with a bare mood/tone "
+                          f"word ({leak_word!r}) followed by a fresh "
+                          "sentence — that is a leaked label, never story; "
+                          "drop it and start the line with the real sentence")
         if mentions_image_file(line):
             errors.append(f"segment {i}: line names an image file — file "
                           "names are tags, never narration; narrate what "

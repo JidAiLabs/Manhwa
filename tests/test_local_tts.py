@@ -32,6 +32,53 @@ def test_leading_tag_and_strip():
     assert lt.strip_bracket_tags("[tense] He runs [beat] now.") == "He runs now."
 
 
+# ---- mood-tag leak regression (round-3 Nano ch1: 18 segments spoke a bare
+# "Dramatic: "/"Comic: " label — see recap_style.mentions_mood_tag_leak for
+# the generation-time/QA half of this net) --------------------------------
+
+@pytest.mark.parametrize("raw, clean", [
+    # real production shapes (manifest.beats.json carried the ALL-CAPS
+    # writer output; normalize_caps_for_tts sentence-cases it before this
+    # function ever sees it, so both cases must be covered).
+    ("DRAMATIC: He’s tumbling down a massive cliff, screaming his "
+     "lungs out while plummeting into the abyss.",
+     "He’s tumbling down a massive cliff, screaming his lungs out "
+     "while plummeting into the abyss."),
+    ("Dramatic: Suddenly, a blinding flash of light erupts out of nowhere.",
+     "Suddenly, a blinding flash of light erupts out of nowhere."),
+    ("Comic: The masked guy grabs him by the throat and asks if that was "
+     "his big attempt at revenge.",
+     "The masked guy grabs him by the throat and asks if that was his "
+     "big attempt at revenge."),
+    # bare space instead of a colon
+    ("Dramatic He's free-falling down a rocky cliff, screaming.",
+     "He's free-falling down a rocky cliff, screaming."),
+    # the double-mention shape script_expander's escalator produces when it
+    # wraps an already-leaked line: "[tag] Leaked: Sentence" must fully clean.
+    ("[dramatic] Dramatic: He's tumbling down a massive cliff.",
+     "He's tumbling down a massive cliff."),
+])
+def test_strip_bracket_tags_removes_leaked_mood_prefix(raw, clean):
+    assert lt.strip_bracket_tags(raw) == clean
+
+
+def test_strip_bracket_tags_leaves_ordinary_prose_alone():
+    # a real sentence that merely STARTS with a mood word as an adjective,
+    # continuing in lowercase, is not a leaked label — never touched.
+    line = "Dramatic reveals stay restrained even in the quiet panels."
+    assert lt.strip_bracket_tags(line) == line
+    # still strips a REAL bracket tag exactly as before this fix
+    assert lt.strip_bracket_tags("[tense] He runs [beat] now.") == "He runs now."
+
+
+def test_mood_keywords_include_confirmed_production_leak_words():
+    # single authority: dramatic + comic (both confirmed in the round-3
+    # regression) must be present so the leak-net derived from this tuple
+    # catches both real shapes.
+    assert "dramatic" in lt.MOOD_KEYWORDS
+    assert "comic" in lt.MOOD_KEYWORDS
+
+
 def test_exaggeration_to_instruction_scales():
     calm = lt.exaggeration_to_instruction(0.30)
     intense = lt.exaggeration_to_instruction(0.78)

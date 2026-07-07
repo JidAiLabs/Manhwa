@@ -16,6 +16,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 _SPEC = importlib.util.spec_from_file_location(
     "prep_qa",
@@ -1560,6 +1561,42 @@ def test_figures_leak_flags_silent_on_resolved_cast_names():
         {"span": ["b.jpg"], "line": "The assassin leader closes in."},
     ]}]}
     assert pq.figures_leak_flags(beats) == []
+
+
+@pytest.mark.parametrize("leaked_line", [
+    # real round-3 Nano ch1 shapes (18 segments: 15 "Dramatic:", 3 "Comic:")
+    "Dramatic: He’s tumbling down a massive cliff, screaming his lungs "
+    "out while plummeting into the abyss.",
+    "Comic: The masked guy grabs him by the throat and asks if that was "
+    "his big attempt at revenge.",
+    "Dramatic He's free-falling down a rocky cliff, screaming.",  # no colon
+])
+def test_mood_tag_leak_flags_catches_the_real_round3_shapes(leaked_line):
+    # a VOICED line opening with a bare mood/tone word is pipeline/authoring
+    # vocabulary read aloud — the SAME leak channel as impact_marker_leak /
+    # figures_leak, just missing its brackets.
+    beats = {"beats": [{
+        "group_id": 9,
+        "segments": [
+            {"span": ["p000010.jpg"],
+             "line": "He steadies himself before the fight."},
+            {"span": ["p000011.jpg"], "line": leaked_line},
+        ],
+    }]}
+    fl = pq.mood_tag_leak_flags(beats)
+    assert [f["code"] for f in fl] == ["mood_tag_leak"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0009"
+    assert fl[0]["scene"] == "p000011.jpg"
+
+
+def test_mood_tag_leak_flags_silent_on_bracketed_and_ordinary_lines():
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["a.jpg"], "line": "[dramatic] He draws his hidden blade."},
+        {"span": ["b.jpg"], "line": "Dramatic reveals stay restrained."},
+        {"span": ["c.jpg"], "line": "The assassin leader closes in."},
+    ]}]}
+    assert pq.mood_tag_leak_flags(beats) == []
 
 
 def test_cut_gap_is_error_not_warn():

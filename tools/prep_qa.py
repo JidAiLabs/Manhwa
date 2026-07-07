@@ -64,6 +64,7 @@ from recap_style import (
     mentions_figures_leak,
     mentions_image_file,
     mentions_impact_marker,
+    mentions_mood_tag_leak,
 )
 from span_align import (  # single authority: lexicon + line<->span affinity
     _IMPACT_LEXEMES,          # noqa: F401  (re-export; tests use pq._IMPACT_LEXEMES)
@@ -1151,6 +1152,35 @@ def figures_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
                     f"wrapper verbatim: {line[:80]!r} — use neutral "
                     "phrasing (the masked figure, the man in the hood), "
                     "never the raw 'unknown (...)' evidence text",
+                    scene=str((s["span"] or [""])[0]),
+                    segment_id=seg))
+    return flags
+
+
+def mood_tag_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """A VOICED line that OPENS with a bare (unbracketed) mood/tone word
+    immediately followed by a fresh capitalized sentence ("Dramatic: He's
+    tumbling…", "Comic: The masked guy…" — the round-3 Nano ch1 regression,
+    18 segments) is pipeline/authoring vocabulary read aloud — the SAME leak
+    channel as impact_marker_leak_flags / figures_leak_flags (mirrors them
+    exactly), just missing its brackets. The sanctioned form is ALWAYS
+    bracketed ("[dramatic] He's…"), added by the packer, never the writer.
+    Deterministic pattern match; see recap_style.mentions_mood_tag_leak."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            if line and mentions_mood_tag_leak(line):
+                flags.append(_flag(
+                    "mood_tag_leak", ERROR,
+                    f"narration opens with a bare mood/tone word verbatim: "
+                    f"{line[:80]!r} — a mood tag is ALWAYS bracketed "
+                    "([dramatic]) and added by the pipeline, never typed "
+                    "into the story text; drop the label and start the "
+                    "real sentence",
                     scene=str((s["span"] or [""])[0]),
                     segment_id=seg))
     return flags
@@ -2440,6 +2470,7 @@ def main() -> int:
     flags.extend(filename_in_narration_flags(beats_obj))
     flags.extend(impact_marker_leak_flags(beats_obj))
     flags.extend(figures_leak_flags(beats_obj))
+    flags.extend(mood_tag_leak_flags(beats_obj))
     flags.extend(story_flags(plan, beats_obj, vitems))
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))
