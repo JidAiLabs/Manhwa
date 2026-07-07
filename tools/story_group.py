@@ -44,6 +44,24 @@ _SEGMENTS = ("present", "flashback", "dream")
 # one context span/shot. Operators can pass --max-beat-len 0 to disable.
 DEFAULT_MAX_BEAT_LEN = 6
 
+# GROUP_SCHEMA asks for INDEX RANGES, not filename echoes. The old schema made
+# beats.scene_files an array of strings and forced the model to type out every
+# panel filename per beat -- on a ~96-panel chapter (~30 beats) that is ~30
+# separate filename arrays, and gemma4:26b died mid-enumeration on EVERY
+# production attempt (raw captures cut off mid scene_files-array; one attempt
+# came back near-empty). build_grouping_payload already numbers every panel
+# (`n`, 0-based, stable reading order) -- a beat is by definition a CONSECUTIVE
+# run in that same order, so it can be expressed as {from_index, to_index}
+# (inclusive) plus the existing short tags, instead of echoing names back.
+# Budget: a beat is now ~2 integers + 2 short strings, so a realistic
+# ~30-beat/~96-panel chapter response is well under 1000 tokens (MEASURED:
+# ~1.9KB for a 24-beat/96-panel synthetic response, see
+# test_realistic_96_panel_range_response_is_well_under_output_budget) --
+# trivial next to the ~4-5KB the old scheme couldn't even finish generating on
+# the same chapter. expand_index_ranges() converts the model's ranges back
+# into the classic {scene_files: [...]} shape immediately after parsing, so
+# repair_to_shots and everything downstream never sees a range -- the
+# shots/groups output stays byte-shape-identical to before this schema change.
 GROUP_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
@@ -54,12 +72,13 @@ GROUP_SCHEMA: Dict[str, Any] = {
         "beats": {"type": "ARRAY", "items": {
             "type": "OBJECT",
             "properties": {
-                "scene_files": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "from_index": {"type": "INTEGER"},
+                "to_index": {"type": "INTEGER"},
                 "segment": {"type": "STRING", "enum": list(_SEGMENTS)},
                 "arc_label": {"type": "STRING"},
                 "why": {"type": "STRING"},
             },
-            "required": ["scene_files"],
+            "required": ["from_index", "to_index"],
         }},
     },
     "required": ["chapter", "beats"],
@@ -82,12 +101,16 @@ SYSTEM = (
     "  - Keep a flashback or dream as a CONTIGUOUS block. Do NOT bounce "
     "present→flashback→present→flashback: only change 'segment' at a real "
     "time-shift, and change it back only when the story truly returns to now.\n"
-    "For each span return: scene_files (its consecutive panels, in order), "
-    "segment (present | flashback | dream — MARK flashbacks and dreams), "
-    "arc_label (a 2-4 word label for the scene). Cover EVERY panel exactly once, "
-    "in order. Do not target a fixed number of spans or a fixed panel count. The "
-    "downstream script/timeline renders panel-level cues; these spans are only "
-    "story context and must follow the source's natural rhythm.\n"
+    "Each input panel has an integer index `n` (0-based, in reading order). For "
+    "each span return: from_index and to_index (the INCLUSIVE `n` range it "
+    "covers — a span is always a CONSECUTIVE run, so from_index <= to_index, "
+    "and the next span's from_index must be greater than this span's to_index: "
+    "spans stay in ascending order and never overlap), segment (present | "
+    "flashback | dream — MARK flashbacks and dreams), arc_label (a 2-4 word "
+    "label for the scene). Cover EVERY panel exactly once, in order. Do not "
+    "target a fixed number of spans or a fixed panel count. The downstream "
+    "script/timeline renders panel-level cues; these spans are only story "
+    "context and must follow the source's natural rhythm.\n"
     "ALSO return 'chapter': a "
     "LOGLINE (one vivid sentence — what this chapter is about, its arc), and a "
     "PREMISE (1-2 sentences: the situation + the stakes), "
@@ -246,6 +269,59 @@ def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
     return [{"shot_id": i, "scene_files": s["scene_files"],
              "segment": s["segment"], "arc_label": s["arc_label"]}
             for i, s in enumerate(shots, 1)]
+
+
+def expand_index_ranges(beats: Any, scene_order: List[str]
+                        ) -> tuple[List[Dict[str, Any]], str]:
+    """Validate + expand the model's GROUP_SCHEMA {from_index,to_index} beats
+    into the classic {scene_files, segment, arc_label, why} shape
+    repair_to_shots has always consumed. `scene_order` MUST be the same
+    ordered scene_file list build_grouping_payload numbered as `n` for this
+    call, so from_index/to_index are positions into it.
+
+    Returns (expanded_beats, issue): issue is "" when every range is a
+    well-formed, in-bounds, ascending, non-overlapping integer pair, and
+    expanded_beats then holds one beat dict per input beat, in order.
+    When issue is non-empty (naming the first bad beat, for the REPAIR
+    re-ask), expanded_beats is [] — caller must not use a partial expansion.
+
+    Ranges need NOT cover every panel — that is by design, not a defect:
+    gaps are the model's prerogative exactly like a gap in the old
+    scene_files lists always was, and repair_to_shots's coverage invariant
+    folds any skipped panel into the beat before it, so nothing is ever
+    lost. What MUST be rejected before repair_to_shots ever sees it is a
+    range that would silently mis-partition the story: an out-of-bounds or
+    inverted pair, or one that overlaps/precedes the previous beat
+    (repair_to_shots's first-write-wins would quietly pick a winner instead
+    of surfacing the model's mistake)."""
+    n = len(scene_order)
+    if not isinstance(beats, list) or not beats:
+        return [], "beats is missing or empty"
+    expanded: List[Dict[str, Any]] = []
+    prev_to = -1
+    for i, b in enumerate(beats):
+        if not isinstance(b, dict):
+            return [], f"beat {i} is not an object"
+        fi, ti = b.get("from_index"), b.get("to_index")
+        if not isinstance(fi, int) or isinstance(fi, bool):
+            return [], f"beat {i} from_index ({fi!r}) is not an integer"
+        if not isinstance(ti, int) or isinstance(ti, bool):
+            return [], f"beat {i} to_index ({ti!r}) is not an integer"
+        if fi > ti:
+            return [], f"beat {i} from_index {fi} > to_index {ti}"
+        if fi < 0 or ti >= n:
+            return [], f"beat {i} range [{fi},{ti}] out of bounds for {n} panels"
+        if fi <= prev_to:
+            return [], (f"beat {i} range [{fi},{ti}] overlaps or precedes the "
+                        f"previous beat (ended at index {prev_to})")
+        prev_to = ti
+        expanded.append({
+            "scene_files": scene_order[fi:ti + 1],
+            "segment": b.get("segment"),
+            "arc_label": b.get("arc_label"),
+            "why": b.get("why"),
+        })
+    return expanded, ""
 
 
 def group_panels(panels: List[Dict[str, Any]], call_fn: Callable[..., Any],
@@ -606,6 +682,13 @@ def main() -> int:
         parsed = None
         raw = ""
         issue = ""
+        range_issue = ""
+        # SAME ordered scene_file list build_grouping_payload numbered as `n`
+        # for this payload — from_index/to_index are positions into it. Shrink
+        # retries only touch `description`, never scene_file order, so this
+        # stays valid across attempts.
+        scene_order = [p.get("scene_file") for p in (payload.get("panels") or [])]
+        n_panels = len(scene_order)
         for attempt in range(2):
             instruction = SYSTEM
             cur_payload = payload
@@ -617,6 +700,13 @@ def main() -> int:
                 cur_payload = _shrink_payload(payload, 80)
                 print(f"[story_group] parse failure (raw len={len(raw)}); "
                       "shrink-retry engaged (descriptions capped to 80 chars)")
+            elif attempt and range_issue:
+                instruction += (
+                    "\n\nREPAIR: the previous beats used invalid index ranges: "
+                    + issue + f". Each beat needs integer from_index/to_index "
+                    f"with 0 <= from_index <= to_index <= {n_panels - 1}; beats "
+                    "must stay in ascending order and never overlap. Return "
+                    "the complete grouping again.")
             elif attempt:
                 instruction += (
                     "\n\nREPAIR: the previous chapter story spine was invalid: "
@@ -632,8 +722,17 @@ def main() -> int:
             issue = _chapter_spine_issue(
                 (parsed or {}).get("chapter") if isinstance(parsed, dict) else None,
                 parsed=parsed, raw=raw)
+            expanded_beats: List[Dict[str, Any]] = []
+            range_issue = ""
             if isinstance(parsed, dict) and not issue:
-                return parsed
+                # spine is safe; now validate + expand the index ranges into
+                # the classic scene_files shape BEFORE returning, so
+                # group_panels/repair_to_shots never need to know ranges exist.
+                expanded_beats, range_issue = expand_index_ranges(
+                    parsed.get("beats"), scene_order)
+                issue = range_issue
+            if isinstance(parsed, dict) and not issue:
+                return {**parsed, "beats": expanded_beats}
         return parsed
 
     # The reference-channel contract has no magic group count. These spans are
@@ -647,6 +746,20 @@ def main() -> int:
     premise = str((chapter or {}).get("premise") or "").strip()
     spine_issue = _chapter_spine_issue(
         chapter, parsed=last_call["parsed"], raw=last_call["raw"])
+    range_issue = ""
+    if not spine_issue and isinstance(last_call["parsed"], dict):
+        # call_fn already retried a bad range once (its own REPAIR re-ask); if
+        # it still gave up, last_call["parsed"]["beats"] still holds the
+        # UNEXPANDED from_index/to_index beats (call_fn returns a NEW dict on
+        # success, it never mutates this one), so this re-checks exactly what
+        # call_fn saw on its last attempt. Without this gate, group_panels's
+        # repair_to_shots would already have silently collapsed every panel
+        # into one giant shot (it saw beats with no "scene_files" key and
+        # treated all of them as unassigned) and we'd write that out instead
+        # of failing loudly.
+        _, range_issue = expand_index_ranges(
+            last_call["parsed"].get("beats"),
+            [p.get("scene_file") for p in story])
     if spine_issue:
         dump = _dump_story_group_raw(
             os.path.dirname(os.path.abspath(args.out)),
@@ -655,6 +768,15 @@ def main() -> int:
         raise SystemExit(
             "Grouping model returned an unsafe chapter story spine: "
             + spine_issue + f"; raw response captured at {dump}"
+            "; refusing to continue")
+    if range_issue:
+        dump = _dump_story_group_raw(
+            os.path.dirname(os.path.abspath(args.out)),
+            raw_response=last_call["raw"], parsed_obj=last_call["parsed"],
+            model=model)
+        raise SystemExit(
+            "Grouping model returned unsafe beat index ranges: "
+            + range_issue + f"; raw response captured at {dump}"
             "; refusing to continue")
     # caption-only beats fold into their neighbour so the text rides real art
     shots = merge_caption_solos(shots, caption_files(story))

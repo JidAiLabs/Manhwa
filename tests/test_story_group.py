@@ -459,7 +459,7 @@ def test_unsafe_spine_dumps_raw_response_before_raising(tmp_path, monkeypatch):
 
     def fake_call(**kw):
         parsed = {"chapter": {"logline": "A ridge walk.", "premise": ""},
-                  "beats": [{"scene_files": ["p0.jpg"]}]}
+                  "beats": [{"from_index": 0, "to_index": 0}]}
         return parsed, "RAW_MODEL_TEXT", {}
 
     monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
@@ -605,7 +605,7 @@ def test_shrink_retry_succeeds_after_one_harder_shrink(tmp_path, monkeypatch):
         if len(desc) > 120:                       # first attempt: normal 160-gist
             return None, "TRUNCATED_MID_STR_HERE", {}
         return ({"chapter": {"logline": "A ridge walk.", "premise": "He walks alone."},
-                  "beats": [{"scene_files": ["p0.jpg"]}]}, "OK_RAW", {})
+                  "beats": [{"from_index": 0, "to_index": 0}]}, "OK_RAW", {})
 
     monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
     monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
@@ -618,3 +618,219 @@ def test_shrink_retry_succeeds_after_one_harder_shrink(tmp_path, monkeypatch):
     assert len(calls[1]["panels"][0]["description"]) <= 80 + len("…")   # attempt 2: shrunk
     written = json.loads(out.read_text())
     assert written["shots"] and written["shots"][0]["scene_files"] == ["p0.jpg"]
+
+
+# ---------------------------------------------------------------------------
+# expand_index_ranges (root cause fix): GROUP_SCHEMA beats are now
+# {from_index, to_index} index ranges over the payload's numbered panel list,
+# not scene_files filename echoes -- gemma4:26b died mid-enumeration typing
+# out ~30 beats' worth of filenames on a ~96-panel chapter. These tests cover
+# the pure expansion/validation function and its wiring into call_fn's
+# REPAIR re-ask loop and the final safety-net gate.
+# ---------------------------------------------------------------------------
+
+def test_expand_index_ranges_happy_path_matches_scene_files_equivalent():
+    """Range expansion happy path (synthetic 10-panel story, 3 beats): the
+    ranges must expand to the EXACT SAME shots as the equivalent hand-written
+    scene_files beats, once both are fed through repair_to_shots -- proving
+    expand_index_ranges is a lossless, byte-shape-identical stand-in for the
+    old scene_files echo."""
+    order = [f"p{i}" for i in range(10)]
+    range_beats = [
+        {"from_index": 0, "to_index": 2, "segment": "present", "arc_label": "intro"},
+        {"from_index": 3, "to_index": 5, "segment": "present", "arc_label": "rising"},
+        {"from_index": 6, "to_index": 9, "segment": "flashback", "arc_label": "backstory"},
+    ]
+    expanded, issue = sg.expand_index_ranges(range_beats, order)
+    assert issue == ""
+    assert [b["scene_files"] for b in expanded] == [order[0:3], order[3:6], order[6:10]]
+
+    scene_files_beats = [
+        {"scene_files": order[0:3], "segment": "present", "arc_label": "intro"},
+        {"scene_files": order[3:6], "segment": "present", "arc_label": "rising"},
+        {"scene_files": order[6:10], "segment": "flashback", "arc_label": "backstory"},
+    ]
+    assert (sg.repair_to_shots(order, expanded)
+            == sg.repair_to_shots(order, scene_files_beats))
+
+
+def test_expand_index_ranges_allows_gaps_like_scene_files_always_did():
+    # A gap between ranges is the model's prerogative, not a defect -- exactly
+    # like an omitted filename in the old scene_files lists. repair_to_shots's
+    # coverage invariant folds the skipped panel into the beat before it, so
+    # nothing is ever lost.
+    order = [f"p{i}" for i in range(5)]
+    expanded, issue = sg.expand_index_ranges(
+        [{"from_index": 0, "to_index": 1, "segment": "present", "arc_label": "a"},
+         {"from_index": 3, "to_index": 4, "segment": "present", "arc_label": "b"}], order)
+    assert issue == ""
+    shots = sg.repair_to_shots(order, expanded)
+    assert [f for s in shots for f in s["scene_files"]] == order   # p2 not lost
+
+
+def test_expand_index_ranges_rejects_overlapping_ranges():
+    order = [f"p{i}" for i in range(6)]
+    expanded, issue = sg.expand_index_ranges(
+        [{"from_index": 0, "to_index": 3}, {"from_index": 2, "to_index": 5}], order)
+    assert expanded == [] and "overlap" in issue
+
+
+def test_expand_index_ranges_rejects_to_index_out_of_bounds():
+    order = [f"p{i}" for i in range(4)]                    # valid indices: 0..3
+    expanded, issue = sg.expand_index_ranges([{"from_index": 0, "to_index": 4}], order)
+    assert expanded == [] and "out of bounds" in issue
+
+
+def test_expand_index_ranges_rejects_from_greater_than_to():
+    order = [f"p{i}" for i in range(4)]
+    expanded, issue = sg.expand_index_ranges([{"from_index": 2, "to_index": 0}], order)
+    assert expanded == [] and "from_index" in issue and "to_index" in issue
+
+
+def test_expand_index_ranges_rejects_non_integer_or_boolean_index():
+    order = [f"p{i}" for i in range(4)]
+    assert sg.expand_index_ranges([{"from_index": "0", "to_index": 1}], order)[1]
+    assert sg.expand_index_ranges([{"from_index": -1, "to_index": 1}], order)[1]
+    # bool is an int subclass in Python -- must still be rejected as non-integer
+    assert sg.expand_index_ranges([{"from_index": True, "to_index": 1}], order)[1]
+
+
+def test_expand_index_ranges_rejects_missing_or_empty_beats():
+    order = ["p0"]
+    assert sg.expand_index_ranges(None, order)[1]
+    assert sg.expand_index_ranges([], order)[1]
+    assert sg.expand_index_ranges("not a list", order)[1]
+
+
+def test_realistic_96_panel_range_response_is_well_under_output_budget():
+    """OUTPUT BUDGET (the root cause): the OLD scene_files-echo schema forced
+    the model to spell out every scene filename per beat -- on Omniscient
+    Reader Episode 1's ~96 panels that was ~30 beats' worth of filename
+    arrays, and gemma4:26b died mid-enumeration on every production attempt
+    (raw captures cut off mid scene_files-array; one attempt came back
+    near-empty). An index-range beat is two small integers plus a couple of
+    short strings -- build a REAL-SHAPED response for a chapter of the same
+    size (96 panels, 24 beats -- the same ballpark as the observed ~30) and
+    confirm it both parses cleanly through expand_index_ranges AND that its
+    JSON is comfortably small (the pinned budget claim)."""
+    import json
+
+    n_panels = 96
+    scene_order = [f"p{i:06d}.jpg" for i in range(n_panels)]
+    span = 4                                   # 96 / 4 = 24 beats, clean division
+    labels = ("open", "clash", "reveal", "turn", "aftermath", "escape",
+              "reunion", "standoff")
+    beats = [{
+        "from_index": i, "to_index": i + span - 1,
+        "segment": "flashback" if bi % 8 == 0 else "present",
+        "arc_label": labels[bi % len(labels)],
+    } for bi, i in enumerate(range(0, n_panels, span))]
+    response = {
+        "chapter": {"logline": "A reader is pulled into his own novel.",
+                    "premise": "He alone knows how it ends and must survive."},
+        "beats": beats,
+    }
+
+    # vendored parse: round-trip through JSON exactly as the real pipeline
+    # would (model text -> json.loads -> expand_index_ranges).
+    raw = json.dumps(response, separators=(",", ":"))
+    parsed = json.loads(raw)
+    expanded, issue = sg.expand_index_ranges(parsed["beats"], scene_order)
+    assert issue == ""
+    assert len(expanded) == len(beats) == 24
+    assert sum(len(b["scene_files"]) for b in expanded) == n_panels   # full coverage
+
+    # THE BUDGET CLAIM, pinned: comfortably under 2000 chars for a realistic
+    # ~96-panel chapter's beats -- vs. the old scheme, which could not even
+    # finish generating on the same chapter (~4-5KB truncated mid-string).
+    assert len(raw) < 2000, f"range response too large: {len(raw)} chars"
+
+
+def test_range_repair_retry_succeeds_after_range_specific_complaint(tmp_path, monkeypatch):
+    """REPAIR re-ask (malformed ranges): a beat with an out-of-bounds range
+    must trigger the SAME REPAIR-and-reask mechanism as an unsafe chapter
+    spine, but with a complaint that specifically names the RANGE problem
+    (not the generic spine wording) -- the second attempt then succeeds."""
+    import json
+    import sys as _sys
+
+    understood = {"panels": [
+        {"scene_file": "p0.jpg", "description": "a", "panel_kind": "story", "subjects": ["x"]},
+        {"scene_file": "p1.jpg", "description": "b", "panel_kind": "story", "subjects": ["x"]},
+    ]}
+    vision = {"items": [{"scene_file": "p0.jpg"}, {"scene_file": "p1.jpg"}]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps(understood))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    out = tmp_path / "manifest.groups.json"
+
+    calls = []
+
+    def fake_call(**kw):
+        calls.append(kw["system_instruction"])
+        good_chapter = {"logline": "A short chapter.", "premise": "Two panels happen."}
+        if len(calls) == 1:
+            # to_index=5 is out of bounds for a 2-panel chapter (max valid index 1)
+            return ({"chapter": good_chapter,
+                      "beats": [{"from_index": 0, "to_index": 5}]}, "BAD_RANGE_RAW", {})
+        return ({"chapter": good_chapter,
+                  "beats": [{"from_index": 0, "to_index": 1, "segment": "present",
+                             "arc_label": "both"}]}, "GOOD_RANGE_RAW", {})
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up),
+        "--vision-manifest", str(vp), "--out", str(out)])
+    assert sg.main() == 0
+    assert len(calls) == 2
+    assert "invalid index ranges" in calls[1]                     # range-specific complaint
+    assert "chapter story spine was invalid" not in calls[1]      # not the spine wording
+    written = json.loads(out.read_text())
+    assert written["shots"][0]["scene_files"] == ["p0.jpg", "p1.jpg"]
+
+
+def test_unsafe_range_dumps_raw_response_before_raising(tmp_path, monkeypatch):
+    """Malformed ranges that survive the REPAIR re-ask must fail exactly like
+    an unsafe chapter spine: raw response dumped beside the manifests, and a
+    truthful message naming the range problem -- instead of silently
+    collapsing every panel into one giant shot and writing THAT out (which is
+    what repair_to_shots would do if fed beats with no "scene_files" key)."""
+    import json
+    import sys as _sys
+
+    import pytest
+
+    understood = {"panels": [
+        {"scene_file": "p0.jpg", "description": "a", "panel_kind": "story", "subjects": ["x"]},
+        {"scene_file": "p1.jpg", "description": "b", "panel_kind": "story", "subjects": ["x"]},
+    ]}
+    vision = {"items": [{"scene_file": "p0.jpg"}, {"scene_file": "p1.jpg"}]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps(understood))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    out = tmp_path / "manifest.groups.json"
+
+    def fake_call(**kw):
+        # persistently overlapping ranges -- never resolved, even after REPAIR
+        return ({"chapter": {"logline": "A short chapter.", "premise": "Stuff happens here."},
+                  "beats": [{"from_index": 0, "to_index": 1},
+                            {"from_index": 1, "to_index": 1}]}, "OVERLAP_RAW", {})
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up),
+        "--vision-manifest", str(vp), "--out", str(out)])
+    with pytest.raises(SystemExit) as ei:
+        sg.main()
+    msg = str(ei.value)
+    assert "beat index ranges" in msg
+    assert "overlap" in msg
+    dumps = sorted(tmp_path.glob(".story_group_raw-*.json"))
+    assert len(dumps) == 1, "raw capture file must exist beside the manifests"
+    assert dumps[0].name in msg
+    data = json.loads(dumps[0].read_text())
+    assert data["raw_response"] == "OVERLAP_RAW"
