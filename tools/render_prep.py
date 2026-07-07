@@ -715,6 +715,38 @@ def bubble_text_mask(img: np.ndarray, box: Tuple[int, int, int, int]) -> np.ndar
     return _bubble_text(img, box)[0]
 
 
+# Round-2 E2 (bubble-clean residue): stylized lettering Apple-OCR cannot read
+# stays visible in "cleaned" bubbles (Nano ch1 p000023 "JANG?", p000026
+# "END.", p000076, p000099 full dialogue) — the same OCR blindness already
+# proven on painted SFX. A speech bubble interior with DENSE STROKES but
+# empty OCR is invisible text by construction (a genuinely empty bubble is a
+# flat void). Canny edge ratio over the bubble's interior component — the
+# impact_lettering gate style. Measured on the real fixtures: p000099 raw
+# interiors 0.060/0.079; genuinely blank (cleaned) interiors 0.000 → 0.030
+# is a 2x margin under the weakest positive.
+BUBBLE_STROKE_DENSITY_MIN = 0.030
+
+
+def bubble_stroke_density(
+    img: np.ndarray,
+    box: Tuple[int, int, int, int],
+) -> float:
+    """Fraction of Canny edge pixels inside *box*'s bubble interior
+    component. 0.0 when the box has no white/black interior (fail-soft —
+    a detector false-positive on artwork never scores). SINGLE authority
+    for the invisible-text check: clean_scene_image's residue net and
+    prep_qa's bubble_text_residue WARN both call this."""
+    _tmask, _fill, inside = _bubble_text(img, box)
+    if inside is None:
+        return 0.0
+    n = int((inside > 0).sum())
+    if not n:
+        return 0.0
+    gray = img.mean(axis=2).astype(np.uint8) if img.ndim == 3 else img
+    edges = cv2.Canny(gray, 50, 150)
+    return float(((edges > 0) & (inside > 0)).sum()) / float(n)
+
+
 def _merge_word_clusters(
     rects: Sequence[Tuple[int, int, int, int]],
     gap: int = 14,
@@ -811,6 +843,8 @@ def clean_scene_image(
     img: np.ndarray,
     boxes: Sequence[Tuple[int, int, int, int]],
     text_boxes: Optional[Sequence[Tuple[int, int, int, int]]] = None,
+    *,
+    residue_net: bool = False,
 ) -> np.ndarray:
     """Remove the text inside each bubble; the bubble itself stays.
 
@@ -861,6 +895,16 @@ def clean_scene_image(
                 inner[max(0, iy1):iy2, max(0, ix1):ix2] = True
                 gate = gate | inner
         wmask = cv2.bitwise_and(wmask, gate.astype(np.uint8) * 255)
+        # Round-2 E2 residue net: OCR found NOTHING in this SPEECH-SHAPED
+        # bubble, yet its interior shows dense strokes — stylized lettering
+        # OCR cannot read (p000099: the contrast fill catches glyph cores but
+        # leaves readable anti-aliased ghosts at 240-254, inside BOTH sweeps'
+        # tolerance bands). Measured BEFORE any fill; the flatten runs after
+        # the normal passes.
+        dense_invisible = (
+            residue_net and fill is not None and not wmask.any()
+            and speech_shaped_boxes([tuple(int(v) for v in b)], W_)
+            and bubble_stroke_density(out, b) >= BUBBLE_STROKE_DENSITY_MIN)
         if wmask.any() and fill is not None:
             # flat fill with the bubble's own interior color: on a flat
             # interior this is exact removal — nothing to ghost or smear
@@ -878,6 +922,14 @@ def clean_scene_image(
                 if residue.any():
                     out[residue] = fill
             _flatten_blank_bubble_residue(out, b, fill)
+            if dense_invisible:
+                # invisible-text bubble: flatten the WHOLE interior with the
+                # bubble's own flat color (the existing removal mechanism,
+                # without the tolerance bands the 240-254 ghost halos slip
+                # through). Interior-only — outline/shape stay; a speech
+                # bubble's interior is flat paper by design, so this is
+                # exactly what a properly cleaned bubble looks like.
+                out[inside > 0] = fill
 
     if words:
         grown = [(int(b[0]) - 6, int(b[1]) - 6, int(b[2]) + 6, int(b[3]) + 6)
@@ -2969,8 +3021,12 @@ def main() -> int:
                 # ONLY — keep the bubble shape, never inpaint/blur. System panels
                 # are kept whole above (their styled text IS the content);
                 # bubble-only panels are folded to narration upstream, so neither
-                # reaches this default path.
-                out = clean_scene_image(img, boxes, text_boxes=words)
+                # reaches this default path. residue_net: an OCR-empty bubble
+                # whose interior shows dense strokes carries stylized text OCR
+                # can't read (p000099) — flatten it anyway. Story panels only;
+                # the doc/in-world path above never enables the net.
+                out = clean_scene_image(img, boxes, text_boxes=words,
+                                        residue_net=True)
                 cleaned_cache[fname] = (out, boxes)
         return cleaned_cache[fname]
 

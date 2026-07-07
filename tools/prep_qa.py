@@ -306,6 +306,25 @@ def image_flags(
                                f"({top['ink_glyphs']} glyphs) — bubble text "
                                "still readable (blanking missed it)",
                                scene=name, segment_id=segment_id))
+
+        # Round-2 E2 measurement net (WARN): a speech-shaped bubble on the
+        # CLEANED panel whose interior still shows dense strokes = stylized
+        # text the cleaner's residue net missed (or a path that bypassed it).
+        # Same single authority as the cleaner (rp.bubble_stroke_density) so
+        # QA and render_prep can never disagree about "dense".
+        dens_hits = [
+            (b, d) for b in rp.speech_shaped_boxes(boxes, w)
+            for d in (rp.bubble_stroke_density(img, b),)
+            if d >= rp.BUBBLE_STROKE_DENSITY_MIN]
+        if dens_hits:
+            _b, top_d = max(dens_hits, key=lambda t: t[1])
+            flags.append(_flag(
+                "bubble_text_residue", WARN,
+                f"stroke_density={top_d:.3f} >= "
+                f"{rp.BUBBLE_STROKE_DENSITY_MIN} inside a cleaned "
+                "speech bubble — likely stylized text OCR could not see "
+                "(clean residue net missed or bypassed)",
+                scene=name, segment_id=segment_id))
     return flags
 
 
