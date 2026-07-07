@@ -1982,6 +1982,46 @@ def ken_variety_motions(n: int, fx: float, fy: float) -> List[Dict[str, Any]]:
     return [wide, tight, pull]
 
 
+def _rewrite_item_camera_for_ken(item: Dict[str, Any],
+                                 motions: List[Dict[str, Any]],
+                                 dims: Dict[str, Any]) -> None:
+    """The renderer clamps every cut's zoom to the ITEM-level camera:
+    Shot.tsx passes item.camera into Cut.tsx's zoomCap = min(MAX_ZOOM_CAP,
+    camera.max_zoom), further min'd to TEXT_ZOOM_CAP=1.06 when
+    camera.avoid_text_zoom (remotion/src/plan.ts). The planner mirrors
+    max_zoom off the item's ORIGINAL motion end (<=~1.16; 1.0 static) and
+    defaults avoid_text_zoom True — so without this rewrite the ken-variety
+    tight push (1.18->1.32) renders FLAT at 1.06 and the long-hold defect
+    ships invisibly. Raise max_zoom to cover the new sub-cut zooms; clear
+    avoid_text_zoom ONLY when every panel the item shows has nothing
+    readable left to protect: bubble text already blanked off (scene_dims
+    'blanked') and not a doc text panel. Stamped panel_kind=='system' cards
+    never reach the ken passes (skip_files), and the pixel-level 'sys' flag
+    is deliberately NOT consulted (the system-box YOLO overfires on
+    SFX/bubble text). Items with no camera are never clamped below
+    MAX_ZOOM_CAP — left untouched."""
+    cam = item.get("camera")
+    if not isinstance(cam, dict) or not cam:
+        return
+    cam = dict(cam)
+    need = max((max(float((m.get("zoom") or {}).get("start") or 1.0),
+                    float((m.get("zoom") or {}).get("end") or 1.0))
+                for m in motions), default=1.0)
+    if float(cam.get("max_zoom") or 0.0) < need:
+        cam["max_zoom"] = round(float(need), 3)
+    if cam.get("avoid_text_zoom"):
+        files = [str(x) for c in (item.get("cuts") or [])
+                 for x in (c.get("file"), c.get("file2")) if x]
+
+        def _text_gone(f: str) -> bool:
+            d = dims.get(f) or {}
+            return bool(d.get("blanked")) and not d.get("doc")
+
+        if files and all(_text_gone(f) for f in files):
+            cam["avoid_text_zoom"] = False
+    item["camera"] = cam
+
+
 def split_long_hold_cuts(
     plan: Dict[str, Any],
     *,
@@ -2017,6 +2057,7 @@ def split_long_hold_cuts(
         if not cuts:
             continue
         out_cuts: List[Dict[str, Any]] = []
+        split_motions: List[Dict[str, Any]] = []
         changed = False
         for c in cuts:
             f = str(c.get("file") or "")
@@ -2043,10 +2084,24 @@ def split_long_hold_cuts(
                                  "dur": d_k, "motion": m,
                                  "ken_variety": True})
                 acc = round(acc + d_k, 4)
+            # rounding the earlier weights can shave the remainder to
+            # 1.9999s at a pathological cap — a manufactured flash_cut.
+            # Shift the epsilon off the previous sub-cut (the while-guard
+            # above leaves it >=0.33s of slack at the feasibility boundary)
+            # so the floor holds and the total stays EXACT.
+            last, prev = out_cuts[-1], out_cuts[-2]
+            eps = round(_KV_MIN_SUBCUT_SEC - float(last["dur"]), 4)
+            if eps > 0:
+                prev["dur"] = round(float(prev["dur"]) - eps, 4)
+                last["dur"] = round(float(last["dur"]) + eps, 4)
+                last["start"] = round(float(last["start"]) - eps, 4)
+            split_motions.extend(motions)
             changed = True
             logs.append((str(item.get("segment_id") or ""), f, dur, n, src))
         if changed:
             item["cuts"] = out_cuts
+            # the item-level camera cap must not flatten the sub-cut zooms
+            _rewrite_item_camera_for_ken(item, split_motions, dims)
     return plan, logs
 
 
@@ -2079,17 +2134,21 @@ def ken_differentiate_echo_pairs(
     halves (no raw image) are skipped — raw-distinctness can't be proven."""
     skip = skip_files or set()
     dims = (plan or {}).get("scene_dims") or {}
-    ent: List[Tuple[str, Dict[str, Any]]] = []      # (segment_id, cut ref)
+    # (segment_id, cut ref, item ref). NOTE: deliberate divergence from
+    # prep_qa.iter_shown_cuts (its echo window includes split2 file2 halves):
+    # enforcement only walks cuts whose motion it could rewrite; QA measures
+    # the shown stream.
+    ent: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
     for item in (plan or {}).get("timeline") or []:
         if item.get("branding"):
             continue
         for c in item.get("cuts") or []:
             f = str(c.get("file") or "")
             if f and not c.get("file2") and not c.get("layout"):
-                ent.append((str(item.get("segment_id") or ""), c))
+                ent.append((str(item.get("segment_id") or ""), c, item))
 
     counts: Dict[str, int] = {}
-    for _seg, c in ent:
+    for _seg, c, _it in ent:
         counts[str(c["file"])] = counts.get(str(c["file"]), 0) + 1
 
     ch: Dict[str, Optional[int]] = {}
@@ -2115,12 +2174,12 @@ def ken_differentiate_echo_pairs(
     logs: List[Tuple[str, str, str, str, int, int]] = []
     seen_pairs: set = set()
     for j in range(len(ent)):
-        seg_j, cj = ent[j]
+        seg_j, cj, it_j = ent[j]
         fj = str(cj["file"])
         if fj in skip:
             continue
         for i in range(max(0, j - (window - 1)), j):
-            seg_i, ci = ent[i]
+            seg_i, ci, it_i = ent[i]
             fi = str(ci["file"])
             if not fi or fi == fj or fi in skip:
                 continue
@@ -2143,11 +2202,13 @@ def ken_differentiate_echo_pairs(
                 ci["motion"] = {**ken_variety_motions(2, fx, fy)[0],
                                 "echo_pair": fj}
                 ci["echo_differentiated"] = True
+                _rewrite_item_camera_for_ken(it_i, [ci["motion"]], dims)
             if _modifiable(fj, cj):
                 fx, fy, _s = focal_for_file(fj)
                 cj["motion"] = {**ken_variety_motions(2, fx, fy)[1],
                                 "echo_pair": fi}
                 cj["echo_differentiated"] = True
+                _rewrite_item_camera_for_ken(it_j, [cj["motion"]], dims)
             logs.append((seg_i, fi, seg_j, fj, sham, rham))
     return plan, logs
 

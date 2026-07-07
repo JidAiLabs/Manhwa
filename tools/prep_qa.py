@@ -461,6 +461,24 @@ def dup_shown_flags(seq: Sequence[Dict[str, Any]],
     return flags
 
 
+def echo_exempt_fn(dims: Dict[str, Any], vitems: Dict[str, Any]):
+    """STAMPED-only exemption for the perceptual_echo net — mirrors
+    _static_ceiling_exempt minus the aspect clause: doc dims + stamped
+    panel_kind=='system'. Deliberately NOT _qa_exempt: that one honors
+    scene_dims' PIXEL-level 'sys' flag, which the system-box YOLO overfires
+    on mere SFX/bubble text — the p000090/p000095 incident panels all
+    carried sys:True and would self-exempt the exact evidence class this
+    net exists to catch."""
+    def _exempt(f: str) -> bool:
+        d = dims.get(f) or {}
+        if d.get("doc"):
+            return True
+        pk = str((vitems.get(parent_scene(f)) or vitems.get(f)
+                  or {}).get("panel_kind") or "").strip().lower()
+        return pk == "system"
+    return _exempt
+
+
 def perceptual_echo_flags(seq: Sequence[Dict[str, Any]],
                           get_clean_img,
                           get_clean_boxes,
@@ -485,6 +503,9 @@ def perceptual_echo_flags(seq: Sequence[Dict[str, Any]],
     (split halves — raw-distinctness unprovable) are skipped. One flag per
     pair, carrying BOTH ham values."""
     exempt = is_exempt or (lambda f: False)
+    # NOTE: deliberate divergence from render_prep.ken_differentiate_echo_pairs'
+    # window arithmetic — QA walks the full SHOWN stream (split2 file2 halves
+    # included via iter_shown_cuts); enforcement only walks modifiable cuts.
     ent = [c for c in seq if not c.get("branding")]
     ch: Dict[str, Optional[int]] = {}
     rh: Dict[str, Optional[int]] = {}
@@ -2431,10 +2452,12 @@ def main() -> int:
     # distinct — the zoom-echo / husk-crop class dup_shown correctly ignores
     # but the viewer reads as a stutter. Same helpers as the checks above
     # (clean-crop masked hashing / raw masked hashing), so QA and render_prep's
-    # ken differentiation measure the same thing.
+    # ken differentiation measure the same thing. STAMPED-only exemption —
+    # _qa_exempt's pixel-level sys flag would self-exempt the evidence class
+    # (the p000090/p000095 incident panels all carried sys:True).
     flags.extend(perceptual_echo_flags(cuts, _clean_img, _qa_boxes,
                                        _raw_img, _raw_boxes,
-                                       is_exempt=_qa_exempt))
+                                       is_exempt=echo_exempt_fn(dims, vitems)))
 
     # vision-level checks once per shown parent scene
     seen_parents: set = set()

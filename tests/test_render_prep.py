@@ -2089,6 +2089,73 @@ def test_split_long_hold_20s_single_cut_into_three_ken_varied_subcuts():
     assert len({json.dumps(c["motion"], sort_keys=True) for c in cuts}) == 3
 
 
+def _effective_zoom_cap(camera):
+    """zoomCap reimplemented from remotion/src/plan.ts constants
+    (MAX_ZOOM_CAP=1.35, TEXT_ZOOM_CAP=1.06): hard = min(MAX_ZOOM_CAP,
+    camera.max_zoom ?? MAX_ZOOM_CAP); avoid_text_zoom -> min(hard, TEXT)."""
+    MAX_ZOOM_CAP, TEXT_ZOOM_CAP = 1.35, 1.06
+    cam = camera or {}
+    mz = cam.get("max_zoom")
+    hard = min(MAX_ZOOM_CAP, MAX_ZOOM_CAP if mz is None else float(mz))
+    return min(hard, TEXT_ZOOM_CAP) if cam.get("avoid_text_zoom") else hard
+
+
+def test_ken_split_rewrites_item_camera_so_zooms_survive_effective_cap():
+    # PRODUCTION-shaped item: the planner mirrors camera.max_zoom off the
+    # item's ORIGINAL motion end (1.08 here) and avoid_text_zoom defaults
+    # True — Cut.tsx's zoomCap (item-level camera, Shot.tsx) would clamp the
+    # 1.18->1.32 tight push to a STATIC 1.06 hold and the 22.8s defect would
+    # ship invisibly. The split must rewrite item['camera'] too.
+    def _plan(blanked):
+        return {"scene_dims": {"a.jpg": {"w": 795, "h": 832, "doc": False,
+                                         "sys": True,      # pixel-level YOLO
+                                         "blanked": blanked}},
+                "timeline": [{"segment_id": "g0020_p01", "duration_sec": 20.0,
+                              "camera": {"avoid_text_zoom": True,
+                                         "max_zoom": 1.08},
+                              "cuts": [{"file": "a.jpg", "start": 0.0,
+                                        "dur": 20.0}]}]}
+
+    out, logs = rp.split_long_hold_cuts(
+        _plan(True), max_hold_sec=10.0,
+        focal_for_file=lambda f: (0.7, 0.3, "art"))
+    item = out["timeline"][0]
+    assert len(item["cuts"]) == 3 and len(logs) == 1
+    cam = item["camera"]
+    # blanked non-doc panel: nothing readable left to protect -> cleared;
+    # the pixel-level sys:True must NOT keep the 1.06 text clamp
+    assert cam["avoid_text_zoom"] is False
+    assert cam["max_zoom"] >= 1.32
+    cap = _effective_zoom_cap(cam)
+    assert cap >= 1.32
+    for c in item["cuts"]:
+        z = c["motion"]["zoom"]
+        # every sub-cut zoom range survives the EFFECTIVE cap un-flattened:
+        # both endpoints inside [1.0, cap], so clamp() is the identity
+        assert 1.0 <= z["start"] <= cap and 1.0 <= z["end"] <= cap
+        assert abs(z["end"] - z["start"]) > 0.01
+    # pre-fix camera for contrast: effective cap 1.06 flattened the tight
+    # push (start 1.18 and end 1.32 both clamp to 1.06 -> zero travel)
+    pre = _effective_zoom_cap({"avoid_text_zoom": True, "max_zoom": 1.08})
+    tight = item["cuts"][1]["motion"]["zoom"]
+    assert pre == 1.06
+    assert min(tight["start"], pre) == min(tight["end"], pre) == pre
+
+    # text NOT blanked: max_zoom still raised, but the text clamp is KEPT
+    out2, _ = rp.split_long_hold_cuts(
+        _plan(False), max_hold_sec=10.0,
+        focal_for_file=lambda f: (0.7, 0.3, "art"))
+    cam2 = out2["timeline"][0]["camera"]
+    assert cam2["avoid_text_zoom"] is True and cam2["max_zoom"] >= 1.32
+
+    # no camera on the item (nothing clamps below MAX_ZOOM_CAP): untouched
+    plan3 = _plan(True)
+    del plan3["timeline"][0]["camera"]
+    out3, _ = rp.split_long_hold_cuts(
+        plan3, max_hold_sec=10.0, focal_for_file=lambda f: (0.7, 0.3, "art"))
+    assert "camera" not in out3["timeline"][0]
+
+
 def test_split_long_hold_two_way_and_untouched_cases():
     dims = {"a.jpg": {"w": 795, "h": 832},
             "wide.jpg": {"w": 1300, "h": 900},        # w/h>=1.3: cover drift
@@ -2160,12 +2227,15 @@ def test_echo_pair_p90_p95_gets_distinct_ken_regions():
     p90 = _fiximg("p000090.jpg")
     p95 = _fiximg("p000095.jpg")
     crop95 = p90[5:225, 5:395]
-    plan = {"scene_dims": {"p000090.jpg": {"w": 795, "h": 832},
+    plan = {"scene_dims": {"p000090.jpg": {"w": 795, "h": 832,
+                                           "blanked": True},
                            "p000095.jpg": {"w": 795, "h": 832}},
             "timeline": [
                 {"segment_id": "g0019_p00", "tts_text": "a",
+                 "camera": {"avoid_text_zoom": True, "max_zoom": 1.0},
                  "cuts": [{"file": "p000090.jpg", "start": 0.0, "dur": 5.0}]},
                 {"segment_id": "g0020_p01", "tts_text": "b",
+                 "camera": {"avoid_text_zoom": True, "max_zoom": 1.0},
                  "cuts": [{"file": "p000095.jpg", "start": 0.0, "dur": 6.0}]},
             ]}
     clean = {"p000090.jpg": p90, "p000095.jpg": crop95}
@@ -2187,6 +2257,15 @@ def test_echo_pair_p90_p95_gets_distinct_ken_regions():
     assert c0["motion"] != c1["motion"]
     assert (c0["file"], c0["dur"]) == ("p000090.jpg", 5.0)
     assert (c1["file"], c1["dur"]) == ("p000095.jpg", 6.0)
+    # ITEM cameras rewritten so the re-aimed zooms survive Cut.tsx's zoomCap:
+    # each member's cap covers its own motion; the text clamp clears only on
+    # the blanked panel (p000090), stays on the un-blanked one (p000095)
+    cam0 = out["timeline"][0]["camera"]
+    cam1 = out["timeline"][1]["camera"]
+    assert cam0["max_zoom"] >= max(c0["motion"]["zoom"].values())
+    assert cam1["max_zoom"] >= 1.32
+    assert cam0["avoid_text_zoom"] is False
+    assert cam1["avoid_text_zoom"] is True
 
 
 def test_echo_differentiation_ignores_distinct_panels_and_raw_twins():

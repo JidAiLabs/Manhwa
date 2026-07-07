@@ -2005,6 +2005,22 @@ def test_perceptual_echo_skips_raw_twins_window_exempt_and_rawless():
                                     lambda f: [], lambda f: raw.get(f),
                                     lambda f: rb.get(f, []),
                                     is_exempt=lambda f: True) == []
+    # the REAL wired exemption is STAMPED-only: scene_dims' pixel-level
+    # sys:True (system-box YOLO overfire — all five incident evidence panels
+    # carried it) must NOT self-exempt the pair; it STILL flags
+    dims_sys = {"p000090.jpg": {"w": 795, "h": 832, "sys": True},
+                "p000095.jpg": {"w": 795, "h": 832, "sys": True}}
+    fl = pq.perceptual_echo_flags(pair, lambda f: clean.get(f),
+                                  lambda f: [], lambda f: raw.get(f),
+                                  lambda f: rb.get(f, []),
+                                  is_exempt=pq.echo_exempt_fn(dims_sys, {}))
+    assert [f["scene"] for f in fl] == ["p000095.jpg"]
+    # a STAMPED panel_kind=='system' record DOES exempt (shared UI frames)
+    vit_sys = {"p000095.jpg": {"panel_kind": "system"}}
+    assert pq.perceptual_echo_flags(
+        pair, lambda f: clean.get(f), lambda f: [], lambda f: raw.get(f),
+        lambda f: rb.get(f, []),
+        is_exempt=pq.echo_exempt_fn(dims_sys, vit_sys)) == []
     # no raw scene image (split halves): raw-distinctness unprovable -> skip
     assert pq.perceptual_echo_flags(pair, lambda f: clean.get(f),
                                     lambda f: [], lambda f: None,
