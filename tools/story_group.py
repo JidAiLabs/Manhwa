@@ -62,6 +62,20 @@ DEFAULT_MAX_BEAT_LEN = 6
 # into the classic {scene_files: [...]} shape immediately after parsing, so
 # repair_to_shots and everything downstream never sees a range -- the
 # shots/groups output stays byte-shape-identical to before this schema change.
+# The beat shape is defined ONCE and shared by reference between the
+# whole-chapter schema and the chunk schema below, so the two can never drift.
+_BEATS_ITEMS_SCHEMA: Dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "from_index": {"type": "INTEGER"},
+        "to_index": {"type": "INTEGER"},
+        "segment": {"type": "STRING", "enum": list(_SEGMENTS)},
+        "arc_label": {"type": "STRING"},
+        "why": {"type": "STRING"},
+    },
+    "required": ["from_index", "to_index"],
+}
+
 GROUP_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
@@ -69,22 +83,30 @@ GROUP_SCHEMA: Dict[str, Any] = {
             "logline": {"type": "STRING", "minLength": 12},
             "premise": {"type": "STRING", "minLength": 12},
         }, "required": ["logline", "premise"]},
-        "beats": {"type": "ARRAY", "items": {
-            "type": "OBJECT",
-            "properties": {
-                "from_index": {"type": "INTEGER"},
-                "to_index": {"type": "INTEGER"},
-                "segment": {"type": "STRING", "enum": list(_SEGMENTS)},
-                "arc_label": {"type": "STRING"},
-                "why": {"type": "STRING"},
-            },
-            "required": ["from_index", "to_index"],
-        }},
+        "beats": {"type": "ARRAY", "items": _BEATS_ITEMS_SCHEMA},
     },
     "required": ["chapter", "beats"],
 }
 
-SYSTEM = (
+# CHUNK calls (the chunked fallback below) see a contiguous SLICE of the
+# chapter, never the whole thing — they cannot honestly write a whole-chapter
+# logline/premise; the dedicated spine call covers that. The old chunk path
+# reused GROUP_SCHEMA anyway, so constrained decoding FORCED the model to
+# fabricate a 12+-char spine per chunk that chunk_call_fn then discarded —
+# wasted decode plus an invitation to invent chapter-level claims from partial
+# evidence. Beats only; no chapter key at all.
+BEATS_ONLY_SCHEMA: Dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {"beats": {"type": "ARRAY", "items": _BEATS_ITEMS_SCHEMA}},
+    "required": ["beats"],
+}
+
+# Shared instruction core: everything both the whole-chapter call and a chunk
+# call need. SYSTEM (whole chapter) appends the spine ask; SYSTEM_CHUNK (a
+# slice) appends the beats-only line instead — mirroring the schema split
+# above, so the prompt and the schema always agree about whether a 'chapter'
+# object is wanted.
+_SYSTEM_CORE = (
     "You are a manhwa recap editor. You get a numbered sequence of panel "
     "descriptions from ONE chapter, in reading order. Segment them into STORY "
     "CONTEXT SPANS for the recap.\n"
@@ -111,6 +133,9 @@ SYSTEM = (
     "target a fixed number of spans or a fixed panel count. The downstream "
     "script/timeline renders panel-level cues; these spans are only story "
     "context and must follow the source's natural rhythm.\n"
+)
+
+SYSTEM = _SYSTEM_CORE + (
     "ALSO return 'chapter': a "
     "LOGLINE (one vivid sentence — what this chapter is about, its arc), and a "
     "PREMISE (1-2 sentences: the situation + the stakes), "
@@ -122,6 +147,14 @@ SYSTEM = (
     "the panels explicitly say so. Prefer a simple accurate sequence over a clever "
     "but unsupported causal connection. "
     "chapter.logline and chapter.premise are REQUIRED and MUST NEVER be blank."
+)
+
+# Chunk-call variant (pairs with BEATS_ONLY_SCHEMA): tells the model the truth
+# about what it is looking at, and asks for nothing it cannot honestly give.
+SYSTEM_CHUNK = _SYSTEM_CORE + (
+    "You are seeing a CONTIGUOUS SLICE of the chapter, not the whole chapter: "
+    "output beats only. Do NOT write any chapter summary, logline or premise — "
+    "the chapter spine is synthesized separately from all slices."
 )
 
 
@@ -212,13 +245,30 @@ def _dump_story_group_raw(ep_dir: str, *, raw_response: Any, parsed_obj: Any,
     return path
 
 
+# THE VERIFIED EFFECTIVE CONTEXT CEILING for gemma4:26b in this fleet.
+# Ground-truthed 2026-07-07 (read-only `ollama show gemma4:26b` on both
+# machines): the Air's Modelfile pins `PARAMETER num_ctx 8192` (model-level
+# cap); the Mini's Modelfile has NO num_ctx parameter, so the request rules
+# there — but 16384 requests are the production-verified SWA-cache-thrash
+# wedge (~32min stalls, see gemini_narrative_pass's num_ctx comment), and the
+# ORV ep1 grouping truncated silently at ~10.5K tokens when this path
+# requested 12288+. 8192 is also exactly what per-beat narration runs at
+# (STUDIO_BEATS_NUM_CTX default). Requesting above it wedges or silently
+# clamps; requesting below it starves the _PROMPT_TOKEN_BUDGET-sized prompt.
+_GROUP_NUM_CTX = 8192
+
+
 def _normalized_group_num_ctx(value: Any) -> int:
-    """The whole-chapter grouping prompt needs room for input plus JSON output."""
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        n = 16384
-    return max(12288, n)
+    """Pin the grouping call to the VERIFIED effective ceiling (8192 — see
+    _GROUP_NUM_CTX). The old behavior (max(12288, requested), default 16384)
+    asked for context the fleet never actually grants: above the Air's
+    model-level cap, into the Mini's SWA-thrash wedge zone, and past the point
+    where ollama silently truncates the prompt. Any requested value — higher,
+    lower, or unparseable — normalizes to the one size the payload budget
+    below is calibrated against (*value* is accepted only so the CLI flag
+    stays wire-compatible)."""
+    del value
+    return _GROUP_NUM_CTX
 
 
 def _gist(text: Any, limit: int = 160) -> str:
@@ -291,16 +341,27 @@ def _shrink_payload(payload: Dict[str, Any], limit: int) -> Dict[str, Any]:
 # EMPTY, which already eats most of a 5500-token budget by ~96 panels, leaving
 # no room for any real description. Recalibrated to 7000 (chars/3.5 estimate)
 # so a ~96-panel chapter (the verified ORV ep1 scale) stays a single call with
-# real content, while still leaving comfortable headroom under the ~8192
-# effective ceiling for the model's own output, and still forcing a 200+-panel
-# chapter (the backlog scale) into the chunked fallback below.
+# real content, while still forcing a 200+-panel chapter (the backlog scale)
+# into the chunked fallback below.
+#
+# 7000 is sized against the VERIFIED 8192 ceiling (_GROUP_NUM_CTX — Air
+# Modelfile `num_ctx 8192`, Mini wedges/truncates above it; checked 2026-07-07
+# via `ollama show gemma4:26b` on both machines): 8192 minus ~1000 tokens of
+# output headroom (a realistic range-beats response measured ~550 tokens),
+# with the remainder absorbing the chars/3.5 estimate error. Future
+# calibration signal: ollama returns the ACTUAL prompt size as
+# `prompt_eval_count` (already surfaced as usage["input"] by
+# _call_model_with_backoff) — compare it against _prompt_token_estimate on
+# real chapters before ever moving this number; do not guess.
 _CHARS_PER_TOKEN = 3.5
 _PROMPT_TOKEN_BUDGET = 7000
 # Shrink ladder, in order: 160 (default/full) -> 100 -> 60 -> (drop subjects).
 _GIST_SHRINK_STEPS = (160, 100, 60)
-# SYSTEM + GROUP_SCHEMA are sent on EVERY grouping call regardless of payload
-# size -- measured once so fit_grouping_payload can budget the PAYLOAD's own
-# share of _PROMPT_TOKEN_BUDGET.
+# SYSTEM + GROUP_SCHEMA are sent on EVERY whole-chapter grouping call
+# regardless of payload size -- measured once so fit_grouping_payload can
+# budget the PAYLOAD's own share of _PROMPT_TOKEN_BUDGET. Chunk calls send the
+# strictly SMALLER SYSTEM_CHUNK + BEATS_ONLY_SCHEMA pair, so budgeting against
+# the larger pair stays conservative for them.
 _FIXED_OVERHEAD_CHARS = len(SYSTEM) + len(json.dumps(GROUP_SCHEMA))
 
 
@@ -545,8 +606,8 @@ def _validated_beats_or_raise(parsed: Any, raw: Any, scene_order: List[str],
         "; refusing to continue")
 
 
-def _merge_seam(left: List[Dict[str, Any]], right: List[Dict[str, Any]]
-               ) -> List[Dict[str, Any]]:
+def _merge_seam(left: List[Dict[str, Any]], right: List[Dict[str, Any]],
+                *, max_beat_len: int = 0) -> List[Dict[str, Any]]:
     """Join two adjacent chunks' already-repaired shot lists in reading order.
     When the chunk split fell mid-beat (the last shot of the left chunk and
     the first shot of the right chunk share the same non-blank arc_label AND
@@ -554,7 +615,11 @@ def _merge_seam(left: List[Dict[str, Any]], right: List[Dict[str, Any]]
     ongoing beat), fold them into one shot instead of leaving a spurious cut
     where the story never actually breaks. This is deliberately narrow: only
     the exact chunk seam is ever considered, never general same-arc_label
-    merging across the whole chapter."""
+    merging across the whole chapter. When *max_beat_len* is set, a fold whose
+    COMBINED panel count would exceed it is skipped -- each chunk's own
+    repair_to_shots already enforced the cap, and the merge runs AFTER repair,
+    so nothing downstream would ever re-split an over-cap seam beat (the exact
+    overflow the cap exists to prevent: gemma parse-fails on giant beats)."""
     if not left:
         return list(right)
     if not right:
@@ -563,9 +628,15 @@ def _merge_seam(left: List[Dict[str, Any]], right: List[Dict[str, Any]]
     arc_a = str(a.get("arc_label") or "").strip().lower()
     arc_b = str(b.get("arc_label") or "").strip().lower()
     if arc_a and arc_a == arc_b and a.get("segment") == b.get("segment"):
+        merged_files = list(a["scene_files"]) + list(b["scene_files"])
+        if max_beat_len and len(merged_files) > max_beat_len:
+            print(f"[story_group] seam-merge skipped: folded beat would span "
+                  f"{len(merged_files)} panels > max_beat_len={max_beat_len} "
+                  f"(arc_label={a.get('arc_label')!r})")
+            return left + right
         print(f"[story_group] seam-merge: chunk boundary folded "
               f"(arc_label={a.get('arc_label')!r}, segment={a.get('segment')!r})")
-        merged = {**a, "scene_files": list(a["scene_files"]) + list(b["scene_files"])}
+        merged = {**a, "scene_files": merged_files}
         return left[:-1] + [merged] + right[1:]
     return left + right
 
@@ -598,7 +669,7 @@ def _group_chunked(panels: List[Dict[str, Any]], chunk_call_fn: Callable[..., An
                           out_path=out_path, model=model)
     right = _group_chunked(panels[mid:], chunk_call_fn, max_beat_len,
                            out_path=out_path, model=model)
-    return _merge_seam(left, right)
+    return _merge_seam(left, right, max_beat_len=max_beat_len)
 
 
 def group_chapter(panels: List[Dict[str, Any]], call_fn: Callable[..., Any],
@@ -906,9 +977,12 @@ def main() -> int:
                     help="0 = deterministic beat boundaries + segment tags")
     ap.add_argument(
         "--num-ctx", type=int,
-        default=int(os.environ.get("STUDIO_GROUP_NUM_CTX", "16384")),
-        help="Ollama context for the one whole-chapter grouping call; kept "
-             "separate from the 8K per-beat narration context")
+        default=int(os.environ.get("STUDIO_GROUP_NUM_CTX", "8192")),
+        help="Ollama context for the grouping call. Normalized to the "
+             "verified 8192 effective ceiling regardless (see "
+             "_normalized_group_num_ctx) — the payload budget guarantees the "
+             "prompt fits it; higher requests wedge/clamp, lower ones starve "
+             "the budgeted prompt")
     ap.add_argument("--keep-chrome", action="store_true")
     args = ap.parse_args()
 
@@ -960,9 +1034,10 @@ def main() -> int:
     client = None
     model = args.ollama_model
     if args.backend == "ollama":
-        # _call_model reads STUDIO_BEATS_NUM_CTX. Override it only inside this
-        # one-call grouping subprocess: the whole chapter payload can exceed 8K,
-        # while per-beat narration intentionally stays at 8K to avoid SWA thrash.
+        # _call_model reads STUDIO_BEATS_NUM_CTX. Grouping runs at the SAME
+        # verified 8192 ceiling as per-beat narration (_GROUP_NUM_CTX):
+        # fit_grouping_payload guarantees the prompt fits under it, so this
+        # call never needs — and the fleet never grants — more.
         os.environ["STUDIO_BEATS_NUM_CTX"] = str(
             _normalized_group_num_ctx(args.num_ctx))
     if args.backend == "vertex":
@@ -988,8 +1063,14 @@ def main() -> int:
         # stays valid across attempts.
         scene_order = [p.get("scene_file") for p in (payload.get("panels") or [])]
         n_panels = len(scene_order)
+        # A chunk call (require_spine=False) sees a SLICE: beats-only schema +
+        # the chunk-variant instruction, so constrained decoding is never
+        # forced to fabricate a whole-chapter spine that gets discarded. The
+        # whole-chapter single-call path keeps GROUP_SCHEMA/SYSTEM unchanged.
+        base_instruction = SYSTEM if require_spine else SYSTEM_CHUNK
+        schema = GROUP_SCHEMA if require_spine else BEATS_ONLY_SCHEMA
         for attempt in range(2):
-            instruction = SYSTEM
+            instruction = base_instruction
             cur_payload = payload
             if attempt and parsed is None:
                 # DEFENSIVE RETRY: the previous attempt failed to parse AT ALL
@@ -1020,7 +1101,7 @@ def main() -> int:
             sent_tok = _prompt_token_estimate(cur_payload)
             parsed, raw, _usage = _call_model_with_backoff(
                 client=client, model=model, system_instruction=instruction,
-                user_payload=cur_payload, image_paths=[], response_schema=GROUP_SCHEMA,
+                user_payload=cur_payload, image_paths=[], response_schema=schema,
                 max_output_tokens=3000, temperature=args.temperature,
                 backoff_max=60.0, backend=args.backend)
             last_call["raw"], last_call["parsed"] = raw, parsed

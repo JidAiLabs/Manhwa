@@ -31,6 +31,43 @@ def test_sha_stable_under_tag_ws_case_but_differs_on_edit():
     assert a != d               # genuine edit -> different fingerprint
 
 
+# ---- leaked mood-label strip in the fingerprint (retroactive remediation) --
+# TTS strips a leaked bare mood label before speaking ("Dramatic: He's…" is
+# voiced without the label), so the fingerprint must ignore it too. The 18
+# round-3 leaked clips carry a text_sha computed on the DIRTY text (old
+# normalize) — the freshly computed clean sha then mismatches -> audio_stale ->
+# exactly those clips re-voice on the next voiced run; clean clips untouched.
+
+def test_normalize_strips_leaked_mood_label_dirty_equals_clean():
+    clean = "He's free-falling down a rocky cliff, screaming."
+    for dirty in [
+        "Dramatic: He's free-falling down a rocky cliff, screaming.",  # colon
+        "Dramatic He's free-falling down a rocky cliff, screaming.",   # bare
+        # the double-mention shape (bracket tag over an already-leaked line)
+        "[dramatic] Dramatic: He's free-falling down a rocky cliff, screaming.",
+    ]:
+        assert nc.narration_sha(dirty) == nc.narration_sha(clean), dirty
+
+
+def test_normalize_leak_strip_never_touches_real_narration():
+    # pronoun-gated bare/comma form: proper nouns and common nouns after the
+    # mood word are REAL narration — same fingerprint as before, no re-voice.
+    for line in [
+        "Tense, Mira grips the railing.",
+        "Calm, Prince Cheon steadies his blade.",
+        "Dramatic tension fills the hall.",
+    ]:
+        assert nc.normalize_narration(line) == line.casefold(), line
+
+
+def test_narration_sha_pinned_no_global_cache_bust():
+    # PINNED fingerprint of a normal line: proves the leak-strip extension did
+    # not shift the normalization for clean text — a change here would stale
+    # EVERY cached clip fleet-wide, not just the 18 leaked ones.
+    assert nc.narration_sha("He runs.") == (
+        "627b648f575876cb2ba5aed936672d54f9b6fdef860e3d5961cbb954efef5eba")
+
+
 # ---- consistency over a plan + index ------------------------------------
 
 def _plan(*segs):

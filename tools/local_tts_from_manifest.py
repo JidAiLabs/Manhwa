@@ -39,7 +39,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-from narration_consistency import narration_sha  # noqa: E402
+from narration_consistency import (  # noqa: E402
+    MOOD_KEYWORDS,
+    MOOD_LEAK_STRIP_RE as _MOOD_LEAK_STRIP_RE,
+    narration_sha,
+)
 from manifest_io import write_manifest, input_sha  # noqa: E402
 
 # tts_align is a sibling module in tools/; import it the same way this module
@@ -90,7 +94,11 @@ _SEGMENT_WAV_RE = re.compile(r"^g\d{4}_p\d{2}\.wav$")
 # its sentiment to expressiveness so local TTS still tracks scene emotion.
 # "comic" (2026-07-07): not an ElevenLabs-v3 tag, but a CONFIRMED-in-production
 # self-invented tone word (the writer free-labels a wry/dark-humor beat the same
-# way it free-labels a "dramatic" one — see MOOD_KEYWORDS below).
+# way it free-labels a "dramatic" one). The WORD list itself is
+# narration_consistency.MOOD_KEYWORDS (single authority — the sha normalization
+# must see the same vocabulary); this table pairs each word with its
+# exaggeration, and the import-time guard below fails loud if the two ever
+# drift. Add a new mood word in BOTH places.
 _EMOTION_BY_KEYWORD: List[Tuple[str, float]] = [
     ("whisper", 0.25), ("calm", 0.30), ("somber", 0.30), ("sad", 0.35),
     ("serious", 0.45), ("neutral", 0.45), ("curious", 0.50), ("comic", 0.55),
@@ -100,27 +108,14 @@ _EMOTION_BY_KEYWORD: List[Tuple[str, float]] = [
 ]
 _DEFAULT_EXAGGERATION = 0.5
 
-# Single authority for "words the writer/TTS pipeline treats as a mood/tone
-# label" — derived (not duplicated) from the keyword table above, so a new
-# keyword only needs to be added there. Consumed by this module's own
-# unbracketed-leak stripper below AND by recap_style.mentions_mood_tag_leak
-# (the generation-time + QA detector) so both sides of the leak-net can never
-# drift out of sync.
-MOOD_KEYWORDS: Tuple[str, ...] = tuple(kw for kw, _ in _EMOTION_BY_KEYWORD)
-
-# A BARE (unbracketed) mood/tone word at the very start of a line, immediately
-# followed by the sentence's real capitalized opening ("DRAMATIC: He's
-# tumbling…", normalized by normalize_caps_for_tts to "Dramatic: He's
-# tumbling…") is pipeline/authoring vocabulary read aloud — the round-3 Nano
-# ch1 regression (18 segments: 15 "Dramatic:", 3 "Comic:"). The legitimate
-# form is ALWAYS bracketed ("[dramatic] He's…"); this is the SAME leak class
-# _TAG_RE already strips, just missing its brackets. An optional ':'/',' plus
-# a following CAPITALIZED word gates the match so ordinary prose that merely
-# STARTS with one of these words as a real adjective ("Dramatic reveals stay
-# restrained…") is left alone — see tests for the precision tradeoff.
-_MOOD_LEAK_STRIP_RE = re.compile(
-    r"^\s*(?i:%s)\b[:,]?\s+(?=[A-Z])" % "|".join(re.escape(w) for w in MOOD_KEYWORDS)
-)
+# MOOD_KEYWORDS + _MOOD_LEAK_STRIP_RE are imported from narration_consistency
+# (see the authority comment there): the leak stripper below, recap_style's
+# mentions_mood_tag_leak (generation-time + QA detector), and narration_sha's
+# normalization all consume the ONE compiled pattern, so a clip's spoken text
+# and its text_sha can never disagree about what a leak is.
+assert tuple(kw for kw, _ in _EMOTION_BY_KEYWORD) == MOOD_KEYWORDS, (
+    "emotion dial drifted from narration_consistency.MOOD_KEYWORDS — "
+    "add/remove mood words in both places")
 
 
 def leading_tag(text: str) -> Optional[str]:
@@ -131,10 +126,11 @@ def leading_tag(text: str) -> Optional[str]:
 
 def strip_bracket_tags(text: str) -> str:
     """Remove all ``[tag]`` markers AND a leaked bare (unbracketed) mood/tone
-    prefix ("Dramatic: ", "Comic He's…" — see _MOOD_LEAK_STRIP_RE), then
-    collapse whitespace (what TTS speaks). Order matters: stripping brackets
-    FIRST also catches the double-mention shape ("[dramatic] Dramatic: …")
-    that script_expander's escalator can produce over an already-leaked line."""
+    prefix ("Dramatic: He's…", "Comic He's…" — see narration_consistency.
+    MOOD_LEAK_STRIP_RE for the colon/pronoun gating), then collapse whitespace
+    (what TTS speaks). Order matters: stripping brackets FIRST also catches the
+    double-mention shape ("[dramatic] Dramatic: …") that script_expander's
+    escalator can produce over an already-leaked line."""
     s = re.sub(r"\s+", " ", _TAG_RE.sub(" ", text or "")).strip()
     return _MOOD_LEAK_STRIP_RE.sub("", s, count=1)
 

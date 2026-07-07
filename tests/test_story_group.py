@@ -113,6 +113,30 @@ def test_group_schema_requires_nonoptional_story_spine_fields():
     assert chapter["properties"]["premise"]["minLength"] >= 1
 
 
+def test_beats_only_schema_has_no_chapter_and_shares_the_beat_shape():
+    # CHUNK calls see a SLICE: the schema must not even OFFER a chapter key —
+    # the old reuse of GROUP_SCHEMA forced constrained decoding to fabricate a
+    # 12+-char spine per chunk that chunk_call_fn discarded.
+    assert set(sg.BEATS_ONLY_SCHEMA["required"]) == {"beats"}
+    assert "chapter" not in sg.BEATS_ONLY_SCHEMA["properties"]
+    # single authority: the beat item shape is the SAME OBJECT as the
+    # whole-chapter schema's, so the two can never drift.
+    assert (sg.BEATS_ONLY_SCHEMA["properties"]["beats"]["items"]
+            is sg.GROUP_SCHEMA["properties"]["beats"]["items"])
+
+
+def test_system_chunk_asks_for_beats_only_on_a_slice():
+    # prompt and schema must agree: the chunk instruction names the slice and
+    # forbids the spine, while the whole-chapter SYSTEM still requires it.
+    assert "CONTIGUOUS SLICE" in sg.SYSTEM_CHUNK
+    assert "beats only" in sg.SYSTEM_CHUNK
+    assert "Do NOT write any chapter summary" in sg.SYSTEM_CHUNK
+    assert "MUST NEVER be blank" in sg.SYSTEM   # whole-chapter path unchanged
+    # both variants share the core segmentation contract verbatim
+    assert sg.SYSTEM.startswith(sg._SYSTEM_CORE)
+    assert sg.SYSTEM_CHUNK.startswith(sg._SYSTEM_CORE)
+
+
 def test_chapter_spine_complete_rejects_blank_fields():
     assert sg._chapter_spine_complete(
         {"logline": "A prince is hunted.", "premise": "His bloodline is fatal."})
@@ -120,10 +144,20 @@ def test_chapter_spine_complete_rejects_blank_fields():
     assert not sg._chapter_spine_complete({})
 
 
-def test_grouping_context_cannot_starve_structured_output():
-    assert sg._normalized_group_num_ctx(None) == 16384
-    assert sg._normalized_group_num_ctx(8192) == 12288
-    assert sg._normalized_group_num_ctx(16384) == 16384
+def test_grouping_num_ctx_pinned_to_verified_ceiling():
+    """GROUND-TRUTHED 2026-07-07 (`ollama show gemma4:26b`, both machines):
+    the Air's Modelfile pins num_ctx 8192; the Mini has no Modelfile cap but
+    16384 is the production-verified SWA-thrash wedge and the ORV grouping
+    truncated silently when 12288+ was requested. The old max(12288, n)
+    normalization requested context the fleet never grants — every request
+    now pins to the 8192 ceiling the payload budget is calibrated against."""
+    assert sg._GROUP_NUM_CTX == 8192
+    assert sg._normalized_group_num_ctx(None) == 8192
+    assert sg._normalized_group_num_ctx(8192) == 8192
+    assert sg._normalized_group_num_ctx(16384) == 8192   # never the wedge zone
+    assert sg._normalized_group_num_ctx(4096) == 8192    # never starved either
+    # the payload budget keeps ~1000+ tokens of output headroom under it
+    assert sg._PROMPT_TOKEN_BUDGET <= sg._GROUP_NUM_CTX - 1000
 
 
 def test_nonstory_files_drops_chrome_empty_and_parse_failures():
@@ -988,7 +1022,11 @@ def test_200_panel_chapter_chunks_rebases_indices_and_merges_the_seam(tmp_path, 
             return ({"chapter": {"logline": "A traveler crosses the dead land.",
                                   "premise": "The road home is longer than a life."}},
                     "SPINE_RAW", {})
-        assert kw["response_schema"] is sg.GROUP_SCHEMA
+        # the ENFORCED chunk contract: beats-only schema (no chapter key to
+        # fabricate) + the slice-variant instruction — never the whole-chapter
+        # GROUP_SCHEMA/SYSTEM pair.
+        assert kw["response_schema"] is sg.BEATS_ONLY_SCHEMA
+        assert "CONTIGUOUS SLICE" in kw["system_instruction"]
         group_calls.append(kw["user_payload"])
         chunk_panels = kw["user_payload"]["panels"]
         n = len(chunk_panels)
@@ -1042,6 +1080,46 @@ def test_200_panel_chapter_chunks_rebases_indices_and_merges_the_seam(tmp_path, 
     assert story["logline"] == "A traveler crosses the dead land."
     assert [a["arc_label"] for a in story["arc"]] == [
         "the road", "the gate", "the return"]
+
+
+# ---------------------------------------------------------------------------
+# _merge_seam: the chunk-boundary fold. Same-arc_label+segment seams fold into
+# one shot; differing labels never fold; and (2026-07-07) a fold that would
+# blow past max_beat_len is skipped — each chunk's repair_to_shots already
+# enforced the cap, the merge runs AFTER repair, and nothing downstream would
+# re-split an over-cap seam beat (the giant-beat overflow the cap prevents).
+# ---------------------------------------------------------------------------
+
+def _shot(files, arc="the gate", segment="present"):
+    return {"shot_id": 1, "scene_files": list(files),
+            "arc_label": arc, "segment": segment}
+
+
+def test_merge_seam_differing_arc_labels_never_fold():
+    left = [_shot(["p0", "p1"], arc="the road")]
+    right = [_shot(["p2", "p3"], arc="the gate")]
+    merged = sg._merge_seam(left, right, max_beat_len=6)
+    assert [s["scene_files"] for s in merged] == [["p0", "p1"], ["p2", "p3"]]
+
+
+def test_merge_seam_matching_labels_over_cap_do_not_fold():
+    left = [_shot(["p0", "p1", "p2", "p3"])]
+    right = [_shot(["p4", "p5", "p6"])]
+    merged = sg._merge_seam(left, right, max_beat_len=6)   # 4+3=7 > 6
+    assert [s["scene_files"] for s in merged] == [
+        ["p0", "p1", "p2", "p3"], ["p4", "p5", "p6"]]
+    assert all(len(s["scene_files"]) <= 6 for s in merged)
+
+
+def test_merge_seam_matching_labels_under_cap_fold_as_before():
+    left = [_shot(["p0", "p1"])]
+    right = [_shot(["p2", "p3"])]
+    merged = sg._merge_seam(left, right, max_beat_len=6)   # 2+2=4 <= 6
+    assert [s["scene_files"] for s in merged] == [["p0", "p1", "p2", "p3"]]
+    # cap disabled (0) keeps the historic unbounded fold
+    big_l = [_shot([f"p{i}" for i in range(50)])]
+    big_r = [_shot([f"q{i}" for i in range(50)])]
+    assert len(sg._merge_seam(big_l, big_r, max_beat_len=0)) == 1
 
 
 def test_chunk_parse_failure_fails_loudly_with_measured_prompt_size(tmp_path, monkeypatch):

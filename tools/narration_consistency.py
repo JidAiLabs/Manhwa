@@ -19,19 +19,64 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ALL [mood]/[delivery] bracket tags, anywhere in the line — TTS strips every
 # one of them before synthesis (strip_bracket_tags), so the spoken content must
 # ignore them wherever they sit, not just at the start.
 _BRACKET_TAGS = re.compile(r"\[[^\]]*\]")
 
+# --- leaked mood/tone label (single authority) -------------------------------
+# The words the writer/TTS pipeline treats as mood/tone labels. The tuple lives
+# HERE — the import root: local_tts_from_manifest imports this module (its
+# emotion dial covers the same words, guarded at its import), recap_style's QA
+# detector consumes the compiled pattern below — so the TTS stripper, the
+# generation-time/QA leak-net, and the sha normalization can never drift apart.
+# Add a new mood word here AND its exaggeration float in
+# local_tts_from_manifest._EMOTION_BY_KEYWORD (import-time guard fails loud on
+# any mismatch).
+MOOD_KEYWORDS: Tuple[str, ...] = (
+    "whisper", "calm", "somber", "sad", "serious", "neutral", "curious",
+    "comic", "tense", "nervous", "excited", "intense", "dramatic", "angry",
+    "shout", "explosive", "scream",
+)
+
+# A BARE (unbracketed) mood/tone word opening a line is pipeline/authoring
+# vocabulary spoken aloud (round-3 Nano ch1: 18 segments, 15 "Dramatic:",
+# 3 "Comic:") — the SAME leak class _BRACKET_TAGS strips, just missing its
+# brackets. Two shapes, gated differently (2026-07-07 precision fix — the old
+# single [:,]?\s+[A-Z] gate silently deleted REAL narration like
+# "Tense, Mira grips the railing."):
+#   - COLON form ("Dramatic: He's…"): any capitalized next word. ALL 18
+#     production leaks were this shape; a genuine sentence essentially never
+#     opens "Calm: The…".
+#   - BARE/COMMA form ("Dramatic He's…", "Calm, He lowers…"): only when the
+#     next word is a closed CAPITALIZED-PRONOUN set — a fresh sentence start
+#     right after a dangling label. Proper nouns ("Tense, Mira grips…") and
+#     common nouns ("Dramatic tension fills…") never match, so ordinary prose
+#     that merely starts with a mood word as a real adjective is left alone.
+# (?i:) scopes case-folding to the keyword alternation only; the pronoun gate
+# stays case-sensitive on purpose. Lookaheads keep the sentence body intact,
+# so one pattern serves both stripping (sub) and detection (match).
+_LEAK_PRONOUNS: Tuple[str, ...] = (
+    "He", "She", "They", "It", "We", "I", "His", "Her", "Their")
+MOOD_LEAK_STRIP_RE = re.compile(
+    r"^\s*(?i:%s)\b(?::\s+(?=[A-Z])|,?\s+(?=(?:%s)\b))"
+    % ("|".join(re.escape(w) for w in MOOD_KEYWORDS),
+       "|".join(_LEAK_PRONOUNS)))
+
 
 def normalize_narration(text: Optional[str]) -> str:
-    """Canonical spoken-content form: every bracket tag removed, whitespace
-    collapsed, casefolded. Two lines that would be SPOKEN identically normalize
-    to the same string."""
+    """Canonical spoken-content form: every bracket tag removed, a leaked bare
+    mood/tone prefix removed (the TTS stripper removes it before synthesis, so
+    the spoken content must ignore it too — a clip voiced from the dirty text
+    then fingerprints stale against the clean text and re-voices exactly once),
+    whitespace collapsed, casefolded. Two lines that would be SPOKEN
+    identically normalize to the same string. The leak strip runs BEFORE
+    casefold (the pronoun gate is case-sensitive) and only ever removes the
+    one leading label."""
     t = _BRACKET_TAGS.sub(" ", text or "")
+    t = MOOD_LEAK_STRIP_RE.sub("", t, count=1)
     return re.sub(r"\s+", " ", t).strip().casefold()
 
 

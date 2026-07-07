@@ -829,6 +829,8 @@ def test_panel_as_ui_filler_mutation_is_shot_description():
 def test_mentions_mood_tag_leak_catches_the_real_round3_shapes():
     # round-3 Nano ch1 regression: 18 segments (15 "Dramatic:", 3 "Comic:")
     # voiced a bare mood/tone label instead of the sanctioned bracketed tag.
+    # ALL 18 real leaks were colon-form; the bare/comma form only counts when
+    # a fresh capitalized PRONOUN sentence follows the dangling label.
     for bad in [
         "Dramatic: He’s tumbling down a massive cliff, screaming his "
         "lungs out while plummeting into the abyss.",
@@ -837,7 +839,7 @@ def test_mentions_mood_tag_leak_catches_the_real_round3_shapes():
         "was his big attempt at revenge.",
         "DRAMATIC: He's tumbling down a massive cliff.",   # raw writer caps
         "Dramatic He's free-falling down a rocky cliff, screaming.",  # no colon
-        "calm, Jang lowers his blade and breathes.",       # lowercase + comma
+        "calm, He lowers his blade and breathes.",  # comma + pronoun restart
     ]:
         assert rs.mentions_mood_tag_leak(bad), bad
 
@@ -850,6 +852,14 @@ def test_mentions_mood_tag_leak_silent_on_story_and_bracket_forms():
         # continuing in lowercase, is not a leaked label
         "Dramatic reveals stay restrained even in the quiet panels.",
         "Serious injuries mount as the battle rages on.",
+        "Dramatic tension fills the hall.",
+        # PRECISION (2026-07-07): mood word + comma + PROPER NOUN is real
+        # narration, not a dangling label — the old any-capital gate flagged
+        # these and the TTS-side stripper (same pattern) silently deleted the
+        # mood word from the voiced text.
+        "Tense, Mira grips the railing.",
+        "Calm, Prince Cheon steadies his blade.",
+        "calm, Jang lowers his blade and breathes.",
         "",
     ]:
         assert not rs.mentions_mood_tag_leak(good), good

@@ -71,12 +71,37 @@ def test_strip_bracket_tags_leaves_ordinary_prose_alone():
     assert lt.strip_bracket_tags("[tense] He runs [beat] now.") == "He runs now."
 
 
+@pytest.mark.parametrize("line", [
+    # PRECISION (2026-07-07): the old [:,]?\s+[A-Z] gate fired on ANY
+    # capitalized next word, silently deleting real narration ("Tense, " was
+    # eaten) with zero QA visibility — the TTS text is ephemeral. The bare/
+    # comma form now requires a closed capitalized-pronoun set; proper nouns
+    # and common nouns never strip. (All 18 real production leaks were
+    # colon-form, which keeps its any-capital gate.)
+    "Tense, Mira grips the railing.",
+    "Calm, Prince Cheon steadies his blade.",
+    "Dramatic tension fills the hall.",
+])
+def test_strip_bracket_tags_keeps_mood_word_openers_of_real_narration(line):
+    assert lt.strip_bracket_tags(line) == line
+
+
+def test_strip_bracket_tags_comma_pronoun_form_still_strips():
+    # the comma branch stays alive for the actual leak shape: label + fresh
+    # PRONOUN sentence start.
+    assert lt.strip_bracket_tags("Calm, He lowers the blade.") == \
+        "He lowers the blade."
+
+
 def test_mood_keywords_include_confirmed_production_leak_words():
-    # single authority: dramatic + comic (both confirmed in the round-3
-    # regression) must be present so the leak-net derived from this tuple
-    # catches both real shapes.
+    # single authority (narration_consistency.MOOD_KEYWORDS, re-exported
+    # here; the import-time guard pins the emotion dial to the same words):
+    # dramatic + comic (both confirmed in the round-3 regression) must be
+    # present so the leak-net catches both real shapes.
     assert "dramatic" in lt.MOOD_KEYWORDS
     assert "comic" in lt.MOOD_KEYWORDS
+    # the emotion dial and the canonical vocabulary cover each other exactly
+    assert tuple(kw for kw, _ in lt._EMOTION_BY_KEYWORD) == lt.MOOD_KEYWORDS
 
 
 def test_exaggeration_to_instruction_scales():

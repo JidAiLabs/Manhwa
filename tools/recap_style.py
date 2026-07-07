@@ -17,11 +17,12 @@ from beats_segments import (  # noqa: E402
     has_native_segments,
     write_segment_lines,
 )
-# single authority for "recognized mood/tone words" — see local_tts_from_
-# manifest.MOOD_KEYWORDS docstring; imported here so the generation-time +
-# QA leak-net (mentions_mood_tag_leak, below) never drifts from the TTS-side
-# stripper that consumes the same tuple.
-from local_tts_from_manifest import MOOD_KEYWORDS  # noqa: E402
+# single authority for the leaked-mood-label pattern — see the
+# narration_consistency.MOOD_LEAK_STRIP_RE comment block; imported here so the
+# generation-time + QA leak-net (mentions_mood_tag_leak, below) never drifts
+# from the TTS-side stripper and the sha normalization that consume the SAME
+# compiled pattern.
+from narration_consistency import MOOD_LEAK_STRIP_RE  # noqa: E402
 
 
 RECAP_STYLE_RULES = """RECAP-CHANNEL WRITING RULES — apply these while preserving
@@ -349,23 +350,21 @@ def mentions_figures_leak(text: str) -> bool:
 # spoken aloud instead of story — just missing its brackets, so it slips past
 # every bracket-only sanitizer (_MOOD_PREFIX_RE in gemini_narrative_pass.py,
 # the leading-tag strip in prep_qa.py, local_tts_from_manifest.strip_bracket_
-# tags's old behavior). Word list is MOOD_KEYWORDS (single authority — add a
-# keyword there, not here). An optional ':'/',' plus a following CAPITALIZED
-# word gates the match so ordinary prose that merely STARTS with one of these
-# words as a real adjective ("Dramatic reveals stay restrained…", "Serious
-# injuries mount…") is left alone: the second word almost never capitalizes
-# in a genuine sentence, only when the model is actually opening a NEW
-# sentence right after its own dangling label.
-_MOOD_TAG_LEAK_RE = re.compile(
-    r"^\s*(?i:%s)\b[:,]?\s+[A-Z]" % "|".join(re.escape(w) for w in MOOD_KEYWORDS)
-)
+# tags's old behavior). Detection here is the SAME compiled pattern the TTS
+# stripper and narration_sha use (narration_consistency.MOOD_LEAK_STRIP_RE —
+# single authority; add keywords there): colon form matches any capitalized
+# next word (all 18 production leaks were colon-form); the bare/comma form is
+# gated to a closed capitalized-pronoun set so real narration that merely
+# STARTS with a mood word ("Tense, Mira grips the railing.", "Dramatic
+# reveals stay restrained…") is never flagged.
 
 
 def mentions_mood_tag_leak(text: str) -> bool:
-    """True when a line OPENS with a bare (unbracketed) mood/tone word
-    immediately followed by a fresh capitalized sentence start — the leaked
-    label shape, never a legitimate bracketed tag or ordinary prose."""
-    return bool(_MOOD_TAG_LEAK_RE.match(str(text or "")))
+    """True when a line OPENS with a bare (unbracketed) mood/tone word read
+    as a dangling label — colon form, or comma/bare form followed by a fresh
+    pronoun sentence start — never a legitimate bracketed tag, a proper-noun
+    sentence, or ordinary prose."""
+    return bool(MOOD_LEAK_STRIP_RE.match(str(text or "")))
 
 
 def _words(text: str) -> List[str]:
