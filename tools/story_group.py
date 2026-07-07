@@ -125,6 +125,39 @@ SYSTEM = (
 )
 
 
+# CHUNKED FALLBACK spine call (see fit_grouping_payload/group_chapter below): a
+# chapter too large for one grouping call is split into contiguous chunks, each
+# grouped independently -- no single call ever sees the whole panel sequence, so
+# none of them can honestly synthesize a WHOLE-CHAPTER logline/premise. Instead
+# ONE extra, tiny call gets just the ordered arc_label of every beat (across all
+# chunks) plus a gist of the first/last panel -- enough to write the spine
+# without ever re-sending the full sequence that overflowed in the first place.
+CHAPTER_SPINE_SCHEMA: Dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "chapter": {"type": "OBJECT", "properties": {
+            "logline": {"type": "STRING", "minLength": 12},
+            "premise": {"type": "STRING", "minLength": 12},
+        }, "required": ["logline", "premise"]},
+    },
+    "required": ["chapter"],
+}
+
+SYSTEM_SPINE = (
+    "You are a manhwa recap editor. This chapter was too large to group in one "
+    "pass, so it was split into chunks and grouped separately. You get the "
+    "ordered arc_label of every story beat across the WHOLE chapter (in "
+    "reading order), plus a short description of the very first and very last "
+    "panel. From this alone, write the chapter 'spine': a LOGLINE (one vivid "
+    "sentence -- what this chapter is about, its arc) and a PREMISE (1-2 "
+    "sentences: the situation + the stakes). Base it ONLY on the arc labels "
+    "and first/last panel given -- do not invent details, and do not fuse "
+    "separate facts into a new cause, origin, inheritance, identity, or "
+    "timeline. chapter.logline and chapter.premise are REQUIRED and MUST "
+    "NEVER be blank."
+)
+
+
 def _norm_segment(s: Any) -> str:
     s = str(s or "").strip().lower()
     return s if s in _SEGMENTS else "present"
@@ -208,18 +241,27 @@ def build_grouping_payload(panels: List[Dict[str, Any]]) -> Dict[str, Any]:
     over. `description` is shrunk to a GIST (not full prose) FOR THIS PAYLOAD
     ONLY — grouping needs subjects/panel_kind/gist to tell panels apart, not
     prose; the beats writer elsewhere keeps the full description. panel_kind/
-    subjects/intensity stay intact (already short + categorical)."""
-    return {"panels": [{
-        "n": i,
-        "scene_file": p.get("scene_file"),
-        "description": _gist(p.get("description"), 160),
-        "action": (p.get("action") or "")[:160],
-        "setting": (p.get("setting") or "")[:80],
-        "dialogue": (p.get("dialogue") or "")[:160],
-        "panel_kind": p.get("panel_kind") or "",
-        "subjects": list(p.get("subjects") or []),
-        "intensity": p.get("intensity") or "",
-    } for i, p in enumerate(panels)]}
+    subjects/intensity stay intact (already short + categorical).
+    EMPTY action/setting/dialogue are OMITTED, not sent as "": an absent key
+    reads the same to the model, and the always-emitted empty keys alone cost
+    ~44 chars/panel — enough to push a ~96-panel chapter over the prompt
+    budget (see fit_grouping_payload) purely on JSON scaffolding."""
+    out = []
+    for i, p in enumerate(panels):
+        row: Dict[str, Any] = {
+            "n": i,
+            "scene_file": p.get("scene_file"),
+            "description": _gist(p.get("description"), 160),
+            "panel_kind": p.get("panel_kind") or "",
+            "subjects": list(p.get("subjects") or []),
+            "intensity": p.get("intensity") or "",
+        }
+        for key, cap in (("action", 160), ("setting", 80), ("dialogue", 160)):
+            val = (p.get(key) or "")[:cap]
+            if val:
+                row[key] = val
+        out.append(row)
+    return {"panels": out}
 
 
 def _shrink_payload(payload: Dict[str, Any], limit: int) -> Dict[str, Any]:
@@ -230,6 +272,108 @@ def _shrink_payload(payload: Dict[str, Any], limit: int) -> Dict[str, Any]:
     return {**payload, "panels": [
         {**p, "description": _gist(p.get("description"), limit)}
         for p in (payload.get("panels") or [])]}
+
+
+# BUDGET-AWARE PAYLOAD (context/output overflow root cause): a rich chapter's
+# 160-char-gisted payload can STILL overflow the model's effective context --
+# unlike an explicit context-exceed error (see _bumped_num_ctx in
+# gemini_narrative_pass.py), an oversized whole-chapter prompt gets silently
+# truncated by ollama, so the model sees mangled/cut-off input and echoes a
+# bare '{"' forever, on every retry including the 80-char shrink-retry (ORV
+# Episode 1, ~96 panels, verified in production). The fix has to happen BEFORE
+# the call: measure the serialized prompt (payload + SYSTEM + schema) and
+# shrink it to fit a budget with real headroom under the smallest context this
+# ever runs at, rather than reacting after truncation already happened.
+#
+# ~5500 tokens (the original target) turned out to be too tight once measured
+# against this schema's fixed per-panel shape: scene_file + keys + panel_kind
+# + intensity alone cost ~55-60 chars/panel even with description/subjects
+# EMPTY, which already eats most of a 5500-token budget by ~96 panels, leaving
+# no room for any real description. Recalibrated to 7000 (chars/3.5 estimate)
+# so a ~96-panel chapter (the verified ORV ep1 scale) stays a single call with
+# real content, while still leaving comfortable headroom under the ~8192
+# effective ceiling for the model's own output, and still forcing a 200+-panel
+# chapter (the backlog scale) into the chunked fallback below.
+_CHARS_PER_TOKEN = 3.5
+_PROMPT_TOKEN_BUDGET = 7000
+# Shrink ladder, in order: 160 (default/full) -> 100 -> 60 -> (drop subjects).
+_GIST_SHRINK_STEPS = (160, 100, 60)
+# SYSTEM + GROUP_SCHEMA are sent on EVERY grouping call regardless of payload
+# size -- measured once so fit_grouping_payload can budget the PAYLOAD's own
+# share of _PROMPT_TOKEN_BUDGET.
+_FIXED_OVERHEAD_CHARS = len(SYSTEM) + len(json.dumps(GROUP_SCHEMA))
+
+
+def _prompt_token_estimate(payload: Dict[str, Any]) -> int:
+    """Cheap chars/3.5 estimate of the WHOLE prompt (payload + SYSTEM + schema)
+    this payload would produce -- not a real tokenizer, just enough signal to
+    size the payload before calling, so we shrink/chunk BEFORE ollama silently
+    truncates an oversized prompt."""
+    payload_chars = len(json.dumps(payload, ensure_ascii=False))
+    return int((payload_chars + _FIXED_OVERHEAD_CHARS) / _CHARS_PER_TOKEN)
+
+
+def fit_grouping_payload(panels: List[Dict[str, Any]]
+                         ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Build the grouping payload for *panels*, shrinking it until the
+    estimated whole prompt (payload+SYSTEM+schema) fits _PROMPT_TOKEN_BUDGET.
+    Scales, in order: gist 160->100->60 chars, then drops `subjects` (keeping
+    panel_kind+intensity, the categorical signal `effect_only_files` etc. rely
+    on). A small/normal chapter never pays this cost -- shrinking only engages
+    once the estimate actually exceeds budget. Returns (payload, meta); meta
+    feeds the required `[story_group] payload ...` log line and always
+    reflects what is ACTUALLY in `payload` (even when the budget is never
+    reached -- see group_chapter/`_group_chunked`)."""
+    payload = build_grouping_payload(panels)          # gist=160 (default/full)
+    gist_used = _GIST_SHRINK_STEPS[0]
+    tok = _prompt_token_estimate(payload)
+    for step in _GIST_SHRINK_STEPS[1:]:
+        if tok <= _PROMPT_TOKEN_BUDGET:
+            break
+        payload = _shrink_payload(payload, step)
+        gist_used = step
+        tok = _prompt_token_estimate(payload)
+    subjects_on = True
+    if tok > _PROMPT_TOKEN_BUDGET:
+        subjects_on = False
+        payload = {**payload, "panels": [
+            {**p, "subjects": []} for p in payload["panels"]]}
+        tok = _prompt_token_estimate(payload)
+    meta = {
+        "panels": len(panels),
+        "bytes": len(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+        "tokens": tok,
+        "gist": gist_used,
+        "subjects": subjects_on,
+    }
+    return payload, meta
+
+
+def log_grouping_payload(meta: Dict[str, Any]) -> None:
+    """The one required log line, emitted for every real grouping call (the
+    single whole-chapter call, or once per leaf chunk)."""
+    print(f"[story_group] payload {meta['panels']}p {meta['bytes']}B "
+          f"(~{meta['tokens']}tok) gist={meta['gist']} "
+          f"subjects={'on' if meta['subjects'] else 'off'}")
+
+
+_SPINE_GIST_LEN = 160
+
+
+def _spine_payload(shots: List[Dict[str, Any]], panels: List[Dict[str, Any]]
+                   ) -> Dict[str, Any]:
+    """Small payload for the CHUNKED path's one extra spine call. Cheap by
+    construction: it NEVER re-sends the panel sequence (that is exactly what
+    overflowed the budget) -- the ordered arc_label of every beat produced by
+    the chunks, plus a gist of the very first and very last panel, is enough
+    context to write a whole-chapter logline/premise."""
+    return {
+        "arc_labels": [s.get("arc_label") or "" for s in shots],
+        "first_panel": _gist(panels[0].get("description"), _SPINE_GIST_LEN)
+                       if panels else "",
+        "last_panel": _gist(panels[-1].get("description"), _SPINE_GIST_LEN)
+                      if panels else "",
+    }
 
 
 def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
@@ -324,21 +468,176 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
     return expanded, ""
 
 
+def _shots_and_chapter_from_parsed(panels: List[Dict[str, Any]], parsed: Any,
+                                   max_beat_len: int
+                                   ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Shared tail of group_panels/_group_chunked: turn a call_fn response
+    (already-expanded {scene_files,...} beats on success) into (shots,
+    chapter) via the coverage-guaranteeing repair_to_shots."""
+    pd = parsed if isinstance(parsed, dict) else {}
+    shots = repair_to_shots([p.get("scene_file") for p in panels],
+                            pd.get("beats") or [], max_beat_len=max_beat_len)
+    chapter = pd.get("chapter") if isinstance(pd.get("chapter"), dict) else {}
+    return shots, chapter
+
+
 def group_panels(panels: List[Dict[str, Any]], call_fn: Callable[..., Any],
                  *, max_beat_len: int = 0
                  ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Group the (story-only, ordered) panels into story context spans and capture the
     chapter spine (logline/premise). `call_fn(payload) -> parsed dict|None` is
-    injected (real model, or stub in tests). Returns (shots, chapter)."""
+    injected (real model, or stub in tests). Returns (shots, chapter). Single
+    whole-chapter call ONLY -- see group_chapter for the budget-aware entry
+    point that falls back to chunking when panels won't fit one call."""
     if not panels:
         return [], {}
     parsed = call_fn(build_grouping_payload(panels))
-    pd = parsed if isinstance(parsed, dict) else {}
-    beats = pd.get("beats")
-    chapter = pd.get("chapter") if isinstance(pd.get("chapter"), dict) else {}
-    shots = repair_to_shots([p.get("scene_file") for p in panels],
-                            beats or [], max_beat_len=max_beat_len)
-    return shots, chapter
+    return _shots_and_chapter_from_parsed(panels, parsed, max_beat_len)
+
+
+def _validated_beats_or_raise(parsed: Any, raw: Any, scene_order: List[str],
+                              out_path: str, model: str, *, require_spine: bool,
+                              check_ranges: bool = True, prompt_desc: str = ""
+                              ) -> List[Dict[str, Any]]:
+    """Shared post-call gate for BOTH the whole-chapter call and each chunk of
+    the chunked fallback: call_fn already retried once internally (shrink or
+    REPAIR) -- if the result is STILL an unsafe spine or has invalid/unexpanded
+    beat ranges, dump the raw response beside the manifests and fail loudly.
+    Without this, repair_to_shots would silently collapse the panels into one
+    degenerate shot (beats with no 'scene_files' key look "unassigned" to it)
+    and write that out instead. `require_spine=False` skips the spine check
+    for a chunk-local call, which never carries a meaningful whole-chapter
+    spine; `check_ranges=False` skips the range check for the chunked path's
+    final spine-only call, whose response never carries `beats` at all.
+    Returns the EXPANDED beats ({scene_files,...} shape) when safe -- []
+    when check_ranges=False, since that caller has no use for them."""
+    spine_issue = ""
+    if require_spine:
+        chapter = (parsed or {}).get("chapter") if isinstance(parsed, dict) else None
+        spine_issue = _chapter_spine_issue(chapter, parsed=parsed, raw=raw)
+    range_issue = ""
+    expanded: List[Dict[str, Any]] = []
+    if check_ranges and not spine_issue:
+        if isinstance(parsed, dict):
+            expanded, range_issue = expand_index_ranges(parsed.get("beats"), scene_order)
+        elif parsed is None:
+            # a chunk call that never parsed AT ALL must fail loudly too --
+            # falling through with expanded=[] would let repair_to_shots
+            # silently collapse the whole chunk into one degenerate shot.
+            # Reuse the truthful truncated-vs-empty wording.
+            range_issue = _chapter_spine_issue(None, parsed=None, raw=raw)
+        else:
+            range_issue = f"response is not a JSON object ({type(parsed).__name__})"
+    if not spine_issue and not range_issue:
+        return expanded
+    dump = _dump_story_group_raw(
+        os.path.dirname(os.path.abspath(out_path)),
+        raw_response=raw, parsed_obj=parsed, model=model)
+    sent = f"; sent prompt {prompt_desc}" if prompt_desc else ""
+    if spine_issue:
+        raise SystemExit(
+            "Grouping model returned an unsafe chapter story spine: "
+            + spine_issue + sent + f"; raw response captured at {dump}"
+            "; refusing to continue")
+    raise SystemExit(
+        "Grouping model returned unsafe beat index ranges: "
+        + range_issue + sent + f"; raw response captured at {dump}"
+        "; refusing to continue")
+
+
+def _merge_seam(left: List[Dict[str, Any]], right: List[Dict[str, Any]]
+               ) -> List[Dict[str, Any]]:
+    """Join two adjacent chunks' already-repaired shot lists in reading order.
+    When the chunk split fell mid-beat (the last shot of the left chunk and
+    the first shot of the right chunk share the same non-blank arc_label AND
+    segment -- each chunk's own grouping call independently described the SAME
+    ongoing beat), fold them into one shot instead of leaving a spurious cut
+    where the story never actually breaks. This is deliberately narrow: only
+    the exact chunk seam is ever considered, never general same-arc_label
+    merging across the whole chapter."""
+    if not left:
+        return list(right)
+    if not right:
+        return list(left)
+    a, b = left[-1], right[0]
+    arc_a = str(a.get("arc_label") or "").strip().lower()
+    arc_b = str(b.get("arc_label") or "").strip().lower()
+    if arc_a and arc_a == arc_b and a.get("segment") == b.get("segment"):
+        print(f"[story_group] seam-merge: chunk boundary folded "
+              f"(arc_label={a.get('arc_label')!r}, segment={a.get('segment')!r})")
+        merged = {**a, "scene_files": list(a["scene_files"]) + list(b["scene_files"])}
+        return left[:-1] + [merged] + right[1:]
+    return left + right
+
+
+def _group_chunked(panels: List[Dict[str, Any]], chunk_call_fn: Callable[..., Any],
+                   max_beat_len: int, *, out_path: str, model: str
+                   ) -> List[Dict[str, Any]]:
+    """CHUNKED GROUPING FALLBACK (scale answer for 200+-panel chapters): keeps
+    halving the ordered panel list into contiguous, order-preserving pieces
+    until each slice's OWN fit_grouping_payload estimate is back under budget,
+    groups that slice with one call (indices LOCAL to the slice -- call_fn's
+    existing expand_index_ranges already re-bases them onto the slice's own
+    scene_file order, so no separate re-basing step is needed), then merges
+    sibling slices back together in order, folding a same-arc_label seam (see
+    _merge_seam). `chunk_call_fn(payload) -> (parsed, raw)`: raw travels WITH
+    parsed in the return value (not via the shared last_call side-channel a
+    sibling chunk's call would otherwise overwrite before a failing chunk's
+    evidence gets dumped)."""
+    payload, meta = fit_grouping_payload(panels)
+    if meta["tokens"] <= _PROMPT_TOKEN_BUDGET or len(panels) <= 1:
+        log_grouping_payload(meta)
+        scene_order = [p.get("scene_file") for p in panels]
+        parsed, raw = chunk_call_fn(payload)
+        expanded_beats = _validated_beats_or_raise(
+            parsed, raw, scene_order, out_path, model, require_spine=False,
+            prompt_desc=f"{meta['bytes']}B (~{meta['tokens']}tok)")
+        return repair_to_shots(scene_order, expanded_beats, max_beat_len=max_beat_len)
+    mid = len(panels) // 2
+    left = _group_chunked(panels[:mid], chunk_call_fn, max_beat_len,
+                          out_path=out_path, model=model)
+    right = _group_chunked(panels[mid:], chunk_call_fn, max_beat_len,
+                           out_path=out_path, model=model)
+    return _merge_seam(left, right)
+
+
+def group_chapter(panels: List[Dict[str, Any]], call_fn: Callable[..., Any],
+                  chunk_call_fn: Callable[..., Any],
+                  spine_call_fn: Optional[Callable[..., Any]] = None, *,
+                  max_beat_len: int = 0, out_path: str = "", model: str = ""
+                  ) -> tuple[List[Dict[str, Any]], Dict[str, Any], bool]:
+    """Budget-aware entry point (main() calls this instead of group_panels
+    directly): fit_grouping_payload decides whether the whole chapter still
+    fits one call. When it does not, even at maximum shrink, falls back to
+    _group_chunked plus one extra small spine call (see _spine_payload).
+    Returns (shots, chapter, chunked) -- `chunked` tells the caller that the
+    post-call range re-validation (which assumes a single whole-chapter beats
+    response) does not apply, since each chunk already validated its own."""
+    if not panels:
+        return [], {}, False
+    payload, meta = fit_grouping_payload(panels)
+    if meta["tokens"] <= _PROMPT_TOKEN_BUDGET:
+        log_grouping_payload(meta)
+        # send the FITTED payload (possibly shrunk to make budget) — calling
+        # group_panels here would rebuild it at full gist and undo the fit.
+        parsed = call_fn(payload)
+        shots, chapter = _shots_and_chapter_from_parsed(panels, parsed, max_beat_len)
+        return shots, chapter, False
+    print(f"[story_group] payload over budget even at minimum shrink "
+          f"(~{meta['tokens']}tok > {_PROMPT_TOKEN_BUDGET}); chunked fallback "
+          f"engaged for {len(panels)} panels")
+    shots = _group_chunked(panels, chunk_call_fn, max_beat_len,
+                           out_path=out_path, model=model)
+    # each chunk's repair_to_shots numbered its own shots from 1 — renumber the
+    # merged chapter so shot_id stays contiguous and unique across chunks.
+    for i, s in enumerate(shots, 1):
+        s["shot_id"] = i
+    chapter: Dict[str, Any] = {}
+    if spine_call_fn is not None:
+        parsed = spine_call_fn(_spine_payload(shots, panels))
+        pd = parsed if isinstance(parsed, dict) else {}
+        chapter = pd.get("chapter") if isinstance(pd.get("chapter"), dict) else {}
+    return shots, chapter, True
 
 
 def nonstory_files(panels: List[Dict[str, Any]]) -> set:
@@ -678,7 +977,7 @@ def main() -> int:
     # without this a spine rejection discards the very evidence it needs.
     last_call: Dict[str, Any] = {"raw": None, "parsed": None}
 
-    def call_fn(payload: Dict[str, Any]):
+    def call_fn(payload: Dict[str, Any], *, require_spine: bool = True):
         parsed = None
         raw = ""
         issue = ""
@@ -707,32 +1006,88 @@ def main() -> int:
                     f"with 0 <= from_index <= to_index <= {n_panels - 1}; beats "
                     "must stay in ascending order and never overlap. Return "
                     "the complete grouping again.")
-            elif attempt:
+            elif attempt and require_spine:
                 instruction += (
                     "\n\nREPAIR: the previous chapter story spine was invalid: "
                     + issue + ". Return the complete grouping again with a "
                     "specific, source-grounded logline and premise. Do not "
                     "use placeholders or fuse separate facts into a new cause.")
+            # measure the prompt actually SENT this attempt (payload may have
+            # been shrunk) so a parse failure can report it (requirement: the
+            # error must carry the measured prompt size, the overflow signal).
+            sent_bytes = len(json.dumps(cur_payload, ensure_ascii=False)
+                             .encode("utf-8"))
+            sent_tok = _prompt_token_estimate(cur_payload)
             parsed, raw, _usage = _call_model_with_backoff(
                 client=client, model=model, system_instruction=instruction,
                 user_payload=cur_payload, image_paths=[], response_schema=GROUP_SCHEMA,
                 max_output_tokens=3000, temperature=args.temperature,
                 backoff_max=60.0, backend=args.backend)
             last_call["raw"], last_call["parsed"] = raw, parsed
-            issue = _chapter_spine_issue(
-                (parsed or {}).get("chapter") if isinstance(parsed, dict) else None,
-                parsed=parsed, raw=raw)
+            last_call["prompt_desc"] = f"{sent_bytes}B (~{sent_tok}tok)"
+            # require_spine=False (a chunk of the CHUNKED FALLBACK): this slice
+            # never carries a meaningful whole-chapter spine, so skip the check
+            # entirely instead of REPAIR-reasking a chunk for something it
+            # cannot honestly answer (see group_chapter's dedicated spine call).
+            issue = ""
+            if require_spine:
+                issue = _chapter_spine_issue(
+                    (parsed or {}).get("chapter") if isinstance(parsed, dict) else None,
+                    parsed=parsed, raw=raw)
             expanded_beats: List[Dict[str, Any]] = []
             range_issue = ""
             if isinstance(parsed, dict) and not issue:
-                # spine is safe; now validate + expand the index ranges into
-                # the classic scene_files shape BEFORE returning, so
-                # group_panels/repair_to_shots never need to know ranges exist.
+                # spine is safe (or not required); now validate + expand the
+                # index ranges into the classic scene_files shape BEFORE
+                # returning, so group_panels/repair_to_shots never need to
+                # know ranges exist.
                 expanded_beats, range_issue = expand_index_ranges(
                     parsed.get("beats"), scene_order)
                 issue = range_issue
             if isinstance(parsed, dict) and not issue:
                 return {**parsed, "beats": expanded_beats}
+        return parsed
+
+    def chunk_call_fn(payload: Dict[str, Any]) -> tuple[Any, str]:
+        """_group_chunked's injected callable for one chunk: run call_fn
+        (shrink/REPAIR retries happen inside it, spine not required) and hand
+        back the UNEXPANDED last-attempt snapshot -- matching last_call, and
+        what _validated_beats_or_raise expects -- so a chunk that still fails
+        after its own retries can be gated + dumped exactly like the
+        whole-chapter path. call_fn's own (possibly-expanded) return value is
+        not used here; _group_chunked re-expands after the gate passes."""
+        call_fn(payload, require_spine=False)
+        return last_call["parsed"], last_call["raw"]
+
+    def spine_call_fn(payload: Dict[str, Any]):
+        """The CHUNKED FALLBACK's one extra small call (see _spine_payload):
+        same shrink-free REPAIR-retry shape as call_fn, scoped to just the
+        chapter spine (CHAPTER_SPINE_SCHEMA has no `beats` at all)."""
+        parsed = None
+        raw = ""
+        issue = ""
+        for attempt in range(2):
+            instruction = SYSTEM_SPINE
+            if attempt and parsed is None:
+                print(f"[story_group] spine parse failure (raw len={len(raw)}); retrying")
+            elif attempt:
+                instruction += (
+                    "\n\nREPAIR: the previous chapter spine was invalid: " + issue
+                    + ". Return logline and premise again, grounded only in "
+                    "the arc labels and first/last panel given.")
+            parsed, raw, _usage = _call_model_with_backoff(
+                client=client, model=model, system_instruction=instruction,
+                user_payload=payload, image_paths=[], response_schema=CHAPTER_SPINE_SCHEMA,
+                max_output_tokens=400, temperature=args.temperature,
+                backoff_max=60.0, backend=args.backend)
+            last_call["raw"], last_call["parsed"] = raw, parsed
+            last_call["prompt_desc"] = (
+                f"{len(json.dumps(payload, ensure_ascii=False).encode('utf-8'))}B "
+                f"(~{_prompt_token_estimate(payload)}tok, spine call)")
+            chapter = (parsed or {}).get("chapter") if isinstance(parsed, dict) else None
+            issue = _chapter_spine_issue(chapter, parsed=parsed, raw=raw)
+            if isinstance(parsed, dict) and not issue:
+                return parsed
         return parsed
 
     # The reference-channel contract has no magic group count. These spans are
@@ -741,13 +1096,18 @@ def main() -> int:
     # DEFAULT_MAX_BEAT_LEN) so an over-long beat never overflows the model and
     # parse-fails; it never caps narration length. Pass 0 to disable the cap.
     mbl = int(args.max_beat_len or 0)
-    shots, chapter = group_panels(story, call_fn, max_beat_len=mbl)
+    # Budget-aware entry: group_chapter measures the fitted payload first and
+    # only chunks (with the extra small spine call) when even the minimum
+    # shrink cannot fit one whole-chapter call.
+    shots, chapter, chunked = group_chapter(
+        story, call_fn, chunk_call_fn, spine_call_fn,
+        max_beat_len=mbl, out_path=args.out, model=model)
     logline = str((chapter or {}).get("logline") or "").strip()
     premise = str((chapter or {}).get("premise") or "").strip()
     spine_issue = _chapter_spine_issue(
         chapter, parsed=last_call["parsed"], raw=last_call["raw"])
     range_issue = ""
-    if not spine_issue and isinstance(last_call["parsed"], dict):
+    if not spine_issue and not chunked and isinstance(last_call["parsed"], dict):
         # call_fn already retried a bad range once (its own REPAIR re-ask); if
         # it still gave up, last_call["parsed"]["beats"] still holds the
         # UNEXPANDED from_index/to_index beats (call_fn returns a NEW dict on
@@ -756,11 +1116,17 @@ def main() -> int:
         # repair_to_shots would already have silently collapsed every panel
         # into one giant shot (it saw beats with no "scene_files" key and
         # treated all of them as unassigned) and we'd write that out instead
-        # of failing loudly.
+        # of failing loudly. Skipped when CHUNKED: each chunk already gated its
+        # own ranges inside _group_chunked, and last_call now holds the SPINE
+        # call's response, which carries no beats at all.
         _, range_issue = expand_index_ranges(
             last_call["parsed"].get("beats"),
             [p.get("scene_file") for p in story])
     if spine_issue:
+        if "failed to parse" in spine_issue and last_call.get("prompt_desc"):
+            # requirement: a parse failure (the silent-truncation signature)
+            # must report the measured prompt size that was sent.
+            spine_issue += f"; sent prompt {last_call['prompt_desc']}"
         dump = _dump_story_group_raw(
             os.path.dirname(os.path.abspath(args.out)),
             raw_response=last_call["raw"], parsed_obj=last_call["parsed"],

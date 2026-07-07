@@ -520,6 +520,9 @@ def test_parse_failure_error_message_names_truncation_not_blank_spine(tmp_path, 
     assert "failed to parse" in msg
     assert "logline/premise is blank" not in msg   # the old, misleading message
     assert f"raw length={len(raw_truncated)}" in msg
+    # the parse-failure message must also carry the MEASURED size of the
+    # prompt that was sent (the silent-truncation overflow signal).
+    assert "sent prompt" in msg and "tok)" in msg
     dumps = sorted(tmp_path.glob(".story_group_raw-*.json"))
     assert len(dumps) == 1, "raw capture file must exist beside the manifests"
     assert dumps[0].name in msg
@@ -834,3 +837,242 @@ def test_unsafe_range_dumps_raw_response_before_raising(tmp_path, monkeypatch):
     assert dumps[0].name in msg
     data = json.loads(dumps[0].read_text())
     assert data["raw_response"] == "OVERLAP_RAW"
+
+
+# ---------------------------------------------------------------------------
+# BUDGET-AWARE PAYLOAD + CHUNKED FALLBACK (ORV ep1 root cause): the grouping
+# prompt (payload+SYSTEM+schema) must be measured and made to fit BEFORE the
+# call -- ollama silently truncates an over-num_ctx prompt and gemma then emits
+# a bare '{"' on every attempt (verified in production; the shrink-retry alone
+# could not save it because the payload was over budget before any retry).
+# ---------------------------------------------------------------------------
+
+_PU3_DESC = ("The hunter advances through the shattered hall, every step "
+             "deliberate, as the wounded beast coils against the far wall and "
+             "broken glass glitters across the floor between them like a "
+             "field of stars. ")
+
+
+def _pu_v3_panel(i, desc=_PU3_DESC, action="", setting="", dialogue="",
+                 subjects=("a hunter",)):
+    """A pu_v3-shaped understood panel: rich prose description plus the
+    short categorical fields the understanding pass emits."""
+    return {"scene_file": f"p{i:06d}.jpg", "description": desc,
+            "action": action, "setting": setting, "dialogue": dialogue,
+            "subjects": list(subjects), "panel_kind": "story",
+            "intensity": ["calm", "tense", "intense"][i % 3]}
+
+
+def test_fit_grouping_payload_keeps_small_chapters_at_full_richness():
+    """A 30-panel chapter fits the budget with NO shrinking: gist stays 160,
+    subjects stay on -- small chapters must not pay any quality cost."""
+    panels = [_pu_v3_panel(i, action="he advances slowly") for i in range(30)]
+    payload, meta = sg.fit_grouping_payload(panels)
+    assert meta["tokens"] <= sg._PROMPT_TOKEN_BUDGET
+    assert meta["gist"] == 160 and meta["subjects"] is True
+    ell = len("…")
+    assert all(p["description"] == sg._gist(_PU3_DESC, 160)
+               for p in payload["panels"])
+    assert all(len(p["description"]) <= 160 + ell for p in payload["panels"])
+    assert payload["panels"][0]["subjects"] == ["a hunter"]
+
+
+def test_fit_grouping_payload_ladder_shrinks_gists_then_drops_subjects():
+    """A rich ~96-panel pu_v3 chapter (the ORV ep1 scale) exceeds budget at
+    full gist; the ladder must walk 160->100->60 then drop subjects, landing
+    UNDER budget -- keeping panel_kind + intensity intact throughout."""
+    import json
+    panels = [_pu_v3_panel(i, action="he advances slowly",
+                           dialogue="" if i % 4 else '"Stay back."')
+              for i in range(96)]
+    # over budget at full richness (the premise of the ladder)
+    full = sg.build_grouping_payload(panels)
+    assert sg._prompt_token_estimate(full) > sg._PROMPT_TOKEN_BUDGET
+    payload, meta = sg.fit_grouping_payload(panels)
+    assert meta["tokens"] <= sg._PROMPT_TOKEN_BUDGET, meta
+    assert meta["gist"] == 60 and meta["subjects"] is False
+    assert meta["bytes"] == len(json.dumps(payload, ensure_ascii=False)
+                                .encode("utf-8"))
+    assert meta["bytes"] < 22_000, f"fitted payload too large: {meta['bytes']}B"
+    for p in payload["panels"]:
+        assert p["subjects"] == []                       # dropped to make budget
+        assert p["panel_kind"] == "story" and p["intensity"]   # kept
+        assert len(p["description"]) <= 60 + len("…")
+
+
+def test_build_grouping_payload_omits_empty_optional_fields():
+    """Empty action/setting/dialogue are OMITTED, not sent as "": the empty
+    keys alone cost ~44 chars/panel of pure JSON scaffolding -- enough to push
+    a ~96-panel chapter over budget with no content at all."""
+    built = sg.build_grouping_payload([
+        _pu_v3_panel(0),                                   # all three empty
+        _pu_v3_panel(1, action="he runs", setting="hall", dialogue='"Go!"')])
+    p0, p1 = built["panels"]
+    assert "action" not in p0 and "setting" not in p0 and "dialogue" not in p0
+    assert p1["action"] == "he runs" and p1["setting"] == "hall"
+    assert p1["dialogue"] == '"Go!"'
+
+
+def _write_chapter_fixtures(tmp_path, panels):
+    import json
+    understood = {"panels": panels}
+    vision = {"items": [{"scene_file": p["scene_file"]} for p in panels]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps(understood))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    return up, vp, tmp_path / "manifest.groups.json"
+
+
+def test_96_panel_pu_v3_chapter_stays_a_single_call_under_budget(tmp_path, monkeypatch):
+    """THE VERIFIED PRODUCTION CASE (ORV ep1 scale): ~96 rich pu_v3 panels
+    must still be ONE grouping call -- fitted under budget by the shrink
+    ladder, never chunked -- and the payload the model actually receives must
+    measure under budget (assert bytes + token estimate)."""
+    import json
+    import sys as _sys
+
+    panels = [_pu_v3_panel(i, action="he advances slowly",
+                           dialogue="" if i % 4 else '"Stay back."')
+              for i in range(96)]
+    up, vp, out = _write_chapter_fixtures(tmp_path, panels)
+
+    sent = []
+
+    def fake_call(**kw):
+        assert kw["response_schema"] is sg.GROUP_SCHEMA
+        sent.append(kw["user_payload"])
+        n = len(kw["user_payload"]["panels"])
+        beats = [{"from_index": i, "to_index": min(i + 3, n - 1),
+                  "segment": "present", "arc_label": f"arc {i // 4}"}
+                 for i in range(0, n, 4)]
+        return ({"chapter": {"logline": "A hunter corners the wounded beast.",
+                              "premise": "One of them leaves the hall alive."},
+                 "beats": beats}, "RAW", {})
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up), "--vision-manifest", str(vp),
+        "--out", str(out), "--max-beat-len", "0"])
+    assert sg.main() == 0
+    assert len(sent) == 1, "96 panels must stay a SINGLE grouping call"
+    payload = sent[0]
+    assert len(payload["panels"]) == 96
+    assert sg._prompt_token_estimate(payload) <= sg._PROMPT_TOKEN_BUDGET
+    payload_bytes = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    assert payload_bytes < 22_000, f"sent payload too large: {payload_bytes}B"
+    written = json.loads(out.read_text())
+    flat = [f for s in written["shots"] for f in s["scene_files"]]
+    assert flat == [p["scene_file"] for p in panels]      # coverage, in order
+
+
+def test_200_panel_chapter_chunks_rebases_indices_and_merges_the_seam(tmp_path, monkeypatch):
+    """SCALE (200+-panel backlog chapters): over budget even at minimum
+    shrink, the chapter must split into 2 contiguous chunks (each grouped with
+    indices LOCAL to its chunk, re-based on merge), preserve reading order
+    end-to-end, seam-merge the boundary beat both chunks described with the
+    same arc_label, and fill the chapter spine from ONE extra tiny call."""
+    import json
+    import sys as _sys
+
+    panels = [_pu_v3_panel(i, desc="The gate creaks open onto the empty road.",
+                           subjects=("a traveler",)) for i in range(200)]
+    up, vp, out = _write_chapter_fixtures(tmp_path, panels)
+
+    group_calls, spine_calls = [], []
+
+    def fake_call(**kw):
+        if kw["response_schema"] is sg.CHAPTER_SPINE_SCHEMA:
+            spine_calls.append(kw["user_payload"])
+            return ({"chapter": {"logline": "A traveler crosses the dead land.",
+                                  "premise": "The road home is longer than a life."}},
+                    "SPINE_RAW", {})
+        assert kw["response_schema"] is sg.GROUP_SCHEMA
+        group_calls.append(kw["user_payload"])
+        chunk_panels = kw["user_payload"]["panels"]
+        n = len(chunk_panels)
+        first_sf = chunk_panels[0]["scene_file"]
+        # indices are LOCAL to the chunk: both chunks answer in 0..n-1.
+        if first_sf == "p000000.jpg":            # first half p000000..p000099
+            beats = [{"from_index": 0, "to_index": 49, "segment": "present",
+                      "arc_label": "the road"},
+                     {"from_index": 50, "to_index": n - 1, "segment": "present",
+                      "arc_label": "the gate"}]
+        else:                                     # second half p000100..p000199
+            beats = [{"from_index": 0, "to_index": 49, "segment": "present",
+                      "arc_label": "the gate"},   # same beat continues -> seam-merge
+                     {"from_index": 50, "to_index": n - 1, "segment": "present",
+                      "arc_label": "the return"}]
+        return ({"beats": beats}, "CHUNK_RAW", {})
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up), "--vision-manifest", str(vp),
+        "--out", str(out), "--max-beat-len", "0"])
+    assert sg.main() == 0
+
+    assert len(group_calls) == 2, "200 panels must split into exactly 2 chunks"
+    assert [len(c["panels"]) for c in group_calls] == [100, 100]
+    assert group_calls[0]["panels"][0]["scene_file"] == "p000000.jpg"
+    assert group_calls[1]["panels"][0]["scene_file"] == "p000100.jpg"
+    for c in group_calls:                          # every chunk fits the budget
+        assert sg._prompt_token_estimate(c) <= sg._PROMPT_TOKEN_BUDGET
+
+    written = json.loads(out.read_text())
+    flat = [f for s in written["shots"] for f in s["scene_files"]]
+    assert flat == [p["scene_file"] for p in panels]   # order + full coverage
+    # seam-merge: road(50) + gate(50+50, folded across the boundary) + return(50)
+    assert [s["arc_label"] for s in written["shots"]] == [
+        "the road", "the gate", "the return"]
+    gate = written["shots"][1]
+    assert gate["scene_files"][0] == "p000050.jpg"     # chunk 1, local 50
+    assert gate["scene_files"][-1] == "p000149.jpg"    # chunk 2, local 49 RE-BASED
+    assert [s["shot_id"] for s in written["shots"]] == [1, 2, 3]
+
+    # the spine call: exactly one, and its payload is TINY by construction
+    assert len(spine_calls) == 1
+    spine_payload = spine_calls[0]
+    assert spine_payload["arc_labels"] == ["the road", "the gate", "the return"]
+    spine_bytes = len(json.dumps(spine_payload, ensure_ascii=False).encode("utf-8"))
+    assert spine_bytes < 2_000, f"spine payload must stay tiny: {spine_bytes}B"
+
+    story = json.loads((tmp_path / "manifest.story.json").read_text())
+    assert story["logline"] == "A traveler crosses the dead land."
+    assert [a["arc_label"] for a in story["arc"]] == [
+        "the road", "the gate", "the return"]
+
+
+def test_chunk_parse_failure_fails_loudly_with_measured_prompt_size(tmp_path, monkeypatch):
+    """A chunk whose response never parses must fail LOUDLY (raw dumped, size
+    of the sent prompt in the message) -- never silently collapse the chunk
+    into one degenerate shot via repair_to_shots's unassigned-continuation."""
+    import json
+    import sys as _sys
+
+    import pytest
+
+    panels = [_pu_v3_panel(i, desc="The gate creaks open onto the empty road.",
+                           subjects=("a traveler",)) for i in range(200)]
+    up, vp, out = _write_chapter_fixtures(tmp_path, panels)
+
+    def fake_call(**kw):
+        if kw["response_schema"] is sg.CHAPTER_SPINE_SCHEMA:
+            return ({"chapter": {"logline": "x" * 20, "premise": "y" * 20}},
+                    "SPINE_RAW", {})
+        return None, '{"', {}                      # the production signature
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up), "--vision-manifest", str(vp),
+        "--out", str(out), "--max-beat-len", "0"])
+    with pytest.raises(SystemExit) as ei:
+        sg.main()
+    msg = str(ei.value)
+    assert "failed to parse" in msg
+    assert "sent prompt" in msg and "tok)" in msg      # measured prompt size
+    dumps = sorted(tmp_path.glob(".story_group_raw-*.json"))
+    assert len(dumps) == 1
+    assert json.loads(dumps[0].read_text())["raw_response"] == '{"'
