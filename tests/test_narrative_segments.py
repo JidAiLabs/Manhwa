@@ -146,6 +146,24 @@ def test_impact_marker_leak_in_line_flagged():
     assert any("bracket" in e and "marker" in e for e in errs)
 
 
+def test_figures_leak_in_line_flagged():
+    # the writer's payload carries "unknown (<evidence>)" for an unresolved
+    # cast_identity figure (gemini_narrative_pass._pack_group_payload) — an
+    # echoed evidence wrapper must fail validation exactly like a leaked
+    # impact-SFX/scene_file tag (the SAME leak channel). A resolved cast NAME
+    # is sanctioned and must NOT trip this.
+    segs = [{"span": ["p1.jpg", "p2.jpg"],
+             "line": "unknown (a masked figure lurking) nears the gate."},
+            {"span": ["p3.jpg"], "line": _words(8)}]
+    errs = gnp.validate_segments(segs, FILES, KINDS)
+    assert any("unknown" in e and "payload" in e for e in errs)
+
+    named = [{"span": ["p1.jpg", "p2.jpg"],
+              "line": "Prince Cheon draws his hidden blade and lunges."},
+             {"span": ["p3.jpg"], "line": _words(8)}]
+    assert gnp.validate_segments(named, FILES, KINDS) == []
+
+
 def test_empty_line_and_mood_prefix_flagged():
     segs = [{"span": ["p1.jpg"], "line": ""},
             {"span": ["p2.jpg"], "line": "[tense] " + _words(8)},

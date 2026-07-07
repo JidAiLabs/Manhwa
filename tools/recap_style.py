@@ -313,6 +313,28 @@ def mentions_impact_marker(text: str) -> bool:
     return bool(_IMPACT_MARKER_RE.search(str(text or "")))
 
 
+# The cast-resolution writer-input marker for an UNRESOLVED figure ("unknown
+# (a masked figure in a dark hooded cloak...)", tools/cast_identity.py's
+# resolve_figures evidence string, stamped into the payload by
+# gemini_narrative_pass.py's _pack_group_payload) is the SAME leak channel as
+# the scene_file/impact-SFX tags above: the raw evidence wrapper fed to the
+# model as context can get echoed back verbatim instead of being converted
+# into neutral phrasing ("the masked figure"). A RESOLVED cast NAME in
+# narration is the sanctioned, intended behavior (FIGURES ARE GROUND TRUTH —
+# the whole point is the writer names actors from it) and never matches this;
+# only the literal 'unknown (' wrapper is unshippable. Substring match,
+# case-insensitive.
+_FIGURES_LEAK_RE = re.compile(r"\bunknown\s*\(", re.I)
+
+
+def mentions_figures_leak(text: str) -> bool:
+    """True when a narration line echoes the writer-input FIGURES payload's
+    unresolved-figure wrapper ('unknown (<evidence>)') instead of neutral
+    phrasing. A resolved cast name used in narration is sanctioned and never
+    matches — only the raw evidence-wrapper format is a leak."""
+    return bool(_FIGURES_LEAK_RE.search(str(text or "")))
+
+
 def _words(text: str) -> List[str]:
     return _WORD_RE.findall(_TAG_RE.sub("", str(text or "")))
 

@@ -1530,6 +1530,38 @@ def test_impact_marker_leak_flags_clean_on_story_lines():
     assert pq.impact_marker_leak_flags(beats) == []
 
 
+def test_figures_leak_flags_catches_the_unknown_wrapper_echo():
+    # the writer's payload carries "unknown (<evidence>)" for an unresolved
+    # cast_identity figure (tools/gemini_narrative_pass.py's
+    # _pack_group_payload) — the SAME leak channel as the impact-SFX/
+    # scene_file tags: it can get echoed back verbatim instead of being
+    # converted into neutral phrasing.
+    beats = {"beats": [{
+        "group_id": 9,
+        "segments": [
+            {"span": ["p000010.jpg"],
+             "line": "He steadies himself before the fight."},
+            {"span": ["p000011.jpg"],
+             "line": "unknown (a masked figure lurking) nears the gate."},
+        ],
+    }]}
+    fl = pq.figures_leak_flags(beats)
+    assert [f["code"] for f in fl] == ["figures_leak"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0009"
+    assert fl[0]["scene"] == "p000011.jpg"
+
+
+def test_figures_leak_flags_silent_on_resolved_cast_names():
+    # FIGURES ARE GROUND TRUTH is the point of the feature: a resolved cast
+    # name in narration is sanctioned, never a leak.
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["a.jpg"], "line": "Prince Cheon draws his hidden blade."},
+        {"span": ["b.jpg"], "line": "The assassin leader closes in."},
+    ]}]}
+    assert pq.figures_leak_flags(beats) == []
+
+
 def test_cut_gap_is_error_not_warn():
     # D1-backstop: a residual render-plan time-hole (black screen) must BLOCK
     # autopilot, not ship silently as a WARN.

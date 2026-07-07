@@ -43,6 +43,7 @@ from recap_style import (  # noqa: E402
     dedupe_consecutive_panel_lines,
     ends_terminal,
     is_shot_description,
+    mentions_figures_leak,
     mentions_image_file,
     mentions_impact_marker,
     neutralize_identity_reveal_leaks,
@@ -1347,6 +1348,11 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
             errors.append(f"segment {i}: line echoes the impact-SFX bracket "
                           "marker verbatim — describe the strike/stab/blow "
                           "itself, never the bracket tag")
+        if mentions_figures_leak(line):
+            errors.append(f"segment {i}: line echoes the unresolved-figure "
+                          "'unknown (...)' payload wrapper verbatim — use "
+                          "neutral phrasing (the masked figure, the man in "
+                          "the hood) instead, never the raw evidence text")
         if is_shot_description(line):
             # same detector prep_qa ERRORs on — enforcing it here turns a
             # multi-cycle heal burn into one cheap repair re-ask at source

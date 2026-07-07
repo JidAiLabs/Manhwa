@@ -63,6 +63,25 @@ def test_density_failsoft_on_art_box_without_interior():
     assert rp.bubble_stroke_density(img, (300, 400, 460, 700)) == 0.0
 
 
+def test_density_stays_under_floor_for_sparse_art_on_white():
+    # A detector false-positive on artwork: a speech-shaped white region
+    # DOES have a clean interior component (unlike the no-interior case
+    # above), but only a couple of sparse, incidental strokes in it — not
+    # dense stylized lettering. bubble_stroke_density is the SINGLE
+    # authority the residue net's dense_invisible gate consults
+    # (BUBBLE_STROKE_DENSITY_MIN), so this must score nonzero (it does have
+    # strokes) yet stay well under the floor that real ghost text clears
+    # (0.060/0.079 measured on p000099) — the floor's whole job is telling
+    # sparse art apart from dense invisible text.
+    img = np.full((300, 300, 3), 255, np.uint8)
+    box = (50, 50, 200, 150)  # w=150 h=100, aspect 1.5 -> speech-shaped
+    cv2.line(img, (70, 70), (120, 130), (20, 20, 20), 1)
+    cv2.line(img, (150, 60), (170, 100), (20, 20, 20), 1)
+    assert rp.speech_shaped_boxes([box], img.shape[1]) == [box]
+    d = rp.bubble_stroke_density(img, box)
+    assert 0.0 < d < rp.BUBBLE_STROKE_DENSITY_MIN, d
+
+
 def test_residue_net_flattens_the_ghost_text():
     img = _img(P99)
     out = rp.clean_scene_image(img.copy(), BOXES_99, text_boxes=[],

@@ -61,6 +61,7 @@ from recap_style import (
     analyze_recap_style,
     ends_terminal,
     is_shot_description,
+    mentions_figures_leak,
     mentions_image_file,
     mentions_impact_marker,
 )
@@ -1121,6 +1122,35 @@ def impact_marker_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
                     f"narration echoes the impact-SFX bracket marker "
                     f"verbatim: {line[:80]!r} — describe the strike/stab/"
                     "blow itself, never the bracket tag",
+                    scene=str((s["span"] or [""])[0]),
+                    segment_id=seg))
+    return flags
+
+
+def figures_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """A VOICED line that echoes the writer-input FIGURES payload's
+    unresolved-figure wrapper ("unknown (<evidence>)", stamped into the
+    payload by tools/gemini_narrative_pass.py's _pack_group_payload from
+    tools/cast_identity.py's resolve_figures) is pipeline bookkeeping read
+    aloud — the SAME leak channel as filename_in_narration_flags /
+    impact_marker_leak_flags (mirrors it exactly). A resolved cast NAME in
+    narration is sanctioned (FIGURES ARE GROUND TRUTH is the whole point of
+    the feature) and never fires this; only the raw 'unknown (' evidence
+    format is a leak. Deterministic substring match."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            if line and mentions_figures_leak(line):
+                flags.append(_flag(
+                    "figures_leak", ERROR,
+                    f"narration echoes the unresolved-figure payload "
+                    f"wrapper verbatim: {line[:80]!r} — use neutral "
+                    "phrasing (the masked figure, the man in the hood), "
+                    "never the raw 'unknown (...)' evidence text",
                     scene=str((s["span"] or [""])[0]),
                     segment_id=seg))
     return flags
@@ -2409,6 +2439,7 @@ def main() -> int:
     flags.extend(truncated_line_flags(beats_obj))
     flags.extend(filename_in_narration_flags(beats_obj))
     flags.extend(impact_marker_leak_flags(beats_obj))
+    flags.extend(figures_leak_flags(beats_obj))
     flags.extend(story_flags(plan, beats_obj, vitems))
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))

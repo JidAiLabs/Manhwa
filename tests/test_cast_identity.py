@@ -121,6 +121,50 @@ def test_resolution_is_deterministic():
     assert a == b
 
 
+# --- round-2 review, class C: id-derived tokens are not identity evidence --
+
+def test_group_of_villagers_never_hard_claims_the_assassins():
+    # assassin_group's id ("assassin_group") must never leak "group" in as a
+    # name token: an unrelated group of villagers must never hard-claim the
+    # assassins (score 10 on the old bug).
+    assert ci.resolve_figures({"subjects": ["a group of villagers"]},
+                              PROFILES) == []
+
+
+def test_masked_assassin_in_dark_tunic_still_resolves_after_id_fix():
+    # real-shaped cast still resolves correctly once id-word noise is gone —
+    # canonical_name ("unnamed assassin"/"the assassins") + aliases alone
+    # carry enough evidence, same-faction tie included.
+    names = _names(ci.resolve_figures(
+        {"subjects": ["a masked assassin in a dark tunic"]}, PROFILES))
+    assert names and names[0] in ("unnamed assassin", "the assassins")
+
+
+# --- round-2 review, class C: generic words carry no appearance evidence ---
+
+def test_generic_words_alone_never_hard_claim_a_profile():
+    # _GENERIC_PERSON/_GENERIC_DESCRIPTOR are documented as NOT evidence
+    # (module comment) but used to leak into the appearance/subject token
+    # sets: 'a young man' (man+young=2.0) used to clear the resolution bar
+    # and hard-claim the protagonist. Now scores 0 -> falls through to the
+    # unknown _looks_person stamp, never a guess.
+    assert _names(ci.resolve_figures({"subjects": ["a young man"]},
+                                     PROFILES)) == ["unknown"]
+    assert _names(ci.resolve_figures({"subjects": ["a bleeding man"]},
+                                     PROFILES)) == ["unknown"]
+
+
+def test_specific_appearance_words_still_clear_the_bar():
+    # Isolated cast (protagonist + one unrelated, non-color-coded member) so
+    # this checks SPECIFIC evidence clearing the bar in isolation; the
+    # full-cast cross-character color disambiguation is already covered by
+    # test_hoodie_is_the_stranger_not_the_hooded_assassins.
+    cast = {"cast": [CAST["cast"][0], CAST["cast"][4]]}  # protagonist + Ancestor
+    profiles = ci.cast_profiles(cast)
+    u = {"subjects": ["a young man in a white robe with a blue sash"]}
+    assert _names(ci.resolve_figures(u, profiles)) == ["our protagonist"]
+
+
 # --- noun map + subject-position filter ------------------------------------
 
 def test_noun_map_derives_from_cast_manifest_only():
@@ -134,6 +178,10 @@ def test_noun_map_derives_from_cast_manifest_only():
     assert "guy" not in nm
     # adjectives that ride cast names never become matchable nouns
     assert "mysterious" not in nm and "mysteriou" not in nm
+    # id-slug structural words (assassin_group, assassin_leader) are not
+    # identity nouns; "member"/"bastard" (real aliases) still are
+    assert "group" not in nm and "leader" not in nm
+    assert nm["member"] == {"the assassins"}
 
 
 def test_subject_position_filter_skips_late_object_mentions():
@@ -150,11 +198,27 @@ def test_subject_position_filter_skips_late_object_mentions():
         "The dust settles at last. The assassin lunges again.", nm)
 
 
+def test_quoted_dialogue_does_not_leak_its_names_into_the_speakers_window():
+    # a name inside what a character SAYS is who they talk about, not the
+    # narrator's claim about this line's actor
+    nm = ci.actor_noun_map(CAST)
+    hits = ci.subject_actor_nouns(
+        "The stranger sneers 'the prince dies tonight.'", nm)
+    assert [n for n, _ in hits] == ["stranger"]
+
+
 # --- prep_qa actor_mismatch ------------------------------------------------
 
 _UNDERSTOOD = {"panels": [
     {"scene_file": "p000010.jpg",
-     "subjects": ["a young man in a light robe with a blue sash, bleeding"],
+     # same real g0008 phrasing as test_g0008_counter_draw_subject_resolves_
+     # to_cheon below: "bleeding from the mouth" is the protagonist-exclusive
+     # cue. Without it, "light robe" + "blue sash" alone ties the stranger's
+     # "blue and white hoodie" on raw color overlap (correctly, post round-2
+     # generic-token fix: neither profile still gets a free young+man bump) —
+     # this fixture must carry the same real evidence the live panel did.
+     "subjects": ["a young man in a light robe with a blue sash, bleeding "
+                 "from the mouth"],
      "action": "draws a hidden blade", "description": ""},
     {"scene_file": "p000011.jpg",
      "subjects": ["a masked figure in a dark hooded cloak with a sword"],
@@ -179,6 +243,15 @@ def test_actor_mismatch_silent_when_the_actor_is_correct():
     beats = _beats(("The assassin closes in.", ["p000011.jpg"]),
                    ("The prince rips his hidden knife free.",
                     ["p000010.jpg"]))
+    assert pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST) == []
+
+
+def test_actor_mismatch_silent_on_correct_line_with_id_noun_collision():
+    # round-2 review, class C: assassin_group's id used to leak "group" into
+    # the noun map, so this CORRECT line over the protagonist's span used to
+    # fire a false actor_mismatch (and the heal note would then rewrite a
+    # correct line).
+    beats = _beats(("A group of guards floods the hall.", ["p000010.jpg"]))
     assert pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST) == []
 
 

@@ -133,31 +133,53 @@ def _members(cast: Any) -> List[Dict[str, Any]]:
 
 
 def _name_tokens(member: Dict[str, Any]) -> Set[str]:
-    """Identity NOUNS for one member: canonical_name + aliases + id words,
-    minus stopwords / generic person-words / generic descriptors."""
+    """Identity NOUNS for one member: canonical_name + aliases, minus
+    stopwords / generic person-words / generic descriptors.
+
+    `id` words are deliberately EXCLUDED (round-2 review, class C): ids are
+    pipeline slugs (assassin_group, assassin_leader) whose structural parts
+    ("group", "leader") are role/count descriptors, not identity evidence —
+    "a group of villagers" must never hard-claim the assassins, and a line
+    naming an unrelated "leader" must never stamp the assassin leader in.
+    canonical_name/aliases already carry the real nouns (assassin, member,
+    prince, cheon, …); cast_builder's schema requires canonical_name
+    non-empty, so no evidence is lost by dropping the id."""
     raw: List[str] = []
     raw += _tokens(member.get("canonical_name") or "")
     for a in member.get("aliases") or []:
         raw += _tokens(a)
-    raw += _tokens(str(member.get("id") or "").replace("_", " "))
     return {t for t in raw
             if t not in _STOPWORDS and t not in _GENERIC_PERSON
             and t not in _GENERIC_DESCRIPTOR and len(t) > 1}
 
 
+def _specific(toks: Sequence[str]) -> List[str]:
+    """*toks* minus generic person/descriptor words — appearance evidence
+    they are NOT (module comment above): 'young' and 'man' must never by
+    themselves clear the resolution score bar."""
+    return [t for t in toks
+            if t not in _GENERIC_PERSON and t not in _GENERIC_DESCRIPTOR]
+
+
 def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
     """[{name, name_tokens, appearance, pairs}] per cast member.
 
-    appearance = informative tokens of visual_description (garment-class
-    members add the 'garment' marker); pairs = color→garment associations."""
+    appearance = informative, NON-GENERIC tokens of visual_description
+    (garment-class members add the 'garment' marker); pairs = color→garment
+    associations. Every point of `_score` traces back to a name hit, a
+    pair, or one of these appearance tokens, so filtering generic words out
+    here is what makes "score >= 2.0" mean ">= 1 piece of SPECIFIC evidence"
+    — 'a young man' (both generic) must score 0, never hard-claim a cast
+    member on vibes alone."""
     profiles: List[Dict[str, Any]] = []
     for m in _members(cast):
         name = str(m.get("canonical_name") or m.get("id") or "").strip()
         if not name:
             continue
         toks = _informative(_tokens(m.get("visual_description") or ""))
-        appearance = set(toks)
-        appearance.update("garment" for t in toks if t in _GARMENT)
+        specific = _specific(toks)
+        appearance = set(specific)
+        appearance.update("garment" for t in specific if t in _GARMENT)
         profiles.append({
             "name": name,
             "name_tokens": _name_tokens(m),
@@ -168,9 +190,13 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
 
 
 def _subject_tokens(text: str) -> Set[str]:
-    toks = _informative(_tokens(text))
-    out = set(toks)
-    out.update("garment" for t in toks if t in _GARMENT)
+    """Non-generic informative tokens of *text* (+ the 'garment' class
+    marker) — the SAME generic exclusion as cast_profiles' appearance set,
+    so a subject built entirely of generic words ('a young man') can never
+    share evidence with a profile."""
+    specific = _specific(_informative(_tokens(text)))
+    out = set(specific)
+    out.update("garment" for t in specific if t in _GARMENT)
     return out
 
 
@@ -296,6 +322,21 @@ def actor_noun_map(cast: Any) -> Dict[str, Set[str]]:
 
 _SENT_SPLIT_RE = re.compile(r"[.!?…]+")
 
+# Quoted dialogue is stripped before sentence-splitting: a name inside what a
+# character SAYS is who they talk ABOUT, not the narrator's claim about this
+# line's actor ("the stranger sneers 'the prince dies tonight'" claims only
+# the stranger — "prince" is the stranger's own words, not the narrator
+# naming an actor). The apostrophe doubles as a contraction/possessive mark
+# ("can't", "assassin's") with no surrounding space, so only a quote-shaped
+# apostrophe/quote-mark — whitespace-or-start before the opener, whitespace/
+# punctuation/end after the closer — is treated as a delimiter; an in-word
+# apostrophe never matches and is left alone.
+_QUOTED_SPAN_RE = re.compile(
+    r"(?:(?<=\s)|^)['\"‘“]"
+    r"[^'\"’”]*"
+    r"['\"’”](?=[\s.,!?;:]|$)"
+)
+
 
 def subject_actor_nouns(line: str, noun_map: Dict[str, Set[str]]
                         ) -> List[Tuple[str, Set[str]]]:
@@ -307,7 +348,8 @@ def subject_actor_nouns(line: str, noun_map: Dict[str, Set[str]]
     measured heal-target, not an FP fountain."""
     hits: List[Tuple[str, Set[str]]] = []
     seen: Set[str] = set()
-    for sent in _SENT_SPLIT_RE.split(str(line or "")):
+    clean_line = _QUOTED_SPAN_RE.sub(" ", str(line or ""))
+    for sent in _SENT_SPLIT_RE.split(clean_line):
         raw = _WORD_RE.findall(sent)
         for i, w in enumerate(raw[:7]):
             possessive = w.lower().endswith("'s") or w.lower().endswith("s'")

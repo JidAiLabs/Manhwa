@@ -31,6 +31,7 @@ HEALABLE = {
     "filler_narration", "beats_incomplete",
     "empty_item", "silent_group", "grounding_weak",
     "shot_description", "filename_in_narration", "impact_marker_leak",
+    "figures_leak",
     # detector-verified impact SFX on a span panel but no impact wording in
     # the line — re-narration IS the fix: the regenerated group's writer
     # payload carries the [IMPACT SFX on panel] marker, so the re-roll sees
@@ -100,6 +101,14 @@ def _note_for(code: str, detail: str) -> str:
                 "never story. Re-narrate the actual strike/stab/blow: who "
                 "hits, what lands, the force and the damage. Never mention "
                 "a bracket, a tag, or the marker itself.")
+    if code == "figures_leak":
+        return ("This line reads the unresolved-figure payload wrapper "
+                "aloud (e.g. 'unknown (a masked figure...)') — that is "
+                "pipeline bookkeeping, never story. Re-narrate using "
+                "neutral phrasing for the figure (the masked figure, the "
+                "man in the hood); a RESOLVED cast name is fine to say, "
+                "just never the raw evidence text or the word 'unknown' "
+                "followed by a parenthesis.")
     if code == "impact_mismatch":
         return ("Painted IMPACT-SFX lettering is on this panel — a strike, "
                 "stab, blow, or crash is landing HERE, and the current line "
