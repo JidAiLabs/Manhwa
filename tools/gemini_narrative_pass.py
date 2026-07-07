@@ -436,10 +436,12 @@ def _pack_group_payload(
     group: Dict[str, Any],
     vision_items_by_file: Dict[str, Dict[str, Any]],
     understand_by_file: Optional[Dict[str, Dict[str, Any]]] = None,
+    figures_by_file: Optional[Dict[str, List[Dict[str, str]]]] = None,
 ) -> Dict[str, Any]:
     scene_files = group.get("scene_files") or []
     scenes: List[Dict[str, Any]] = []
     understand_by_file = understand_by_file or {}
+    figures_by_file = figures_by_file or {}
 
     for sf in scene_files:
         it = vision_items_by_file.get(sf) or {}
@@ -494,6 +496,17 @@ def _pack_group_payload(
         _sow = str(understood.get("strikes_or_weapons") or "").strip().lower()
         if _sow and _sow != "none":
             scenes[-1]["strikes_or_weapons"] = _sow
+        # Round-2 identity fix: the panel's cast-resolved FIGURES (deterministic
+        # keyword evidence, tools/cast_identity.py) ride the payload so the
+        # writer names actors from GROUND truth, not vibes ("the assassin draws
+        # his steel" over Cheon's counter-draw). Key exists ONLY when a cast
+        # manifest resolved something — byte-compatible otherwise.
+        figs = figures_by_file.get(sf) or []
+        if figs:
+            scenes[-1]["figures"] = [
+                (f["name"] if f.get("name") and f["name"] != "unknown"
+                 else f"unknown ({str(f.get('evidence') or '')[:40]})")
+                for f in figs[:4]]
 
     return {
         "group_id": int(group.get("shot_id") or group.get("group_id") or 0),
@@ -1752,6 +1765,13 @@ def main() -> int:
         "      UNKNOWN figure is a mystery to preserve — but once the story's own text or the\n"
         "      character's established look identifies someone, use their name. Once introduced,\n"
         "      ration the protagonist's real name and usually use pronouns or a relaxed stand-in.\n"
+        "    - FIGURES ARE GROUND TRUTH: when a panel's scenes_signals entry carries a\n"
+        "      'figures' list, those are the characters ACTUALLY IN that panel, resolved from\n"
+        "      the chapter cast's appearance. Name actors ONLY from that list: NEVER attribute\n"
+        "      an action, weapon, wound, or thought to a cast member the panel's figures do not\n"
+        "      include (if figures says the prince, it is the prince drawing the blade — not an\n"
+        "      assassin). When a figure is 'unknown (…)', use neutral phrasing (the masked\n"
+        "      figure, the man in the hood) — never guess a name for an unknown.\n"
         "    - DIALOGUE — quote selectively, recap-style: PARAPHRASE the bulk into narration but\n"
         "      DO quote occasionally for impact. QUOTE a SHORT (<=6 words), COMPLETE, punchy real\n"
         "      line (a threat, a name, a key line) in clean sentence case, attributed — e.g. he\n"
@@ -1800,6 +1820,12 @@ def main() -> int:
         "      narration trail off on a dangling quoted stub or bare '...' (do NOT end\n"
         "      with e.g. 'Wait a sec...' or 'What the—'); finish the thought in your\n"
         "      own words.\n"
+        "    - SYSTEM CARDS SPEAK THEIR TEXT: when a panel is an in-world system/\n"
+        "      notification card (panel_kind 'system'), voice the card's ACTUAL words —\n"
+        "      verbatim or tightly paraphrased ('Seventh generation nano machine —\n"
+        "      activation begins.'). NEVER describe the card as an object or interface:\n"
+        "      'a white panel appears with the text…', 'a panel displays…', 'text appears\n"
+        "      on screen' are BANNED — say what the card SAYS, never how it is drawn.\n"
         "    - CONTINUITY: INPUT_JSON.previous_narration holds the line(s) the narrator\n"
         "      JUST SPOKE. Continue that flow: never re-introduce characters or\n"
         "      re-describe the setting already established, never start with the same\n"
@@ -1853,6 +1879,14 @@ def main() -> int:
     # Same cast list (loaded once) feeds the per-beat token resolver, which scrubs
     # any bracketed cast token the model copied into the final narration.
     cast_list = _load_cast_list(args.cast)
+    # Round-2 identity fix: deterministic panel→cast FIGURE resolution at the
+    # writer seam (cast exists only from the beated stage — AFTER understanding
+    # — so resolution happens at read time, tools/cast_identity.py; prep_qa's
+    # actor_mismatch gate shares the same authority). {} without cast/understood.
+    figures_by_file: Dict[str, List[Dict[str, str]]] = {}
+    if cast_list and u_by_file:
+        from cast_identity import resolve_figures_by_file
+        figures_by_file = resolve_figures_by_file(understood_m, cast_list)
     story_block = _build_story_block(args.story)
     system_body = system_body.replace("{CAST_BLOCK}", cast_block)
     system_body = system_body.replace("{STORY_SPINE}", story_block)
@@ -1984,7 +2018,8 @@ def main() -> int:
                 sys_g += _pinned_span_block(beat_segments(pin_prev))
             regenerated += 1
 
-        payload = _pack_group_payload(g, vision_by_file, u_by_file)
+        payload = _pack_group_payload(g, vision_by_file, u_by_file,
+                                      figures_by_file=figures_by_file)
         # rolling context: the last spoken lines ride along so each beat
         # CONTINUES the story instead of re-opening it (and completes any
         # fragment the previous caption left hanging)

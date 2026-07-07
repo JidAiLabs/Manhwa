@@ -48,6 +48,12 @@ HEALABLE = {
     # a voiced line stops mid-sentence ("...no mercy to be found, only the")
     # — a writer-truncated final sentence; a re-roll writes the full thought.
     "truncated_line",
+    # a line's actor-noun contradicts the span's cast-resolved figures ("the
+    # assassin draws his steel" over Cheon's counter-draw) — the re-roll's
+    # writer payload carries the per-panel `figures` ground truth the
+    # original roll lacked. NOT worker-blocking yet (precision is measured
+    # on the first production run).
+    "actor_mismatch",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -100,6 +106,19 @@ def _note_for(code: str, detail: str) -> str:
                 "misses it entirely. Re-narrate the physical impact "
                 "explicitly: who strikes, what lands, the force and the "
                 "damage. Never describe this panel as calm or uneventful.")
+    if code == "actor_mismatch":
+        issue = (detail or "").split(":", 1)[0].strip()
+        return ("This line attributes the action/thought to the WRONG "
+                "character" + (f" ({issue})" if issue else "") + ". "
+                "Each panel's `figures` list is ground truth — re-narrate "
+                "naming the actor ONLY from the panel's figures; when a "
+                "figure is unknown, use neutral phrasing (the masked "
+                "figure), never a guessed name.")
+    if code == "phrase_echo":
+        return ("This line repeats an earlier line's phrase nearly "
+                "verbatim — re-narrate the same moment with FRESH wording "
+                "(new verbs and imagery, same facts); never re-use a "
+                "sentence you already spoke.")
     if code == "narration_offset":
         return ("This line describes the NEIGHBORING panel's moment, not its "
                 "own — a one-panel lead/lag (e.g. narrating the impact while "
@@ -132,6 +151,9 @@ def corrections_from_qa(report: Dict[str, Any], *,
         # default; opt in when running the slower semantic-heal experiment.
         if code == "chrome_narration":
             pass
+        elif code == "phrase_echo":
+            pass   # WARN by design (heal-target): a near-verbatim repeated
+            #        phrase is a wording fix, never worth blocking a chapter
         elif code == "grounding_weak" and include_grounding_warn:
             pass   # a rule/quality violation worth healing at ANY severity
         elif f.get("severity") == "ERROR" and code in HEALABLE:

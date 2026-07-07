@@ -1227,6 +1227,96 @@ def narration_offset_flags(beats_obj: Any, understood_obj: Any
     return flags
 
 
+def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
+                         cast_obj: Any) -> List[Dict[str, Any]]:
+    """CAST-GROUNDED actor gate (ERROR, heal-target, deliberately NOT in the
+    worker blocking set — the first production run measures its precision):
+    the round-2 vision review's dominant class (~6 findings) was identity
+    misattribution — "the assassin draws his steel" over Prince Cheon's
+    counter-draw (g0008_p06), the dying prince's eye narrated as "an
+    assassin's eye" (g0019_p00), a departed assassin given the descendant's
+    inner thoughts (g0020_p01).
+
+    Fires when a line's SUBJECT-position actor-noun (noun map derived from
+    manifest.cast.json — names/aliases/ids, no hardcoded series words) maps
+    to cast members that are DISJOINT from the span's resolved figures
+    (tools/cast_identity.py — the SAME deterministic resolution the writer
+    payload's `figures` lines use, so QA and the writer can never disagree).
+    Precision posture: subject-position-only nouns (late mentions are
+    objects/off-panel references), spans with zero resolved figures are
+    skipped (no ground truth), ties resolve to unknown upstream. Healable:
+    the regenerated group's payload carries the figures lines the original
+    roll lacked. Silent without cast or understanding."""
+    from cast_identity import (actor_noun_map, resolve_figures_by_file,
+                               subject_actor_nouns)
+    flags: List[Dict[str, Any]] = []
+    noun_map = actor_noun_map(cast_obj)
+    figures = resolve_figures_by_file(understood_obj, cast_obj)
+    if not noun_map or not figures or not isinstance(beats_obj, dict):
+        return flags
+    fig_by_base = {_base_scene(os.path.basename(f)): v
+                   for f, v in figures.items()}
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            if not line:
+                continue
+            span_names = {f["name"]
+                          for fn in s["span"]
+                          for f in fig_by_base.get(_base_scene(fn), [])
+                          if f.get("name") and f["name"] != "unknown"}
+            if not span_names:
+                continue
+            for noun, members in subject_actor_nouns(line, noun_map):
+                if members & span_names:
+                    continue
+                flags.append(_flag(
+                    "actor_mismatch", ERROR,
+                    f"line names '{noun}' as the actor but the span's "
+                    f"resolved figures are {sorted(span_names)}: "
+                    f"{line[:80]!r} — re-narrate naming the actor from the "
+                    "panel's actual figures",
+                    scene=str((s["span"] or [""])[0]), segment_id=seg))
+    return flags
+
+
+def phrase_echo_flags(beats_obj: Any, *, window: int = 8,
+                      min_words: int = 6) -> List[Dict[str, Any]]:
+    """PHRASE ECHO (WARN, heal-target): two narrated segments within *window*
+    of each other share a >= *min_words* verbatim word run (case/punct-
+    normalized) — the round-2 g0020_p01/g0024_p12 near-verbatim repeated
+    thought. Cheap + deterministic (the same longest_common_run authority the
+    ocr_echo check uses). One flag per offending later segment; consecutive-
+    duplicate LINES are a different class (dedupe_consecutive_panel_lines)."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    rows: List[Tuple[str, str]] = []          # (segment_tag, line)
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            if s["line"]:
+                rows.append((seg, s["line"]))
+    flagged: set = set()
+    for j in range(1, len(rows)):
+        if j in flagged:
+            continue
+        for i in range(max(0, j - window), j):
+            run = longest_common_run(rows[i][1], rows[j][1],
+                                     min_words=min_words)
+            if run:
+                flags.append(_flag(
+                    "phrase_echo", WARN,
+                    f"repeats {rows[i][0]}'s phrase nearly verbatim "
+                    f"({run[:60]!r}): {rows[j][1][:80]!r} — re-narrate "
+                    "with fresh wording",
+                    segment_id=rows[j][0]))
+                flagged.add(j)
+                break
+    return flags
+
+
 def span_cover_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
                      vitems: Optional[Dict[str, Dict[str, Any]]] = None
                      ) -> List[Dict[str, Any]]:
@@ -2305,6 +2395,8 @@ def main() -> int:
     flags.extend(span_cover_flags(plan, beats_obj, vitems))
     flags.extend(impact_mismatch_flags(beats_obj, understood_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
+    flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj))
+    flags.extend(phrase_echo_flags(beats_obj))
 
     recap_style = analyze_recap_style(
         script_obj, beats_obj, story_obj, cast_obj, vitems)

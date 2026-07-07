@@ -58,7 +58,11 @@ SYSTEM = (
     "vivid, but strictly faithful to what is shown (never invent characters or "
     "events). Return JSON:\n"
     "  description: 1-2 concrete sentences of the action/scene in this panel.\n"
-    "  subjects: the characters / creatures / key objects visible.\n"
+    "  subjects: the characters / creatures / key objects visible. For each\n"
+    "PERSON, include their distinguishing look AS DRAWN — clothing/outfit and\n"
+    "its color, hair, any mask/hood/armor or notable accessory (e.g. 'a young\n"
+    "man in a light robe with a blue sash', 'a masked figure in a dark hooded\n"
+    "cloak') — never just 'a man' or 'a figure'.\n"
     "  action: the single key event or beat of this panel.\n"
     "  dialogue: any spoken line or caption, copied VERBATIM from the OCR; '' if "
     "none. Do not paraphrase dialogue.\n"
@@ -113,7 +117,12 @@ SYSTEM = (
 # pu_v2: impact-SFX fusion (strikes_or_weapons + sfx_text fields, the
 # detector-driven impact notice) — invalidates ALL pu_v1 records, INTENDED:
 # chapters re-understand under the impact-aware prompt.
-PROMPT_VERSION = "pu_v2"
+# pu_v3: subjects must carry each person's distinguishing LOOK (outfit color,
+# hair, mask/hood, accessories) — the raw material cast_identity.py resolves
+# panel figures from deterministically (round-2 identity misattribution fix).
+# Invalidates ALL pu_v2 records, INTENDED: chapters re-understand so figure
+# resolution has appearance evidence to match against manifest.cast.json.
+PROMPT_VERSION = "pu_v3"
 
 
 def _norm_panel_kind(v: Any) -> str:
