@@ -744,3 +744,83 @@ def test_repair_spoken_fragments_amputates_truncated_segment_line():
     seg = beats["beats"][0]["segments"][0]
     assert seg["line"] == "But there is no mercy to be found."
     assert beats["beats"][0]["narration"] == "But there is no mercy to be found."
+
+
+# ---------------------------------------------------------------------------
+# Round-2 (2026-07-07) classes E3 (truncation MUTATION: possessive/function
+# word + bare period slips the terminal-char test) and E4 (filler mutation:
+# panel-as-UI narration slips the display-meta arms). Real lines verbatim.
+# ---------------------------------------------------------------------------
+
+def test_possessive_period_ending_is_a_truncation_mutation():
+    # the REAL round-2 line: ends "…an assassin's." — possessive + period,
+    # which the old guard read as a finished sentence
+    line = "He whips the blade around and sends blood splattering across " \
+           "an assassin's."
+    assert not rs.ends_terminal(line)
+    assert rs.is_spoken_fragment(line)
+    # plural possessive mutation too
+    assert not rs.ends_terminal("The plan was always the assassins'.")
+
+
+def test_possessive_followed_by_noun_is_terminal():
+    # careful negative from the spec: possessive + NOUN + period IS a
+    # complete thought — only possessive-period-END fails
+    for ok in [
+        "Blood splatters across the assassin's blade.",
+        "He tears the mask from the assassin's face.",
+        "The ancestor's last wish hangs in the air.",
+    ]:
+        assert rs.ends_terminal(ok), ok
+        assert not rs.is_spoken_fragment(ok), ok
+
+
+def test_article_preposition_conjunction_period_is_not_terminal():
+    for bad in [
+        "But there is no mercy to be found, only the.",
+        "He reaches for the hilt and.",
+        "The strike was meant for.",
+        "She vanishes into the mist with.",
+    ]:
+        assert not rs.ends_terminal(bad), bad
+    # the same words INSIDE a finished sentence stay terminal
+    for ok in [
+        "He fights for the ones he lost.",
+        "That is what the blade is for!",
+        "And with that, the hall goes silent.",
+    ]:
+        assert rs.ends_terminal(ok), ok
+
+
+def test_mutation_endings_keep_exclamation_and_ellipsis_behavior():
+    # scoped to bare '.' — deliberate trails/exclamations are untouched
+    assert rs.ends_terminal("A pause hangs in the air…")
+    assert rs.ends_terminal("Seriously, what even is that light?!")
+
+
+def test_repair_never_double_punctuates_a_mutation_ending():
+    # already ends '.', not terminal: repair must NOT append another period
+    # (no separator to amputate at -> left for the truncated_line heal)
+    line = "He sends blood splattering across an assassin's."
+    assert rs.repair_spoken_line(line) == line
+
+
+def test_panel_as_ui_filler_mutation_is_shot_description():
+    # class E4 — the REAL voiced line evaded the display-meta arms
+    for bad in [
+        "A white panel appears with the text: serial number.",
+        "A panel appears with the text announcing his awakening.",
+        "The panel displays a string of numbers.",
+        "The white panel shows the activation message.",
+        "The card reads, with the text: nano machine online.",
+    ]:
+        assert rs.is_shot_description(bad), bad
+    # in-story senses: a named in-world screen or story 'panel' stays clean
+    for good in [
+        "The control panel displays his vitals in red.",
+        "The status panel shows his strength climbing.",
+        "The panel begins to glow beneath his palm.",
+        "He hammers on the door panel until it gives.",
+        "A mechanical voice announces the seventh activation.",
+    ]:
+        assert not rs.is_shot_description(good), good

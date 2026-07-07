@@ -351,9 +351,11 @@ def test_writeback_before_understood_dump_mtime_order(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_prompt_version_bumped_for_impact_fields():
-    # pu_v2 invalidates every pu_v1 resume record (INTENDED — chapters
-    # re-understand under the impact-aware prompt).
-    assert pu.PROMPT_VERSION == "pu_v2"
+    # pu_v3 invalidates every pu_v2 resume record (INTENDED — chapters
+    # re-understand under the appearance-aware subjects prompt, the raw
+    # material cast_identity figure resolution matches against; pu_v2 did
+    # the same for the impact-aware prompt over pu_v1).
+    assert pu.PROMPT_VERSION == "pu_v3"
 
 
 def test_panel_schema_adds_impact_fields_backward_compatibly():

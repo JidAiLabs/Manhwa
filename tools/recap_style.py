@@ -230,7 +230,15 @@ _DISPLAY_META_RE = re.compile(
     r"|\borganizational\s+name\s*card\b"
     r"|\b(?:text|caption|card|title|lettering|logo)s?\s+appears?\s+as\s+a\b"
     r"|\bappears?\s+as\s+a\s+(?:standalone\s+)?"
-    r"(?:caption|card|title|text|logo|graphic|banner)\b",
+    r"(?:caption|card|title|text|logo|graphic|banner)\b"
+    # Round-2 E4 filler mutation: "A white panel appears with the text:
+    # serial number." — narrates the panel-as-UI and evaded every arm above.
+    # The panel-noun arms are gated on (a|the)( white)? immediately before
+    # "panel" so an in-world screen line ("the control/status panel displays
+    # his vitals") and story senses ("the panel begins to glow") never fire.
+    r"|\bpanel\s+appears\s+with\s+the\s+text\b"
+    r"|\bwith\s+the\s+text\s*:"
+    r"|\b(?:a|the)\s+(?:white\s+)?panel\s+(?:appears|shows|displays)\b",
     re.I,
 )
 
@@ -329,13 +337,39 @@ _FUNCTION_TAIL_WORDS = frozenset({
 })
 
 
+# Round-2 E3 truncation MUTATION: "…sends blood splattering across an
+# assassin's." — the writer-truncated tail ends in a possessive + bare
+# period, so the terminal-CHAR test alone passes it. A sentence can never
+# END on a bare possessive ("…an assassin's.") or on an article/preposition/
+# conjunction ("…only the."); a possessive followed by a NOUN then the
+# period ("…the assassin's blade.") IS terminal — the word test looks only
+# at the LAST word. Scoped to bare-'.' endings so '!'/'?'/'…' lines (and
+# deliberate ellipsis trails) keep their existing behavior.
+_NON_TERMINAL_ENDERS = frozenset({
+    "the", "a", "an", "of", "with", "and", "but", "to", "for",
+})
+_POSSESSIVE_END_RE = re.compile(r"[A-Za-z]+(?:'s|s')$")
+
+
 def ends_terminal(text: str) -> bool:
     """True when the line ends a spoken thought: terminal punctuation
-    (.!?…), allowing trailing closing quotes/brackets after it."""
+    (.!?…), allowing trailing closing quotes/brackets after it — unless the
+    final word before a bare period is a possessive or an article/
+    preposition/conjunction (a truncation mutation, round-2 E3)."""
     s = _TAG_RE.sub("", str(text or "")).strip()
     while s and s[-1] in _TRAILING_CLOSERS:
         s = s[:-1].rstrip()
-    return bool(s) and s[-1] in _TERMINAL_CHARS
+    if not s or s[-1] not in _TERMINAL_CHARS:
+        return False
+    if s[-1] == ".":
+        body = s.rstrip(".").rstrip()
+        words = body.split()
+        last_raw = words[-1] if words else ""
+        if _POSSESSIVE_END_RE.search(last_raw):
+            return False
+        if last_raw.strip(_TRAILING_CLOSERS).lower() in _NON_TERMINAL_ENDERS:
+            return False
+    return True
 
 
 def is_spoken_fragment(text: str) -> bool:
@@ -384,8 +418,12 @@ def repair_spoken_line(text: str) -> str:
     if s.endswith((",", ";", ":")):
         s = s[:-1].rstrip() + "."
     if s and not ends_terminal(s):
-        last = s.split()[-1].rstrip(_TRAILING_CLOSERS).lower()
-        if last in _FUNCTION_TAIL_WORDS:
+        # strip terminal chars too: a MUTATION ending ("…an assassin's.")
+        # already carries its period — the last-word test must see the word,
+        # and the complete-clause branch below must never double-punctuate.
+        last = (s.split()[-1].rstrip(_TRAILING_CLOSERS + _TERMINAL_CHARS)
+                .rstrip(_TRAILING_CLOSERS).lower())
+        if last in _FUNCTION_TAIL_WORDS or _POSSESSIVE_END_RE.search(last):
             # writer-truncated tail ("...to be found, only the"): amputate a
             # SHORT (<=2-word) dangling stub after the last clause separator
             # — keeps every complete clause, adds no invented facts. A wider
@@ -399,9 +437,11 @@ def repair_spoken_line(text: str) -> str:
             m = re.match(r"^(.*[,;:—–])\s+\S+(?:\s+\S+){0,1}$", s)
             if m and m.group(1).rstrip(",;:—– ").strip():
                 s = m.group(1).rstrip(",;:—– ").strip() + "."
-        else:
+        elif s[-1] not in _TERMINAL_CHARS:
             # a complete clause that just lost its final punctuation
             s = s + "."
+        # else: already punctuated but non-terminal (a mutation ending) —
+        # leave it; the truncated_line QA flag heals it with a real re-write
     return (tag + s).strip()
 
 
