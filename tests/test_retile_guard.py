@@ -46,13 +46,39 @@ class _Boxes:
 class _FakeModel:
     """Returns one panel near the top of every tile it is handed."""
     def predict(self, source=None, **kw):
-        return [type("R", (), {"boxes": _Boxes([[10, 10, 790, 1000]], [yp._PANEL_CLASS_ID])})()]
+        return [type("R", (), {"boxes": _Boxes([[10, 10, 790, 1000]], [0])})()]
 
 
 def test_retile_offsets_and_merges_windows(tmp_path):
     p = tmp_path / "chunk.jpg"
     Image.fromarray(np.zeros((12000, 800, 3), dtype=np.uint8)).save(str(p))
     boxes = yp._retile_panels(_FakeModel(), str(p), 800, 12000, 0.25, "cpu",
-                              win=5000, overlap=500)
+                              960, 0, win=5000, overlap=500)
     assert len(boxes) >= 2                       # multiple windows -> multiple panels
     assert max(b[3] for b in boxes) > 5000       # a box was offset into the lower chunk
+
+
+def test_resolve_classes_both_generations():
+    legacy = {0: "panel", 1: "system_box", 2: "speech_bubble", 3: "text",
+              4: "sfx", 5: "character"}
+    pid, els = yp.resolve_classes(legacy)
+    assert pid == 0
+    assert els == {1: "system_box", 2: "speech_bubble", 4: "sfx"}
+
+    v3 = {0: "panel", 1: "speech_bubble", 2: "radio", 3: "speech_background",
+          4: "sfx_text", 5: "system_ui", 6: "caption_box", 7: "free_text"}
+    pid, els = yp.resolve_classes(v3)
+    assert pid == 0
+    # v3 names land on the manifest keys consumers already speak
+    assert els[5] == "system_box" and els[4] == "sfx"
+    assert els[1] == "speech_bubble" and els[2] == "radio"
+    assert els[3] == "speech_background"
+    assert els[6] == "caption_box" and els[7] == "free_text"
+
+
+def test_dedup_iou_drops_contained_fragment():
+    big = (0, 0, 800, 1000)
+    frag = (100, 100, 300, 300)      # fully inside big -> double-cover, drop
+    apart = (0, 1200, 800, 2000)
+    kept = yp._dedup_iou([frag, big, apart])
+    assert big in kept and apart in kept and frag not in kept

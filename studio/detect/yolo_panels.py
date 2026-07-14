@@ -112,15 +112,36 @@ def snap_panels_to_elements(
 # YOLO inference
 # ---------------------------------------------------------------------------
 
-_PANEL_CLASS_ID = 0  # class 0 = panel in the trained webtoon model
+# Class resolution is NAME-driven from the checkpoint's own names dict so both
+# model generations drop in without code edits:
+#   legacy 6-class: panel, system_box, speech_bubble, text, sfx, character
+#   v3 8-class:     panel, speech_bubble, radio, speech_background, sfx_text,
+#                   system_ui, caption_box, free_text
+# _NAME_TRANSLATE maps a model class name -> the manifest elements_norm key
+# downstream consumers already speak (system_box / speech_bubble / sfx);
+# unmapped names (text, character) stay discarded.
+_NAME_TRANSLATE = {
+    "system_box": "system_box",
+    "speech_bubble": "speech_bubble",
+    "sfx": "sfx",
+    "radio": "radio",
+    "speech_background": "speech_background",
+    "sfx_text": "sfx",
+    "system_ui": "system_box",
+    "caption_box": "caption_box",
+    "free_text": "free_text",
+}
+# Element keys whose sliced boxes should pull the panel boundary outward
+# (voice containers + system windows must never be bisected by a crop).
+_SNAP_CLASSES = ("speech_bubble", "system_box", "radio", "speech_background")
 
-# Non-panel classes the webtoon model was trained on (data.yaml order:
-# panel, system_box, speech_bubble, text, sfx, character). These were
-# previously discarded; now emitted as elements_norm for bubble snapping
-# and pixel-accurate inpaint masks.
-_ELEMENT_CLASS_IDS = {1: "system_box", 2: "speech_bubble", 4: "sfx"}
-# Classes whose sliced boxes should pull the panel boundary outward.
-_SNAP_CLASSES = ("speech_bubble", "system_box")
+
+def resolve_classes(names: Dict[int, str]) -> Tuple[int, Dict[int, str]]:
+    """(panel_class_id, {class_id: elements_norm key}) from a model names dict."""
+    panel_id = next((i for i, n in names.items() if n == "panel"), 0)
+    elements = {i: _NAME_TRANSLATE[n] for i, n in names.items()
+                if n in _NAME_TRANSLATE}
+    return panel_id, elements
 
 
 def _iou(a, b) -> float:
@@ -134,14 +155,32 @@ def _iou(a, b) -> float:
     return inter / (aa + bb - inter)
 
 
-def _dedup_iou(boxes, thr: float = 0.5):
-    """Drop near-duplicate boxes (the same panel seen in two overlapping
-    windows), keeping the first in reading order."""
-    kept: List[Tuple[float, float, float, float]] = []
-    for b in sorted(boxes, key=lambda z: (z[1], z[0])):
-        if not any(_iou(b, k) > thr for k in kept):
-            kept.append(b)
-    return kept
+def _dedup_iou(boxes, thr: float = 0.5, contain_thr: float = 0.85):
+    """Drop near-duplicate panel boxes: same panel seen twice (IoU > thr) or a
+    fragment mostly contained in a larger box (containment > contain_thr — the
+    prep_qa panel_double_covered signature). Larger boxes win; reading order
+    otherwise preserved."""
+    ordered = sorted(boxes, key=lambda z: (z[1], z[0]))
+    areas = [max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1]) for b in ordered]
+    dropped = [False] * len(ordered)
+    for i in range(len(ordered)):
+        if dropped[i]:
+            continue
+        for j in range(len(ordered)):
+            if i == j or dropped[j] or areas[j] < areas[i]:
+                continue
+            # j is the equal-or-larger box; test i against it
+            if areas[j] == areas[i] and j > i:
+                continue
+            inter_x = max(0.0, min(ordered[i][2], ordered[j][2]) - max(ordered[i][0], ordered[j][0]))
+            inter_y = max(0.0, min(ordered[i][3], ordered[j][3]) - max(ordered[i][1], ordered[j][1]))
+            inter = inter_x * inter_y
+            if inter <= 0 or areas[i] <= 0:
+                continue
+            if _iou(ordered[i], ordered[j]) > thr or inter / areas[i] > contain_thr:
+                dropped[i] = True
+                break
+    return [b for b, d in zip(ordered, dropped) if not d]
 
 
 def _under_segmented(px_boxes, img_h: int, *, min_h: int = 8000) -> bool:
@@ -157,8 +196,8 @@ def _under_segmented(px_boxes, img_h: int, *, min_h: int = 8000) -> bool:
     return len(px_boxes) < img_h / 4000.0
 
 
-def _retile_panels(model, img_path, img_w, img_h, conf, device,
-                   *, win: int = 6000, overlap: int = 600):
+def _retile_panels(model, img_path, img_w, img_h, conf, device, imgsz,
+                   panel_class_id, *, win: int = 6000, overlap: int = 600):
     """Re-detect panels in an under-segmented chunk by slicing it into vertical
     windows YOLO resolves at proper scale, offsetting boxes back to chunk coords,
     and de-duplicating the window overlaps. Returns panel boxes (x1,y1,x2,y2)."""
@@ -171,11 +210,12 @@ def _retile_panels(model, img_path, img_w, img_h, conf, device,
     while True:
         y1 = min(img_h, y + win)
         arr = _np.asarray(im.crop((0, y, img_w, y1)))
-        res = model.predict(source=arr, conf=conf, device=device, verbose=False)[0]
+        res = model.predict(source=arr, conf=conf, device=device, imgsz=imgsz,
+                            verbose=False)[0]
         b = res.boxes
         if b is not None and len(b) > 0:
             for (x1, ty1, x2, ty2), c in zip(b.xyxy.cpu().numpy(), b.cls.cpu().numpy()):
-                if int(c) == _PANEL_CLASS_ID:
+                if int(c) == panel_class_id:
                     found.append((float(x1), float(ty1) + y, float(x2), float(ty2) + y))
         if y1 >= img_h:
             break
@@ -190,6 +230,7 @@ def detect_panels(
     conf: float = 0.25,
     device: Optional[str] = None,
     snap: bool = True,
+    imgsz: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run YOLO panel detection over all chunks listed in a stitch manifest.
 
@@ -200,6 +241,10 @@ def detect_panels(
         conf: Confidence threshold (default 0.25).
         device: Inference device ("mps", "cpu", "cuda", …).
                 Defaults to "mps" if available, else "cpu".
+        imgsz: Inference size. Defaults to the size the checkpoint was
+               TRAINED at (train_args.imgsz) — the legacy model is 640, the
+               v3 8-class model is 960; running a model off its native scale
+               costs recall. Falls back to 640 if the ckpt has no record.
 
     Returns:
         The output dict that was written to out_path.
@@ -225,6 +270,10 @@ def detect_panels(
 
     # Load model once
     model = YOLO(weights)
+    panel_class_id, element_class_ids = resolve_classes(model.names or {})
+    if imgsz is None:
+        imgsz = int(((getattr(model, "ckpt", None) or {}).get("train_args")
+                     or {}).get("imgsz") or 640)
 
     out_chunks: List[Dict[str, Any]] = []
 
@@ -241,6 +290,7 @@ def detect_panels(
             source=img_path,
             conf=conf,
             device=device,
+            imgsz=imgsz,
             verbose=False,
         )
 
@@ -250,7 +300,7 @@ def detect_panels(
         boxes = result.boxes
         px_boxes: List[Tuple[float, float, float, float]] = []
         el_px: Dict[str, List[Tuple[float, float, float, float]]] = {
-            name: [] for name in _ELEMENT_CLASS_IDS.values()
+            name: [] for name in element_class_ids.values()
         }
 
         if boxes is not None and len(boxes) > 0:
@@ -259,16 +309,21 @@ def detect_panels(
             for (x1, y1, x2, y2), c in zip(xyxy, cls):
                 ci = int(c)
                 box = (float(x1), float(y1), float(x2), float(y2))
-                if ci == _PANEL_CLASS_ID:
+                if ci == panel_class_id:
                     px_boxes.append(box)
-                elif ci in _ELEMENT_CLASS_IDS:
-                    el_px[_ELEMENT_CLASS_IDS[ci]].append(box)
+                elif ci in element_class_ids:
+                    el_px[element_class_ids[ci]].append(box)
+
+        # NMS dedup: the same panel emitted twice (high IoU) or a fragment box
+        # inside a larger one becomes a double-covered crop downstream.
+        px_boxes = _dedup_iou(px_boxes)
 
         # RE-TILE GUARD: a tall chunk the full-chunk pass under-segmented (one box
         # spanning most of it, or too sparse) means YOLO's downscale ate the
         # panels. Re-run on vertical sub-tiles so each panel is seen at full scale.
         if _under_segmented(px_boxes, img_h):
-            retiled = _retile_panels(model, img_path, img_w, img_h, conf, device)
+            retiled = _retile_panels(model, img_path, img_w, img_h, conf, device,
+                                     imgsz, panel_class_id)
             if len(retiled) > len(px_boxes):
                 px_boxes = retiled
 
