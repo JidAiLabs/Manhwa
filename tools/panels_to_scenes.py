@@ -573,6 +573,13 @@ class GutterParams:
     min_run_px: int = 80
     margin_px: int = 30
     max_splits: int = 4
+    # Vertical (column) gutter split — side-by-side merged panels. Calibrated
+    # on the real ORV Ep2 p000006 case: ~10px white gutter flanked by panel
+    # border lines with >=0.48h contiguous dark columns.
+    v_min_run_px: int = 4
+    v_flank_px: int = 12
+    v_border_dark_lum: float = 64.0
+    v_border_min_frac: float = 0.30
 
 def _row_blank_edge(im: Image.Image, max_w: int = 420) -> Tuple[np.ndarray, np.ndarray, float]:
     rgb = im.convert("RGB")
@@ -641,17 +648,113 @@ def _find_best_internal_gutter_run(
         return None
     return (y0, y1)
 
+def _find_best_internal_vertical_gutter_run(
+    crop: Image.Image,
+    gp: GutterParams,
+    min_part_w: int,
+) -> Optional[Tuple[int, int]]:
+    """
+    Vertical-gutter analog of _find_best_internal_gutter_run for SIDE-BY-SIDE
+    merged panels (e.g. two phone screens detected as one box). Returns
+    (x0, x1) in crop pixel coords of the best full-height blank column run.
+
+    Differs from the row version, driven by real webtoon geometry:
+    - side-by-side gutters are THIN (~10px measured on p000006) vs the huge
+      stacked-scroll gutters, so this runs at FULL resolution (a 420px
+      downsample would blur a 10px gutter into its neighboring borders);
+    - a thin blank run alone is weak evidence (white background art has
+      full-height blank columns), so the run must be flanked on BOTH sides by
+      a contiguous dark vertical line (the panel borders) — the signature of
+      two bordered panels sitting side by side. No borders -> no split:
+      a missed split is the status quo, a false split bisects real art.
+    """
+    rgb = crop.convert("RGB")
+    w, h = rgb.size
+    if h < 8 or w < 2 * min_part_w + gp.v_min_run_px:
+        return None
+    arr = np.asarray(rgb).astype(np.float32)
+    lum = 0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
+    blank = np.maximum((lum >= 245).mean(axis=0), (lum <= 12).mean(axis=0))
+    edge = np.abs(lum[1:, :] - lum[:-1, :]).mean(axis=0) / 255.0
+    good = (blank >= gp.blank_thr) & (edge <= gp.edge_max)
+    dark = lum <= gp.v_border_dark_lum
+    need_dark = gp.v_border_min_frac * h
+
+    def _border_line_in(x_lo: int, x_hi: int) -> bool:
+        # any column in [x_lo, x_hi) whose LONGEST CONTIGUOUS dark run covers
+        # >= v_border_min_frac of the crop height (a border line, not a blob)
+        for x in range(max(0, x_lo), min(w, x_hi)):
+            col = dark[:, x].astype(np.int8)
+            if not col.any():
+                continue
+            d = np.diff(col)
+            starts = np.flatnonzero(d == 1) + 1
+            ends = np.flatnonzero(d == -1) + 1
+            if col[0]:
+                starts = np.r_[0, starts]
+            if col[-1]:
+                ends = np.r_[ends, col.size]
+            if starts.size and (ends - starts).max() >= need_dark:
+                return True
+        return False
+
+    runs: List[Tuple[int, int, float]] = []
+    i = 0
+    while i < w:
+        if not good[i]:
+            i += 1
+            continue
+        j = i
+        while j < w and good[j]:
+            j += 1
+        run_len = j - i
+        if run_len >= gp.v_min_run_px:
+            split_x = (i + j) // 2
+            if (split_x >= min_part_w and (w - split_x) >= min_part_w
+                    and _border_line_in(i - gp.v_flank_px, i)
+                    and _border_line_in(j, j + gp.v_flank_px)):
+                score = float(run_len) + float(blank[i:j].mean()) * 10.0
+                runs.append((i, j, score))
+        i = j
+
+    if not runs:
+        return None
+    runs.sort(key=lambda t: t[2], reverse=True)
+    i0, i1, _ = runs[0]
+    return (int(i0), int(i1))
+
+
 def split_crop_on_gutters(
     crop: Image.Image,
     crop_box_in_chunk: List[int],
     spans_local: List[List[int]],
     gp: GutterParams,
     min_h_px: int,
+    min_w_px: int = 240,
 ) -> List[Tuple[Image.Image, List[int], List[List[int]]]]:
     """
     Iteratively split a crop into multiple sub-crops on internal gutter runs.
-    Returns list of (sub_image, sub_box_in_chunk, sub_spans_local).
+    Horizontal (stacked) gutters are tried first; when none fires, a vertical
+    (side-by-side) gutter is tried. Returns list of
+    (sub_image, sub_box_in_chunk, sub_spans_local).
     """
+    def _try_vertical(im: Image.Image, box: List[int], spans: List[List[int]]):
+        # Protected spans are full-width y-bands; a vertical cut would bisect
+        # them, so their presence disables the side-by-side split.
+        if spans:
+            return None
+        found_v = _find_best_internal_vertical_gutter_run(im, gp, min_w_px)
+        if not found_v:
+            return None
+        vx0, vx1 = found_v
+        split_x = (vx0 + vx1) // 2
+        x0, y0, x1, y1 = box
+        left = (im.crop((0, 0, split_x, im.height)),
+                [x0, y0, x0 + split_x, y1], [])
+        right = (im.crop((split_x, 0, im.width, im.height)),
+                 [x0 + split_x, y0, x1, y1], [])
+        return [left, right]
+
     out: List[Tuple[Image.Image, List[int], List[List[int]]]] = [(crop, crop_box_in_chunk, spans_local)]
     for _ in range(gp.max_splits):
         changed = False
@@ -659,13 +762,23 @@ def split_crop_on_gutters(
         for im, box, spans in out:
             found = _find_best_internal_gutter_run(im, spans, gp)
             if not found:
-                new_out.append((im, box, spans))
+                vparts = _try_vertical(im, box, spans)
+                if vparts:
+                    new_out.extend(vparts)
+                    changed = True
+                else:
+                    new_out.append((im, box, spans))
                 continue
             gy0, gy1 = found
             # split at center of gutter run
             split_y = (gy0 + gy1) // 2
             if split_y < min_h_px or (im.height - split_y) < min_h_px:
-                new_out.append((im, box, spans))
+                vparts = _try_vertical(im, box, spans)
+                if vparts:
+                    new_out.extend(vparts)
+                    changed = True
+                else:
+                    new_out.append((im, box, spans))
                 continue
 
             # compute sub-images + sub-boxes (chunk coords)
@@ -958,6 +1071,7 @@ def main() -> int:
                         spans_local=crop_local_spans,
                         gp=gp,
                         min_h_px=int(args.min_h_px),
+                        min_w_px=int(args.min_w_px),
                     )
 
                 for part_idx, (part_im, part_box, part_spans) in enumerate(split_parts):
