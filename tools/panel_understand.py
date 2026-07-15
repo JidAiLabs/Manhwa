@@ -135,7 +135,7 @@ PROMPT_VERSION = "pu_v3"
 # understood in ~1600px windows instead. Records carry a DISTINCT version
 # suffix so only tall strips re-run on upgrade — bumping PROMPT_VERSION itself
 # would invalidate every cached panel fleet-wide.
-TALL_WINDOWS_VERSION = PROMPT_VERSION + "+tw1"
+TALL_WINDOWS_VERSION = PROMPT_VERSION + "+tw2"   # tw2: rescue respects windows
 _TALL_MIN_H_PX = 4000
 _TALL_MIN_RATIO = 6.0
 _TALL_WIN_PX = 1600
@@ -670,7 +670,14 @@ def apply_inworld_screen_overrides(
     cand = [p for p in panels
             if p.get("panel_kind") == "chrome" and (p.get("dialogue") or "").strip()
             and not _looks_like_chrome_furniture(
-                p.get("description"), p.get("action"), p.get("dialogue"))]
+                p.get("description"), p.get("action"), p.get("dialogue"))
+            # WINDOWED CHROME EVIDENCE IS FINAL: an extreme-tall strip was
+            # condemned because gemma SAW the title/credits at readable window
+            # scale (b9e70c7). Its merged "dialogue" is novel/caption text and
+            # a balloon somewhere in 7000px means nothing — never rescue it
+            # (ORV Ep0: the 800x7540 cover strip was un-chromed exactly here).
+            and not any(m.get("panel_kind") == "chrome"
+                        for m in (p.get("tall_windows") or []))]
     if not cand:
         return 0
     path_by_file = {it.get("scene_file"): it.get("scene_path") for it in items}

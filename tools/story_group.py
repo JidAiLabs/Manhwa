@@ -857,9 +857,27 @@ def merge_caption_solos(shots: List[Dict[str, Any]], caption_set: set
         else:
             out.append(s)
             i += 1
-    for i, s in enumerate(out, 1):
+
+    # pass 3 (last resort, CROSS-segment): a caption-only beat must never
+    # survive standalone — it has no art, so downstream it becomes a narrated
+    # timeline item with NOTHING on screen (prep_qa empty_item; ORV Ep0 g0003
+    # "BACK THEN," was segment-isolated and shipped 3 empty items). Segment
+    # purity yields to the on-screen invariant: fold into the previous beat,
+    # else forward into the next.
+    final: List[Dict[str, Any]] = []
+    for j, s in enumerate(out):
+        if all_caption(s):
+            if final:
+                final[-1]["scene_files"].extend(s["scene_files"])
+                continue
+            if j + 1 < len(out):
+                out[j + 1]["scene_files"] = (list(s["scene_files"])
+                                             + list(out[j + 1]["scene_files"]))
+                continue
+        final.append(s)
+    for i, s in enumerate(final, 1):
         s["shot_id"] = i
-    return out
+    return final
 
 
 _INTENSITY_RANK = {"calm": 0, "tense": 1, "intense": 2, "explosive": 3}

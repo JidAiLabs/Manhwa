@@ -369,12 +369,16 @@ def test_caption_only_kept_out_of_standalone_shots_but_text_rides_neighbor():
     assert ["cap"] not in [s["scene_files"] for s in merged]
 
 
-def test_caption_closer_with_no_same_segment_neighbour_stays():
+def test_caption_closer_with_no_same_segment_neighbour_folds_anyway():
+    # CONTRACT CHANGE 2026-07-15: this used to pin "stays as-is when the
+    # segment differs" — production proved that ships a narrated beat with
+    # NOTHING on screen (prep_qa empty_item, ORV Ep0 g0003). A caption-only
+    # beat now always folds, crossing segments as a last resort.
     shots = [
         {"shot_id": 1, "scene_files": ["p0"], "segment": "flashback", "arc_label": "x"},
         {"shot_id": 2, "scene_files": ["c9"], "segment": "present", "arc_label": "end"}]
     merged = sg.merge_caption_solos(shots, {"c9"})
-    assert [s["scene_files"] for s in merged] == [["p0"], ["c9"]]   # segment differs
+    assert [s["scene_files"] for s in merged] == [["p0", "c9"]]
 
 
 def test_annotate_intensity_takes_the_peak_per_beat():
@@ -1154,3 +1158,23 @@ def test_chunk_parse_failure_fails_loudly_with_measured_prompt_size(tmp_path, mo
     dumps = sorted(tmp_path.glob(".story_group_raw-*.json"))
     assert len(dumps) == 1
     assert json.loads(dumps[0].read_text())["raw_response"] == '{"'
+
+
+def test_caption_solo_isolated_by_segment_still_folds_cross_segment():
+    # ORV Ep0 g0003 "BACK THEN,": the caption-only beat had NO same-segment
+    # neighbour, survived standalone, and shipped 3 empty_item timeline errors
+    # (narration with nothing on screen). Last-resort pass folds cross-segment:
+    # prefer the previous beat; a leading caption folds forward.
+    shots = [
+        {"shot_id": 1, "scene_files": ["p0"], "segment": "past", "arc_label": "a"},
+        {"shot_id": 2, "scene_files": ["c1"], "segment": "present", "arc_label": "c"},
+        {"shot_id": 3, "scene_files": ["p2"], "segment": "future", "arc_label": "b"}]
+    merged = sg.merge_caption_solos(shots, {"c1"})
+    assert [s["scene_files"] for s in merged] == [["p0", "c1"], ["p2"]]
+
+    lead = [
+        {"shot_id": 1, "scene_files": ["c1"], "segment": "past", "arc_label": "c"},
+        {"shot_id": 2, "scene_files": ["p1"], "segment": "present", "arc_label": "a"}]
+    merged = sg.merge_caption_solos(lead, {"c1"})
+    assert [s["scene_files"] for s in merged] == [["c1", "p1"]]
+    assert [s["shot_id"] for s in merged] == [1]

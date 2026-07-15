@@ -252,3 +252,31 @@ def test_system_box_override_fail_soft_when_weights_missing():
     assert n == 0
     assert panels[0]["panel_kind"] == "caption"      # untouched
     assert any("DISABLED" in m or "missing" in m for m in logs)
+
+
+def test_rescue_never_promotes_windowed_chrome_strip():
+    # ORV Ep0: the 800x7540 cover strip. Windowed understanding saw the series
+    # title at readable scale (chrome windows) -> merged verdict chrome. Its
+    # merged "dialogue" is novel/caption text and a balloon exists SOMEWHERE in
+    # 7500px, which used to rescue it chrome->story. Windowed chrome evidence
+    # is final: never rescued.
+    panels = [{
+        "scene_file": "p000035.jpg",
+        "panel_kind": "chrome",
+        "dialogue": "THERE ARE THREE WAYS TO SURVIVE THE APOCALYPSE",
+        "description": "black screen with white text / the word OMN in large type",
+        "action": "a narrative transition",
+        "subjects": [],
+        "tall_windows": [
+            {"y0": 0, "y1": 1600, "panel_kind": "caption", "desc": "text"},
+            {"y0": 1400, "y1": 3000, "panel_kind": "chrome", "desc": "series logo"},
+            {"y0": 2800, "y1": 4400, "panel_kind": "story", "desc": "art"},
+        ],
+    }]
+    items = [{"scene_file": "p000035.jpg", "scene_path": "/s/p000035.jpg"}]
+    n = pu.apply_inworld_screen_overrides(
+        panels, items,
+        detect_fn=lambda sp: (800, 7540, _det_balloon()),
+        log=lambda _m: None)
+    assert n == 0
+    assert panels[0]["panel_kind"] == "chrome"
