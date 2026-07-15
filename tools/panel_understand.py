@@ -584,8 +584,12 @@ _SPEECH_BUBBLE_RE = re.compile(
     r"\b(?:speech|dialogue|thought|talk|word)\s*(?:bubble|balloon)s?\b"
     r"|\b(?:bubbles?|balloons?)\b", re.IGNORECASE)
 _SYS_BOX_MIN_COVER = 0.20
+# v3 (2026-07-15): the legacy model's system_box fires 0.96-cover on PLAIN
+# TEXT CARDS (measured on ORV Ep0 "BACK THEN," — promoted a caption to
+# system and put a white card on screen); v3's system_ui is trained on real
+# UI windows only (0.00 on the same card) and calls text cards free_text.
 _DEFAULT_PANEL_WEIGHTS = os.path.join(
-    os.path.dirname(_TD), "assets", "models", "webtoon_panels.pt")
+    os.path.dirname(_TD), "assets", "models", "webtoon_panels_v3.pt")
 
 
 def _describes_speech_bubble(description: Any) -> bool:

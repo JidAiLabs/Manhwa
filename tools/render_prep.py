@@ -2753,9 +2753,11 @@ def main() -> int:
     ap.add_argument("--panel-weights",
                     default=os.path.join(os.path.dirname(os.path.dirname(
                         os.path.abspath(__file__))), "assets", "models",
-                        "webtoon_panels.pt"),
-                    help="trained webtoon YOLO — its system_box class protects "
-                         "system-message panels from the bubble gate/blanking")
+                        "webtoon_panels_v3.pt"),
+                    help="trained webtoon YOLO — its system class (by name: "
+                         "system_box/system_ui) protects system-message panels "
+                         "from the bubble gate/blanking; v3 doesn't fire on "
+                         "plain text cards like the legacy model did")
     ap.add_argument("--branding-dir",
                     default=os.path.join(os.path.dirname(os.path.dirname(
                         os.path.abspath(__file__))), "assets", "branding", "origin-power"),
