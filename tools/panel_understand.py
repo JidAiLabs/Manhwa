@@ -559,7 +559,8 @@ def apply_inworld_screen_overrides(
 # so it must be kept + shown (panel_kind 'system'). gemma classifies it
 # NON-deterministically: an earlier roll got it right, a fresh roll called it
 # 'caption' (text-on-plain) -> the grouper folded it and it was never shown. The
-# trained webtoon YOLO has a dedicated `system_box` class (class 1, mAP .843)
+# trained webtoon YOLO has a dedicated system-window class (system_box in the
+# legacy 6-class model, system_ui in v3 — resolved by NAME from model.names)
 # that fires reliably on these cards, so we use it as a DETERMINISTIC override:
 # the verdict no longer depends on gemma's roll. AGNOSTIC — no series/word list.
 #
@@ -605,8 +606,9 @@ def apply_system_card_overrides(
 
     `detect_fn(scene_path) -> system_box_coverage | None` is an injectable seam
     (defaults to the real cv2 + trained YOLO, mirroring render_prep's `_sys_boxes`:
-    YOLO(weights), predict(conf=0.30), keep class==1). It returns the fraction of
-    the panel covered by system_box detections, or None if the image is missing."""
+    YOLO(weights), predict(conf=0.30), keep the system classes resolved by NAME
+    via studio.detect.yolo_panels.system_class_ids). It returns the fraction of
+    the panel covered by system-window detections, or None if the image is missing."""
     path_by_file = {it.get("scene_file"): it.get("scene_path") for it in items}
     cand = [p for p in panels
             if str(p.get("panel_kind") or "").strip().lower() in ("caption", "empty")
@@ -623,7 +625,9 @@ def apply_system_card_overrides(
             import cv2
             import numpy as np
             from ultralytics import YOLO
+            from studio.detect.yolo_panels import system_class_ids
             model = YOLO(wp)
+            sys_ids = system_class_ids(getattr(model, "names", None))
         except Exception as e:                                       # pragma: no cover
             log(f"[system-card] detector unavailable ({e}) — override skipped")
             return 0
@@ -641,7 +645,7 @@ def apply_system_card_overrides(
             if r.boxes is not None:
                 for (x1, y1, x2, y2), c in zip(
                         r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy()):
-                    if int(c) == 1:                                  # system_box
+                    if int(c) in sys_ids:            # system_box / system_ui
                         boxes.append((int(x1), int(y1), int(x2), int(y2)))
             h, w = img.shape[:2]
             if h <= 0 or w <= 0 or not boxes:

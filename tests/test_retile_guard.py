@@ -76,6 +76,19 @@ def test_resolve_classes_both_generations():
     assert els[6] == "caption_box" and els[7] == "free_text"
 
 
+def test_system_class_ids_by_name():
+    legacy = {0: "panel", 1: "system_box", 2: "speech_bubble", 3: "text",
+              4: "sfx", 5: "character"}
+    assert yp.system_class_ids(legacy) == {1}
+    v3 = {0: "panel", 1: "speech_bubble", 2: "radio", 3: "speech_background",
+          4: "sfx_text", 5: "system_ui", 6: "caption_box", 7: "free_text"}
+    assert yp.system_class_ids(v3) == {5}
+    assert yp.system_class_ids(None) == {1}          # no names dict: legacy id
+    assert yp.system_class_ids({}) == {1}
+    # a model with names but NO system class: protection off, not misfiring
+    assert yp.system_class_ids({0: "cat", 1: "dog"}) == set()
+
+
 def test_dedup_iou_drops_contained_fragment():
     big = (0, 0, 800, 1000)
     frag = (100, 100, 300, 300)      # fully inside big -> double-cover, drop

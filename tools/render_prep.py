@@ -2875,9 +2875,12 @@ def main() -> int:
     # they veto both the dominance gate and text blanking. Fail-soft when the
     # weights are missing — protection off, loudly.
     panel_model = None
+    sys_ids: set = set()
     if os.path.exists(args.panel_weights):
         from ultralytics import YOLO
+        from studio.detect.yolo_panels import system_class_ids
         panel_model = YOLO(args.panel_weights)
+        sys_ids = system_class_ids(getattr(panel_model, "names", None))
     else:
         print(f"[warn] panel weights missing ({args.panel_weights}) — "
               "system-message protection DISABLED")
@@ -2894,7 +2897,7 @@ def main() -> int:
                 if r.boxes is not None:
                     for (x1, y1, x2, y2), c in zip(
                             r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy()):
-                        if int(c) == 1:  # system_box
+                        if int(c) in sys_ids:  # system_box / system_ui by NAME
                             out.append((int(x1), int(y1), int(x2), int(y2)))
             sys_cache[fname] = out
         return sys_cache[fname]

@@ -144,6 +144,19 @@ def resolve_classes(names: Dict[int, str]) -> Tuple[int, Dict[int, str]]:
     return panel_id, elements
 
 
+def system_class_ids(names) -> set:
+    """Class ids meaning 'in-world system window', resolved by NAME so every
+    model generation works (legacy 6-class: system_box=1; v3 8-class:
+    system_ui=5). Consumers (panel_understand system-card override,
+    render_prep _sys_boxes) must NOT hardcode class 1. A ckpt with no names
+    dict falls back to the legacy id {1}; names WITHOUT any system class
+    yield an empty set (the protection turns off, fail-soft)."""
+    if not names:
+        return {1}
+    return {i for i, n in dict(names).items()
+            if n in ("system_box", "system_ui")}
+
+
 def _iou(a, b) -> float:
     ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
     ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
