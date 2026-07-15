@@ -7,7 +7,10 @@ base_url = "https://elftoon.com"
 
 [detect]
 backend = "yolo"
-yolo_weights = "assets/models/webtoon_panels.pt"   # in-repo copy (migration-proof)
+# v3 8-class (2026-07-15, run v3_8class_960 best=epoch 58): panel/speech_bubble/radio/
+# speech_background/sfx_text/system_ui/caption_box/free_text. imgsz + class ids resolve
+# from the ckpt itself. Rollback = point back at webtoon_panels.pt (legacy 6-class).
+yolo_weights = "assets/models/webtoon_panels_v3.pt"
 
 [gallerydl]
 sleep = 2.0
