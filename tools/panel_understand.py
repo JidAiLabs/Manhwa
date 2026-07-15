@@ -128,6 +128,152 @@ SYSTEM = (
 # resolution has appearance evidence to match against manifest.cast.json.
 PROMPT_VERSION = "pu_v3"
 
+# --- extreme-tall strips: windowed understanding -----------------------------
+# A cover/credits strip (ORV Ep0: 800x7540) downscaled to model resolution is
+# unreadable — gemma described the top art, never saw the series title, said
+# 'story', and the title shipped on screen. Strips past these gates are
+# understood in ~1600px windows instead. Records carry a DISTINCT version
+# suffix so only tall strips re-run on upgrade — bumping PROMPT_VERSION itself
+# would invalidate every cached panel fleet-wide.
+TALL_WINDOWS_VERSION = PROMPT_VERSION + "+tw1"
+_TALL_MIN_H_PX = 4000
+_TALL_MIN_RATIO = 6.0
+_TALL_WIN_PX = 1600
+_TALL_WIN_OVERLAP = 200
+
+
+def _tall_dims(scene_path: Optional[str]) -> Optional[Tuple[int, int]]:
+    """(w, h) when the scene is an extreme-tall strip gemma cannot read at
+    model scale (cover/credits blocks, chunk-as-panel leftovers); else None.
+    Real tall art (vertical falls, ~3-4k px, ratio < 6) stays single-pass."""
+    if not scene_path or not os.path.exists(scene_path):
+        return None
+    try:
+        from PIL import Image
+        with Image.open(scene_path) as im:
+            w, h = im.size
+    except Exception:
+        return None
+    if h >= _TALL_MIN_H_PX and h >= _TALL_MIN_RATIO * max(1, w):
+        return (int(w), int(h))
+    return None
+
+
+def _expected_version(it: Dict[str, Any]) -> str:
+    return (TALL_WINDOWS_VERSION if _tall_dims(it.get("scene_path"))
+            else PROMPT_VERSION)
+
+
+def understand_tall_strip(
+    it: Dict[str, Any],
+    ctx: List[str],
+    call_fn: Callable[..., Any],
+    dims: Tuple[int, int],
+    *,
+    impact_regions: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Describe an extreme-tall strip window-by-window; merge to ONE record.
+
+    ANY chrome window makes the WHOLE strip publication chrome: covers carry
+    the series title ON the art, so keeping the "art part" would still show
+    the cover. A strip with zero chrome windows stays one pannable panel with
+    the window fields merged. Returns (parsed_or_None, windows_meta) —
+    parsed=None when every window failed to parse (resume re-runs it).
+    """
+    # ponytail: whole-strip verdict; per-window keep/crop only if a mixed
+    # story+credits strip ever shows up in QA.
+    import tempfile
+    from PIL import Image
+    w, h = dims
+    spans: List[Tuple[int, int]] = []
+    y = 0
+    while y < h:
+        y1 = min(h, y + _TALL_WIN_PX)
+        spans.append((y, y1))
+        if y1 >= h:
+            break
+        y += _TALL_WIN_PX - _TALL_WIN_OVERLAP
+
+    parsed_windows: List[Dict[str, Any]] = []
+    meta: List[Dict[str, Any]] = []
+    with Image.open(it.get("scene_path")) as im:
+        rgb = im.convert("RGB")
+        for wy0, wy1 in spans:
+            regs = [r for r in (impact_regions or [])
+                    if (r.get("bbox") or [0, 0, 0, 0])[1] < wy1
+                    and ((r.get("bbox") or [0, 0, 0, 0])[1]
+                         + (r.get("bbox") or [0, 0, 0, 0])[3]) > wy0]
+            win = rgb.crop((0, wy0, w, wy1))
+            tmp = ""
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".jpg",
+                                                 delete=False) as tf:
+                    tmp = tf.name
+                win.save(tmp, "JPEG", quality=90)
+                parsed = call_fn(build_payload(it, ctx, impact_regions=regs),
+                                 tmp)
+            finally:
+                if tmp:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+            pw = parsed if isinstance(parsed, dict) else {}
+            parsed_windows.append(pw)
+            meta.append({"y0": wy0, "y1": wy1,
+                         "panel_kind": _norm_panel_kind(pw.get("panel_kind")),
+                         "desc": str(pw.get("description") or "")[:80]})
+
+    if not any(pw for pw in parsed_windows):
+        return None, meta
+
+    kinds = [m["panel_kind"] for m in meta]
+    if any(k == "chrome" for k in kinds):
+        kind = "chrome"
+    else:
+        kind = next((k for k in ("story", "system", "caption")
+                     if k in kinds), "empty")
+    subjects: List[str] = []
+    seen: set = set()
+    for pw in parsed_windows:
+        for s in (pw.get("subjects") or []):
+            s = str(s)
+            if s and s not in seen:
+                seen.add(s)
+                subjects.append(s)
+    order = {"calm": 0, "tense": 1, "intense": 2, "explosive": 3}
+    intensities = [str(pw.get("intensity") or "").lower()
+                   for pw in parsed_windows]
+    intensities = [v for v in intensities if v in order]
+    merged = {
+        "description": " / ".join(
+            str(pw.get("description") or "").strip()
+            for pw in parsed_windows
+            if str(pw.get("description") or "").strip())[:600],
+        "subjects": subjects[:12],
+        "action": next((str(pw.get("action") or "").strip()
+                        for pw in parsed_windows
+                        if str(pw.get("action") or "").strip()), ""),
+        "dialogue": " ".join(str(pw.get("dialogue") or "").strip()
+                             for pw in parsed_windows
+                             if str(pw.get("dialogue") or "").strip())[:400],
+        "setting": next((str(pw.get("setting") or "").strip()
+                         for pw in parsed_windows
+                         if str(pw.get("setting") or "").strip()), ""),
+        "intensity": (max(intensities, key=lambda v: order[v])
+                      if intensities else ""),
+        "panel_kind": kind,
+        "strikes_or_weapons": next(
+            (str(pw.get("strikes_or_weapons") or "").strip().lower()
+             for pw in parsed_windows
+             if str(pw.get("strikes_or_weapons") or "").strip().lower()
+             not in ("", "none")), "none"),
+        "sfx_text": " ".join(str(pw.get("sfx_text") or "").strip()
+                             for pw in parsed_windows
+                             if str(pw.get("sfx_text") or "").strip())[:200],
+    }
+    return merged, meta
+
 
 def _norm_panel_kind(v: Any) -> str:
     v = str(v or "").strip().lower()
@@ -326,10 +472,20 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
 
     def _understand(it: Dict[str, Any], ctx: List[str]) -> Dict[str, Any]:
         regions = detect_impact(it.get("scene_path")) or []
-        rec = assemble_record(
-            it.get("scene_file"),
-            call_fn(build_payload(it, ctx, impact_regions=regions),
-                    it.get("scene_path")))
+        dims = _tall_dims(it.get("scene_path"))
+        if dims:
+            parsed, wmeta = understand_tall_strip(
+                it, ctx, call_fn, dims, impact_regions=regions)
+            rec = assemble_record(it.get("scene_file"), parsed)
+            rec["tall_windows"] = wmeta
+            log(f"[panel] {it.get('scene_file')}: extreme-tall "
+                f"{dims[0]}x{dims[1]} -> {len(wmeta)} windows "
+                f"-> {rec.get('panel_kind')}")
+        else:
+            rec = assemble_record(
+                it.get("scene_file"),
+                call_fn(build_payload(it, ctx, impact_regions=regions),
+                        it.get("scene_path")))
         # DETECTOR-owned impact verdict — stamped AFTER assemble_record so the
         # model can never claim or override it (the deterministic signal the
         # impact_mismatch QA gate reads back from understood.json).
@@ -337,7 +493,7 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
         # Content-keyed provenance, stamped at emit time (see the prior.get(sf)
         # acceptance check below, which requires both to still match on resume).
         rec["scene_sha"] = _scene_sha(it.get("scene_path"))
-        rec["prompt_version"] = PROMPT_VERSION
+        rec["prompt_version"] = _expected_version(it)
         return rec
 
     def _flush(batch: List[Dict[str, Any]]) -> None:
@@ -370,7 +526,7 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
         # migration cost.
         if (done and done.get("description") and not done.get("error")
                 and done.get("scene_sha") == _scene_sha(it.get("scene_path"))
-                and done.get("prompt_version") == PROMPT_VERSION):
+                and done.get("prompt_version") == _expected_version(it)):
             _flush(batch)                # emit the pending batch first (keep order)
             batch = []
             out.append(done)
