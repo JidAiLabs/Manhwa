@@ -38,6 +38,13 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+# `from studio...` must work even when spawned as a bare script without
+# PYTHONPATH (the worker does; pipeline._run_tool sets it) — same bootstrap
+# prep_qa.py uses.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import cv2
 import numpy as np
 

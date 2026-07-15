@@ -24,8 +24,12 @@ import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _TD = os.path.dirname(os.path.abspath(__file__))
-if _TD not in sys.path:
-    sys.path.insert(0, _TD)
+# repo root too: `from studio...` must work even when spawned as a bare
+# script without PYTHONPATH (the worker does; pipeline._run_tool sets it) —
+# same bootstrap prep_qa.py uses.
+for _p in (_TD, os.path.dirname(_TD)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from gemini_narrative_pass import (                                   # noqa: E402
     load_json, _call_model_with_backoff)
 from manifest_io import write_manifest, input_sha                     # noqa: E402
