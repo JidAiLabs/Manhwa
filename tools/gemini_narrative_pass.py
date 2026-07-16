@@ -1803,6 +1803,20 @@ _PER_PANEL_NARRATION_INSTRUCTION = (
     "isolated captions. Then set 'narration' to all the lines joined with a space.\n"
 )
 
+def _max_words(n: int) -> int:
+    return int(n * _SEG_MAX_SEC_PER_PANEL * (WPM / 60.0))
+
+
+# the validator's exact arithmetic, spelled out for the model's FIRST draft
+_WORD_CAP_RULE = (
+    "HARD LENGTH CAP (screen time — a sentence over its cap FAILS validation "
+    "and costs a rewrite): a sentence may carry AT MOST "
+    f"{_max_words(1)} words PER TAGGED PANEL — one panel <={_max_words(1)}, "
+    f"two <={_max_words(2)}, three <={_max_words(3)}, four <={_max_words(4)} "
+    "words. Count your words before answering. The taste target sits far "
+    "below the cap: a solo moment ~5-13 words, a run ~10-15 words per panel.\n"
+)
+
 _ADAPTIVE_NARRATION_INSTRUCTION = (
     "You are the NARRATOR telling this story aloud — never a caption writer. "
     "The per-panel descriptions are RAW MATERIAL, not lines: echoing or "
@@ -1823,8 +1837,9 @@ _ADAPTIVE_NARRATION_INSTRUCTION = (
     "Never enumerate panels — 'in the next panel' and the like are BANNED.\n"
     "WORD BUDGET (the voice carries the span's screen time): solo ≈5-13 "
     "words; 2-panel ≈10-26; 3-panel ≈25-40; 4-panel ≈30-50. Never a thin "
-    "line stretched over panels, never a bloated line parked on one.\n"
-    "Lines FLOW as one continuous story (continue from previous_narration). "
+    "line stretched over panels, never a bloated line parked on one. "
+    + _WORD_CAP_RULE
+    + "Lines FLOW as one continuous story (continue from previous_narration). "
     "Set 'narration' to the segment lines joined with a space.\n"
 )
 
@@ -1866,6 +1881,11 @@ _PROSE_NARRATION_INSTRUCTION = (
     "(panel_kind 'caption') is TEXT, not a picture: WEAVE its words into the "
     "sentence of the nearest drawn panel — never write a standalone sentence "
     "about a bubble alone.\n"
+    # HARD numeric caps in the PRIMARY prompt (2026-07-17): the caps only
+    # lived in the rejection note, so 15/25 groups paid a full second model
+    # call to learn them (~9 min/chapter). Derived from the same constants
+    # validate_segments enforces — they cannot drift.
+    + _WORD_CAP_RULE
 )
 
 # A structurally-VALID all-singleton answer on a big beat is the observed
