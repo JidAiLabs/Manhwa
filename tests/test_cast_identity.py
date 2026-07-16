@@ -411,3 +411,68 @@ def test_actor_count_is_a_healable_code_with_note():
     assert "actor_count_mismatch" in nh.HEALABLE
     note = nh._note_for("actor_count_mismatch", "line pluralizes 'assassin'")
     assert "ONE figure" in note and "companions" in note
+
+
+# ---- 2026-07-16 job-48 review fixes ------------------------------------------
+
+def test_appearance_words_are_not_identity_nouns():
+    # 'the hooded leader' identifies by LEADER — any hooded figure must not
+    # name-hit him (+10). Same for masked/cloaked/colors.
+    cast = {"cast": [
+        {"canonical_name": "the hooded leader", "aliases": [],
+         "visual_description": "A man wearing a dark hooded cloak and a "
+                               "black face mask"},
+    ]}
+    profs = ci.cast_profiles(cast)
+    assert profs[0]["name_tokens"] == {"leader"}
+    nm = ci.actor_noun_map(cast)
+    assert "hooded" not in nm and "masked" not in nm and "leader" in nm
+
+
+def test_color_clash_blocks_cross_color_garment_resolution():
+    # job-48 g0014/15: the light-blue-hooded arrival resolved to the
+    # dark-cloaked leader and the identity gate rewrote the protagonist's
+    # transformation reveal to the villain.
+    cast = {"cast": [
+        {"canonical_name": "the hooded leader", "aliases": [],
+         "visual_description": "A man wearing a dark hooded cloak and a "
+                               "black face mask covering his nose"},
+        {"canonical_name": "our protagonist", "aliases": ["Prince Cheon"],
+         "visual_description": "A young man with messy dark hair in a "
+                               "white martial arts tunic"},
+    ]}
+    u = {"subjects": ["a person wearing a light blue hooded jacket with "
+                      "dark trim, surrounded by glowing blue electrical "
+                      "energy"]}
+    figs = ci.resolve_figures(u, ci.cast_profiles(cast))
+    assert all(f["name"] == "unknown" for f in figs)   # neutral, never claimed
+    # the REAL assassin-class subject still resolves via appearance evidence
+    u2 = {"subjects": ["a masked figure in a dark hooded cloak with a "
+                       "black face mask"]}
+    figs2 = ci.resolve_figures(u2, ci.cast_profiles(cast))
+    assert [f["name"] for f in figs2] == ["the hooded leader"]
+
+
+def test_neutral_handle_never_ends_in_a_gerund():
+    figs = [{"name": "unknown",
+             "evidence": "a person wearing a light blue hooded jacket"}]
+    assert g._neutral_from_evidence(figs) == "the person"
+    figs = [{"name": "unknown",
+             "evidence": "a masked figure in a dark hooded cloak"}]
+    assert g._neutral_from_evidence(figs) == "the masked figure"
+    assert g._neutral_from_evidence([]) == "the figure"
+
+
+def test_echo_belt_ignores_non_adjacent_pairs():
+    surviving = ["a.jpg", "b.jpg", "c.jpg"]
+    segs = [{"span": ["a.jpg"], "line": "The eye narrows on the ridge."},
+            {"span": ["b.jpg"], "line": "Steel whispers out of its sheath."},
+            {"span": ["c.jpg"], "line": "The same eye snaps wide open."}]
+    # non-adjacent echo (c echoes a) — glue skips it, the belt must too
+    errs = g.validate_segments(segs, surviving, {},
+                               echo_of={"c.jpg": "a.jpg"})
+    assert not any("echo pair split" in e for e in errs)
+    # adjacent split pair still trips the belt
+    errs = g.validate_segments(segs, surviving, {},
+                               echo_of={"b.jpg": "a.jpg"})
+    assert any("echo pair split" in e for e in errs)

@@ -1376,11 +1376,21 @@ _HANDLE_STOP = frozenset({"a", "an", "the", "in", "with", "and", "of", "on"})
 
 def _neutral_from_evidence(figs) -> str:
     """A grounded neutral handle from an unknown figure's evidence subject —
-    'a masked figure in a dark hooded cloak' -> 'the masked figure'."""
+    'a masked figure in a dark hooded cloak' -> 'the masked figure'.
+    Gerunds/verbs are skipped ('a person wearing…' must yield 'the person',
+    never 'the person wearing' — job-48 g0018)."""
+    person_nouns = ("figure", "person", "man", "woman", "warrior",
+                    "stranger", "fighter")
     for f in figs or []:
         ev = str((f or {}).get("evidence") or "").strip().lower()
         toks = [t for t in re.findall(r"[a-z']+", ev)
-                if t not in _HANDLE_STOP]
+                if t not in _HANDLE_STOP and not t.endswith("ing")]
+        # anchor on the person-noun: 'a masked figure in a dark hooded
+        # cloak' -> 'the masked figure'; 'a person wearing a light blue
+        # hooded jacket' -> 'the person'
+        for i, t in enumerate(toks):
+            if t in person_nouns:
+                return "the " + ((toks[i - 1] + " ") if i else "") + t
         if len(toks) >= 2:
             return "the " + " ".join(toks[:2])
         if toks:
@@ -1492,13 +1502,18 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
     echo_of = echo_of or {}
     words_per_sec = float(wpm) / 60.0
 
-    # belt-check: glue_echo_spans runs before validation, so a split echo pair
-    # here is a logic bug (or a span-pinned regen trying to re-split) — never
-    # a model style choice.
+    # belt-check: glue_echo_spans runs before validation, so a split ADJACENT
+    # echo pair here is a logic bug (or a span-pinned regen trying to
+    # re-split) — never a model style choice. Non-adjacent pairs mirror the
+    # glue's skip (they can't be moved without breaking the consecutive
+    # partition; render_prep's ken restyle covers their presentation).
     span_of = {f: i for i, seg in enumerate(segs) if isinstance(seg, dict)
                for f in (seg.get("span") or [])}
+    pos = {f: i for i, f in enumerate(files)}
     for _later, _earlier in echo_of.items():
-        if (_later in span_of and _earlier in span_of
+        if (pos.get(_later) is not None and pos.get(_earlier) is not None
+                and pos[_later] == pos[_earlier] + 1
+                and _later in span_of and _earlier in span_of
                 and span_of[_later] != span_of[_earlier]):
             errors.append(f"echo pair split across segments: {_later} is a "
                           f"zoom re-frame of {_earlier} and must ride its "

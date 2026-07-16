@@ -84,6 +84,21 @@ _COLORS = frozenset({
     "dark", "light", "pale", "crimson", "golden", "yellow", "silver",
 })
 
+# worn-item words (and their -ed adjectives) that describe APPEARANCE, not
+# identity, when they appear inside a cast NAME ("the hooded leader", "the
+# masked assassin" identify by leader/assassin — job-48 g0014/15: the
+# light-blue-hooded arrival name-hit the dark-cloaked leader on 'hooded'
+# (+10) and the identity gate then rewrote the protagonist's transformation
+# reveal to the villain).
+_WORN = frozenset({"hood", "hooded", "mask", "masked", "veil", "veiled",
+                   "cloaked", "robed", "armored", "armoured", "helmeted"})
+
+
+def _is_appearance_word(t: str) -> bool:
+    if t in _COLORS or t in _GARMENT or t in _WORN:
+        return True
+    return t.endswith("ed") and (t[:-2] in _GARMENT or t[:-2] in _WORN)
+
 
 def _singular(tok: str) -> str:
     """Cheap, safe singularization: assassins→assassin, robes→robe. The
@@ -150,7 +165,8 @@ def _name_tokens(member: Dict[str, Any]) -> Set[str]:
         raw += _tokens(a)
     return {t for t in raw
             if t not in _STOPWORDS and t not in _GENERIC_PERSON
-            and t not in _GENERIC_DESCRIPTOR and len(t) > 1}
+            and t not in _GENERIC_DESCRIPTOR and not _is_appearance_word(t)
+            and len(t) > 1}
 
 
 def _specific(toks: Sequence[str]) -> List[str]:
@@ -212,10 +228,18 @@ def _score(profile: Dict[str, Any], text: str) -> Tuple[float, List[str]]:
     for nt in name_hits:
         score += 10.0
         ev.append(nt)
-    pair_hits = profile["pairs"] & _color_garment_pairs(stream)
+    subj_pairs = _color_garment_pairs(stream)
+    pair_hits = profile["pairs"] & subj_pairs
     for c, _g in sorted(pair_hits):
         score += 2.0
         ev.append(f"{c}+garment")
+    # COLOR CLASH: both sides dress their garments in colors and share NONE —
+    # strong mismatch evidence ('light blue hooded jacket' must not resolve
+    # to the 'dark hooded cloak' leader). A penalty, not a veto: multi-outfit
+    # characters stay resolvable via name/appearance dominance.
+    if profile["pairs"] and subj_pairs and not pair_hits:
+        score -= 3.0
+        ev.append("color-clash")
     shared = sorted((profile["appearance"] & toks) - set(name_hits))
     score += float(len(shared))
     ev += shared
