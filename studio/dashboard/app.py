@@ -96,8 +96,16 @@ def _gallery(ep_dir: Optional[str]) -> List[Dict[str, Any]]:
             files = []
             for c in item.get("cuts") or []:
                 for f in (c.get("file"), c.get("file2")):
-                    if f:
-                        files.append(str(f))
+                    if not f:
+                        continue
+                    # ken_variety sub-cuts = ONE panel, several camera moves;
+                    # N identical thumbnails here read as the duplicate-panel
+                    # bug (2026-07-16 owner report). Collapse consecutive
+                    # repeats into one thumb with an xN motion badge.
+                    if files and files[-1]["name"] == str(f):
+                        files[-1]["n"] += 1
+                    else:
+                        files.append({"name": str(f), "n": 1})
             out.append({"segment_id": item.get("segment_id"),
                         "narration": item.get("tts_text") or "",
                         "files": files, "src_dir": "scenes_clean",
@@ -122,13 +130,15 @@ def _gallery(ep_dir: Optional[str]) -> List[Dict[str, Any]]:
         if not segs:
             out.append({"segment_id": f"g{gid:04d}",
                         "narration": bt.get("narration") or "",
-                        "files": [str(f) for f in (bt.get("scene_files") or [])[:4]],
+                        "files": [{"name": str(f), "n": 1}
+                                  for f in (bt.get("scene_files") or [])[:4]],
                         "src_dir": "scenes", "duration": 0})
             continue
         for i, seg in enumerate(segs):
             out.append({"segment_id": f"g{gid:04d} · {i + 1}/{len(segs)}",
                         "narration": seg["line"],
-                        "files": list(seg["span"]),
+                        "files": [{"name": str(f), "n": 1}
+                                  for f in seg["span"]],
                         "src_dir": "scenes", "duration": 0})
     return out
 

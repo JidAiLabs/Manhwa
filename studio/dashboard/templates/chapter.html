@@ -67,9 +67,10 @@
 <div class="seg"><span class="kv"><b>{{ g.segment_id }}</b>{% if g.duration %} · {{ '%.1f'|format(g.duration) }}s{% endif %}</span>
 {% if g.narration %}<div class="nar">{{ g.narration }}</div>{% endif %}
 {% if ep_rel %}{% for f in g.files %}<span style="position:relative;display:inline-block">
-<img src="/media/{{ ep_rel }}/{{ g.src_dir }}/{{ f }}" loading="lazy">
-<form method="post" action="/chapter/{{ ch.id }}/drop" style="position:absolute;top:2px;right:2px;margin:0" onsubmit="return confirm('Drop {{ f }} from this chapter? It will never be shown; prep re-runs automatically.')">
-<input type="hidden" name="file" value="{{ f }}"><button class="ghost" style="padding:0 6px;font-size:11px" title="drop this panel">✕</button></form>
+<img src="/media/{{ ep_rel }}/{{ g.src_dir }}/{{ f.name }}" loading="lazy">
+{% if f.n > 1 %}<span style="position:absolute;bottom:2px;left:2px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;padding:0 5px;border-radius:3px" title="one panel shown with {{ f.n }} camera moves — not a duplicate">×{{ f.n }} motion</span>{% endif %}
+<form method="post" action="/chapter/{{ ch.id }}/drop" style="position:absolute;top:2px;right:2px;margin:0" onsubmit="return confirm('Drop {{ f.name }} from this chapter? It will never be shown; prep re-runs automatically.')">
+<input type="hidden" name="file" value="{{ f.name }}"><button class="ghost" style="padding:0 6px;font-size:11px" title="drop this panel">✕</button></form>
 </span>{% endfor %}{% endif %}
 </div>
 {% else %}<div class="kv">no narration yet — “prepare → QA” first</div>{% endfor %}

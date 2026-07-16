@@ -498,7 +498,7 @@ def test_chapter_page_gallery_shows_flow_span_grouped(client, tmp_path,
     assert (flow + " " + solo) not in html
 
     rows = _app._gallery(str(ep))
-    assert [r["files"] for r in rows] == [
+    assert [[f["name"] for f in r["files"]] for r in rows] == [
         ["p1.jpg", "p2.jpg", "p3.jpg"], ["p4.jpg"]]
     assert [r["narration"] for r in rows] == [flow, solo]
 
@@ -527,5 +527,24 @@ def test_chapter_page_gallery_legacy_manifest_one_row_per_panel(client,
 
     assert c.get("/chapter/1").status_code == 200
     rows = _app._gallery(str(ep))
-    assert [r["files"] for r in rows] == [["a.jpg"], ["b.jpg"]]
+    assert [[f["name"] for f in r["files"]] for r in rows] == [
+        ["a.jpg"], ["b.jpg"]]
     assert [r["narration"] for r in rows] == ["First.", "Second."]
+
+
+def test_gallery_collapses_ken_variety_subcuts(tmp_path):
+    """3 same-file sub-cuts (ken motion passes) = ONE thumb with n=3 — never
+    three identical thumbnails masquerading as the duplicate-panel bug."""
+    import json
+    from studio.dashboard import app as _app
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    (ep / "render.plan.clean.json").write_text(json.dumps({"timeline": [{
+        "segment_id": "g0011_p09", "duration_sec": 21.1, "tts_text": "line",
+        "cuts": [
+            {"file": "p31.jpg", "dur": 7.0, "ken_variety": True},
+            {"file": "p31.jpg", "dur": 7.0, "ken_variety": True},
+            {"file": "p31.jpg", "dur": 7.1, "ken_variety": True},
+        ]}]}))
+    rows = _app._gallery(str(ep))
+    assert rows[0]["files"] == [{"name": "p31.jpg", "n": 3}]
