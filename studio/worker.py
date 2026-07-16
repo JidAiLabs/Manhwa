@@ -766,6 +766,19 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                      else f"hitting the {_HEAL_MAX}-cycle cap\n"))
         _run_prep_and_qa(con, ch, log, heal_aware=True,
                          reuse_clean=True, semantic=True)
+    # RENDER-FIXABLE remnants on the loop-exit path too (2026-07-17 job 55:
+    # the check only lived in the zero-corrections branch, so a stuck-stop
+    # with a long_hold left the STALE plan blocking — re-narration cycles can
+    # never rebuild a plan). One re-prep + re-QA; arbitration below then
+    # binds to the final error set.
+    render_fixable = _RENDER_FIXABLE_QA_CODES & _qa_error_codes(ep)
+    if render_fixable:
+        log.write(f"[heal] render-fixable ERRORs remain after heal "
+                  f"({sorted(render_fixable)}) — re-running render_prep + QA "
+                  "once (plan-side codes: re-narration can never clear "
+                  "them)\n")
+        _run_prep_and_qa(con, ch, log, heal_aware=True,
+                         reuse_clean=True, semantic=True)
     log.write("[heal] " + ("stopped early — no progress\n" if stuck
                            else f"hit the {_HEAL_MAX}-cycle cap\n"))
     # WRITER-FINAL ARBITRATION: every group flagged here got >=1 informed

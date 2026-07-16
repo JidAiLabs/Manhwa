@@ -1678,3 +1678,49 @@ def test_heal_repreps_once_for_render_fixable_remnants(tmp_path, monkeypatch):
     worker._heal_to_green(con, ch, ep, open(logf, "w"))
     assert len(preps) == 1 and preps[0].get("reuse_clean") is True
     assert "render-fixable" in logf.read_text()
+
+
+def test_heal_repreps_render_fixable_after_stuck_stop(tmp_path, monkeypatch):
+    """Job-55 class: the render-fixable re-prep must ALSO run on the stuck/
+    cap loop-exit path — a treadmill stop with a long_hold left the stale
+    plan blocking."""
+    import itertools
+    import json
+    import types
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep), "number": 1}
+    monkeypatch.setenv("STUDIO_SEMANTIC_HEAL", "1")
+    same_corr = {"3": "bridge it"}
+    err_cycle = itertools.cycle([["long_hold", "impact_mismatch"],
+                                 ["long_hold", "narration_offset"]])
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        if "narration_heal.py" in s:
+            json.dump(same_corr, open(cmd[cmd.index("--out") + 1], "w"))
+        return 0
+
+    def fake_qa(con_, ch_, log_, **kw):
+        preps.append(kw)
+        (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+            {"code": c, "severity": "ERROR", "segment_id": "g0003"}
+            for c in next(err_cycle)]}))
+        return set()
+
+    preps = []
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_run_prep_and_qa", fake_qa)
+    monkeypatch.setattr(worker, "_regen_flagged", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "_replan", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
+        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
+                              punchup="cinematic", script_model="s"), "p", "l"))
+    fake_qa(con, ch, None)
+    preps.clear()
+    logf = tmp_path / "log.txt"
+    worker._heal_to_green(con, ch, ep, open(logf, "w"))
+    text = logf.read_text()
+    assert "identical corrections" in text          # treadmill stop happened
+    assert "render-fixable" in text                 # AND the re-prep followed
+    assert preps and preps[-1].get("reuse_clean") is True
