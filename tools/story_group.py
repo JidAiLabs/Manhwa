@@ -123,7 +123,9 @@ _SYSTEM_CORE = (
     "  - Keep a flashback or dream as a CONTIGUOUS block. Do NOT bounce "
     "present→flashback→present→flashback: only change 'segment' at a real "
     "time-shift, and change it back only when the story truly returns to now.\n"
-    "Each input panel has an integer index `n` (0-based, in reading order). For "
+    "Each input panel has an integer index `n` (0-based, in reading order — "
+    "the LAST panel's n is one less than the panel count; to_index must NEVER "
+    "equal the panel count). For "
     "each span return: from_index and to_index (the INCLUSIVE `n` range it "
     "covers — a span is always a CONSECUTIVE run, so from_index <= to_index, "
     "and the next span's from_index must be greater than this span's to_index: "
@@ -515,6 +517,18 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
         norm = {re.sub(r"[^a-z]", "", str(k).lower()): v for k, v in b.items()}
         fi = b.get("from_index", norm.get("fromindex"))
         ti = b.get("to_index", norm.get("toindex"))
+        # Fencepost clamp (2026-07-17, jobs 50-52): a range ending EXACTLY one
+        # past the last valid index is the classic exclusive-end/1-based slip,
+        # not a hallucinated range — clamp it instead of failing the chapter.
+        # Deterministic backends repeat the identical fencepost on every
+        # retry, so "re-ask and hope" can never clear this class. Anything
+        # further out of bounds still fails loudly below.
+        if (isinstance(ti, int) and not isinstance(ti, bool) and ti == n
+                and isinstance(fi, int) and not isinstance(fi, bool)
+                and 0 <= fi <= n):
+            ti = n - 1
+            if fi == n:
+                fi = n - 1
         if not isinstance(fi, int) or isinstance(fi, bool):
             return [], f"beat {i} from_index ({fi!r}) is not an integer"
         if not isinstance(ti, int) or isinstance(ti, bool):

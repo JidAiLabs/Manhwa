@@ -123,3 +123,21 @@ def test_expand_index_ranges_tolerates_typoed_keys():
     expanded, issue = sg.expand_index_ranges(
         [{"to_index": 3, "segment": "present"}], order)
     assert expanded == [] and "from_index" in issue
+
+
+def test_expand_index_ranges_clamps_exclusive_end_fencepost():
+    # jobs 50-52 2026-07-17: the model ended the LAST beat at to_index == N
+    # (exclusive-end slip) for an N-panel chunk; deterministic backends repeat
+    # it on every retry, so the parser clamps instead of failing the chapter.
+    order = [f"p{i}.jpg" for i in range(5)]
+    beats = [
+        {"from_index": 0, "to_index": 3, "segment": "present", "arc_label": "a"},
+        {"from_index": 4, "to_index": 5, "segment": "present", "arc_label": "b"},
+    ]
+    expanded, issue = sg.expand_index_ranges(beats, order)
+    assert issue == ""
+    assert expanded[-1]["scene_files"] == ["p4.jpg"]      # clamped to 4..4
+    # a fully out-of-range beat still fails loudly
+    expanded, issue = sg.expand_index_ranges(
+        [{"from_index": 0, "to_index": 9, "segment": "present"}], order)
+    assert expanded == [] and "out of bounds" in issue

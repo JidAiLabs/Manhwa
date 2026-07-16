@@ -718,7 +718,12 @@ def test_expand_index_ranges_rejects_overlapping_ranges():
 
 def test_expand_index_ranges_rejects_to_index_out_of_bounds():
     order = [f"p{i}" for i in range(4)]                    # valid indices: 0..3
+    # to_index == N is the exclusive-end fencepost — CLAMPED since 2026-07-17
+    # (jobs 50-52: deterministic backends repeat it on every retry)
     expanded, issue = sg.expand_index_ranges([{"from_index": 0, "to_index": 4}], order)
+    assert issue == "" and expanded[0]["scene_files"] == order
+    # anything PAST the fencepost still fails loudly
+    expanded, issue = sg.expand_index_ranges([{"from_index": 0, "to_index": 5}], order)
     assert expanded == [] and "out of bounds" in issue
 
 
