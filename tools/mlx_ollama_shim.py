@@ -181,8 +181,14 @@ async def chat(req: Request):
                         "JSON (it was malformed or wrapped in prose/fences). "
                         "Output ONLY the corrected, complete JSON — nothing "
                         "else.")
+                    # a FORMATTING fix does not need the montage re-encoded:
+                    # multi-image writer calls pay 60-80s per roll and the
+                    # retry tax measured 79 of 200 minutes (job 48+49). A
+                    # single-image call (understanding) keeps its image —
+                    # dropping it would invite hallucinated re-description.
+                    retry_imgs = imgs if len(imgs) <= 1 else []
                     text2, p2, g2, d2 = _gen_once(
-                        retry_prompt, imgs, opts, think,
+                        retry_prompt, retry_imgs, opts, think,
                         max(0.4, temperature + 0.3))
                     ptok += p2
                     gtok += g2

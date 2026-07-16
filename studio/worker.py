@@ -659,6 +659,7 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
     project = location = env = None
     used_fast_qa = False
     prev_error_codes: "set | None" = None      # convergence guard (no-progress)
+    prev_corr_fp: "str | None" = None          # guard 2: corrections treadmill
     stuck = False
 
     def _ensure_cfg() -> None:                 # load cloud/ollama routing lazily
@@ -713,6 +714,24 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
             stuck = True
             break
         prev_error_codes = cur_error_codes
+        # CONVERGENCE GUARD 2 (2026-07-16, the treadmill): identical
+        # CORRECTIONS two cycles running means the exact same re-narration
+        # request is being re-issued — the previous regen was reverted
+        # (strictly-better) or changed nothing, so re-rolling it again just
+        # burns the cap (job 49: 4 cycles x the SAME 16 groups, the WARN-
+        # driven corrections invisible to the ERROR-set guard above; each
+        # cycle also re-runs punchup+plan+prep+QA — ~40 min of treadmill).
+        # The correction notes embed the flagged line text, so identical
+        # fingerprints == identical lines + identical judgments.
+        cur_corr_fp = corr.read_text()
+        if prev_corr_fp is not None and cur_corr_fp == prev_corr_fp:
+            log.write(f"[heal] no progress (identical corrections two cycles "
+                      f"running — {ncorr} group(s) not healable by "
+                      "re-narration; keeping their current lines) -> "
+                      "stopping early\n")
+            stuck = True
+            break
+        prev_corr_fp = cur_corr_fp
 
         _ensure_cfg()
         log.write(f"[heal] cycle {cycle}/{_HEAL_MAX}: re-narrating {ncorr} "

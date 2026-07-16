@@ -148,3 +148,24 @@ def _understand_parser_actions():
         except SystemExit:
             pass
     return captured["parser"]._actions
+
+
+def test_shim_format_retry_drops_montage_images_keeps_single(monkeypatch):
+    # the retry tax: a FORMAT fix must not re-encode a 6-image montage
+    # (79 of 200 measured minutes) — but a single-image call (understanding)
+    # keeps its image.
+    seen = []
+    rolls = iter(['[{ index": 1 }]', '[{"a": 1}]',
+                  '[{ index": 2 }]', '[{"b": 2}]'])
+
+    def fake_gen(prompt, imgs, opts, think, temperature):
+        seen.append(len(imgs))
+        return next(rolls), 5, 5, 0.1
+
+    monkeypatch.setattr(shim, "_gen_once", fake_gen)
+    monkeypatch.setattr(shim, "_images", lambda msgs: ["i1", "i2", "i3"])
+    _post(_client(), format={"type": "array"}, options={"temperature": 0})
+    assert seen[:2] == [3, 0]                    # montage dropped on retry
+    monkeypatch.setattr(shim, "_images", lambda msgs: ["only"])
+    _post(_client(), format={"type": "array"}, options={"temperature": 0})
+    assert seen[2:] == [1, 1]                    # single image kept

@@ -1595,3 +1595,50 @@ def test_regen_flagged_passes_understanding_to_the_writer(tmp_path, monkeypatch)
     assert gnp, "heal regen must invoke the narration writer"
     assert "--understood" in gnp[0]
     assert str(ep / "manifest.panels.understood.json") in gnp[0]
+
+
+def test_heal_treadmill_guard_stops_on_identical_corrections(
+        tmp_path, monkeypatch):
+    """Job-49 class: WARN-driven corrections stay byte-identical cycle after
+    cycle (strictly-better keeps reverting the regen) while the ERROR set
+    drifts — the old guard never fired and the loop burned all 4 cycles
+    re-narrating the same groups. Guard 2 stops after ONE wasted repeat."""
+    import itertools
+    import json
+    import types
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep), "number": 1}
+    monkeypatch.setenv("STUDIO_SEMANTIC_HEAL", "1")
+
+    same_corr = {"3": "bridge from the previous line"}
+    err_cycle = itertools.cycle([["impact_mismatch"], ["panel_substituted"]])
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        if "narration_heal.py" in s:
+            out = cmd[cmd.index("--out") + 1]
+            json.dump(same_corr, open(out, "w"))
+        return 0
+
+    def fake_qa(con_, ch_, log_, **kw):
+        (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+            {"code": c, "severity": "ERROR", "segment_id": "g0003"}
+            for c in next(err_cycle)]}))
+        return set()
+
+    regen = []
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_run_prep_and_qa", fake_qa)
+    monkeypatch.setattr(worker, "_regen_flagged",
+                        lambda *a, **k: regen.append(1))
+    monkeypatch.setattr(worker, "_replan", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
+        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
+                              punchup="cinematic", script_model="s"), "p", "l"))
+    fake_qa(con, ch, None)                       # seed the initial QA report
+    logf = tmp_path / "log.txt"
+    worker._heal_to_green(con, ch, ep, open(logf, "w"))
+    text = logf.read_text()
+    assert regen == [1]                          # exactly ONE regen, no treadmill
+    assert "identical corrections" in text
