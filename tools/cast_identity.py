@@ -338,6 +338,34 @@ _QUOTED_SPAN_RE = re.compile(
 )
 
 
+def subject_actor_nouns_ex(line: str, noun_map: Dict[str, Set[str]]
+                           ) -> List[Tuple[str, Set[str], bool]]:
+    """Like subject_actor_nouns but each hit carries a PLURAL bit — whether
+    the raw token was a plural form before _norm singularized it ("his
+    assassins" → ('assassin', …, True)). The actor_count guard reads it; a
+    possessive ("assassin's") is never plural."""
+    hits: List[Tuple[str, Set[str], bool]] = []
+    seen: Set[str] = set()
+    clean_line = _QUOTED_SPAN_RE.sub(" ", str(line or ""))
+    for sent in _SENT_SPLIT_RE.split(clean_line):
+        raw = _WORD_RE.findall(sent)
+        for i, w in enumerate(raw[:7]):
+            lw = w.lower()
+            possessive = lw.endswith("'s") or lw.endswith("s'")
+            if i >= 5 and not possessive:
+                continue
+            t = _norm(w)
+            if t in noun_map and t not in seen:
+                base = lw.rstrip("'")
+                if base.endswith("'s"):
+                    base = base[:-2]
+                plural = (not possessive and base != t
+                          and _singular(base) == t)
+                seen.add(t)
+                hits.append((t, set(noun_map[t]), plural))
+    return hits
+
+
 def subject_actor_nouns(line: str, noun_map: Dict[str, Set[str]]
                         ) -> List[Tuple[str, Set[str]]]:
     """Actor-nouns of *line* used in SUBJECT position: within the first 5
@@ -346,17 +374,5 @@ def subject_actor_nouns(line: str, noun_map: Dict[str, Set[str]]
     references ("their blades meant for the ancestor") — deliberately not
     flagged; this is the precision lever that keeps actor_mismatch a
     measured heal-target, not an FP fountain."""
-    hits: List[Tuple[str, Set[str]]] = []
-    seen: Set[str] = set()
-    clean_line = _QUOTED_SPAN_RE.sub(" ", str(line or ""))
-    for sent in _SENT_SPLIT_RE.split(clean_line):
-        raw = _WORD_RE.findall(sent)
-        for i, w in enumerate(raw[:7]):
-            possessive = w.lower().endswith("'s") or w.lower().endswith("s'")
-            if i >= 5 and not possessive:
-                continue
-            t = _norm(w)
-            if t in noun_map and t not in seen:
-                seen.add(t)
-                hits.append((t, set(noun_map[t])))
-    return hits
+    return [(t, members)
+            for (t, members, _plural) in subject_actor_nouns_ex(line, noun_map)]

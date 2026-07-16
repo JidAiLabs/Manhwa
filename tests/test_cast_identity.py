@@ -295,3 +295,119 @@ def test_writer_system_prompt_carries_the_figures_hard_rule():
     src = Path("tools/gemini_narrative_pass.py").read_text(encoding="utf-8")
     assert "FIGURES ARE GROUND TRUTH" in src
     assert "SYSTEM CARDS SPEAK THEIR TEXT" in src
+
+
+# ---- 2026-07-16 wave: plurality bit ------------------------------------------
+
+def test_subject_actor_nouns_ex_plurality_bit():
+    nm = {"assassin": {"unnamed assassin"}, "prince": {"our protagonist"}}
+    hits = ci.subject_actor_nouns_ex("His assassins close in fast.", nm)
+    assert hits == [("assassin", {"unnamed assassin"}, True)]
+    hits = ci.subject_actor_nouns_ex("The assassin closes in.", nm)
+    assert hits == [("assassin", {"unnamed assassin"}, False)]
+    # possessive is never plural
+    hits = ci.subject_actor_nouns_ex("The assassin's blade gleams.", nm)
+    assert hits == [("assassin", {"unnamed assassin"}, False)]
+    # legacy wrapper keeps its two-tuple shape
+    assert ci.subject_actor_nouns("His assassins close in.", nm) == [
+        ("assassin", {"unnamed assassin"})]
+
+
+# ---- 2026-07-16 wave: deterministic identity gate (writer-side) --------------
+
+_NM = {"assassin": {"unnamed assassin"}, "prince": {"our protagonist"},
+       "cheon": {"our protagonist"}, "protagonist": {"our protagonist"}}
+_PROT = {"our protagonist"}
+
+
+def _beat(line, span=("p1.jpg",)):
+    return {"group_id": 1, "segments": [{"span": list(span), "line": line}],
+            "narration": line}
+
+
+def test_handle_gate_rewrites_protagonist_handle_over_helper_span():
+    figs = {"p1.jpg": [{"name": "unnamed assassin", "evidence": "a masked figure"}]}
+    b = _beat("Blue sparks crackle around our protagonist.")
+    rw = g.enforce_actor_handles(b, figs, _NM, _PROT)
+    assert rw and "protagonist handle" in rw[0]
+    assert b["segments"][0]["line"] == (
+        "Blue sparks crackle around the assassin.")
+
+
+def test_handle_gate_keeps_handle_when_protagonist_resolved():
+    figs = {"p1.jpg": [{"name": "our protagonist", "evidence": "purple hair"}]}
+    b = _beat("Our guy staggers upright.")
+    assert g.enforce_actor_handles(b, figs, _NM, _PROT) == []
+    assert b["segments"][0]["line"] == "Our guy staggers upright."
+
+
+def test_handle_gate_neutral_for_unknown_only_span():
+    figs = {"p1.jpg": [{"name": "unknown",
+                        "evidence": "a masked figure in a dark hooded cloak"}]}
+    b = _beat("Our protagonist lunges forward.")
+    rw = g.enforce_actor_handles(b, figs, _NM, _PROT)
+    assert rw
+    assert b["segments"][0]["line"].startswith("The masked figure lunges") or \
+        b["segments"][0]["line"].startswith("the masked figure lunges")
+
+
+def test_handle_gate_rewrites_wrong_actor_noun_and_keeps_possessive():
+    figs = {"p1.jpg": [{"name": "our protagonist", "evidence": "purple hair"}]}
+    b = _beat("The assassin's eyes burn with resolve.")
+    rw = g.enforce_actor_handles(b, figs, _NM, _PROT)
+    assert rw and "'assassin'" in rw[0]
+    assert b["segments"][0]["line"] == "our protagonist's eyes burn with resolve."
+
+
+def test_handle_gate_hands_off_ambiguous_and_ungrounded_spans():
+    # multi-figure span: ambiguous -> untouched
+    figs = {"p1.jpg": [{"name": "our protagonist", "evidence": "e"},
+                       {"name": "unnamed assassin", "evidence": "e"}]}
+    b = _beat("The stranger watches our protagonist bleed.")
+    assert g.enforce_actor_handles(b, figs, _NM, _PROT) == []
+    # zero figures: no ground truth -> untouched
+    b2 = _beat("Our guy tumbles into the dark.")
+    assert g.enforce_actor_handles(b2, {}, _NM, _PROT) == []
+    # plural mismatch left for the actor_count heal net
+    figs3 = {"p1.jpg": [{"name": "our protagonist", "evidence": "e"}]}
+    b3 = _beat("His assassins tumble with him.")
+    assert g.enforce_actor_handles(b3, figs3, _NM, _PROT) == []
+
+
+# ---- 2026-07-16 wave: actor_count_mismatch (plural over single-figure span) --
+
+def test_actor_count_fires_on_plural_over_single_figure_span():
+    beats = _beats(("His assassins go tumbling down with him.",
+                    ["p000010.jpg"]))
+    flags = pq.actor_count_flags(beats, _UNDERSTOOD, CAST)
+    assert [f["code"] for f in flags] == ["actor_count_mismatch"]
+    assert flags[0]["severity"] == pq.ERROR
+    assert "assassin" in flags[0]["detail"]
+
+
+def test_actor_count_silent_on_singular_multi_figure_and_uncertain():
+    # singular actor: fine
+    beats = _beats(("The assassin closes in.", ["p000011.jpg"]))
+    assert pq.actor_count_flags(beats, _UNDERSTOOD, CAST) == []
+    # two-person span: plural is legal
+    u2 = {"panels": [
+        {"scene_file": "p000012.jpg",
+         "subjects": ["a masked figure in a dark hooded cloak",
+                      "a second masked figure in dark robes with a blade"],
+         "action": "", "description": ""}]}
+    beats = _beats(("The assassins close in.", ["p000012.jpg"]))
+    assert pq.actor_count_flags(beats, u2, CAST) == []
+    # uncertain panel contributes no ground truth (pu_v4)
+    u3 = {"panels": [
+        {"scene_file": "p000013.jpg", "uncertain": True,
+         "subjects": ["a masked figure in a dark hooded cloak"],
+         "action": "", "description": ""}]}
+    beats = _beats(("The assassins close in.", ["p000013.jpg"]))
+    assert pq.actor_count_flags(beats, u3, CAST) == []
+
+
+def test_actor_count_is_a_healable_code_with_note():
+    import tools.narration_heal as nh
+    assert "actor_count_mismatch" in nh.HEALABLE
+    note = nh._note_for("actor_count_mismatch", "line pluralizes 'assassin'")
+    assert "ONE figure" in note and "companions" in note

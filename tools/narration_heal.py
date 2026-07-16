@@ -60,6 +60,11 @@ HEALABLE = {
     # original roll lacked. NOT worker-blocking yet (precision is measured
     # on the first production run).
     "actor_mismatch",
+    # a line PLURALIZES its actor ("our guy and his assassins") over a span
+    # whose every panel shows ONE person — the invented-companions class from
+    # the 2026-07-16 audit. Same posture as actor_mismatch: heal-target,
+    # NOT worker-blocking until precision is measured.
+    "actor_count_mismatch",
     # a segment line past its span's word budget (escaped the writer
     # validator via its fallback path) — a re-roll with the explicit word
     # cap in the note converges: length is fully in the writer's control.
@@ -140,6 +145,11 @@ def _note_for(code: str, detail: str) -> str:
                 "naming the actor ONLY from the panel's figures; when a "
                 "figure is unknown, use neutral phrasing (the masked "
                 "figure), never a guessed name.")
+    if code == "actor_count_mismatch":
+        return ("This line PLURALIZES the actor but every panel in its span "
+                "shows ONE figure — re-narrate with the single actor the "
+                "panel's figures name; never invent companions, groups, or "
+                "'and his …' phrasing the art does not show.")
     if code == "line_overlong":
         cap = ""
         m = re.search(r"/ (\d+) words", detail or "")

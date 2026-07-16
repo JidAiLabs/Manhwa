@@ -1405,6 +1405,63 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     return flags
 
 
+def actor_count_flags(beats_obj: Any, understood_obj: Any,
+                      cast_obj: Any) -> List[Dict[str, Any]]:
+    """PLURALITY gate (ERROR, heal-target, NOT worker-blocking — precision is
+    measured first, same posture as actor_mismatch): a line that PLURALIZES a
+    subject-position actor-noun ("our guy and his assassins go tumbling")
+    while every panel in its span shows at most ONE person. Capacity is the
+    max person count across the span's resolved figures (unknowns included —
+    each is a person-ish subject); panels the analyst marked `uncertain`
+    (pu_v4) contribute no ground truth and are skipped. Shares its pattern
+    authority with the writer's identity gate (cast_identity)."""
+    from cast_identity import (_looks_person, actor_noun_map,
+                               subject_actor_nouns_ex)
+    flags: List[Dict[str, Any]] = []
+    noun_map = actor_noun_map(cast_obj)
+    if not noun_map or not isinstance(beats_obj, dict):
+        return flags
+    # capacity = person-ish SUBJECT count (resolve_figures dedupes same-cast
+    # figures by name, so it under-counts a genuine two-assassin panel)
+    cap_by_base: Dict[str, int] = {}
+    unc_by_base: set = set()
+    for p in ((understood_obj or {}).get("panels") or []):
+        base = _base_scene(os.path.basename(str(p.get("scene_file") or "")))
+        if not base:
+            continue
+        if p.get("uncertain"):
+            unc_by_base.add(base)
+        cap_by_base[base] = sum(
+            1 for s in (p.get("subjects") or []) if _looks_person(str(s)))
+    if not cap_by_base:
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            if not line:
+                continue
+            capacities = []
+            for fn in s["span"]:
+                base = _base_scene(os.path.basename(fn))
+                if base in unc_by_base or base not in cap_by_base:
+                    continue
+                capacities.append(cap_by_base[base])
+            if not capacities or max(capacities) != 1:
+                continue          # multi-person span (or no ground truth)
+            for noun, _members, plural in subject_actor_nouns_ex(line,
+                                                                 noun_map):
+                if not plural:
+                    continue
+                flags.append(_flag(
+                    "actor_count_mismatch", ERROR,
+                    f"line pluralizes '{noun}' but every panel in the span "
+                    f"shows ONE figure: {line[:80]!r} — re-narrate with the "
+                    "single actor shown, never invent companions",
+                    scene=str((s["span"] or [""])[0]), segment_id=seg))
+    return flags
+
+
 def phrase_echo_flags(beats_obj: Any, *, window: int = 8,
                       min_words: int = 6) -> List[Dict[str, Any]]:
     """PHRASE ECHO (WARN, heal-target): two narrated segments within *window*
@@ -2537,6 +2594,7 @@ def main() -> int:
     flags.extend(line_overlong_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj))
+    flags.extend(actor_count_flags(beats_obj, understood_obj, cast_obj))
     flags.extend(phrase_echo_flags(beats_obj))
 
     recap_style = analyze_recap_style(
