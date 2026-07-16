@@ -485,6 +485,7 @@ def drop_cross_segment_near_identical_cuts(
     get_raw_img=None,
     get_raw_boxes=None,
     on_recrop=None,
+    max_hold_sec: float = 0.0,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Tuple[str, str]],
            List[Tuple[str, str, str]]]:
     """Drop a SOURCE-REPEATED panel shown again across a segment boundary — the
@@ -535,6 +536,13 @@ def drop_cross_segment_near_identical_cuts(
     canonicalized: List[Tuple[str, str, str]] = []
     prev_file: Optional[str] = None
     prev_hash: Optional[int] = None
+    prev_run_sec = 0.0   # continuous on-screen run of prev_file (cap gate)
+
+    def _dur(cut) -> float:
+        try:
+            return float(cut.get("dur") or cut.get("duration_sec") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
     for seg in order:
         cuts = out.get(seg) or []
         kept: List[Dict[str, Any]] = []
@@ -594,12 +602,33 @@ def drop_cross_segment_near_identical_cuts(
                               f"for {prev_file!r}/{f!r} — guard skipped, "
                               f"canonicalizing on crop-twin alone (legacy "
                               f"behavior)")
+                # CAP-AWARE canonicalize (2026-07-17, nano ch2 job 53): the
+                # re-seated file's continuous run must stay under the hold
+                # cap — an 11.3s canonicalized run is exactly the long_hold /
+                # panel_substituted block. Past the cap, keep the cut's OWN
+                # art: the raws are twins, so the repeat reads as an artist
+                # echo (ken echo differentiation styles it, WARN not block).
+                if (max_hold_sec > 0
+                        and prev_run_sec + _dur(c) > max_hold_sec):
+                    print(f"[dedup] {seg}: canonicalize to {prev_file} would "
+                          f"hold {prev_run_sec + _dur(c):.1f}s > "
+                          f"{max_hold_sec:.1f}s cap — keeping own art {f}")
+                    kept.append(c)
+                    if h is not None:
+                        prev_file, prev_hash = f, h
+                        prev_run_sec = _dur(c)
+                    continue
                 canonicalized.append((seg, f, prev_file))
                 c["file"] = prev_file
+                prev_run_sec += _dur(c)
                 kept.append(c)
                 continue
             kept.append(c)
             if h is not None:
+                if f == prev_file:
+                    prev_run_sec += _dur(c)
+                else:
+                    prev_run_sec = _dur(c)
                 prev_file, prev_hash = f, h
         if len(kept) != len(cuts) and kept:
             removed = [str(c.get("file")) for c in cuts if c not in kept]
@@ -3381,7 +3410,8 @@ def main() -> int:
         cuts_by_segment, order, _shown_img,
         exempt=system_files, get_boxes=_shown_boxes,
         get_raw_img=_img, get_raw_boxes=_boxes,
-        on_recrop=lambda seg, f: force_full_panel.add(f))
+        on_recrop=lambda seg, f: force_full_panel.add(f),
+        max_hold_sec=float(args.max_hold_sec))
     for seg, f in nidrop:
         all_dropped.append(f)
         print(f"[ok] {seg}: cross-segment near-identical {f} dropped")

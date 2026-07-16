@@ -2354,3 +2354,30 @@ def test_husk_recrop_duration_and_coverage_gates():
     out3, info3 = rp.husk_recrop_decision(
         img, [], display_sec=6.0, max_hold_sec=10.0, neighbor_crops=[])
     assert not info3["husk_recropped"] and info3["blank_frac"] == 0.0
+
+
+def test_cross_segment_canonicalize_is_hold_cap_aware():
+    # nano ch2 job 53 (2026-07-17): canonicalizing a run of late-chapter echo
+    # panels re-seated the SAME earlier file across segments for 11.3s — past
+    # the 10s hold cap, a BLOCKING long_hold/panel_substituted. Past the cap
+    # the cut keeps its OWN art (raw twins: the repeat reads as an artist
+    # echo, styled by the ken echo pass — WARN, never a block).
+    imgs = {"eye0.jpg": _hramp(base=0), "eye1.jpg": _hramp(base=20),
+            "eye2.jpg": _hramp(base=10)}
+    cbs = {"g17": [{"file": "eye0.jpg", "start": 0.0, "dur": 6.0}],
+           "g18": [{"file": "eye1.jpg", "start": 0.0, "dur": 3.0}],
+           "g19": [{"file": "eye2.jpg", "start": 0.0, "dur": 3.0}]}
+    out, dropped, canon = rp.drop_cross_segment_near_identical_cuts(
+        cbs, ["g17", "g18", "g19"], lambda f: imgs.get(f), max_hold_sec=10.0)
+    assert dropped == []
+    # g18 canonicalizes (6+3 = 9s <= 10s); g19 would make it 12s -> keeps own
+    assert canon == [("g18", "eye1.jpg", "eye0.jpg")]
+    assert [c["file"] for c in out["g18"]] == ["eye0.jpg"]
+    assert [c["file"] for c in out["g19"]] == ["eye2.jpg"]   # own art kept
+    # without a cap the whole run still canonicalizes (legacy behavior)
+    cbs2 = {"g17": [{"file": "eye0.jpg", "start": 0.0, "dur": 6.0}],
+            "g18": [{"file": "eye1.jpg", "start": 0.0, "dur": 3.0}],
+            "g19": [{"file": "eye2.jpg", "start": 0.0, "dur": 3.0}]}
+    out2, _d2, canon2 = rp.drop_cross_segment_near_identical_cuts(
+        cbs2, ["g17", "g18", "g19"], lambda f: imgs.get(f))
+    assert len(canon2) == 2
