@@ -103,3 +103,23 @@ def test_validate_segments_echo_belt_and_cap_exemption():
     assert not any("exceeds the cap" in e for e in errs)
     errs = gnp.validate_segments(seg, files, {})
     assert any("exceeds the cap" in e for e in errs)
+
+
+def test_expand_index_ranges_tolerates_typoed_keys():
+    # nano ch1 2026-07-16: the model wrote "fromindex" once; MLX at temp 0 is
+    # deterministic, so every retry returned the identical typo — the parser
+    # must normalize unambiguous key typos instead of failing the chapter.
+    order = [f"p{i}.jpg" for i in range(8)]
+    beats = [
+        {"from_index": 0, "to_index": 3, "segment": "present",
+         "arc_label": "a"},
+        {"fromindex": 4, "to_index": 7, "segment": "present",
+         "arc_label": "b"},
+    ]
+    expanded, issue = sg.expand_index_ranges(beats, order)
+    assert issue == ""
+    assert [b["scene_files"] for b in expanded] == [order[0:4], order[4:8]]
+    # a genuinely missing key still fails loudly
+    expanded, issue = sg.expand_index_ranges(
+        [{"to_index": 3, "segment": "present"}], order)
+    assert expanded == [] and "from_index" in issue

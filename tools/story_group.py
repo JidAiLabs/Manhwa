@@ -507,7 +507,14 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
     for i, b in enumerate(beats):
         if not isinstance(b, dict):
             return [], f"beat {i} is not an object"
-        fi, ti = b.get("from_index"), b.get("to_index")
+        # Tolerant key read: the model occasionally typos a schema key
+        # ("fromindex" — nano ch1 2026-07-16, and MLX at temp 0 is
+        # DETERMINISTIC so a retry returns the same typo forever; the old
+        # ollama retry-roulette merely masked this class). Only unambiguous
+        # normalizations: strip _/- and case from the key.
+        norm = {re.sub(r"[^a-z]", "", str(k).lower()): v for k, v in b.items()}
+        fi = b.get("from_index", norm.get("fromindex"))
+        ti = b.get("to_index", norm.get("toindex"))
         if not isinstance(fi, int) or isinstance(fi, bool):
             return [], f"beat {i} from_index ({fi!r}) is not an integer"
         if not isinstance(ti, int) or isinstance(ti, bool):
