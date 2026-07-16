@@ -190,3 +190,45 @@ def test_same_strip_disabled_without_overlap_px():
     a = _strip(6, 68786, 9389, 9784, overlap=0)
     b = _strip(7, 78889, 12, 381, overlap=0)
     assert not same_strip_overlap(a, b, 0)
+
+
+# -----------------------------
+# same_strip_dup (geometry-PRIMARY seam dedupe, 2026-07-16)
+# -----------------------------
+from tools.panels_to_scenes import same_strip_dup, _tg_area
+
+
+def _strip_x(seq, gy0, y0, y1, x0, x1, overlap=700):
+    e = _strip(seq, gy0, y0, y1, overlap)
+    e["x0"], e["x1"] = x0, x1
+    return e
+
+
+def test_same_strip_dup_full_panel_vs_its_tail():
+    # The nano ch1 p000043/p000044 class: chunk N sees the FULL panel, chunk
+    # N+1 sees only its bottom inside the overlap band. Framing differs ->
+    # dhash diverges -> the old hash-first gate never consulted geometry.
+    a = _strip_x(6, 68786, 9200, 9784, 0, 800)    # full panel (h=584)
+    b = _strip_x(7, 78889, 12, 381, 30, 790)      # its tail in the next chunk
+    assert same_strip_dup(a, b, 700)
+
+
+def test_same_strip_dup_keeps_side_by_side_siblings():
+    # Gutter-split siblings share the SAME rows with disjoint columns — the
+    # x gate must keep both (regression guard for the daa885f A-split).
+    a = _strip_x(6, 68786, 9389, 9784, 0, 310)
+    b = _strip_x(6, 68786 + 700, 9389 - 700, 9784 - 700, 312, 800)
+    b["seq"] = 7
+    assert not same_strip_dup(a, b, 700)
+
+
+def test_same_strip_dup_rejects_thin_column_overlap():
+    a = _strip_x(6, 68786, 9389, 9784, 0, 400)
+    b = _strip_x(7, 78889, 12, 381, 350, 800)     # 50px shared < half width
+    assert not same_strip_dup(a, b, 700)
+
+
+def test_tg_area_orders_fuller_crop_first():
+    full = _strip_x(6, 68786, 9200, 9784, 0, 800)
+    tail = _strip_x(7, 78889, 12, 381, 30, 790)
+    assert _tg_area(full) > _tg_area(tail)

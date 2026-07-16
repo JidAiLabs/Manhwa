@@ -258,6 +258,29 @@ def same_strip_overlap(prev: Dict[str, Any], cur: Dict[str, Any],
     return (hi - lo) >= 0.5 * max(1, min_h)
 
 
+def same_strip_dup(prev: Dict[str, Any], cur: Dict[str, Any],
+                   overlap_px: int) -> bool:
+    """Geometry-PROVEN duplicate: adjacent-chunk crops covering the same
+    true-global rows AND columns are the same source pixels by construction
+    (the chunks share overlap_px rows of one strip) — no pixel comparison can
+    veto that proof. The column gate keeps side-by-side gutter-split siblings
+    (identical rows, disjoint columns) alive; chunk-local x IS strip-global x
+    (chunks are full-width horizontal slices)."""
+    if not same_strip_overlap(prev, cur, overlap_px):
+        return False
+    lo = max(prev["x0"], cur["x0"])
+    hi = min(prev["x1"], cur["x1"])
+    if hi <= lo:
+        return False
+    min_w = min(prev["x1"] - prev["x0"], cur["x1"] - cur["x0"])
+    return (hi - lo) >= 0.5 * max(1, min_w)
+
+
+def _tg_area(e: Dict[str, Any]) -> int:
+    """True-global coverage of a crop record — the keep-larger tiebreak."""
+    return max(0, e["ty1"] - e["ty0"]) * max(0, e["x1"] - e["x0"])
+
+
 # -----------------------------
 # DHash for dedupe
 # -----------------------------
@@ -947,6 +970,7 @@ def main() -> int:
     skipped_blank = 0
     skipped_small = 0
     skipped_dedupe = 0
+    replaced_seam = 0
     skipped_overlap = 0
 
     seq_id = 0
@@ -1112,13 +1136,36 @@ def main() -> int:
                     ty_base = int(chunk_global_y0.get(cf, 0)) - seq * overlap_px
                     strip = {"seq": seq,
                              "ty0": ty_base + int(part_box[1]),
-                             "ty1": ty_base + int(part_box[3])}
+                             "ty1": ty_base + int(part_box[3]),
+                             "x0": int(part_box[0]), "x1": int(part_box[2])}
                     if args.dedupe and recent:
                         r_w, r_h = part_im.size
                         r_ratio = r_w / max(1, r_h)
                         r_area = r_w * r_h
                         dup = False
                         for prev in recent[-int(args.dedupe_lookback):]:
+                            # GEOMETRY FIRST (2026-07-16): a full panel and
+                            # its overlap-band tail FRAME differently, so
+                            # their hashes differ — the hash gate below must
+                            # never veto a provable same-rows+cols pair (the
+                            # cross_dup lesson repeated: nano ch1 shipped
+                            # p000043 alongside its own bottom as p000044).
+                            if same_strip_dup(prev, strip, overlap_px):
+                                if _tg_area(strip) > _tg_area(prev):
+                                    # cur sees MORE of the panel (it began in
+                                    # the overlap band, the LATER chunk holds
+                                    # the full art) — replace prev, keep cur.
+                                    try:
+                                        os.remove(prev["out_path"])
+                                    except OSError:
+                                        pass
+                                    scenes[prev["scene_i"]] = None  # tombstone
+                                    recent.remove(prev)
+                                    written -= 1
+                                    replaced_seam += 1
+                                else:
+                                    dup = True
+                                break
                             ham = hamming64(dh, prev["dhash64"])
                             if ham > int(args.dedupe_threshold):
                                 continue
@@ -1187,12 +1234,16 @@ def main() -> int:
                         }
                     )
                     recent.append({"dhash64": dh, "w": part_im.width, "h": part_im.height,
-                                   "seq": strip["seq"], "ty0": strip["ty0"], "ty1": strip["ty1"]})
+                                   "seq": strip["seq"], "ty0": strip["ty0"], "ty1": strip["ty1"],
+                                   "x0": strip["x0"], "x1": strip["x1"],
+                                   "scene_i": len(scenes) - 1,
+                                   "out_path": out_path})
                     written += 1
 
                     if args.progress_every > 0 and (written % int(args.progress_every) == 0):
                         print(f"[prog] written={written} scenes total_panels_in={total_panels_in} (blank={skipped_blank} small={skipped_small} dedupe={skipped_dedupe})")
 
+    scenes = [s for s in scenes if s is not None]   # seam-replace tombstones
     out_obj = {
         "source_stitch_manifest": os.path.abspath(args.stitch_manifest),
         "source_panels_manifest": os.path.abspath(args.panels_manifest),
@@ -1205,6 +1256,7 @@ def main() -> int:
             "skipped_blank": int(skipped_blank),
             "skipped_small": int(skipped_small),
             "skipped_dedupe": int(skipped_dedupe),
+            "replaced_seam": int(replaced_seam),
             "skipped_overlap": int(skipped_overlap),
             "merged_sliver_bands": int(merged_bands_total),
         },
