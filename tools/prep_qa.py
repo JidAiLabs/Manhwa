@@ -1820,7 +1820,9 @@ named or weak; empty if ok>"}}"""
 
 def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                     model: str = "gemma4:26b",
-                    cache_path: Optional[str] = None) -> List[Dict[str, Any]]:
+                    cache_path: Optional[str] = None,
+                    uncertain_files: Optional[set] = None
+                    ) -> List[Dict[str, Any]]:
     """Stronger 'eyes' than semantic_alignment_flags: per beat, judge whether the
     narration INVENTS or MIS-NAMES anything absent from every panel the beat
     shows, or is weak filler. Judged against the WHOLE montage (all the beat's
@@ -1836,12 +1838,14 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
         return [_flag("grounding_skipped", INFO,
                       "ollama not importable — grounding judge skipped")]
     from ollama_compat import chat as _ollama_chat
+    unc = {parent_scene(f) for f in (uncertain_files or set())} | set(
+        uncertain_files or set())
 
-    def _judge(paths: List[str], text: str) -> Dict[str, Any]:
+    def _judge(paths: List[str], text: str, note: str = "") -> Dict[str, Any]:
         resp = _ollama_chat(
             model=model, think=False,
             messages=[{"role": "user",
-                       "content": _GROUND_PROMPT.format(text=text[:400]),
+                       "content": _GROUND_PROMPT.format(text=text[:400]) + note,
                        "images": paths}],
             options={"temperature": 0, "num_predict": 200})
         raw = str(resp["message"]["content"] or "")
@@ -1849,7 +1853,7 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
         return json.loads(m.group(0)) if m else {}
 
     # 1. collect the beats to judge, in timeline order (output stays deterministic)
-    work: List[Tuple[str, str, List[str]]] = []   # (segment_id, narration, files)
+    work: List[Tuple[str, str, List[str], str]] = []  # (segment_id, narration, files, note)
     for item in (plan or {}).get("timeline") or []:
         if item.get("branding"):
             continue
@@ -1870,7 +1874,16 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                     files.append(f)
         if not files:
             continue
-        work.append((seg, text, files))
+        # pu_v4: the analyst itself hedged on these panels — tell the judge so
+        # a deliberately-vague line is CORRECT grounding, not weakness.
+        hedged = sorted({f for f in files if f in unc or parent_scene(f) in unc})
+        note = ""
+        if hedged:
+            note = ("\nNOTE: the visual analyst marked panel(s) "
+                    + ", ".join(hedged[:3])
+                    + " as visually AMBIGUOUS — hedged/vague wording about "
+                    "them is correct grounding, never 'weak'.")
+        work.append((seg, text, files, note))
 
     # 2. content-addressed verdict cache. A grounding verdict is a pure function
     #    of (model, narration, panels shown) — so the voiceover-time QA, which
@@ -1879,9 +1892,9 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
     #    redundant second pass (and heal re-runs) to ~0 gemma calls.
     import hashlib
 
-    def _key(text: str, files: List[str]) -> str:
+    def _key(text: str, files: List[str], note: str = "") -> str:
         h = hashlib.sha1()
-        for part in (model, text[:400], "\x00".join(files[:6])):
+        for part in (model, text[:400], "\x00".join(files[:6]), note):
             h.update(part.encode("utf-8", "replace"))
             h.update(b"\x00")
         return h.hexdigest()
@@ -1893,7 +1906,7 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                 cache = json.load(f)
         except Exception:                                   # noqa: BLE001
             cache = {}
-    keys = [_key(text, files) for (_, text, files) in work]
+    keys = [_key(text, files, note) for (_, text, files, note) in work]
     miss = [i for i, k in enumerate(keys) if k not in cache]
 
     # judge only the MISSES, CONCURRENTLY so the 26B calls fill ollama's
@@ -1901,9 +1914,10 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
     # Each ollama_compat.chat builds its OWN Client + watchdog (no shared state),
     # so threading is safe; STUDIO_QA_CONC mirrors understanding's proven width.
     def _judge_one(i: int):
-        _, text, files = work[i]
+        _, text, files, note = work[i]
         try:
-            return _judge([os.path.join(clean_dir, f) for f in files[:6]], text)
+            return _judge([os.path.join(clean_dir, f) for f in files[:6]],
+                          text, note)
         except Exception as e:                              # noqa: BLE001
             return e
     conc = max(1, int(os.environ.get("STUDIO_QA_CONC", "3")))
@@ -1938,7 +1952,7 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
 
     # 3. build flags in timeline order — identical to the serial output
     flags: List[Dict[str, Any]] = []
-    for (seg, text, files), v in zip(work, verdicts):
+    for (seg, text, files, _note), v in zip(work, verdicts):
         if isinstance(v, Exception):
             flags.append(_flag("grounding_error", INFO,
                                f"judge failed on {seg}: {v}", segment_id=seg))
@@ -2559,8 +2573,13 @@ def main() -> int:
         # ONE call (~1 call/group, ~23/chapter), vs the retired per-panel judge
         # that cost ~1 call PER SHOWN CUT (~61/chapter) for the same check — and
         # this one is montage-aware, so it has fewer false positives by design.
-        flags.extend(grounding_flags(plan, clean_dir, model=args.semantic_model,
-                                     cache_path=os.path.join(ep, ".grounding_cache.json")))
+        flags.extend(grounding_flags(
+            plan, clean_dir, model=args.semantic_model,
+            cache_path=os.path.join(ep, ".grounding_cache.json"),
+            uncertain_files={
+                str(p.get("scene_file") or "")
+                for p in ((understood_obj or {}).get("panels") or [])
+                if p.get("uncertain")}))
         # a number/name SPOKEN in a non-shown panel is grounded in the dialogue —
         # drop the visual judge's false positive in that case
         flags = _suppress_grounded_mismatches(

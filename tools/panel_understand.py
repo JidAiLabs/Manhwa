@@ -52,6 +52,9 @@ PANEL_SCHEMA: Dict[str, Any] = {
         "strikes_or_weapons": {"type": "STRING",
                                "enum": ["none", "visible", "in_use"]},
         "sfx_text": {"type": "STRING"},
+        # pu_v4: the analyst's own confidence — NOT in `required`, same
+        # back-compat posture as the pu_v2 fields above.
+        "uncertain": {"type": "BOOLEAN"},
     },
     "required": ["description", "action", "intensity", "panel_kind"],
 }
@@ -66,8 +69,18 @@ SYSTEM = (
     "PERSON, include their distinguishing look AS DRAWN — clothing/outfit and\n"
     "its color, hair, any mask/hood/armor or notable accessory (e.g. 'a young\n"
     "man in a light robe with a blue sash', 'a masked figure in a dark hooded\n"
-    "cloak') — never just 'a man' or 'a figure'.\n"
+    "cloak') — never just 'a man' or 'a figure'. If the SAME person appears in "
+    "several sub-frames/insets of this ONE panel, list that person ONCE — never "
+    "one subjects entry per sub-frame.\n"
     "  action: the single key event or beat of this panel.\n"
+    "  Evidence discipline: describe marks and stains at the certainty the art "
+    "gives — an ambiguous dark or reddish stain is 'a dark stain' / 'stained', "
+    "NEVER 'blood' unless a wound, dripping, or spatter makes it unambiguous; "
+    "never upgrade dirt, shadow, or paint to gore, and never upgrade an "
+    "ambiguous shape into a specific object or an attack.\n"
+    "  uncertain: set true when you genuinely cannot identify a subject — then "
+    "describe it hedged ('an unclear pale shape') and do NOT assign it an "
+    "action or intent; false otherwise.\n"
     "  dialogue: any spoken line or caption, copied VERBATIM from the OCR; '' if "
     "none. Do not paraphrase dialogue.\n"
     "  setting: where/what the scene is (a train, a city street, a flashback "
@@ -126,7 +139,13 @@ SYSTEM = (
 # panel figures from deterministically (round-2 identity misattribution fix).
 # Invalidates ALL pu_v2 records, INTENDED: chapters re-understand so figure
 # resolution has appearance evidence to match against manifest.cast.json.
-PROMPT_VERSION = "pu_v3"
+# pu_v4: evidence discipline (ambiguous stain != blood; never upgrade an
+# ambiguous shape to an object/attack), same-person-across-sub-frames listed
+# ONCE, and the `uncertain` flag (+ forced-choice re-ask) so the writer and
+# the grounding judge know when the analyst itself hedged. Invalidates ALL
+# pu_v3 records, INTENDED (2026-07-16 root-cause wave: dirt->blood,
+# limb-or-object->attack, 3-sub-shots->3 people).
+PROMPT_VERSION = "pu_v4"
 
 # --- extreme-tall strips: windowed understanding -----------------------------
 # A cover/credits strip (ORV Ep0: 800x7540) downscaled to model resolution is
@@ -271,6 +290,8 @@ def understand_tall_strip(
         "sfx_text": " ".join(str(pw.get("sfx_text") or "").strip()
                              for pw in parsed_windows
                              if str(pw.get("sfx_text") or "").strip())[:200],
+        # pu_v4: any-window OR — one hedged window makes the strip uncertain
+        "uncertain": any(bool(pw.get("uncertain")) for pw in parsed_windows),
     }
     return merged, meta
 
@@ -374,6 +395,12 @@ def build_payload(panel: Dict[str, Any], prev_descs: List[str],
     return payload
 
 
+# pu_v4: hedged-subject wording that forces uncertain=True deterministically.
+_UNCERTAIN_RE = re.compile(
+    r"\b(?:or\b|unclear|possibly|unidentifi|indeterminate|hard to tell)",
+    re.IGNORECASE)
+
+
 def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Pure: normalize one model result into a panel record. A parse failure is
     recorded (never silently dropped) so resume can re-run just that panel."""
@@ -390,6 +417,11 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
     sow = str(parsed.get("strikes_or_weapons") or "").strip().lower()
     description = str(parsed.get("description") or "").strip()
     subjects = [str(s) for s in (parsed.get("subjects") or []) if s]
+    # pu_v4: the model is the describer, the regex is the guarantee — hedged
+    # wording in a subject forces uncertain=True even when the model forgot
+    # the flag (same philosophy as the husk override below).
+    uncertain = bool(parsed.get("uncertain")) or any(
+        _UNCERTAIN_RE.search(s) for s in subjects)
     kind = _norm_panel_kind(parsed.get("panel_kind"))
     # Deterministic husk override: a panel the model called 'story'/'system' that
     # is really ONLY a bubble/text on a plain background is a caption — its words
@@ -412,6 +444,7 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
         "strikes_or_weapons": sow if sow in ("none", "visible", "in_use")
         else "none",
         "sfx_text": str(parsed.get("sfx_text") or "").strip(),
+        "uncertain": uncertain,
     }
 
 
@@ -486,6 +519,30 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
                 it.get("scene_file"),
                 call_fn(build_payload(it, ctx, impact_regions=regions),
                         it.get("scene_path")))
+        # pu_v4 forced-choice re-ask: ONE retry that demands a commitment on a
+        # hedged subject; accepted only when the second read actually commits
+        # (uncertain cleared) — else the hedged record stands. Tall strips are
+        # skipped (windowed re-runs are expensive; the flag alone suffices).
+        if rec.get("uncertain") and not rec.get("error") and not dims:
+            payload = build_payload(it, ctx, impact_regions=regions)
+            payload["forced_choice_notice"] = (
+                "Your first read could not identify a subject: "
+                + "; ".join(rec.get("subjects") or [])[:300]
+                + ". Look again and COMMIT to the single most likely reading "
+                "of each unclear subject (e.g. 'a tree branch', 'an arm'). "
+                "If you still cannot commit, keep uncertain=true.")
+            try:
+                second = assemble_record(
+                    it.get("scene_file"),
+                    call_fn(payload, it.get("scene_path")))
+            except Exception:
+                second = {"scene_file": it.get("scene_file"),
+                          "error": "reask_failed"}
+            if not second.get("error") and not second.get("uncertain"):
+                second["reask"] = True
+                rec = second
+                log(f"[panel] {it.get('scene_file')}: forced-choice re-ask "
+                    "committed")
         # DETECTOR-owned impact verdict — stamped AFTER assemble_record so the
         # model can never claim or override it (the deterministic signal the
         # impact_mismatch QA gate reads back from understood.json).

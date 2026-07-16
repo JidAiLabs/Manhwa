@@ -509,6 +509,11 @@ def _pack_group_payload(
                 (f["name"] if f.get("name") and f["name"] != "unknown"
                  else f"unknown ({str(f.get('evidence') or '')[:40]})")
                 for f in figs[:4]]
+        # pu_v4: the analyst itself hedged on this panel — the writer must not
+        # upgrade that uncertainty into a concrete event (key exists only when
+        # flagged, byte-compatible otherwise).
+        if understood.get("uncertain"):
+            scenes[-1]["uncertain"] = True
 
     return {
         "group_id": int(group.get("shot_id") or group.get("group_id") or 0),
@@ -1772,6 +1777,10 @@ def main() -> int:
         "      them (if it says 'beast' it is a beast, not a 'hound'), do not change their number\n"
         "      (two stay two, never 'a pack/swarm'), and do not add a creature/person not listed.\n"
         "      Do NOT invent a SYSTEM the world lacks (no 'server'/'game'/'respawn' on a real scene).\n"
+        "      NEVER upgrade specificity beyond the understanding: 'stained' stays stained (not\n"
+        "      blood), 'a dark shape' stays a shape. A panel marked 'uncertain' is one the analyst\n"
+        "      could not identify — narrate it just as vaguely or fold it into the surrounding\n"
+        "      motion; NEVER give an uncertain subject an action, attacker, weapon, or identity.\n"
         "    - IDENTITY + NAMES: NAME established CHAPTER CAST members so the audience can\n"
         "      follow who is who — recognition is the priority. NAME the protagonist (or a\n"
         "      relaxed stand-in like 'our guy') normally on HIS OWN panels, even when a\n"

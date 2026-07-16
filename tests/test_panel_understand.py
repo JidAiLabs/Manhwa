@@ -351,11 +351,11 @@ def test_writeback_before_understood_dump_mtime_order(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_prompt_version_bumped_for_impact_fields():
-    # pu_v3 invalidates every pu_v2 resume record (INTENDED — chapters
-    # re-understand under the appearance-aware subjects prompt, the raw
-    # material cast_identity figure resolution matches against; pu_v2 did
-    # the same for the impact-aware prompt over pu_v1).
-    assert pu.PROMPT_VERSION == "pu_v3"
+    # pu_v4 invalidates every pu_v3 resume record (INTENDED — chapters
+    # re-understand under the evidence-discipline + uncertain-flag prompt;
+    # pu_v3 did the same for appearance-aware subjects over pu_v2, pu_v2 for
+    # the impact-aware prompt over pu_v1).
+    assert pu.PROMPT_VERSION == "pu_v4"
 
 
 def test_panel_schema_adds_impact_fields_backward_compatibly():
@@ -428,3 +428,76 @@ def test_default_impact_fn_is_fail_soft_on_missing_images():
         items, lambda payload, image_path: {
             "description": "d", "action": "a", "intensity": "calm"})
     assert out[0]["impact_sfx"] == {"present": False, "regions": 0}
+
+
+# ---- pu_v4: uncertain flag + evidence discipline -----------------------------
+
+def test_uncertain_flag_passthrough_and_regex_backstop():
+    # model-set flag survives normalization
+    rec = pu.assemble_record("p1.jpg", {
+        "description": "d", "action": "a", "intensity": "calm",
+        "panel_kind": "story", "uncertain": True})
+    assert rec["uncertain"] is True
+    # hedged wording forces the flag even when the model forgot it —
+    # the exact production failure string (p000003, "limb or object")
+    rec = pu.assemble_record("p2.jpg", {
+        "description": "d", "action": "a", "intensity": "calm",
+        "panel_kind": "story",
+        "subjects": ["a pale pinkish limb or object with a motion trail"]})
+    assert rec["uncertain"] is True
+    # confident subjects stay unflagged
+    rec = pu.assemble_record("p3.jpg", {
+        "description": "d", "action": "a", "intensity": "calm",
+        "panel_kind": "story", "subjects": ["a masked figure in a dark cloak"]})
+    assert rec["uncertain"] is False
+
+
+def test_forced_choice_reask_commits_or_keeps_hedged():
+    items = [{"scene_file": "p0.jpg", "scene_path": "/nonexistent/p0.jpg"}]
+    calls = []
+
+    def committing(payload, image_path):
+        calls.append("forced_choice_notice" in payload)
+        if len(calls) == 1:
+            return {"description": "d", "action": "a", "intensity": "calm",
+                    "panel_kind": "story", "subjects": ["a limb or object"]}
+        return {"description": "d2", "action": "a", "intensity": "calm",
+                "panel_kind": "story", "subjects": ["a tree branch"]}
+
+    out = pu.understand_panels(items, committing)
+    assert calls == [False, True]              # exactly ONE re-ask, marked
+    assert out[0]["subjects"] == ["a tree branch"]
+    assert out[0]["uncertain"] is False and out[0].get("reask") is True
+
+    def stubborn(payload, image_path):
+        return {"description": "d", "action": "a", "intensity": "calm",
+                "panel_kind": "story", "subjects": ["a limb or object"]}
+
+    out = pu.understand_panels(items, stubborn)
+    assert out[0]["uncertain"] is True         # hedged record stands
+    assert "reask" not in out[0]
+
+
+def test_tall_strip_merges_uncertain_any_window(monkeypatch, tmp_path):
+    from PIL import Image
+    p = tmp_path / "strip.jpg"
+    Image.new("RGB", (100, 3400), "white").save(p)
+    monkeypatch.setattr(pu, "_TALL_MIN_H_PX", 3000)
+    monkeypatch.setattr(pu, "_TALL_MIN_RATIO", 3.0)
+    responses = iter([
+        {"description": "top", "action": "a", "intensity": "calm",
+         "panel_kind": "story"},
+        {"description": "mid", "action": "a", "intensity": "calm",
+         "panel_kind": "story", "uncertain": True},
+        {"description": "bot", "action": "a", "intensity": "calm",
+         "panel_kind": "story"},
+    ])
+    merged, meta = pu.understand_tall_strip(
+        {"scene_file": "strip.jpg", "scene_path": str(p)}, [],
+        lambda payload, image_path: next(responses, {}), (100, 3400))
+    assert merged["uncertain"] is True         # any-window OR
+
+
+def test_prompt_version_is_pu_v4():
+    assert pu.PROMPT_VERSION == "pu_v4"
+    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v4")
