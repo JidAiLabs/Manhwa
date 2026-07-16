@@ -25,10 +25,38 @@ def client(tmp_path):
 def test_all_pages_render(client):
     c, _ = client
     for path in ("/", "/series", "/series/1", "/chapter/1", "/videos",
-                 "/discovery", "/health"):
+                 "/discovery", "/health", "/runs"):
         r = c.get(path)
         assert r.status_code == 200, path
     assert "Nano Machine" in c.get("/series").text
+
+
+def _insert_finished_job(con, jid=77, state="done"):
+    con.execute(
+        "INSERT INTO job (id, type, series_id, chapter_id, state, priority, "
+        "created_at, started_at, finished_at, log_path) VALUES "
+        "(?, 'prepare', 1, 1, ?, 1, '2026-07-16 01:00:00', "
+        "'2026-07-16 01:00:00', '2026-07-16 01:12:30', 'logs/jobs/77.log')",
+        (jid, state))
+    con.commit()
+
+
+def test_runs_page_lists_finished_job_with_duration(client):
+    c, con = client
+    _insert_finished_job(con)
+    text = c.get("/runs").text
+    assert "77" in text and "DONE" in text
+    assert "Nano Machine" in text          # scope name resolved
+    assert "/partials/log/77" in text      # log button survives completion
+    assert "12:2" in text or "12:30" in text  # ~12m30s duration rendered (fmt_eta mm:ss)
+
+
+def test_queue_partial_keeps_finished_jobs_visible(client):
+    c, con = client
+    _insert_finished_job(con, jid=78, state="failed")
+    text = c.get("/partials/queue").text
+    assert "finished" in text and "FAILED" in text
+    assert "/partials/log/78" in text
 
 
 def test_post_job_inserts_queued_row(client):

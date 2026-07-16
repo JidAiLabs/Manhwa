@@ -276,6 +276,16 @@ def queue_view(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             + [_with_timing(con, _row(r)) for r in recent])
 
 
+def runs_view(con: sqlite3.Connection, limit: int = 100) -> List[Dict[str, Any]]:
+    """Full run history — every finished job, newest first, with durations.
+    The job table is never pruned, so this IS the durable per-run record."""
+    rows = con.execute(
+        f"SELECT {_COLS} FROM job WHERE type!='heartbeat' AND "
+        "state IN ('done','failed','cancelled') "
+        "ORDER BY finished_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+    return [_with_timing(con, _row(r)) for r in rows]
+
+
 def failed_chapters(con: sqlite3.Connection,
                     series_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Chapters whose MOST RECENT job FAILED (auto-retry exhausted, nothing

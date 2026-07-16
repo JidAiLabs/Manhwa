@@ -377,6 +377,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             f.seek(max(0, size - 8192))
             return f.read().decode("utf-8", "replace")
 
+    @app.get("/runs", response_class=HTMLResponse)
+    def runs_page(request: Request):
+        return page("runs.html", request, jobs=jobs.runs_view(con()))
+
     @app.get("/series", response_class=HTMLResponse)
     def series_page(request: Request):
         return page("series.html", request, series=_series_rows(con()))
