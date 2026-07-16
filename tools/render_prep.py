@@ -979,6 +979,101 @@ def bubble_coverage(
     return float(grid.mean())
 
 
+def edge_recrop_window(
+    img: np.ndarray,
+    bubbles: Sequence[Tuple[int, int, int, int]],
+    protected: Sequence[Tuple[int, int, int, int]] = (),
+    *,
+    edge_touch_frac: float = 0.10,
+    max_cut_frac: float = 0.50,
+    min_keep_px: int = 320,
+    dominance: float = 0.55,
+    flat_std: float = 18.0,
+) -> Tuple[int, int]:
+    """(y0, y1) of the SHOWN window after trimming bubble-dominated edge bands.
+
+    The tag-driven re-crop (owner decision 2026-07-16): a balloon stack parked
+    against the top/bottom edge of a panel crop is dialogue chrome, not art —
+    the shown frame tightens to the art region and the balloons never appear
+    (their words already ride the narration). A band is only cut when
+    (a) its bubbles touch the edge, (b) nothing protected (system windows)
+    intersects it, (c) it is bubble-DOMINATED: union coverage >= *dominance*
+    OR the non-bubble remainder is flat background (std < *flat_std*), and
+    (d) at least *min_keep_px* and half the panel survive. Bubbles overlapping
+    real art (mid-panel) never trigger a cut — they stay, drawn as-is.
+    Vertical only.  # ponytail: add left/right bands if a real case shows up.
+    """
+    h, w = img.shape[0], img.shape[1]
+    y0, y1 = 0, h
+
+    gray = (cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            if img.ndim == 3 else img)
+
+    def _band_ok(a: int, b: int) -> bool:
+        if b <= a:
+            return False
+        for (px1, py1, px2, py2) in protected:
+            if py2 > a and py1 < b:
+                return False
+        band = np.zeros((b - a, w), bool)
+        for (bx1, by1, bx2, by2) in bubbles:
+            iy0, iy1 = max(a, int(by1)) - a, min(b, int(by2)) - a
+            if iy1 > iy0:
+                band[iy0:iy1, max(0, int(bx1)):max(0, int(bx2))] = True
+        cover = float(band.mean())
+        if cover >= dominance:
+            return True
+        rest = gray[a:b][~band]
+        if rest.size == 0:
+            return True
+        if float(rest.std()) < flat_std:
+            return True
+        # backdrop gradients (sky, blur) beat the flat test but carry no ART:
+        # bubble-masked edge density of the band, on the min-art-score scale
+        # (balloon outlines are masked out; a face/action in the band fires
+        # edges and vetoes the cut). Measured on nano p000023: balloon band
+        # 0.0115 vs the face region 0.0419 — 3.6x separation at 0.015.
+        edges = cv2.Canny(gray[a:b], 50, 150)
+        edges[band] = 0
+        return float(edges.mean()) / 255.0 < 0.015
+
+    # Chained cuts: a balloon STACK reaches the edge through its first member
+    # (p000023: balloon 2 starts mid-balloon-1, not at the edge) — grow the
+    # cut while another bubble starts above/below the current line.
+    top_edge = int(h * edge_touch_frac)
+    top_cut = 0
+    changed = True
+    while changed:
+        changed = False
+        for (_bx1, by1, _bx2, by2) in bubbles:
+            reach = top_edge if top_cut == 0 else top_cut
+            end = min(int(by2), int(h * max_cut_frac))
+            if int(by1) <= reach and end > top_cut:
+                top_cut = end
+                changed = True
+    if top_cut > 0 and _band_ok(0, top_cut):
+        y0 = top_cut
+
+    bot_edge = int(h * (1.0 - edge_touch_frac))
+    bot_cut = h
+    changed = True
+    while changed:
+        changed = False
+        for (_bx1, by1, by2_start_guard, by2) in [
+                (b[0], b[1], max(int(b[1]), int(h * (1.0 - max_cut_frac))), b[3])
+                for b in bubbles]:
+            reach = bot_edge if bot_cut == h else bot_cut
+            if int(by2) >= reach and by2_start_guard < bot_cut:
+                bot_cut = by2_start_guard
+                changed = True
+    if bot_cut < h and _band_ok(bot_cut, h):
+        y1 = bot_cut
+
+    if y1 - y0 < max(min_keep_px, h // 2):
+        return 0, h
+    return int(y0), int(y1)
+
+
 def art_content_score(
     img: np.ndarray,
     bubble_boxes: Sequence[Tuple[int, int, int, int]],
@@ -2726,6 +2821,14 @@ def main() -> int:
     # harmless by construction (no white/black interior -> untouched).
     ap.add_argument("--bubble-conf", type=float, default=0.20)
     ap.add_argument("--no-bubbles", action="store_true", help="skip bubble inpainting")
+    ap.add_argument("--bubble-shown-mode", choices=["keep", "husk"],
+                    default="keep",
+                    help="story panels on screen: 'keep' (default; owner "
+                         "2026-07-16) trims bubble-dominated EDGE bands off "
+                         "the shown frame (tag-driven re-crop via the trained "
+                         "detector) and leaves remaining bubbles AS DRAWN — "
+                         "no text erasure, no white husks; 'husk' is the "
+                         "legacy erase-text-keep-bubble behavior")
     ap.add_argument("--reuse-clean", action="store_true",
                     help="heal-cycle fast path: reuse the cached per-cut visual "
                          "judge verdicts (panels are unchanged between heal "
@@ -2885,31 +2988,43 @@ def main() -> int:
     # weights are missing — protection off, loudly.
     panel_model = None
     sys_ids: set = set()
+    bubble_ids: set = set()
     if os.path.exists(args.panel_weights):
         from ultralytics import YOLO
         from studio.detect.yolo_panels import system_class_ids
         panel_model = YOLO(args.panel_weights)
-        sys_ids = system_class_ids(getattr(panel_model, "names", None))
+        names = getattr(panel_model, "names", None) or {}
+        sys_ids = system_class_ids(names)
+        # voice containers by NAME — v3: speech_bubble/radio/speech_background;
+        # legacy: speech_bubble. Feed the shown-frame edge re-crop.
+        bubble_ids = {i for i, n in dict(names).items()
+                      if n in ("speech_bubble", "radio", "speech_background")}
     else:
         print(f"[warn] panel weights missing ({args.panel_weights}) — "
               "system-message protection DISABLED")
-    sys_cache: Dict[str, List[Tuple[int, int, int, int]]] = {}
+    el_cache: Dict[str, Dict[str, List[Tuple[int, int, int, int]]]] = {}
 
-    def _sys_boxes(fname: str) -> List[Tuple[int, int, int, int]]:
-        if panel_model is None:
-            return []
-        if fname not in sys_cache:
+    def _element_boxes(fname: str) -> Dict[str, List[Tuple[int, int, int, int]]]:
+        """One trained-model pass per shown file: system + bubble boxes."""
+        if fname not in el_cache:
+            out: Dict[str, List[Tuple[int, int, int, int]]] = {
+                "system": [], "bubbles": []}
             img = _img(fname)
-            out: List[Tuple[int, int, int, int]] = []
-            if img is not None:
+            if panel_model is not None and img is not None:
                 r = panel_model.predict(img, conf=0.30, device=args.device, verbose=False)[0]
                 if r.boxes is not None:
                     for (x1, y1, x2, y2), c in zip(
                             r.boxes.xyxy.cpu().numpy(), r.boxes.cls.cpu().numpy()):
-                        if int(c) in sys_ids:  # system_box / system_ui by NAME
-                            out.append((int(x1), int(y1), int(x2), int(y2)))
-            sys_cache[fname] = out
-        return sys_cache[fname]
+                        box = (int(x1), int(y1), int(x2), int(y2))
+                        if int(c) in sys_ids:
+                            out["system"].append(box)
+                        elif int(c) in bubble_ids:
+                            out["bubbles"].append(box)
+            el_cache[fname] = out
+        return el_cache[fname]
+
+    def _sys_boxes(fname: str) -> List[Tuple[int, int, int, int]]:
+        return _element_boxes(fname)["system"]
 
     from scene_chrome import is_chrome_scene, needs_image_stats  # sibling tool
 
@@ -2991,6 +3106,10 @@ def main() -> int:
                 # like any other: blank ONLY words inside speech-SHAPED
                 # boxes; UI rows (wide flat detector boxes) and all
                 # outside-bubble text stay untouched. No orphan pass here.
+                # keep-mode: the screen ships AS DRAWN (bubble text included).
+                if args.bubble_shown_mode == "keep":
+                    cleaned_cache[fname] = (img.copy(), [])
+                    return cleaned_cache[fname]
                 sboxes = speech_shaped_boxes(
                     _boxes(fname), img.shape[1])
                 words = word_boxes_by_file.get(fname) or []
@@ -3010,6 +3129,19 @@ def main() -> int:
                 inwords = [w for w in words if _in_speech(w)]
                 out = (clean_scene_image(img.copy(), sboxes, text_boxes=inwords)
                        if (sboxes and inwords) else img.copy())
+                cleaned_cache[fname] = (out, [])
+            elif args.bubble_shown_mode == "keep":
+                # TAG-DRIVEN SHOWN FRAME (owner 2026-07-16): trim bubble-
+                # dominated edge bands via the trained detector's bubble boxes
+                # (the balloon stack over p000023's face vanishes; the face
+                # fills the frame); every surviving bubble ships AS DRAWN —
+                # its dialogue already rides the narration. No text erasure,
+                # no white husks, no residue nets on the story path.
+                els = _element_boxes(fname)
+                ry0, ry1 = edge_recrop_window(img, els["bubbles"],
+                                              protected=els["system"])
+                out = img[ry0:ry1].copy() if (ry0, ry1) != (0, img.shape[0]) \
+                    else img.copy()
                 cleaned_cache[fname] = (out, [])
             else:
                 protected = [] if fname in speech_files else _sys_boxes(fname)
