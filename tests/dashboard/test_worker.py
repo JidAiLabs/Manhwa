@@ -1642,3 +1642,39 @@ def test_heal_treadmill_guard_stops_on_identical_corrections(
     text = logf.read_text()
     assert regen == [1]                          # exactly ONE regen, no treadmill
     assert "identical corrections" in text
+
+
+def test_heal_repreps_once_for_render_fixable_remnants(tmp_path, monkeypatch):
+    """Job-54 class: zero narration corrections but a long_hold ERROR remains
+    — the plan is stale and only a render_prep re-run (cap-aware passes) can
+    clear it. The heal loop must re-prep ONCE instead of returning."""
+    import json
+    import types
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep), "number": 1}
+    monkeypatch.setenv("STUDIO_SEMANTIC_HEAL", "1")
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "long_hold", "severity": "ERROR", "segment_id": "g0019"}]}))
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        if "narration_heal.py" in s:
+            out = cmd[cmd.index("--out") + 1]
+            json.dump({}, open(out, "w"))          # nothing narration-healable
+        return 0
+
+    preps = []
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda *a, **k: preps.append(k) or set())
+    monkeypatch.setattr(worker, "_regen_flagged",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not re-narrate")))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
+        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
+                              punchup="cinematic", script_model="s"), "p", "l"))
+    logf = tmp_path / "log.txt"
+    worker._heal_to_green(con, ch, ep, open(logf, "w"))
+    assert len(preps) == 1 and preps[0].get("reuse_clean") is True
+    assert "render-fixable" in logf.read_text()

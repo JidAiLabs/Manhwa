@@ -646,6 +646,13 @@ def _replan(ep: Path, log: TextIO) -> None:
 
 _HEAL_MAX = 4
 
+# ERROR codes that live in the PLAN, not the narration: a render_prep re-run
+# (whose passes are cap-aware) clears them; re-narration never can. The heal
+# loop re-preps ONCE when only these remain (2026-07-17 job 54: a heal with
+# zero narration corrections exited without re-running render_prep, so the
+# cap-aware canonicalize fix could never reach the stale plan).
+_RENDER_FIXABLE_QA_CODES = {"long_hold", "panel_substituted"}
+
 
 def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                    log: TextIO) -> None:
@@ -693,6 +700,15 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                 with record_stage(con, chapter_id=ch["id"], stage="planned",
                                   series_id=ch["series_id"]):
                     _replan(ep, log)
+                _run_prep_and_qa(con, ch, log, heal_aware=True,
+                                 reuse_clean=True, semantic=True)
+                return
+            render_fixable = _RENDER_FIXABLE_QA_CODES & _qa_error_codes(ep)
+            if render_fixable:
+                log.write(f"[heal] render-fixable ERRORs remain "
+                          f"({sorted(render_fixable)}) — re-running "
+                          "render_prep + QA once (plan-side codes: "
+                          "re-narration can never clear them)\n")
                 _run_prep_and_qa(con, ch, log, heal_aware=True,
                                  reuse_clean=True, semantic=True)
                 return
