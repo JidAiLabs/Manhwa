@@ -25,7 +25,7 @@ import os
 import re
 import sys
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
@@ -880,6 +880,138 @@ def merge_caption_solos(shots: List[Dict[str, Any]], caption_set: set
     return final
 
 
+def compute_echo_pairs(story_panels: List[Dict[str, Any]],
+                       vmap: Dict[str, Dict[str, Any]], *,
+                       get_img=None, get_boxes=None,
+                       window: int = 2) -> List[Tuple[str, str]]:
+    """Deterministic PRE-NARRATION zoom/echo-twin detection (2026-07-16 wave).
+
+    An artist echo (the same artwork re-drawn or re-framed as a zoom, e.g.
+    nano ch1 p000043/p000044) used to reach the writer as two panels and get
+    two narrated beats; every downstream dedup then correctly refused to drop
+    a narrated panel and could only re-style. Detecting the pair HERE — before
+    grouping — lets the fold happen where beats are born, so only ONE line is
+    ever written (narrate-LAST honored).
+
+    Reuses render_prep's production-calibrated twin machinery (_dhash8_bgr /
+    _mask_bubbles_for_hash / twin_verdict — never reimplemented) plus one new
+    branch for pure zooms: the earlier panel's masked halves/center hashed
+    against the later panel at the STRICT ham<=8 (no OCR loosening). Adjacency
+    window keeps precision (artist echoes are adjacent). Fail-soft: cv2 /
+    render_prep / detector unavailable -> [] / unmasked hashing, loudly."""
+    try:
+        import render_prep as rp
+    except Exception as exc:                                # noqa: BLE001
+        print(f"[echo] render_prep unavailable ({exc}) — echo fold skipped",
+              flush=True)
+        return []
+    if get_img is None:
+        try:
+            import cv2
+        except Exception:                                   # noqa: BLE001
+            print("[echo] cv2 unavailable — echo fold skipped", flush=True)
+            return []
+
+        def get_img(f: str):
+            p = (vmap.get(f) or {}).get("scene_path")
+            return cv2.imread(p) if p and os.path.exists(p) else None
+    if get_boxes is None:
+        _det: List[Any] = []                # [detector] once loaded, [] before
+
+        def get_boxes(img):
+            if not _det:
+                try:
+                    _det.append(rp._load_bubble_detector("auto"))
+                except Exception:                           # noqa: BLE001
+                    _det.append(None)
+            if _det[0] is None or img is None:
+                return ()
+            try:
+                return [(int(x1), int(y1), int(x2), int(y2))
+                        for (x1, y1, x2, y2, _s)
+                        in _det[0].detect(img, imgsz=1024, conf=0.30)]
+            except Exception:                               # noqa: BLE001
+                return ()
+
+    cache: Dict[str, Any] = {}
+
+    def _hashes(f: str):
+        if f not in cache:
+            img = get_img(f)
+            if img is None:
+                cache[f] = None
+            else:
+                boxes = get_boxes(img)
+                masked = (rp._mask_bubbles_for_hash(img, boxes)
+                          if len(boxes) else img)
+                h = masked.shape[0]
+                crops = [masked[0:h // 2], masked[h // 2:],
+                         masked[h // 4:3 * h // 4]]
+                cache[f] = {
+                    "full": rp._dhash8_bgr(masked),
+                    "crops": [rp._dhash8_bgr(c) for c in crops
+                              if c.shape[0] >= 32],
+                }
+        return cache[f]
+
+    files = [str(p.get("scene_file") or "") for p in story_panels]
+    pairs: List[Tuple[str, str]] = []
+    taken: set = set()
+    for i in range(1, len(files)):
+        b = files[i]
+        if not b or b in taken:
+            continue
+        hb = _hashes(b)
+        if hb is None:
+            continue
+        for j in range(i - 1, max(-1, i - 1 - window), -1):
+            a = files[j]
+            if not a or a in taken:
+                continue
+            ha = _hashes(a)
+            if ha is None:
+                continue
+            ham = (ha["full"] ^ hb["full"]).bit_count()
+            ocr_a = (vmap.get(a) or {}).get("ocr_clean") or ""
+            ocr_b = (vmap.get(b) or {}).get("ocr_clean") or ""
+            zoom_ham = min(
+                [(ca ^ hb["full"]).bit_count() for ca in ha["crops"]]
+                + [(cb ^ ha["full"]).bit_count() for cb in hb["crops"]]
+                + [64])
+            if rp.twin_verdict(ham, ocr_a, ocr_b) or zoom_ham <= 8:
+                print(f"[echo] {b} ~ {a} ham={ham} zoom_ham={zoom_ham} "
+                      "-> fold to one beat", flush=True)
+                pairs.append((a, b))
+                taken.add(b)
+                break
+    return pairs
+
+
+def merge_echo_shots(shots: List[Dict[str, Any]],
+                     pairs: List[Tuple[str, str]]) -> List[Dict[str, Any]]:
+    """Deterministic fold: if an echo pair straddles two beats, merge the later
+    beat into the earlier so the pair is narrated ONCE (code-enforced — never
+    left to the grouping model). Renumbers shot_id like merge_caption_solos."""
+    if not pairs:
+        return shots
+    out = [dict(s, scene_files=list(s["scene_files"])) for s in shots]
+    for a, b in pairs:
+        ia = ib = None
+        for i, s in enumerate(out):
+            if a in s["scene_files"]:
+                ia = i
+            if b in s["scene_files"]:
+                ib = i
+        if ia is None or ib is None or ia == ib:
+            continue
+        lo, hi = min(ia, ib), max(ia, ib)
+        out[lo]["scene_files"].extend(out[hi]["scene_files"])
+        del out[hi]
+    for i, s in enumerate(out, 1):
+        s["shot_id"] = i
+    return out
+
+
 _INTENSITY_RANK = {"calm": 0, "tense": 1, "intense": 2, "explosive": 3}
 
 
@@ -1245,6 +1377,9 @@ def main() -> int:
             "; refusing to continue")
     # caption-only beats fold into their neighbour so the text rides real art
     shots = merge_caption_solos(shots, caption_files(story))
+    # zoom/echo twins fold to ONE beat BEFORE narration is born (2026-07-16)
+    echo_pairs = compute_echo_pairs(story, vmap)
+    shots = merge_echo_shots(shots, echo_pairs)
     shots = annotate_intensity(shots, panels)   # per-shot PACE = peak intensity
     out = {
         "source_understood": os.path.abspath(args.understood),
@@ -1256,6 +1391,9 @@ def main() -> int:
         "summary": {"num_scenes": len(story), "num_shots": len(shots),
                     "flashback_shots": sum(1 for s in shots
                                            if s["segment"] != "present")},
+        # zoom/echo pairs [[earlier, later], ...] — the writer tags the later
+        # panel echo_of so its span glues to the original (byte-additive key).
+        "echo_pairs": [[a, b] for a, b in echo_pairs],
         "shots": shots,
     }
     write_manifest(args.out, out, inputs=(args.understood,), tool="story_group")

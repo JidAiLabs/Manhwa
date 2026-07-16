@@ -439,11 +439,13 @@ def _pack_group_payload(
     vision_items_by_file: Dict[str, Dict[str, Any]],
     understand_by_file: Optional[Dict[str, Dict[str, Any]]] = None,
     figures_by_file: Optional[Dict[str, List[Dict[str, str]]]] = None,
+    echo_of: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     scene_files = group.get("scene_files") or []
     scenes: List[Dict[str, Any]] = []
     understand_by_file = understand_by_file or {}
     figures_by_file = figures_by_file or {}
+    echo_of = echo_of or {}
 
     for sf in scene_files:
         it = vision_items_by_file.get(sf) or {}
@@ -514,6 +516,10 @@ def _pack_group_payload(
         # flagged, byte-compatible otherwise).
         if understood.get("uncertain"):
             scenes[-1]["uncertain"] = True
+        # zoom/echo: the later panel of a story_group echo pair repeats the
+        # earlier one's art re-framed — one moment, narrated once.
+        if sf in echo_of:
+            scenes[-1]["echo_of"] = echo_of[sf]
 
     return {
         "group_id": int(group.get("shot_id") or group.get("group_id") or 0),
@@ -1301,7 +1307,46 @@ def align_panel_narration(scene_files, model_panels, understand_by_file=None):
     return out
 
 
-def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[str]:
+def glue_echo_spans(segs, echo_of, surviving):
+    """An echo panel (a zoom re-frame of its original — story_group
+    echo_pairs) always rides its ORIGINAL's span so the pair is voiced as ONE
+    moment, never two events. Deterministic: only the safe adjacent case is
+    glued (the echo directly follows its original in reading order, so the
+    consecutive-partition invariant is preserved by construction); a
+    non-adjacent echo is left alone (render_prep's ken echo restyle still
+    covers presentation). If the echo owned a whole segment, that segment's
+    line JOINS the original's line — words are never dropped. Pure."""
+    if not echo_of or not segs:
+        return segs
+    pos = {f: i for i, f in enumerate([f for f in (surviving or []) if f])}
+    out = [dict(s, span=[str(f) for f in (s.get("span") or []) if f])
+           for s in segs if isinstance(s, dict)]
+    for later, earlier in echo_of.items():
+        if pos.get(later) is None or pos.get(earlier) is None:
+            continue
+        if pos[later] != pos[earlier] + 1:
+            continue                    # non-adjacent: not safely glueable
+        ie = il = None
+        for i, s in enumerate(out):
+            if earlier in s["span"]:
+                ie = i
+            if later in s["span"]:
+                il = i
+        if ie is None or il is None or ie == il:
+            continue
+        out[il]["span"] = [f for f in out[il]["span"] if f != later]
+        out[ie]["span"].append(later)
+        if not out[il]["span"]:
+            extra = str(out[il].get("line") or "").strip()
+            if extra:
+                out[ie]["line"] = (str(out[ie].get("line") or "").strip()
+                                   + " " + extra).strip()
+            del out[il]
+    return out
+
+
+def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
+                      echo_of=None) -> List[str]:
     """Deterministic guardrails for adaptive flow segments — pure, no LLM.
 
     Returns human-readable errors ([] = valid) so a failing beat can be
@@ -1322,7 +1367,20 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
     segs = segments if isinstance(segments, list) else []
     files = [f for f in (scene_files or []) if f]
     kinds = kinds or {}
+    echo_of = echo_of or {}
     words_per_sec = float(wpm) / 60.0
+
+    # belt-check: glue_echo_spans runs before validation, so a split echo pair
+    # here is a logic bug (or a span-pinned regen trying to re-split) — never
+    # a model style choice.
+    span_of = {f: i for i, seg in enumerate(segs) if isinstance(seg, dict)
+               for f in (seg.get("span") or [])}
+    for _later, _earlier in echo_of.items():
+        if (_later in span_of and _earlier in span_of
+                and span_of[_later] != span_of[_earlier]):
+            errors.append(f"echo pair split across segments: {_later} is a "
+                          f"zoom re-frame of {_earlier} and must ride its "
+                          "span (one voiced moment)")
 
     covered: List[str] = []
     for i, seg in enumerate(segs):
@@ -1335,8 +1393,11 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
             continue
         covered.extend(span)
         n = len(span)
-        if n > SPAN_CAP:
-            errors.append(f"segment {i}: span of {n} panels exceeds the "
+        # echo riders add no independent watch time — they don't count
+        # against the cap (only relevant when the glue overflowed it)
+        n_cap = sum(1 for f in span if f not in echo_of)
+        if n_cap > SPAN_CAP:
+            errors.append(f"segment {i}: span of {n_cap} panels exceeds the "
                           f"cap of {SPAN_CAP}")
         for f in span:
             if str(kinds.get(f) or "") == "system" and n > 1:
@@ -1475,7 +1536,8 @@ def enforce_pinned_spans(beat, prev_beat, gid):
 
 def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                            reask_fn=None, allow_flow_nudge=True,
-                           derive_fn=None, allow_span_align=True):
+                           derive_fn=None, allow_span_align=True,
+                           echo_of=None):
     """Adaptive mode: normalize + validate the model's segments; on failure do
     ONE repair re-ask (reask_fn(errors) -> repaired beat or None); still failing
     -> fall back to align_panel_narration singleton spans (never block the
@@ -1502,10 +1564,19 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
     punchup key on it.
     """
     _derive = derive_fn or beat_segments
+    echo_of = echo_of or {}
+
+    def _norm(raw_segs):
+        repaired = auto_repair_segments(raw_segs, surviving, kinds, u_by_file)
+        return glue_echo_spans(repaired, echo_of, surviving)
+
+    def _check(s):
+        return validate_segments(s, surviving, kinds, echo_of=echo_of)
+
     raw = _derive(beat)
     if raw:
-        segs = auto_repair_segments(raw, surviving, kinds, u_by_file)
-        errors = validate_segments(segs, surviving, kinds)
+        segs = _norm(raw)
+        errors = _check(segs)
     else:
         segs = []
         errors = ["the answer carried no usable narration shape (no valid "
@@ -1515,8 +1586,8 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         if isinstance(repaired, dict):
             raw2 = _derive(repaired)
             if raw2:
-                segs2 = auto_repair_segments(raw2, surviving, kinds, u_by_file)
-                if not validate_segments(segs2, surviving, kinds):
+                segs2 = _norm(raw2)
+                if not _check(segs2):
                     segs, errors = segs2, []
     elif (not errors and allow_flow_nudge and reask_fn is not None
           and len(surviving) >= _FLOW_NUDGE_MIN_PANELS
@@ -1524,9 +1595,8 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         nudged = reask_fn([_flow_nudge_note(len(surviving))])
         if isinstance(nudged, dict):
             raw3 = _derive(nudged)
-            segs3 = (auto_repair_segments(raw3, surviving, kinds, u_by_file)
-                     if raw3 else [])
-            if (segs3 and not validate_segments(segs3, surviving, kinds)
+            segs3 = _norm(raw3) if raw3 else []
+            if (segs3 and not _check(segs3)
                     and any(len(s["span"]) > 1 for s in segs3)):
                 print(f"[segments] flow-nudge beat g{gid:04d} adopted "
                       f"({len(segs3)} segments)")
@@ -1544,7 +1614,9 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                 {"scene_file": "", "line": str((x or {}).get("text") or "")}
                 for x in (beat.get("sentences") or []) if isinstance(x, dict)]
         aligned = align_panel_narration(surviving, model_panels, u_by_file)
-        segs = [{"span": [p["scene_file"]], "line": p["line"]} for p in aligned]
+        segs = glue_echo_spans(
+            [{"span": [p["scene_file"]], "line": p["line"]} for p in aligned],
+            echo_of, surviving)
         # Marker for the corrections caller: a pad-heavy fallback must NEVER
         # replace pinned prose — when the pin was itself all-singleton the
         # span comparison alone can't tell fallback pads from a real rewrite
@@ -1558,7 +1630,7 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         # False there: a shifted span would only be rejected by the pin).
         aligned, shifts = span_align_pass(
             segs, surviving, kinds, u_by_file, span_cap=SPAN_CAP,
-            validate=lambda s: validate_segments(s, surviving, kinds))
+            validate=_check)
         if shifts:
             for msg in shifts:
                 print(f"[span_align] g{gid:04d}: {msg}")
@@ -1734,6 +1806,10 @@ def main() -> int:
     groups = _read_groups(groups_m)
     if not groups:
         raise SystemExit("No groups/shots found (expected key: shots or groups)")
+    # zoom/echo pairs from story_group: {later: earlier} — the later panel is
+    # the SAME artwork re-framed; it rides the original's span, one voiced line
+    echo_of = {str(b): str(a)
+               for a, b in (groups_m.get("echo_pairs") or []) if a and b}
 
     vision_by_file = _build_vision_map(vision_m)
 
@@ -1781,6 +1857,10 @@ def main() -> int:
         "      blood), 'a dark shape' stays a shape. A panel marked 'uncertain' is one the analyst\n"
         "      could not identify — narrate it just as vaguely or fold it into the surrounding\n"
         "      motion; NEVER give an uncertain subject an action, attacker, weapon, or identity.\n"
+        "      ECHO PANELS: a panel marked 'echo_of' repeats that earlier panel's art re-framed\n"
+        "      (an artist zoom for emphasis). It is the SAME single moment — write ONE flowing\n"
+        "      passage covering both; never introduce the echo as a new event or give it its own\n"
+        "      sentence.\n"
         "    - IDENTITY + NAMES: NAME established CHAPTER CAST members so the audience can\n"
         "      follow who is who — recognition is the priority. NAME the protagonist (or a\n"
         "      relaxed stand-in like 'our guy') normally on HIS OWN panels, even when a\n"
@@ -2048,7 +2128,8 @@ def main() -> int:
             regenerated += 1
 
         payload = _pack_group_payload(g, vision_by_file, u_by_file,
-                                      figures_by_file=figures_by_file)
+                                      figures_by_file=figures_by_file,
+                                      echo_of=echo_of)
         # rolling context: the last spoken lines ride along so each beat
         # CONTINUES the story instead of re-opening it (and completes any
         # fragment the previous caption left hanging)
@@ -2170,7 +2251,8 @@ def main() -> int:
                 derive_fn=_derive,
                 # a span-pinned heal may change LINES only — an offset shift
                 # would re-split and be rejected wholesale by the pin
-                allow_span_align=pin_prev is None)
+                allow_span_align=pin_prev is None,
+                echo_of=echo_of)
 
         # Corrections regen of a native-segments beat: adopt the rewrite ONLY
         # if it kept the pinned spans AND is a real rewrite; a validation
