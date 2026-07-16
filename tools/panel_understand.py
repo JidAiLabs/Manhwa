@@ -907,7 +907,11 @@ def main() -> int:
     ap.add_argument("--model", default="gemini-2.5-flash")
     ap.add_argument("--project", default="")
     ap.add_argument("--location", default="")
-    ap.add_argument("--temperature", type=float, default=0.4)
+    # 0.0 (2026-07-16): understanding is ANALYSIS, not writing — its subjects
+    # wording feeds cast resolution, panel_kind gates, and the narration's
+    # factual source, so sampling variance here is pure downstream noise.
+    # Creative temperature belongs to the writer (0.2) and punchup (0.7).
+    ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--max-output-tokens", type=int, default=400)
     ap.add_argument("--resume", action="store_true",
                     help="keep good panel records in --out, redo only failures")

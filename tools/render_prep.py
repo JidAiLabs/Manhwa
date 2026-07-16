@@ -1945,7 +1945,10 @@ def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
             resp = _chat(model=model, think=False,
                          messages=[{"role": "user", "content": _JUNK_PROMPT,
                                     "images": [path]}],
-                         options={"temperature": 0, "num_predict": 150})
+                         # num_ctx: an image blows past ollama's default
+                         # window -> silent truncation (2026-07-16 audit)
+                         options={"temperature": 0, "num_predict": 150,
+                                  "num_ctx": 8192})
             raw = str(resp["message"]["content"] or "")
             m = re.search(r"\{.*\}", raw, re.S)
             v = json.loads(m.group(0)) if m else {}

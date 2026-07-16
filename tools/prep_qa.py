@@ -1832,7 +1832,11 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
             messages=[{"role": "user",
                        "content": _SEM_PROMPT.format(text=text[:400]),
                        "images": [path]}],
-            options={"temperature": 0, "num_predict": 200})
+            # num_ctx: image tokens overflow ollama's default window and it
+            # TRUNCATES SILENTLY — the judge then judges a partial context
+            # (2026-07-16 audit; MLX ignores this, ollama needs it)
+            options={"temperature": 0, "num_predict": 200,
+                     "num_ctx": 8192})
         raw = str(resp["message"]["content"] or "")
         m = re.search(r"\{.*\}", raw, re.S)
         return json.loads(m.group(0)) if m else {}
@@ -1936,7 +1940,11 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
             messages=[{"role": "user",
                        "content": _GROUND_PROMPT.format(text=text[:400]) + note,
                        "images": paths}],
-            options={"temperature": 0, "num_predict": 200})
+            # num_ctx: up to 6 montage images blow past ollama's default
+            # window and it TRUNCATES SILENTLY — the judge was judging a
+            # partial montage (2026-07-16 audit; MLX ignores this)
+            options={"temperature": 0, "num_predict": 200,
+                     "num_ctx": 8192})
         raw = str(resp["message"]["content"] or "")
         m = re.search(r"\{.*\}", raw, re.S)
         return json.loads(m.group(0)) if m else {}
@@ -2649,7 +2657,8 @@ def main() -> int:
                 "NARRATION spoken: " + narration[:400] + "\n"
                 "Does the narration carry the caption's full meaning "
                 "(paraphrase OK)? Reply ONLY JSON: {\"carried\": true/false}"}],
-                options={"temperature": 0, "num_predict": 60})
+                options={"temperature": 0, "num_predict": 60,
+                         "num_ctx": 8192})
             m = re.search(r"\{.*\}", str(resp["message"]["content"] or ""),
                           re.S)
             return bool(m and json.loads(m.group(0)).get("carried") is True)

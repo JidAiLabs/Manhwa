@@ -535,18 +535,42 @@ def _pack_group_payload(
     }
 
 
-def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+_MD_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.S)
+
+
+def _extract_json_value(text: str) -> Any:
+    """Fence/prose/think-tolerant JSON extraction — object OR array.
+
+    2026-07-16: the old object-only find('{')..rfind('}') fallback was dead
+    code under ollama's format-constrained decoding, and WRONG the moment a
+    backend free-writes: a grouping response is a JSON ARRAY, so the slice
+    glued the beat objects together without their brackets and never parsed.
+    Backend-agnostic by design (ollama / MLX shim / vertex raw fallback)."""
     if not text:
         return None
-    s = text.find("{")
-    e = text.rfind("}")
-    if s == -1 or e == -1 or e <= s:
-        return None
-    candidate = text[s : e + 1]
+    t = _THINK_BLOCK_RE.sub("", str(text))
+    m = _MD_FENCE_RE.search(t)
+    if m:
+        t = m.group(1)
+    t = t.strip()
     try:
-        return json.loads(candidate)
+        return json.loads(t)
     except Exception:
-        return None
+        pass
+    for o, c in (("[", "]"), ("{", "}")):
+        s, e = t.find(o), t.rfind(c)
+        if s != -1 and e > s:
+            try:
+                return json.loads(t[s:e + 1])
+            except Exception:
+                continue
+    return None
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    v = _extract_json_value(text)
+    return v if isinstance(v, dict) else None
 
 
 def _part_text(s: str) -> types.Part:
@@ -656,7 +680,7 @@ def _call_model(
         try:
             return json.loads(raw), raw, usage
         except Exception:
-            return _extract_json_object(raw), raw, usage
+            return _extract_json_value(raw), raw, usage
 
     parts: List[types.Part] = []
     parts.append(_part_text("INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False)))
@@ -688,7 +712,7 @@ def _call_model(
     try:
         return json.loads(raw), raw, usage
     except Exception:
-        return _extract_json_object(raw), raw, usage
+        return _extract_json_value(raw), raw, usage
 
 
 # Wall-clock bound on the 429 retry loop (only the vertex/gemini backend can 429;
