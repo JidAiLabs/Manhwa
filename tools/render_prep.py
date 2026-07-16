@@ -3780,6 +3780,11 @@ def main() -> int:
         out_plan = insert_branding_items(out_plan, intro_dur=0.0,
                                          outro_dur=0.0, which=which)
 
+    # prep_qa gates its bubble-interior checks (visible_text & co.) on this:
+    # in keep mode surviving bubbles ship AS DRAWN, so readable bubble text on
+    # a shown frame is design, not a blanking miss.
+    out_plan["bubble_shown_mode"] = args.bubble_shown_mode
+
     out_path = args.out_plan or (os.path.splitext(args.plan)[0] + ".clean.json")
     script_path = os.path.join(args.episode_dir, "manifest.script.json")
     beats_path = os.path.join(args.episode_dir, "manifest.beats.json")

@@ -121,7 +121,7 @@ def test_prep_qa_emits_bubble_text_residue_warn(monkeypatch):
     raw = _img(P99)   # simulates a production-cleaned file that kept its text
     flags = pq.image_flags("p000099.jpg", raw, BOXES_99, doc=False,
                            dims_entry=None, sys=False, segment_id="g0001",
-                           vitem={"ocr_clean": ""})
+                           vitem={"ocr_clean": ""}, kept_bubbles=False)
     codes = [f["code"] for f in flags]
     assert "bubble_text_residue" in codes
     resid = [f for f in flags if f["code"] == "bubble_text_residue"][0]
@@ -131,5 +131,5 @@ def test_prep_qa_emits_bubble_text_residue_warn(monkeypatch):
                                   residue_net=True)
     flags2 = pq.image_flags("p000099.jpg", netted, BOXES_99, doc=False,
                             dims_entry=None, sys=False, segment_id="g0001",
-                            vitem={"ocr_clean": ""})
+                            vitem={"ocr_clean": ""}, kept_bubbles=False)
     assert "bubble_text_residue" not in [f["code"] for f in flags2]

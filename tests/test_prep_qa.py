@@ -132,9 +132,23 @@ def test_image_flags_husk_and_dead_box_leak():
     img[0:80] = _art(80, 800)                                  # sliver of art
     img[100:480, 40:760] = 252                                 # giant blank box
     flags = pq.image_flags("p000010.jpg", img, [(40, 100, 760, 480)],
-                           doc=False, dims_entry={"w": 800, "h": 500, "doc": False})
+                           doc=False, dims_entry={"w": 800, "h": 500, "doc": False},
+                           kept_bubbles=False)
     codes = {f["code"] for f in flags}
     assert "dead_box_leak" in codes
+
+
+def test_image_flags_keep_mode_skips_bubble_interior_checks():
+    # bubble_shown_mode=keep (default): bubbles ship AS DRAWN — readable
+    # bubble text / blank interiors are design, never blanking misses.
+    img = np.full((500, 800, 3), 250, dtype=np.uint8)
+    img[0:80] = _art(80, 800)
+    img[100:480, 40:760] = 252
+    flags = pq.image_flags("p000010.jpg", img, [(40, 100, 760, 480)],
+                           doc=False, dims_entry={"w": 800, "h": 500, "doc": False})
+    codes = {f["code"] for f in flags}
+    assert not codes & {"dead_box_leak", "ghost_text",
+                        "visible_text", "bubble_text_residue"}
 
 
 def test_image_flags_low_art_husk():

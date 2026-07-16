@@ -188,11 +188,16 @@ def image_flags(
     min_art_score: float = 0.012,
     vitem: Optional[Dict[str, Any]] = None,
     reconciled: bool = False,
+    kept_bubbles: bool = True,
 ) -> List[Dict[str, Any]]:
     """All image-level checks for one shown scenes_clean/ file.
 
     *doc* (document/UI) and *sys* (system-message) panels keep their text BY
-    DESIGN — content checks (husk/card/void/text) do not apply to them."""
+    DESIGN — content checks (husk/card/void/text) do not apply to them.
+    *kept_bubbles* (plan bubble_shown_mode == "keep", the default): shown
+    bubbles ship AS DRAWN, so the bubble-interior blanking checks
+    (dead_box_leak / ghost_text / visible_text / bubble_text_residue) are
+    meaningless and skipped — readable bubble text is design, not a miss."""
     flags: List[Dict[str, Any]] = []
     h, w = img.shape[:2]
 
@@ -280,6 +285,9 @@ def image_flags(
                                f"midtone_frac={midtone:.3f} — near-binary "
                                "card (chrome-like), verify it is story",
                                scene=name, segment_id=segment_id))
+
+        if kept_bubbles:
+            return flags  # bubbles ship as drawn: no blanking to audit
 
         stats = [(b, box_interior_stats(img, b)) for b in boxes]
         blank_boxes = [b for b, st in stats if st["blank"]]
@@ -2562,6 +2570,10 @@ def main() -> int:
     if not args.no_detector:
         detector = rp._load_bubble_detector(args.device)
 
+    # missing stamp = plan written before the stamp existed; every such plan in
+    # the fleet was produced under keep-default render_prep, so default keep.
+    kept_bubbles = plan.get("bubble_shown_mode", "keep") == "keep"
+
     cuts = iter_shown_cuts(plan)
     seg_by_file: Dict[str, str] = {}
     for c in cuts:
@@ -2585,7 +2597,8 @@ def main() -> int:
             sys=sys_panel, segment_id=seg_by_file[fname],
             vitem=vitems.get(parent_scene(fname)) or vitems.get(fname),
             reconciled=(parent_scene(fname) in reconciled_files
-                        or fname in reconciled_files)))
+                        or fname in reconciled_files),
+            kept_bubbles=kept_bubbles))
 
     # consecutive on-screen near-duplicates (zoom pairs included)
     _imc: Dict[str, Any] = {}
