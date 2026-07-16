@@ -38,3 +38,22 @@ def test_env_overrides_toml(tmp_path, monkeypatch):
     toml = tmp_path / "studio.toml"
     toml.write_text('[narration]\nsegmentation = "adaptive"\n')
     assert load(toml).segmentation == "per_panel"
+
+
+# ---- 2026-07-16 wave: semantic_heal ON by default, env is a TWO-WAY hatch ----
+
+def test_semantic_heal_repo_default_is_on(monkeypatch):
+    monkeypatch.delenv("STUDIO_SEMANTIC_HEAL", raising=False)
+    assert load(REPO_ROOT / "studio.toml").semantic_heal is True
+
+
+def test_semantic_heal_env_disables_and_enables(tmp_path, monkeypatch):
+    toml = tmp_path / "studio.toml"
+    toml.write_text("[models]\nsemantic_heal = true\n")
+    monkeypatch.setenv("STUDIO_SEMANTIC_HEAL", "0")
+    assert load(toml).semantic_heal is False     # the rollback lever
+    monkeypatch.setenv("STUDIO_SEMANTIC_HEAL", "1")
+    toml.write_text("[models]\nsemantic_heal = false\n")
+    assert load(toml).semantic_heal is True
+    monkeypatch.delenv("STUDIO_SEMANTIC_HEAL")
+    assert load(toml).semantic_heal is False     # toml rules when env unset

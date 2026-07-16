@@ -13,6 +13,11 @@
     <!-- launchd gives a minimal PATH; the pipeline shells out to Homebrew
          binaries (ffmpeg, blender, npx). Without this they are not found. -->
     <key>PATH</key><string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- 2026-07-16 (owner-approved): every local-LLM call (writer, judges,
+         punchup, understanding) routes to the gemma-4 MLX shim
+         (com.originpower.mlxshim). Rollback = remove this key +
+         bootout/bootstrap; the Ollama daemon stays installed. -->
+    <key>OLLAMA_HOST</key><string>http://127.0.0.1:11500</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>__REPO__/logs/worker.log</string>

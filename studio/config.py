@@ -188,9 +188,13 @@ def load(path: Path | None = None) -> Config:
         punchup=(os.environ.get("STUDIO_PUNCHUP")
                  or m.get("punchup", "full")),
         vision_backend=m.get("vision_backend", "apple"),
-        semantic_heal=(os.environ.get("STUDIO_SEMANTIC_HEAL", "").lower()
-                       in ("1", "true", "yes")
-                       or bool(m.get("semantic_heal", False))),
+        # env wins BOTH WAYS: STUDIO_SEMANTIC_HEAL=0 is the per-run OFF hatch
+        # now that the toml default is true (the old or-chain could only
+        # force ON, never OFF — a rollback lever must roll back).
+        semantic_heal=(
+            os.environ["STUDIO_SEMANTIC_HEAL"].lower() in ("1", "true", "yes")
+            if os.environ.get("STUDIO_SEMANTIC_HEAL", "") != ""
+            else bool(m.get("semantic_heal", False))),
         segmentation=_valid_segmentation(
             os.environ.get("STUDIO_NARR_SEGMENTATION")
             or n.get("segmentation", "adaptive")),

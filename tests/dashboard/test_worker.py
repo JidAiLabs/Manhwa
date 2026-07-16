@@ -437,7 +437,7 @@ def test_heal_to_green_regenerates_only_flagged_then_stops(tmp_path, monkeypatch
     assert regen == [1]          # exactly one heal cycle, then corrections empty
 
 
-def test_heal_to_green_fast_qa_then_final_semantic(tmp_path, monkeypatch):
+def _run_heal_capture(tmp_path, monkeypatch):
     import json
     import types
     con = _con(tmp_path)
@@ -463,11 +463,30 @@ def test_heal_to_green_fast_qa_then_final_semantic(tmp_path, monkeypatch):
         types.SimpleNamespace(beats_model="m", beats_backend="ollama",
                               punchup="cinematic", script_model="s"), "p", "l"))
     worker._heal_to_green(con, ch, ep, open(tmp_path / "log.txt", "w"))
+    return heal_cmds, qa_cmds
 
+
+def test_heal_to_green_fast_qa_then_final_semantic(tmp_path, monkeypatch):
+    # semantic_heal OFF via the env hatch (repo toml default is ON since the
+    # 2026-07-16 wave; STUDIO_SEMANTIC_HEAL=0 is the per-run rollback lever)
+    monkeypatch.setenv("STUDIO_SEMANTIC_HEAL", "0")
+    heal_cmds, qa_cmds = _run_heal_capture(tmp_path, monkeypatch)
     assert all("--include-grounding-warn" not in c for c in heal_cmds)
     assert len(qa_cmds) == 2
     assert "--semantic" not in qa_cmds[0]
     assert "--semantic" in qa_cmds[1]
+
+
+def test_heal_to_green_semantic_default_passes_grounding_warn(
+        tmp_path, monkeypatch):
+    # production default (semantic_heal=true): grounding WARNs are healable
+    # and every heal-cycle QA runs the semantic judge
+    monkeypatch.delenv("STUDIO_SEMANTIC_HEAL", raising=False)
+    heal_cmds, qa_cmds = _run_heal_capture(tmp_path, monkeypatch)
+    assert heal_cmds and all("--include-grounding-warn" in c
+                             for c in heal_cmds)
+    assert qa_cmds and all("--semantic-heal" in c or "--semantic" in c
+                           for c in qa_cmds)
 
 
 def _heal_cfg():
