@@ -260,6 +260,57 @@ _CRITICAL_QA_CODES = {
 # hard-block manual approval. (Verified via cap_repeats_with_holds, 2026-06-24.)
 
 
+# Detector-vs-writer ARBITRATION codes: a deterministic CV detector supplies
+# the trigger (impact-SFX lettering), but the multimodal writer is the
+# semantic authority on what the panel shows. When the heal loop has given
+# such a flag an INFORMED re-roll (the writer payload carried the [IMPACT
+# SFX] marker + the correction note) and the writer still declines the
+# wording, the detector is presumed wrong — audited 2026-07-16: 4/4 blocked
+# nano/ORV panels carried whoosh/dash Korean lettering, no strike landing,
+# and the grounded writer correctly refused to invent one. The flag stays
+# ERROR in the report (visible for review); it just stops BLOCKING. Bound to
+# the beats content sha (qa_arbitration.json), so any re-narration expires
+# the arbitration — it can never mask a fresh miss on new text.
+_WRITER_ARBITRATED_CODES = {"impact_mismatch"}
+
+
+def _beats_sha(ep: Path) -> "str | None":
+    try:
+        return hashlib.sha256(
+            (Path(ep) / "manifest.beats.json").read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _write_qa_arbitration(ep: Path, codes: set, log: TextIO) -> None:
+    """Persist writer-final arbitration for *codes*, bound to the current
+    beats bytes. Deliberately NOT in deps.py/rewind delete-lists: the sha
+    binding is the authority (a rewind that keeps the beats keeps the
+    arbitration valid; one that changes them expires it by content)."""
+    sha = _beats_sha(ep)
+    if not sha or not codes:
+        return
+    (Path(ep) / "qa_arbitration.json").write_text(json.dumps(
+        {"beats_sha": sha, "codes": sorted(codes)}, indent=1))
+    log.write("[heal] writer-final arbitration: detector-triggered "
+              f"{sorted(codes)} survived an informed re-roll — demoted to "
+              "non-blocking while the narration stays byte-identical\n")
+
+
+def _qa_arbitrated(ep: Path) -> set:
+    """Codes demoted by a persisted, still-valid arbitration marker. Valid
+    iff the marker's beats_sha matches the CURRENT beats bytes; only
+    _WRITER_ARBITRATED_CODES members ever demote, so a hand-edited marker
+    can never silence a structural gate (cut_gap, empty_item, ...)."""
+    try:
+        m = json.loads((Path(ep) / "qa_arbitration.json").read_text())
+    except Exception:
+        return set()
+    if not isinstance(m, dict) or m.get("beats_sha") != _beats_sha(ep):
+        return set()
+    return set(m.get("codes") or ()) & _WRITER_ARBITRATED_CODES
+
+
 def _effective_blocking(blocking_codes: "set | None" = None) -> set:
     """The base blocking-code set (default _CRITICAL_QA_CODES) minus any codes
     an operator has demoted via STUDIO_QA_NONBLOCKING (comma-separated env var,
@@ -352,6 +403,7 @@ def _qa_verdict(ep: Path, *, started_at: float,
 
     codes = _error_codes_from_report(report)
     blocking = codes & _effective_blocking(blocking_codes)
+    blocking -= _qa_arbitrated(ep)   # writer-final, beats-sha-bound demotion
     return QAVerdict(ok=not blocking, blocking=blocking, codes=codes,
                      report=report,
                      reason="" if not blocking
@@ -681,6 +733,14 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                          reuse_clean=True, semantic=True)
     log.write("[heal] " + ("stopped early — no progress\n" if stuck
                            else f"hit the {_HEAL_MAX}-cycle cap\n"))
+    # WRITER-FINAL ARBITRATION: every group flagged here got >=1 informed
+    # re-roll (corrections carried the marker + note each cycle), yet the
+    # grounded writer still declined the wording — treat the deterministic
+    # trigger as a semantic false-positive and stop blocking on it. Runs
+    # AFTER the final scan above so it binds to the FINAL beats + error set.
+    surviving = _qa_error_codes(ep) & _WRITER_ARBITRATED_CODES
+    if surviving:
+        _write_qa_arbitration(ep, surviving, log)
 
 
 # QA ERROR codes that re-narration CAN'T fix — the panel itself is the problem
