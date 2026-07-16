@@ -60,6 +60,10 @@ HEALABLE = {
     # original roll lacked. NOT worker-blocking yet (precision is measured
     # on the first production run).
     "actor_mismatch",
+    # a segment line past its span's word budget (escaped the writer
+    # validator via its fallback path) — a re-roll with the explicit word
+    # cap in the note converges: length is fully in the writer's control.
+    "line_overlong",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -136,6 +140,15 @@ def _note_for(code: str, detail: str) -> str:
                 "naming the actor ONLY from the panel's figures; when a "
                 "figure is unknown, use neutral phrasing (the masked "
                 "figure), never a guessed name.")
+    if code == "line_overlong":
+        cap = ""
+        m = re.search(r"/ (\d+) words", detail or "")
+        if m:
+            cap = f" at most {m.group(1)} words —"
+        return ("This line runs far past its panels' watchable screen time. "
+                f"Re-narrate the SAME moment in{cap} one or two punchy "
+                "sentences: keep the concrete facts and any caption words, "
+                "cut everything else.")
     if code == "phrase_echo":
         return ("This line repeats an earlier line's phrase nearly "
                 "verbatim — re-narrate the same moment with FRESH wording "

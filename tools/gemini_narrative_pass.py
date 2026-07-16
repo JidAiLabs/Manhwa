@@ -1378,10 +1378,15 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM) -> List[st
                 f"{n * _SEG_MIN_SEC_PER_PANEL:.0f}s of voice; add words or "
                 "shrink the span)")
         elif sec > n * _SEG_MAX_SEC_PER_PANEL:
+            # state the cap in WORDS — models follow an explicit word count
+            # far more reliably than a seconds figure (2026-07-16: the
+            # seconds-only phrasing re-asked into another fat line, and the
+            # fallback then shipped it -> a 21s single-panel hold)
+            max_words = int(n * _SEG_MAX_SEC_PER_PANEL * words_per_sec)
             errors.append(
                 f"segment {i}: too fat — {n_words} words (~{sec:.1f}s) over "
-                f"{n} panel(s) (max {n * _SEG_MAX_SEC_PER_PANEL:.0f}s; trim "
-                "words or widen the span)")
+                f"{n} panel(s); rewrite this line in AT MOST {max_words} "
+                "words (or widen the span)")
 
     if covered != files:
         cov_set, file_set = set(covered), set(files)

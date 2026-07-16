@@ -2105,3 +2105,34 @@ def test_perceptual_echo_skips_raw_twins_window_exempt_and_rawless():
                                   lambda f: [], lambda f: raw.get(f),
                                   lambda f: rb.get(f, []))
     assert [f["scene"] for f in fl] == ["p000095.jpg"]
+
+
+# ---------------------------------------------------------------------------
+# line_overlong (span word-budget net, 2026-07-16)
+# ---------------------------------------------------------------------------
+def test_line_overlong_flags_catch_the_escaped_fat_line():
+    # the nano g0011 class: a ~55-word single-panel line that escaped the
+    # writer validator via its fallback path -> a 21s hold -> triple ken split
+    fat = " ".join(["word"] * 55)
+    beats = {"beats": [{"group_id": 11, "segments": [
+        {"span": ["p000031.jpg"], "line": fat}]}]}
+    fl = pq.line_overlong_flags(beats)
+    assert [f["code"] for f in fl] == ["line_overlong"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0011"
+    assert fl[0]["scene"] == "p000031.jpg"
+    assert "words" in fl[0]["detail"]
+
+
+def test_line_overlong_budget_scales_with_span_size():
+    # 55 words over a 2-panel span is ~24s against a ~30s cap — fine
+    fat = " ".join(["word"] * 55)
+    beats = {"beats": [{"group_id": 3, "segments": [
+        {"span": ["a.jpg", "b.jpg"], "line": fat}]}]}
+    assert pq.line_overlong_flags(beats) == []
+
+
+def test_line_overlong_clean_on_normal_lines():
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["a.jpg"], "line": "He draws the blade and lunges."}]}]}
+    assert pq.line_overlong_flags(beats) == []

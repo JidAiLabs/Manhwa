@@ -1254,6 +1254,43 @@ def impact_mismatch_flags(beats_obj: Any, understood_obj: Any
     return flags
 
 
+# Span word-budget arithmetic — tiny duplicate of narration_punchup.
+# span_budget_ok / gemini_narrative_pass.validate_segments (same rationale as
+# punchup's copy: importing either would pull their model deps into QA).
+_BUDGET_WPM = 135.0                  # == gemini_narrative_pass.WPM
+_BUDGET_MAX_SEC_PER_PANEL = 15.0     # == _SEG_MAX_SEC_PER_PANEL
+
+
+def line_overlong_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """Deterministic length gate (ERROR, healable, NOT worker-blocking): a
+    segment line past its span's word budget (N*15s at 135wpm ≈ 34 words per
+    panel). The writer validator enforces this at authoring time, but its
+    fallback path ships the model's lines VERBATIM when a re-ask also fails
+    (gemini_narrative_pass segments fallback) — this is the choke-point net
+    for any escaped line: a 55-word single-panel line = a 21s hold = a
+    triple ken split on the dashboard (2026-07-16 nano g0011). Heal
+    converges here — length is fully in the writer's control."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg_id = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            n = max(1, len(s["span"]))
+            words = len(str(s["line"] or "").split())
+            sec = words / (_BUDGET_WPM / 60.0)
+            cap = n * _BUDGET_MAX_SEC_PER_PANEL
+            if sec > cap:
+                max_words = int(cap * _BUDGET_WPM / 60.0)
+                flags.append(_flag(
+                    "line_overlong", ERROR,
+                    f"segment line is {words} words (~{sec:.0f}s of voice) "
+                    f"over a {n}-panel span (cap ~{cap:.0f}s / {max_words} "
+                    f"words) — re-narrate tighter: {str(s['line'])[:80]!r}",
+                    scene=str((s["span"] or [""])[0]), segment_id=seg_id))
+    return flags
+
+
 def narration_offset_flags(beats_obj: Any, understood_obj: Any
                            ) -> List[Dict[str, Any]]:
     """ONE-PANEL OFFSET tripwire (ERROR, heal-target, deliberately NOT in the
@@ -2475,6 +2512,7 @@ def main() -> int:
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))
     flags.extend(impact_mismatch_flags(beats_obj, understood_obj))
+    flags.extend(line_overlong_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj))
     flags.extend(phrase_echo_flags(beats_obj))
