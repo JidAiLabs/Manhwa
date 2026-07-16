@@ -77,8 +77,14 @@ async def chat(req: Request):
         formatted = apply_chat_template(
             processor, config, prompt, num_images=len(imgs))
         t0 = time.time()
+        # ollama semantics: num_predict absent / <=0 = generate until done.
+        # 512 truncated story_group's grouping JSON mid-generation (job 39) —
+        # default LARGE, never small.
+        mt = int(opts.get("num_predict") or 0)
+        if mt <= 0:
+            mt = 8192
         res = generate(model, processor, formatted, imgs if imgs else None,
-                       max_tokens=int(opts.get("num_predict") or 512),
+                       max_tokens=mt,
                        temperature=float(opts.get("temperature") or 0.0),
                        verbose=False)
         text = getattr(res, "text", res)
