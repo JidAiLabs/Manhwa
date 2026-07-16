@@ -30,6 +30,10 @@ HEALABLE = {
     "caption_unvoiced", "chrome_narration", "fragment_dangle",
     "filler_narration", "beats_incomplete",
     "empty_item", "silent_group", "grounding_weak",
+    # a beat's first line opens with a cold scene reset instead of bridging
+    # from the previous line (2026-07-16 transitions wave) — WARN, healed
+    # only under semantic-heal (see corrections_from_qa gating)
+    "cold_open",
     "shot_description", "filename_in_narration", "impact_marker_leak",
     "figures_leak",
     # a voiced line opens with a bare (unbracketed) mood/tone word before its
@@ -145,6 +149,14 @@ def _note_for(code: str, detail: str) -> str:
                 "naming the actor ONLY from the panel's figures; when a "
                 "figure is unknown, use neutral phrasing (the masked "
                 "figure), never a guessed name.")
+    if code == "cold_open":
+        q = _QUOTED_RE.findall(detail or "")
+        prev = q[-1] if q else ""
+        return ("This beat's FIRST line opens with a cold scene reset. The "
+                "narrator just said: \"" + prev + "\" — rewrite the opening "
+                "line to BRIDGE from that (a consequence, reaction, or "
+                "contrast), keeping it a complete standalone sentence; never "
+                "restart with 'The scene shows…' / 'In a …, a figure…'.")
     if code == "actor_count_mismatch":
         return ("This line PLURALIZES the actor but every panel in its span "
                 "shows ONE figure — re-narrate with the single actor the "
@@ -201,6 +213,9 @@ def corrections_from_qa(report: Dict[str, Any], *,
             #        phrase is a wording fix, never worth blocking a chapter
         elif code == "grounding_weak" and include_grounding_warn:
             pass   # a rule/quality violation worth healing at ANY severity
+        elif code == "cold_open" and include_grounding_warn:
+            pass   # transition WARN: healed only under semantic-heal, same
+            #        opt-in as grounding_weak (a wording nit never blocks)
         elif f.get("severity") == "ERROR" and code in HEALABLE:
             pass
         else:

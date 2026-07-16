@@ -48,6 +48,7 @@ from manifest_io import (  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     dedupe_consecutive_panel_lines,
+    is_cold_opener,
     is_spoken_fragment,
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
@@ -332,7 +333,11 @@ def build_prompt(lines: List[Dict[str, Any]], cast_names: List[str],
             "quoted thoughts. Ensure every output is natural, "
             "grammatical spoken English AND an independently speakable complete "
             "clause: never begin with ellipsis/lowercase continuation and never "
-            "end with a comma, colon, or semicolon. Return ONLY a JSON "
+            "end with a comma, colon, or semicolon. PRESERVE FLOW: when a line "
+            "opens with a connective bridge ('But…', 'That focus shatters "
+            "when…'), KEEP or strengthen that opening — never rewrite a "
+            "flowing opening into a cold scene reset ('The scene shows…', "
+            "'In a dark ravine, a figure…'). Return ONLY a JSON "
             f"array of objects {return_schema}.\n\nLINES:\n"
             + json.dumps(payload, ensure_ascii=False, indent=1))
 
@@ -449,6 +454,12 @@ def validate_line(original: str, punched: str,
                 return False    # a caption paraphrased away
     om = _MOOD_RE.match(original)
     if om and not punched.strip().startswith(om.group(1)):
+        return False
+    # 2026-07-16 transitions: a punch must never turn a flowing line into a
+    # cold scene reset (recap_style.is_cold_opener — the same authority
+    # prep_qa's cold_open WARN uses, so enforcement cannot drift). Rejection
+    # keeps the grounded original; nothing is lost.
+    if is_cold_opener(punched) and not is_cold_opener(original):
         return False
     low_o, low_p = original.lower(), punched.lower()
     for name in cast_names:

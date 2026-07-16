@@ -280,6 +280,31 @@ def is_shot_description(text: str) -> bool:
                 or _CAMERA_POV_RE.search(clean))
 
 
+# --- cold-open detector (2026-07-16 transitions wave) ------------------------
+# A GROUP-OPENING line that re-establishes the scene coldly instead of bridging
+# from the narrator's previous line. Curated + narrow ON PURPOSE (a WARN net,
+# never a style straitjacket): each alternation is an observed failure shape.
+# SINGLE AUTHORITY — prep_qa's cold_open flag AND narration_punchup's bridge
+# preservation both import is_cold_opener, so enforcement can never drift.
+_COLD_OPEN_RE = re.compile(
+    r"^(?:"
+    r"the (?:scene|panel|image|frame|view) \w+"        # 'The scene shows...'
+    r"|in (?:a|an|the) [^,]{3,40}, (?:a|an|the) "      # 'In a dark ravine, a…'
+    r"|(?:a|an) \w+(?: \w+)? (?:stands|sits|appears|is (?:shown|seen|visible))"
+    r"|we (?:see|find|open)"
+    r")",
+    re.I,
+)
+
+
+def is_cold_opener(text: str) -> bool:
+    """True when a line OPENS by re-establishing the scene from nothing —
+    the anti-transition: 'The scene shows…', 'In a dark ravine, a figure…',
+    'A warrior stands…', 'We see…'. Only meaningful for a beat's FIRST line
+    when a previous beat exists (the caller owns that context)."""
+    return bool(_COLD_OPEN_RE.match(_TAG_RE.sub("", str(text or "")).strip()))
+
+
 # The prose-first writer receives scene_file names as sentence TAGS — which
 # opened a leak channel: gemma wrote "It progresses through the series to
 # conclude at p000032.jpg." as a 4-panel run's VOICED line (ch1 2026-07-03).

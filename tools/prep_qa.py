@@ -1405,6 +1405,38 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     return flags
 
 
+def cold_open_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """TRANSITION net (WARN, heal-target under semantic-heal): a beat's FIRST
+    line re-establishes the scene coldly ('The scene shows…', 'In a dark
+    ravine, a figure…') even though the narrator just spoke — the audible
+    seam the 2026-07-16 transitions wave kills. Pattern authority lives in
+    recap_style.is_cold_opener (shared with narration_punchup's bridge
+    preservation). The detail carries the PREVIOUS line so the heal note is
+    the exact (prev, this) bridge rewrite. First beat of the chapter is
+    exempt — there is nothing to bridge from."""
+    from recap_style import is_cold_opener
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    prev_line = ""
+    for b in beats_obj.get("beats") or []:
+        segs = beat_segments(b)
+        if not segs:
+            continue
+        seg_id = f"g{int(b.get('group_id') or 0):04d}"
+        first = str(segs[0].get("line") or "").strip()
+        if prev_line and first and is_cold_opener(first):
+            flags.append(_flag(
+                "cold_open", WARN,
+                f"beat opens cold ({first[:60]!r}) instead of bridging from "
+                f"the narrator's previous line ({prev_line[-90:]!r})",
+                scene=str((segs[0].get("span") or [""])[0]),
+                segment_id=seg_id))
+        last = str(segs[-1].get("line") or "").strip()
+        prev_line = last or prev_line
+    return flags
+
+
 def actor_count_flags(beats_obj: Any, understood_obj: Any,
                       cast_obj: Any) -> List[Dict[str, Any]]:
     """PLURALITY gate (ERROR, heal-target, NOT worker-blocking — precision is
@@ -2595,6 +2627,7 @@ def main() -> int:
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj))
     flags.extend(actor_count_flags(beats_obj, understood_obj, cast_obj))
+    flags.extend(cold_open_flags(beats_obj))
     flags.extend(phrase_echo_flags(beats_obj))
 
     recap_style = analyze_recap_style(
