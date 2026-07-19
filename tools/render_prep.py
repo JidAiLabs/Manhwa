@@ -609,10 +609,11 @@ def drop_cross_segment_near_identical_cuts(
                 # art: the raws are twins, so the repeat reads as an artist
                 # echo (ken echo differentiation styles it, WARN not block).
                 if (max_hold_sec > 0
-                        and prev_run_sec + _dur(c) > max_hold_sec):
+                        and (prev_run_sec + _dur(c) > max_hold_sec
+                             or _dur(c) > max_hold_sec)):
                     print(f"[dedup] {seg}: canonicalize to {prev_file} would "
-                          f"hold {prev_run_sec + _dur(c):.1f}s > "
-                          f"{max_hold_sec:.1f}s cap — keeping own art {f}")
+                          f"hold {max(prev_run_sec + _dur(c), _dur(c)):.1f}s "
+                          f"> {max_hold_sec:.1f}s cap — keeping own art {f}")
                     kept.append(c)
                     if h is not None:
                         prev_file, prev_hash = f, h
@@ -2687,10 +2688,14 @@ def enforce_shown_twin_invariant(
                 d = float(c.get("dur") or c.get("duration_sec") or 0.0)
             except (TypeError, ValueError):
                 d = 0.0
+            projected = (run_sec if run_file == target else 0.0) + d
             if (foldable and target != f and max_hold_sec > 0
-                    and run_file == target and run_sec + d > max_hold_sec):
+                    and projected > max_hold_sec):
+                # includes the SINGLE-cut case: an 11.3s cut folded onto a
+                # twin is an over-cap stand-in all by itself (job 57 — the
+                # run-extension-only check let it through)
                 print(f"[twin-fold] cap: kept own art {f} — folding to "
-                      f"{target} would stand it in {run_sec + d:.1f}s > "
+                      f"{target} would stand it in {projected:.1f}s > "
                       f"{max_hold_sec:.1f}s")
                 target = f
             if target != f:

@@ -2415,3 +2415,20 @@ def test_twin_invariant_fold_yields_to_the_hold_cap():
     out3, _f3 = rp.enforce_shown_twin_invariant(
         plan3, lambda f: imgs.get(f), max_hold_sec=10.0)
     assert [c["file"] for c in out3["timeline"][1]["cuts"]] == ["a.jpg"]
+
+
+def test_twin_fold_cap_blocks_single_overcap_cut_and_nonadjacent_prior():
+    # job 57: the folded cut was 11.3s ALONE (prior twin cuts were panels
+    # away, so no run was being "extended") — the cap must gate on the
+    # projected run including the single-cut case.
+    imgs = {"a.jpg": _hramp(base=0), "b.jpg": _hramp(base=20),
+            "x.jpg": _vramp()}
+    plan = {"timeline": [
+        {"segment_id": "g18", "cuts": [{"file": "a.jpg", "dur": 5.0}]},
+        {"segment_id": "gx", "cuts": [{"file": "x.jpg", "dur": 4.0}]},
+        {"segment_id": "g19", "cuts": [{"file": "b.jpg", "dur": 11.3}]},
+    ]}
+    out, folds = rp.enforce_shown_twin_invariant(
+        plan, lambda f: imgs.get(f), max_hold_sec=10.0)
+    assert folds and folds[0][1] == "b.jpg"
+    assert [c["file"] for c in out["timeline"][2]["cuts"]] == ["b.jpg"]
