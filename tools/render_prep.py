@@ -2564,6 +2564,7 @@ def enforce_shown_twin_invariant(
     window: int = 8,
     ham_max: int = 8,
     ham_max_contained: int = 14,
+    max_hold_sec: float = 0.0,
 ) -> Tuple[Dict[str, Any], List[Tuple[str, str, str, int, bool]]]:
     """FINAL invariant pass — "no two shown panels may be twins" — run after
     every other dedup/merge pass, immediately before the clean plan is written.
@@ -2668,10 +2669,36 @@ def enforce_shown_twin_invariant(
             break                                    # cut folded; next entry
 
     if alias:
+        # CAP-AWARE rewrite (2026-07-19, nano ch2 jobs 50-56): the fold is
+        # "no two shown panels may be twins", the hold cap is "no file stands
+        # in past max_hold_sec" — when they conflict (a folded run of echo
+        # panels re-seats ONE survivor for 11.3s), the CAP wins: an on-screen
+        # twin pair far apart is styleable (ken echo differentiation), a
+        # blocking stand-in is not. Walk in shown order tracking each
+        # continuous same-file run; skip a fold that would breach the cap.
+        run_file: Optional[str] = None
+        run_sec = 0.0
         for _seg, c in entries:
             f = str(c.get("file") or "")
-            if f in alias and not c.get("file2") and not c.get("layout"):
-                c["file"] = _resolve(f)
+            foldable = (f in alias and not c.get("file2")
+                        and not c.get("layout"))
+            target = _resolve(f) if foldable else f
+            try:
+                d = float(c.get("dur") or c.get("duration_sec") or 0.0)
+            except (TypeError, ValueError):
+                d = 0.0
+            if (foldable and target != f and max_hold_sec > 0
+                    and run_file == target and run_sec + d > max_hold_sec):
+                print(f"[twin-fold] cap: kept own art {f} — folding to "
+                      f"{target} would stand it in {run_sec + d:.1f}s > "
+                      f"{max_hold_sec:.1f}s")
+                target = f
+            if target != f:
+                c["file"] = target
+            if run_file == target:
+                run_sec += d
+            else:
+                run_file, run_sec = target, d
     return plan, folds
 
 
@@ -3760,7 +3787,7 @@ def main() -> int:
     out_plan, twin_folds = enforce_shown_twin_invariant(
         out_plan, _img, get_raw_boxes=_boxes,
         get_ocr=lambda f: str(vision_item.get(f, {}).get("ocr_clean") or ""),
-        skip_files=system_files)
+        skip_files=system_files, max_hold_sec=float(args.max_hold_sec))
     for seg, loser, survivor, ham_v, contained in twin_folds:
         print(f"[dedup-invariant] {seg}: {loser} folded into {survivor} "
               f"(masked ham={ham_v}, containment={contained})")

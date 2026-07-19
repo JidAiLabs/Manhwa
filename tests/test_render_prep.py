@@ -2381,3 +2381,37 @@ def test_cross_segment_canonicalize_is_hold_cap_aware():
     out2, _d2, canon2 = rp.drop_cross_segment_near_identical_cuts(
         cbs2, ["g17", "g18", "g19"], lambda f: imgs.get(f))
     assert len(canon2) == 2
+
+
+def test_twin_invariant_fold_yields_to_the_hold_cap():
+    # nano ch2 jobs 50-56: the final twin fold re-seated ONE survivor across
+    # an 11.3s run (blocking long_hold + panel_substituted, rebuilt
+    # deterministically on every re-prep). When fold and cap conflict, the
+    # CAP wins: the cut keeps its own art (far-apart twins are styleable).
+    imgs = {"a.jpg": _hramp(base=0), "b.jpg": _hramp(base=20)}
+    plan = {"timeline": [
+        {"segment_id": "g18", "cuts": [{"file": "a.jpg", "dur": 5.1},
+                                       {"file": "a.jpg", "dur": 6.2}]},
+        {"segment_id": "g19", "cuts": [{"file": "b.jpg", "dur": 11.3}]},
+    ]}
+    out, folds = rp.enforce_shown_twin_invariant(
+        plan, lambda f: imgs.get(f), max_hold_sec=10.0)
+    assert folds and folds[0][1] == "b.jpg"     # twin detected (fold intended)
+    g19 = out["timeline"][1]["cuts"]
+    assert [c["file"] for c in g19] == ["b.jpg"]   # ...but own art kept (cap)
+    # without the cap, legacy behavior folds it
+    plan2 = {"timeline": [
+        {"segment_id": "g18", "cuts": [{"file": "a.jpg", "dur": 5.1},
+                                       {"file": "a.jpg", "dur": 6.2}]},
+        {"segment_id": "g19", "cuts": [{"file": "b.jpg", "dur": 11.3}]},
+    ]}
+    out2, _f2 = rp.enforce_shown_twin_invariant(plan2, lambda f: imgs.get(f))
+    assert [c["file"] for c in out2["timeline"][1]["cuts"]] == ["a.jpg"]
+    # a SHORT fold under the cap still folds (the invariant holds when safe)
+    plan3 = {"timeline": [
+        {"segment_id": "g18", "cuts": [{"file": "a.jpg", "dur": 4.0}]},
+        {"segment_id": "g19", "cuts": [{"file": "b.jpg", "dur": 3.0}]},
+    ]}
+    out3, _f3 = rp.enforce_shown_twin_invariant(
+        plan3, lambda f: imgs.get(f), max_hold_sec=10.0)
+    assert [c["file"] for c in out3["timeline"][1]["cuts"]] == ["a.jpg"]
