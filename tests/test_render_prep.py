@@ -2432,3 +2432,38 @@ def test_twin_fold_cap_blocks_single_overcap_cut_and_nonadjacent_prior():
         plan, lambda f: imgs.get(f), max_hold_sec=10.0)
     assert folds and folds[0][1] == "b.jpg"
     assert [c["file"] for c in out["timeline"][2]["cuts"]] == ["b.jpg"]
+
+
+def test_cap_kept_twin_pair_is_stamped_and_dup_shown_honors_it():
+    imgs = {"a.jpg": _hramp(base=0), "b.jpg": _hramp(base=20),
+            "x.jpg": _vramp()}
+    plan = {"timeline": [
+        {"segment_id": "g18", "cuts": [{"file": "a.jpg", "dur": 5.0}]},
+        {"segment_id": "gx", "cuts": [{"file": "x.jpg", "dur": 4.0}]},
+        {"segment_id": "g19", "cuts": [{"file": "b.jpg", "dur": 11.3}]},
+    ]}
+    out, _folds = rp.enforce_shown_twin_invariant(
+        plan, lambda f: imgs.get(f), max_hold_sec=10.0)
+    assert out.get("twin_cap_kept") == [["b.jpg", "a.jpg"]]
+
+    import importlib.util
+    import sys
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "prep_qa_capkept", Path(__file__).resolve().parents[1] / "tools" / "prep_qa.py")
+    pq = importlib.util.module_from_spec(spec)
+    sys.modules["prep_qa_capkept"] = pq
+    spec.loader.exec_module(pq)
+    cuts = [{"file": "a.jpg", "segment_id": "g18"},
+            {"file": "x.jpg", "segment_id": "gx"},
+            {"file": "b.jpg", "segment_id": "g19"}]
+    raw = lambda f: imgs.get(f)
+    boxes = lambda f: ()
+    ocr = lambda f: ""
+    # unstamped: the twin pair blocks (the tripwire's whole job)
+    assert [f["code"] for f in pq.dup_shown_flags(
+        cuts, raw, boxes, ocr)] == ["dup_shown"]
+    # stamped: the documented cap exception is legal
+    assert pq.dup_shown_flags(
+        cuts, raw, boxes, ocr,
+        cap_kept_pairs=out["twin_cap_kept"]) == []

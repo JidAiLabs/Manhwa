@@ -2697,6 +2697,9 @@ def enforce_shown_twin_invariant(
                 print(f"[twin-fold] cap: kept own art {f} — folding to "
                       f"{target} would stand it in {projected:.1f}s > "
                       f"{max_hold_sec:.1f}s")
+                # stamp the DOCUMENTED exception so prep_qa's dup_shown
+                # tripwire (same authority) knows this pair is legal
+                plan.setdefault("twin_cap_kept", []).append([f, target])
                 target = f
             if target != f:
                 c["file"] = target

@@ -433,7 +433,8 @@ def dup_shown_flags(seq: Sequence[Dict[str, Any]],
                     is_exempt=None,
                     window: int = 8,
                     ham_max: int = 8,
-                    ham_max_contained: int = 14) -> List[Dict[str, Any]]:
+                    ham_max_contained: int = 14,
+                    cap_kept_pairs=None) -> List[Dict[str, Any]]:
     """BLOCKING tripwire for the shown-twin INVARIANT: no two shown panels may
     be masked-raw twins. Uses the exact predicate render_prep enforces with
     (`rp.twin_verdict` over `rp._dhash8_bgr` of the RAW `scenes/` panels,
@@ -451,6 +452,12 @@ def dup_shown_flags(seq: Sequence[Dict[str, Any]],
     files with no raw scene image (split halves) are never compared. One flag
     per offending pair."""
     exempt = is_exempt or (lambda f: False)
+    # render_prep's DOCUMENTED cap exception (plan `twin_cap_kept`,
+    # 2026-07-20): a twin pair deliberately kept apart because folding it
+    # would create an over-hold-cap stand-in is LEGAL (ken echo styles it) —
+    # the same authority stamps it, so enforcement and QA cannot drift.
+    cap_ok = {tuple(sorted((str(a), str(b))))
+              for a, b in (cap_kept_pairs or [])}
     hashes: Dict[str, Optional[int]] = {}
 
     def _h(f: str) -> Optional[int]:
@@ -478,7 +485,7 @@ def dup_shown_flags(seq: Sequence[Dict[str, Any]],
                                    ham_max_contained=ham_max_contained):
                 continue
             key = tuple(sorted((fi, fj)))
-            if key in seen_pairs:
+            if key in seen_pairs or key in cap_ok:
                 continue
             seen_pairs.add(key)
             flags.append(_flag(
@@ -2789,7 +2796,8 @@ def main() -> int:
         return str(vit.get("ocr_clean") or "")
 
     flags.extend(dup_shown_flags(cuts, _raw_img, _raw_boxes, _raw_ocr,
-                                 is_exempt=_qa_exempt))
+                                 is_exempt=_qa_exempt,
+                                 cap_kept_pairs=plan.get("twin_cap_kept")))
 
     # V2 echo net (WARN, measure-first): shown-crop twins whose RAWS are
     # distinct — the zoom-echo / husk-crop class dup_shown correctly ignores
