@@ -560,7 +560,11 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
              # chapter fact record: the FACTS block + ledger-aware gate ride
              # every heal cycle too (the writer fail-softs if it is absent)
              "--ledger", str(ep / "manifest.ledger.json"),
-             "--resume", "--corrections", corr_path, "--max-images-per-group", "6"]
+             # Match the primary pass (studio/pipeline.py). Heal is the
+             # EXPENSIVE writer path — it re-narrates flagged groups every
+             # cycle — so it must not be the one paying the 6-image premium:
+             # measured 107.6s/call at 6 images vs 77.5s at 3.
+             "--resume", "--corrections", corr_path, "--max-images-per-group", "3"]
     if cfg.beats_backend == "ollama":
         gargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]
     if _stream(gargs, log, env=env) != 0:
