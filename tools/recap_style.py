@@ -49,7 +49,10 @@ plot fact, and must fit the genre and visible moment.
 3. RATION NAMES: introduce the protagonist by name once, then usually use a
 pronoun or a relaxed genre-appropriate stand-in such as "our guy" or "our boy".
 Repeat the real name only for clarity or emotional weight. Never let the full
-name become a label repeated line after line.
+name become a label repeated line after line. "Our guy"/"our boy"/"our man"
+refers to EXACTLY ONE person — the protagonist; never use it for any other
+character (a helper, ally, or stranger gets their cast name or a neutral
+handle).
 4. ADD TEXTURE, NOT JOKES: eligible connective lines should occasionally carry
 one dry observation, intimate aside, ironic understatement, or concise familiar
 comparison. Aim for roughly one textured touch per four eligible lines. Serious

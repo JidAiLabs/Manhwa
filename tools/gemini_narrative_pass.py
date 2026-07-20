@@ -440,6 +440,7 @@ def _pack_group_payload(
     understand_by_file: Optional[Dict[str, Dict[str, Any]]] = None,
     figures_by_file: Optional[Dict[str, List[Dict[str, str]]]] = None,
     echo_of: Optional[Dict[str, str]] = None,
+    ledger_facts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     scene_files = group.get("scene_files") or []
     scenes: List[Dict[str, Any]] = []
@@ -521,7 +522,7 @@ def _pack_group_payload(
         if sf in echo_of:
             scenes[-1]["echo_of"] = echo_of[sf]
 
-    return {
+    payload = {
         "group_id": int(group.get("shot_id") or group.get("group_id") or 0),
         "scene_files": scene_files,
         "scenes_signals": scenes,
@@ -533,6 +534,13 @@ def _pack_group_payload(
         "segment": group.get("segment") or "present",
         "intensity": group.get("intensity") or "tense",
     }
+    # Story-state ledger (2026-07-20): this beat's slice of the chapter fact
+    # record — dialogue-arbitrated action directions, who is dead by now,
+    # banned handles, answered questions. Key exists ONLY when a ledger does
+    # — byte-compatible otherwise.
+    if ledger_facts:
+        payload["facts"] = ledger_facts
+    return payload
 
 
 _MD_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
@@ -1369,112 +1377,15 @@ def glue_echo_spans(segs, echo_of, surviving):
     return out
 
 
-_PROT_HANDLE_RE = re.compile(r"\bour (?:guy|boy|man|protagonist)\b",
-                             re.IGNORECASE)
-_HANDLE_STOP = frozenset({"a", "an", "the", "in", "with", "and", "of", "on"})
-
-
-def _neutral_from_evidence(figs) -> str:
-    """A grounded neutral handle from an unknown figure's evidence subject —
-    'a masked figure in a dark hooded cloak' -> 'the masked figure'.
-    Gerunds/verbs are skipped ('a person wearing…' must yield 'the person',
-    never 'the person wearing' — job-48 g0018)."""
-    person_nouns = ("figure", "person", "man", "woman", "warrior",
-                    "stranger", "fighter")
-    for f in figs or []:
-        ev = str((f or {}).get("evidence") or "").strip().lower()
-        toks = [t for t in re.findall(r"[a-z']+", ev)
-                if t not in _HANDLE_STOP and not t.endswith("ing")]
-        # anchor on the person-noun: 'a masked figure in a dark hooded
-        # cloak' -> 'the masked figure'; 'a person wearing a light blue
-        # hooded jacket' -> 'the person'
-        for i, t in enumerate(toks):
-            if t in person_nouns:
-                return "the " + ((toks[i - 1] + " ") if i else "") + t
-        if len(toks) >= 2:
-            return "the " + " ".join(toks[:2])
-        if toks:
-            return "the " + toks[0]
-    return "the figure"
-
-
-def _figure_handle(name: str) -> str:
-    """Speakable handle for a resolved cast name: 'unnamed assassin' ->
-    'the assassin'; the cast_builder protagonist convention keeps its own
-    handle; real names are used as-is."""
-    if name.lower().startswith("unnamed "):
-        return "the " + name.split(" ", 1)[1]
-    return name
-
-
-def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names):
-    """Deterministic identity gate (2026-07-16 wave): a line may claim the
-    protagonist ('our guy'/'our protagonist'/a protagonist name-noun) ONLY
-    when the span's cast_identity-resolved figures include the protagonist;
-    any subject-position actor-noun disjoint from the span's figures is
-    rewritten noun-for-noun to what the panel actually shows — but only in
-    the UNAMBIGUOUS case (exactly one resolved figure, singular noun; the
-    all-unknown span gets a neutral evidence-derived handle). Everything
-    else is left for the actor_mismatch heal net. Shares its pattern
-    authority with prep_qa (cast_identity.subject_actor_nouns/actor_noun_map)
-    so guard and QA can never disagree. Returns 'old -> new' descriptions;
-    lines are edited in place via write_segment_lines (spans untouched)."""
-    from cast_identity import subject_actor_nouns_ex
-    segs = beat_segments(beat)
-    if not segs:
-        return []
-    rewrites: List[str] = []
-    lines = [s["line"] or "" for s in segs]
-    new_lines = list(lines)
-    for i, s in enumerate(segs):
-        line = new_lines[i]
-        if not line:
-            continue
-        span_figs = [f for fn in (s["span"] or [])
-                     for f in (figures_by_file.get(fn) or [])]
-        if not span_figs:
-            continue                          # no ground truth -> hands off
-        named = {f["name"] for f in span_figs
-                 if f.get("name") and f["name"] != "unknown"}
-
-        def _repl_for() -> str:
-            if len(named) == 1:
-                return _figure_handle(next(iter(named)))
-            if not named:
-                return _neutral_from_evidence(span_figs)
-            return ""                         # multi-figure: ambiguous
-
-        # 1. protagonist handle over a span that doesn't resolve them
-        if (protagonist_names and not (named & protagonist_names)
-                and _PROT_HANDLE_RE.search(line)):
-            repl = _repl_for()
-            if repl:
-                new = _PROT_HANDLE_RE.sub(repl, line, count=1)
-                if new != line:
-                    rewrites.append(f"protagonist handle -> {repl!r}")
-                    line = new
-        # 2. subject-position actor-noun disjoint from the span's figures
-        #    (singular only; plurals are the actor_count heal net's job)
-        for noun, members, plural in subject_actor_nouns_ex(line, noun_map):
-            if plural or (members & named):
-                continue
-            if named & protagonist_names and members & named:
-                continue
-            repl = _repl_for()
-            if not repl or repl.lower().find(noun) >= 0:
-                continue                      # ambiguous / no-op rewrite
-            pat = re.compile(
-                r"\b(?:(?:our|the|a|an)\s+)?" + re.escape(noun)
-                + r"(?P<poss>'s)?\b", re.IGNORECASE)
-            new, n = pat.subn(
-                lambda m: repl + (m.group("poss") or ""), line, count=1)
-            if n and new != line:
-                rewrites.append(f"'{noun}' -> {repl!r}")
-                line = new
-        new_lines[i] = line
-    if new_lines != lines and all(x.strip() for x in new_lines):
-        write_segment_lines(beat, new_lines)
-    return rewrites
+# Deterministic identity gate — extracted to identity_gate.py (2026-07-20
+# story-state wave) so narration_punchup's post-punchup backstop can re-run
+# the same gate after the persona rewrite. Re-exported here for callers/tests.
+from identity_gate import (  # noqa: E402
+    _PROT_HANDLE_RE,
+    _figure_handle,
+    _neutral_from_evidence,
+    enforce_actor_handles,
+)
 
 
 def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
@@ -1942,6 +1853,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
     ap.add_argument("--understood", default="",
                     help="manifest.panels.understood.json for per-panel pad grounding")
+    ap.add_argument("--ledger", default="",
+                    help="Optional manifest.ledger.json (chapter story-state: "
+                         "arbitrated action directions, deaths, banned handles, "
+                         "answered questions) — per-beat FACTS block + gate")
     ap.add_argument("--niche", default="")
     ap.add_argument("--niche-secondary", default="")
     ap.add_argument("--segmentation", choices=["adaptive", "per_panel"],
@@ -1959,6 +1874,9 @@ def main() -> int:
     vision_m = load_json(args.vision_manifest)
     understood_m = load_json(args.understood) if args.understood and os.path.exists(args.understood) else {}
     u_by_file = {p.get("scene_file"): p for p in (understood_m.get("panels") or []) if p.get("scene_file")}
+    # Story-state ledger — fail-soft: {} keeps every downstream byte-compatible
+    ledger_m = (load_json(args.ledger)
+                if args.ledger and os.path.exists(args.ledger) else {})
 
     groups = _read_groups(groups_m)
     if not groups:
@@ -2021,7 +1939,10 @@ def main() -> int:
         "    - IDENTITY + NAMES: NAME established CHAPTER CAST members so the audience can\n"
         "      follow who is who — recognition is the priority. NAME the protagonist (or a\n"
         "      relaxed stand-in like 'our guy') normally on HIS OWN panels, even when a\n"
-        "      separate mysterious figure is on screen nearby. Reserve a grounded NEUTRAL\n"
+        "      separate mysterious figure is on screen nearby. 'Our guy' / 'our boy' /\n"
+        "      'our man' refers to EXACTLY ONE person — the protagonist. NEVER use it for\n"
+        "      any other character: a helper, ally, stranger, or rescuer gets their cast\n"
+        "      name or a neutral handle, no matter how sympathetic they are. Reserve a grounded NEUTRAL\n"
         "      handle ('the stranger', 'the intruder') ONLY for a figure THIS panel itself\n"
         "      presents as genuinely concealed — transformed, masked, hooded, glowing,\n"
         "      silhouetted, disguised, or newly-arrived (e.g. 'gear unlike anything') — and not\n"
@@ -2038,6 +1959,15 @@ def main() -> int:
         "      include (if figures says the prince, it is the prince drawing the blade — not an\n"
         "      assassin). When a figure is 'unknown (…)', use neutral phrasing (the masked\n"
         "      figure, the man in the hood) — never guess a name for an unknown.\n"
+        "    - FACTS ARE THE CHAPTER RECORD: when INPUT_JSON.facts exists it is the chapter's\n"
+        "      established story record, reconciled against the DIALOGUE (the highest-trust\n"
+        "      evidence). When facts and a panel's visual description disagree about WHO does\n"
+        "      WHAT to WHOM, the FACTS WIN — narrate the [dialogue-arbitrated] direction from\n"
+        "      facts.actions, never the panel's guess. NEVER narrate an action by anyone in\n"
+        "      facts.dead_by_now (they are already dead at this beat); NEVER use a handle in\n"
+        "      facts.banned_handles (e.g. 'the leader' after the leader died — a surviving\n"
+        "      underling does NOT inherit the title); NEVER re-ask a question facts.answered\n"
+        "      already resolves — build on the answer instead.\n"
         "    - DIALOGUE — quote selectively, recap-style: PARAPHRASE the bulk into narration but\n"
         "      DO quote occasionally for impact. QUOTE a SHORT (<=6 words), COMPLETE, punchy real\n"
         "      line (a threat, a name, a key line) in clean sentence case, attributed — e.g. he\n"
@@ -2160,15 +2090,21 @@ def main() -> int:
     protagonist_names: set = set()
     if cast_list and u_by_file:
         from cast_identity import actor_noun_map, resolve_figures_by_file
-        figures_by_file = resolve_figures_by_file(understood_m, cast_list)
+        from identity_gate import protagonist_names as _prot_names
+        # Ledger dead-sets: a killed entity must stop resolving on later
+        # panels (the oracle fix — a dead leader kept claiming look-alike
+        # assassin panels via the faction tie).
+        excluded_by_file: Dict[str, set] = {}
+        if ledger_m:
+            from story_ledger import dead_sets_by_file
+            excluded_by_file = dead_sets_by_file(
+                ledger_m, [p.get("scene_file")
+                           for p in (understood_m.get("panels") or [])
+                           if p.get("scene_file")])
+        figures_by_file = resolve_figures_by_file(
+            understood_m, cast_list, excluded_by_file=excluded_by_file)
         actor_nouns = actor_noun_map(cast_list)
-        protagonist_names = {
-            str(m.get("canonical_name") or "").strip()
-            for m in cast_list if isinstance(m, dict)
-            and (m.get("is_protagonist")
-                 or str(m.get("role") or "").lower() == "protagonist"
-                 or str(m.get("canonical_name") or "") == "our protagonist")}
-        protagonist_names.discard("")
+        protagonist_names = _prot_names(cast_list)
     story_block = _build_story_block(args.story)
     system_body = system_body.replace("{CAST_BLOCK}", cast_block)
     system_body = system_body.replace("{STORY_SPINE}", story_block)
@@ -2300,9 +2236,12 @@ def main() -> int:
                 sys_g += _pinned_span_block(beat_segments(pin_prev))
             regenerated += 1
 
-        payload = _pack_group_payload(g, vision_by_file, u_by_file,
-                                      figures_by_file=figures_by_file,
-                                      echo_of=echo_of)
+        payload = _pack_group_payload(
+            g, vision_by_file, u_by_file,
+            figures_by_file=figures_by_file,
+            echo_of=echo_of,
+            ledger_facts=(ledger_m.get("beat_facts") or {}).get(
+                f"g{gid:04d}") if ledger_m else None)
         # rolling context: the last spoken lines ride along so each beat
         # CONTINUES the story instead of re-opening it (and completes any
         # fragment the previous caption left hanging)
@@ -2469,7 +2408,8 @@ def main() -> int:
         # for the validation rewind's precision measurement.
         if figures_by_file and actor_nouns:
             rw = enforce_actor_handles(beat, figures_by_file, actor_nouns,
-                                       protagonist_names)
+                                       protagonist_names,
+                                       ledger=ledger_m or None)
             if rw:
                 beat["actor_rewrites"] = rw
                 for msg in rw:

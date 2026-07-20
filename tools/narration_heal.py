@@ -73,6 +73,14 @@ HEALABLE = {
     # validator via its fallback path) — a re-roll with the explicit word
     # cap in the note converges: length is fully in the writer's control.
     "line_overlong",
+    # story-state contradictions (2026-07-20 ledger wave): the re-roll's
+    # writer payload carries the beat's FACTS block (dead_by_now /
+    # banned_handles / arbitrated directions), so re-narration sees the very
+    # record the original roll violated. dead_actor is ALSO heal-THEN-block
+    # in the worker; role_stale stays heal-only until precision is measured
+    # (the actor_mismatch precedent).
+    "dead_actor",
+    "role_stale",
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")
@@ -157,6 +165,22 @@ def _note_for(code: str, detail: str) -> str:
                 "line to BRIDGE from that (a consequence, reaction, or "
                 "contrast), keeping it a complete standalone sentence; never "
                 "restart with 'The scene shows…' / 'In a …, a figure…'.")
+    if code == "dead_actor":
+        m = re.search(r'killed at \S+: "([^"]+)"', detail or "")
+        fact = m.group(1) if m else ""
+        return ("FACT (chapter record): this character is ALREADY DEAD at "
+                "this point in the story"
+                + (f" — the dialogue proves it: \"{fact}\"" if fact else "")
+                + ". A dead character cannot act. Re-narrate this moment "
+                "consistent with that fact, naming the LIVING actor the "
+                "panel's figures/facts show; never resurrect the dead.")
+    if code == "role_stale":
+        return ("FACT (chapter record): the holder of this ROLE/TITLE is "
+                "already dead, and nobody inherits the title"
+                + ((" (" + (detail or "").split(":", 1)[0].strip() + ")")
+                   if detail else "")
+                + ". Re-narrate naming who is ACTUALLY shown (a cast name "
+                "or neutral handle), never the dead holder's title.")
     if code == "actor_count_mismatch":
         return ("This line PLURALIZES the actor but every panel in its span "
                 "shows ONE figure — re-narrate with the single actor the "

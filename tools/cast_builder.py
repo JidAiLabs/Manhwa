@@ -74,6 +74,59 @@ def _all_ocr(items: List[Dict[str, Any]]) -> List[str]:
     return out
 
 
+def recurring_figures(understood: Any, min_panels: int = 3) -> List[str]:
+    """Recurring-figure candidate lines from the per-panel understanding —
+    evidence-driven cast coverage (2026-07-20 story-state wave: the blue-sash
+    helper who performs the ch1 kill recurred across panels yet was absent
+    from the sampled-images cast, so the identity gate had nothing to attach
+    the strike to).
+
+    Pure code, no model call: subjects are clustered by their cast_identity
+    appearance tokens (cluster core = INTERSECTION of member token sets, so a
+    cluster is defined by what its subjects have in COMMON and can never
+    drift into swallowing everyone); a cluster seen in >= min_panels distinct
+    panels yields one line '<most common subject wording> — seen in N panels
+    (files…)'. The prompt then requires each listed figure to appear in the
+    cast (entry or alias) — the model decides which."""
+    from collections import Counter
+
+    from cast_identity import _looks_person, _subject_tokens
+    clusters: List[Dict[str, Any]] = []
+    for p in ((understood or {}).get("panels") or []):
+        if not isinstance(p, dict):
+            continue
+        fn = str(p.get("scene_file") or "")
+        for s in (p.get("subjects") or []):
+            s = str(s).strip()
+            if not _looks_person(s):
+                continue                 # props/scenery are not cast material
+            toks = _subject_tokens(s)
+            if len(toks) < 2:
+                continue                 # generic-only: no identity evidence
+            best, best_core = None, ()
+            for c in clusters:
+                core = c["tokens"] & toks
+                if len(core) >= 2 and len(core) > len(best_core):
+                    best, best_core = c, core
+            if best is None:
+                clusters.append({"tokens": set(toks), "files": {fn},
+                                 "reps": Counter([s])})
+            else:
+                best["tokens"] = set(best_core)
+                best["files"].add(fn)
+                best["reps"][s] += 1
+    out: List[str] = []
+    for c in sorted(clusters, key=lambda c: -len(c["files"])):
+        if len(c["files"]) < min_panels:
+            continue
+        rep = c["reps"].most_common(1)[0][0]
+        files = ", ".join(sorted(c["files"])[:3])
+        out.append(f"{rep} — seen in {len(c['files'])} panels ({files}…)")
+        if len(out) >= 8:
+            break
+    return out
+
+
 CAST_SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -113,7 +166,16 @@ SYSTEM = (
     "  visual_description: appearance cues a downstream model can MATCH in a panel — age, hair,\n"
     "    clothing, weapon, distinctive features. Be concrete.\n"
     "  is_protagonist: true for the single main character the recap follows.\n"
-    "Ignore anonymous crowds. Prefer 6-12 entries. Return ONLY JSON matching the schema."
+    "Ignore anonymous crowds. Prefer 6-14 entries. Return ONLY JSON matching the schema."
+)
+
+RECURRING_RULE = (
+    "RECURRING FIGURES OBSERVED (from per-panel analysis of the whole chapter):\n"
+    "{FIGURES}\n"
+    "Every listed recurring figure MUST appear in the cast — either as its own "
+    "entry or as an alias/visual_description of an existing member. A recurring "
+    "figure who performs or receives violence is story-important by definition; "
+    "never omit them."
 )
 
 
@@ -146,6 +208,9 @@ def main() -> int:
     ap.add_argument("--model", default="gemini-2.5-flash")
     ap.add_argument("--backend", choices=["vertex", "ollama"], default="vertex")
     ap.add_argument("--max-images", type=int, default=24)
+    ap.add_argument("--understood", default="",
+                    help="manifest.panels.understood.json — recurring-figure "
+                         "coverage (every recurring figure must land in the cast)")
     args = ap.parse_args()
 
     project = args.project
@@ -161,7 +226,19 @@ def main() -> int:
     images = _sample_images(items, args.max_images)
     ocr = _all_ocr(items)
 
+    figures_block = ""
+    if args.understood and os.path.exists(args.understood):
+        try:
+            figs = recurring_figures(_load(args.understood))
+        except Exception:
+            figs = []
+        if figs:
+            figures_block = RECURRING_RULE.replace(
+                "{FIGURES}", "\n".join(f"  - {f}" for f in figs))
+
     parts: List[types.Part] = [_text_part(SYSTEM)]
+    if figures_block:
+        parts.append(_text_part(figures_block))
     parts.append(_text_part("ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n" + "\n".join(ocr)))
     parts.append(_text_part(f"\n{len(images)} sample panels follow (spread across the chapter):"))
     for p in images:
@@ -171,10 +248,12 @@ def main() -> int:
 
     if args.backend == "ollama":
         import ollama
-        text_blobs = [SYSTEM,
-                      "ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n"
-                      + "\n".join(ocr),
-                      f"\n{len(images)} sample panels follow:"]
+        text_blobs = [SYSTEM]
+        if figures_block:
+            text_blobs.append(figures_block)
+        text_blobs += ["ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n"
+                       + "\n".join(ocr),
+                       f"\n{len(images)} sample panels follow:"]
         import re as _re
 
         def _lower_types(o):
@@ -211,7 +290,10 @@ def main() -> int:
             ),
         )
         cast = json.loads(resp.text)
-    write_manifest(args.out, cast, inputs=(args.groups_manifest, args.vision_manifest),
+    inputs = [args.groups_manifest, args.vision_manifest]
+    if args.understood and os.path.exists(args.understood):
+        inputs.append(args.understood)
+    write_manifest(args.out, cast, inputs=tuple(inputs),
                    tool="cast_builder",
                    extra_meta={"model": args.model, "images_used": len(images),
                                "ocr_lines": len(ocr)})

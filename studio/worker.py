@@ -247,6 +247,14 @@ _CRITICAL_QA_CODES = {
     # first (its writer payload now carries the [IMPACT SFX on panel] marker)
     # — blocking survives only when healing can't clear it.
     "impact_mismatch",
+    # a line has a DEAD character acting (contradicts the story ledger's
+    # dialogue-evidenced death record — the nano ch1 'leader finishes the
+    # job' class). Heal-THEN-block like impact_mismatch: the re-roll's
+    # payload carries the FACTS block; blocking survives only when healing
+    # can't clear it. NOT writer-arbitratable — the fact is ledger-evidenced.
+    # (role_stale, its title-inheritance sibling, stays heal-only until its
+    # precision is measured — the actor_mismatch precedent.)
+    "dead_actor",
 }
 # DELIBERATELY NOT critical: "visual_loop". It looks like montage_degenerate's
 # sibling, but render_prep.cap_repeats_with_holds caps every NON-exempt panel at
@@ -549,6 +557,9 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
              # including the [IMPACT SFX on panel] marker impact_mismatch
              # healing depends on. The writer fail-softs if the file is gone.
              "--understood", str(ep / "manifest.panels.understood.json"),
+             # chapter fact record: the FACTS block + ledger-aware gate ride
+             # every heal cycle too (the writer fail-softs if it is absent)
+             "--ledger", str(ep / "manifest.ledger.json"),
              "--resume", "--corrections", corr_path, "--max-images-per-group", "6"]
     if cfg.beats_backend == "ollama":
         gargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]

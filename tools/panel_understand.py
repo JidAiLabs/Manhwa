@@ -55,6 +55,16 @@ PANEL_SCHEMA: Dict[str, Any] = {
         # pu_v4: the analyst's own confidence — NOT in `required`, same
         # back-compat posture as the pu_v2 fields above.
         "uncertain": {"type": "BOOLEAN"},
+        # pu_v5: structured agent->target attribution. The free-text `action`
+        # carries no direction ("a strike lands"), which let a visually
+        # ambiguous fight panel ship an INVERTED who-struck-whom that no
+        # downstream guard could check. NOT in `required` (back-compat).
+        "actions": {"type": "ARRAY", "items": {
+            "type": "OBJECT",
+            "properties": {"actor": {"type": "STRING"},
+                           "verb": {"type": "STRING"},
+                           "target": {"type": "STRING"}},
+            "required": ["actor", "verb", "target"]}},
     },
     "required": ["description", "action", "intensity", "panel_kind"],
 }
@@ -73,6 +83,14 @@ SYSTEM = (
     "several sub-frames/insets of this ONE panel, list that person ONCE — never "
     "one subjects entry per sub-frame.\n"
     "  action: the single key event or beat of this panel.\n"
+    "  actions: each distinct action performed IN this panel (0-3 entries) as "
+    "{actor, verb, target}. actor and target MUST each copy the EXACT wording "
+    "of one `subjects` entry; target is '' when the action has no target; "
+    "write 'unclear' when you genuinely cannot tell WHO acts or WHO is hit. "
+    "verb is a short present-tense phrase ('strikes', 'draws a blade at', "
+    "'collapses'). WHO does WHAT to WHOM is the single most important fact of "
+    "an action panel — if the striker or the struck is ambiguous, say "
+    "'unclear', NEVER guess.\n"
     "  Evidence discipline: describe marks and stains at the certainty the art "
     "gives — an ambiguous dark or reddish stain is 'a dark stain' / 'stained', "
     "NEVER 'blood' unless a wound, dripping, or spatter makes it unambiguous; "
@@ -145,7 +163,13 @@ SYSTEM = (
 # the grounding judge know when the analyst itself hedged. Invalidates ALL
 # pu_v3 records, INTENDED (2026-07-16 root-cause wave: dirt->blood,
 # limb-or-object->attack, 3-sub-shots->3 people).
-PROMPT_VERSION = "pu_v4"
+# pu_v5: structured `actions` = [{actor, verb, target}] (subjects-verbatim or
+# 'unclear', never a guess) + forced-choice re-ask on an in_use strike with an
+# unclear actor/target. Root-cause for the nano ch1 inverted kill: the
+# free-text `action` carried no direction, so a wrong who-struck-whom guess
+# was unstructured and uncheckable. Invalidates ALL pu_v4 records, INTENDED
+# (2026-07-20 story-state wave).
+PROMPT_VERSION = "pu_v5"
 
 # --- extreme-tall strips: windowed understanding -----------------------------
 # A cover/credits strip (ORV Ep0: 800x7540) downscaled to model resolution is
@@ -292,6 +316,10 @@ def understand_tall_strip(
                              if str(pw.get("sfx_text") or "").strip())[:200],
         # pu_v4: any-window OR — one hedged window makes the strip uncertain
         "uncertain": any(bool(pw.get("uncertain")) for pw in parsed_windows),
+        # pu_v5: concatenate windows' structured actions (reading order)
+        "actions": [a for pw in parsed_windows
+                    for a in (pw.get("actions") or [])
+                    if isinstance(a, dict)][:6],
     }
     return merged, meta
 
@@ -401,6 +429,36 @@ _UNCERTAIN_RE = re.compile(
     re.IGNORECASE)
 
 
+def _norm_actions(raw: Any) -> List[Dict[str, str]]:
+    """Pure: normalize pu_v5 `actions` — dict entries only, string-coerced,
+    a verb plus at least one of actor/target, capped at 4."""
+    out: List[Dict[str, str]] = []
+    if not isinstance(raw, list):
+        return out
+    for a in raw:
+        if not isinstance(a, dict):
+            continue
+        actor = str(a.get("actor") or "").strip()
+        verb = str(a.get("verb") or "").strip()
+        target = str(a.get("target") or "").strip()
+        if verb and (actor or target):
+            out.append({"actor": actor, "verb": verb, "target": target})
+        if len(out) >= 4:
+            break
+    return out
+
+
+def unclear_strike(rec: Dict[str, Any]) -> bool:
+    """Pure: a strike is being DELIVERED in this panel but the analyst could
+    not commit to WHO strikes or WHO is struck — the forced-choice re-ask
+    trigger for the pu_v5 direction contract."""
+    if str(rec.get("strikes_or_weapons") or "") != "in_use":
+        return False
+    return any("unclear" in (str(a.get("actor") or "").lower(),
+                             str(a.get("target") or "").lower())
+               for a in rec.get("actions") or [])
+
+
 def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Pure: normalize one model result into a panel record. A parse failure is
     recorded (never silently dropped) so resume can re-run just that panel."""
@@ -409,7 +467,7 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
         # out of grouping (a panel we can't understand must not be narrated);
         # --resume still re-attempts it because error is recorded.
         return {"scene_file": scene_file, "description": "", "subjects": [],
-                "action": "", "dialogue": "", "setting": "",
+                "action": "", "actions": [], "dialogue": "", "setting": "",
                 "intensity": "unknown", "panel_kind": "empty",
                 "strikes_or_weapons": "none", "sfx_text": "",
                 "error": "parse_failed"}
@@ -434,6 +492,8 @@ def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[s
         "description": description,
         "subjects": subjects,
         "action": str(parsed.get("action") or "").strip(),
+        # pu_v5: structured direction (actor/verb/target, subjects-verbatim)
+        "actions": _norm_actions(parsed.get("actions")),
         "dialogue": str(parsed.get("dialogue") or "").strip(),
         "setting": str(parsed.get("setting") or "").strip(),
         "intensity": inten if inten in
@@ -523,14 +583,29 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
         # hedged subject; accepted only when the second read actually commits
         # (uncertain cleared) — else the hedged record stands. Tall strips are
         # skipped (windowed re-runs are expensive; the flag alone suffices).
-        if rec.get("uncertain") and not rec.get("error") and not dims:
+        # pu_v5 extends the trigger: a strike being DELIVERED (in_use) with an
+        # 'unclear' actor/target demands commitment on WHO strikes WHOM —
+        # accepted only when the second read clears the unclear direction.
+        strike_hedge = unclear_strike(rec)
+        if ((rec.get("uncertain") or strike_hedge)
+                and not rec.get("error") and not dims):
             payload = build_payload(it, ctx, impact_regions=regions)
-            payload["forced_choice_notice"] = (
-                "Your first read could not identify a subject: "
-                + "; ".join(rec.get("subjects") or [])[:300]
-                + ". Look again and COMMIT to the single most likely reading "
-                "of each unclear subject (e.g. 'a tree branch', 'an arm'). "
-                "If you still cannot commit, keep uncertain=true.")
+            if strike_hedge and not rec.get("uncertain"):
+                notice = (
+                    "Your first read marked a strike being DELIVERED in this "
+                    "panel but could not tell WHO strikes or WHO is struck. "
+                    "Look again at the pose, weapon direction, and impact "
+                    "point, and COMMIT actor and target to specific subjects. "
+                    "If you still cannot commit, keep 'unclear'.")
+            else:
+                notice = (
+                    "Your first read could not identify a subject: "
+                    + "; ".join(rec.get("subjects") or [])[:300]
+                    + ". Look again and COMMIT to the single most likely "
+                    "reading of each unclear subject (e.g. 'a tree branch', "
+                    "'an arm'). If you still cannot commit, keep "
+                    "uncertain=true.")
+            payload["forced_choice_notice"] = notice
             try:
                 second = assemble_record(
                     it.get("scene_file"),
@@ -538,7 +613,8 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
             except Exception:
                 second = {"scene_file": it.get("scene_file"),
                           "error": "reask_failed"}
-            if not second.get("error") and not second.get("uncertain"):
+            if (not second.get("error") and not second.get("uncertain")
+                    and not (strike_hedge and unclear_strike(second))):
                 second["reask"] = True
                 rec = second
                 log(f"[panel] {it.get('scene_file')}: forced-choice re-ask "

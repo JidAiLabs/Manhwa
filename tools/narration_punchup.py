@@ -59,7 +59,8 @@ Voice: internet-native, dry, confident, a little sarcastic — a sharp friend
 recapping the story, not a movie trailer.
 
 GENRE-NEUTRAL TECHNIQUES (choose at most one when it helps; never force one):
-- audience intimacy: "our guy", "our boy", "look at his face"
+- audience intimacy: "our guy", "our boy", "look at his face" — these refer
+  ONLY to the protagonist, never any other character
 - comedic hyperbole on impacts ("coughing up half his internal organs")
 - punchy standalone fragments for beats: "Total silence." "Deal." "He's in."
 - snark at villain logic ("he's definitely not taking his own supply")
@@ -78,6 +79,9 @@ HARD RULES:
   GENRE block decides what framing fits; outside a literal game/system world
   there is no "server", "respawn", or "XP" to reach for.
 - Keep every character name EXACTLY as written (the cast list is law).
+- "Our guy"/"our boy"/"our man" = the PROTAGONIST, exactly one person. Never
+  re-point it at a different character than the original line names; a line
+  about a helper, ally, or stranger keeps that character's handle.
 - Paraphrase dialogue in clean narrator language. Never preserve or create a
   quoted run of ALL-CAPS bubble OCR, a truncated fragment, or onomatopoeia.
 - Keep the original meaning and emotional turn of the line — an injured
@@ -760,11 +764,23 @@ def _cast_obj(cast_path: str) -> Dict[str, Any]:
         return {"cast": []}
 
 
+def _ledger_obj(ep_dir: str) -> Dict[str, Any]:
+    """manifest.ledger.json (story-state) from the episode dir; {} fail-soft."""
+    if not ep_dir:
+        return {}
+    try:
+        obj = json.load(open(os.path.join(ep_dir, "manifest.ledger.json")))
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
 def apply_post_punchup_backstop(
     out: Dict[str, Any],
     cast_obj: Dict[str, Any],
     vision_by_file: Dict[str, Any],
     understood_by_file: Dict[str, Any],
+    ledger: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, int]:
     """Re-assert the identity/dedup backstop AFTER the persona pass, in place.
 
@@ -776,16 +792,42 @@ def apply_post_punchup_backstop(
     gemini_narrative_pass does at ITS tail, makes the persona pass unable to leave
     a concealed figure tagged as the protagonist or ship a duplicated consecutive
     line. Agnostic: cues/handles are generic; identity comes only from the cast +
-    the per-panel understanding."""
+    the per-panel understanding.
+
+    2026-07-20 story-state wave: ALSO re-run the deterministic actor-handle
+    gate (identity_gate.enforce_actor_handles) — the persona rewrite used to
+    re-attach a wrong-character "our guy" / actor-noun AFTER the writer's
+    gate had run, with nothing re-checking actor direction before ship."""
     n_ident = neutralize_identity_reveal_leaks(
         out, cast_obj or {"cast": []}, vision_by_file or {},
         understood_by_file or {})
     n_dups = dedupe_consecutive_panel_lines(out)
+    n_actor = 0
+    from cast_identity import actor_noun_map, cast_profiles, resolve_figures
+    from identity_gate import enforce_actor_handles, protagonist_names
+    profiles = cast_profiles(cast_obj or {"cast": []})
+    noun_map = actor_noun_map(cast_obj or {"cast": []})
+    prot = protagonist_names(cast_obj or {"cast": []})
+    if profiles and noun_map:
+        excluded: Dict[str, Any] = {}
+        if ledger:
+            from story_ledger import dead_sets_by_file
+            excluded = dead_sets_by_file(
+                ledger, list(understood_by_file or {}))
+        figures_by_file = {fn: resolve_figures(p, profiles,
+                                               excluded=excluded.get(fn))
+                           for fn, p in (understood_by_file or {}).items()}
+        if figures_by_file:
+            for b in out.get("beats") or []:
+                n_actor += len(enforce_actor_handles(
+                    b, figures_by_file, noun_map, prot, ledger=ledger))
     stats = out.setdefault("stats", {})
     stats["identity_reveals_neutralized"] = n_ident
     stats["consecutive_dups_merged"] = n_dups
+    stats["actor_handles_rewritten"] = n_actor
     return {"identity_reveals_neutralized": n_ident,
-            "consecutive_dups_merged": n_dups}
+            "consecutive_dups_merged": n_dups,
+            "actor_handles_rewritten": n_actor}
 
 
 def main() -> int:
@@ -947,7 +989,8 @@ def main() -> int:
     apply_post_punchup_backstop(
         out, _cast_obj(args.cast),
         _vision_by_file(args.episode_dir),
-        _understood_by_file(args.episode_dir))
+        _understood_by_file(args.episode_dir),
+        ledger=_ledger_obj(args.episode_dir) or None)
 
     write_manifest(args.out, out, tool="narration_punchup",
                    extra_meta=_prior_inputs_extra_meta(beats_obj))

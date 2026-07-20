@@ -62,10 +62,23 @@ ARTIFACTS: Dict[str, A] = {
                                          inputs=("manifest.panels.understood.json",)),
     "manifest.cast.json":              A(stage="beated",
                                          inputs=("manifest.groups.json",
-                                                 "manifest.vision.json")),
+                                                 "manifest.vision.json"),
+                                         # recurring-figure coverage: a cast
+                                         # built before understanding existed
+                                         # must rebuild once it does
+                                         optional=("manifest.panels.understood.json",)),
+    # story-state ledger (2026-07-20): chapter fact record (entities, action
+    # attribution, deaths/role transitions) built between cast and the writer.
+    # NOT required yet — older chapters predate it; flip once the fleet has
+    # regenerated.
+    "manifest.ledger.json":            A(stage="beated",
+                                         inputs=("manifest.panels.understood.json",
+                                                 "manifest.groups.json",
+                                                 "manifest.cast.json")),
     "manifest.beats.json":             A(stage="beated", required=True,
                                          inputs=("manifest.groups.json",),
-                                         optional=("manifest.cast.json",)),
+                                         optional=("manifest.cast.json",
+                                                   "manifest.ledger.json")),
     "manifest.script.json":            A(stage="scripted", required=True,
                                          inputs=("manifest.beats.json",)),
     "manifest.sanitize.json":          A(stage="scripted",

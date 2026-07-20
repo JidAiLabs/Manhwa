@@ -1412,6 +1412,77 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     return flags
 
 
+def ledger_contradiction_flags(beats_obj: Any, ledger_obj: Any,
+                               cast_obj: Any) -> List[Dict[str, Any]]:
+    """STORY-STATE gate (2026-07-20 wave) — narration vs the chapter's fact
+    record (manifest.ledger.json, dialogue-arbitrated):
+      dead_actor (ERROR, heal-THEN-block in the worker): a line's SUBJECT-
+        position actor-noun maps ONLY to entities the ledger says are dead
+        by this beat — a dead character cannot act (the nano ch1 'leader
+        finishes the job' class);
+      role_stale (ERROR, heal-only until precision is measured): a line uses
+        a banned unique-role handle ('the leader' after the leader died — a
+        surviving underling never inherits the title).
+    Details carry the ledger's evidence quote so the heal note states the
+    FACT, not just the violation. Silent without a ledger (old chapters)."""
+    from cast_identity import actor_noun_map, subject_actor_nouns
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict) or not isinstance(ledger_obj, dict):
+        return flags
+    beat_facts = ledger_obj.get("beat_facts") or {}
+    if not beat_facts:
+        return flags
+    noun_map = actor_noun_map(cast_obj)
+    death_ev = {ev.get("subject"): ev
+                for ev in (ledger_obj.get("events") or [])
+                if ev.get("type") == "death"}
+
+    def _quote(members) -> str:
+        for m in members:
+            ev = death_ev.get(m)
+            if ev:
+                q = str(ev.get("evidence_quote") or "").strip()
+                sf = str(ev.get("scene_file") or "")
+                return f" (killed at {sf}: \"{q}\")" if q else f" (killed at {sf})"
+        return ""
+
+    for b in beats_obj.get("beats") or []:
+        gid = f"g{int(b.get('group_id') or 0):04d}"
+        facts = beat_facts.get(gid) or {}
+        dead = set(facts.get("dead_by_now") or [])
+        banned = [str(h) for h in (facts.get("banned_handles") or []) if h]
+        if not dead and not banned:
+            continue
+        for s in beat_segments(b):
+            line = s["line"]
+            if not line:
+                continue
+            fired_nouns: set = set()
+            for noun, members in subject_actor_nouns(line, noun_map):
+                if members and members <= dead:
+                    fired_nouns.add(noun)
+                    flags.append(_flag(
+                        "dead_actor", ERROR,
+                        f"line has '{noun}' acting but "
+                        f"{sorted(members)} are dead by this beat"
+                        f"{_quote(members)}: {line[:80]!r} — a dead "
+                        "character cannot act; re-narrate from the living "
+                        "actors the chapter record names",
+                        scene=str((s["span"] or [""])[0]), segment_id=gid))
+            for h in banned:
+                if h.rsplit(" ", 1)[-1].lower() in fired_nouns:
+                    continue                  # already flagged as dead_actor
+                if re.search(r"\b" + re.escape(h) + r"\b", line,
+                             re.IGNORECASE):
+                    flags.append(_flag(
+                        "role_stale", ERROR,
+                        f"line says {h!r} but that role holder is dead by "
+                        f"this beat{_quote(dead)}: {line[:80]!r} — nobody "
+                        "inherits the title; name who is actually shown",
+                        scene=str((s["span"] or [""])[0]), segment_id=gid))
+    return flags
+
+
 def cold_open_flags(beats_obj: Any) -> List[Dict[str, Any]]:
     """TRANSITION net (WARN, heal-target under semantic-heal): a beat's FIRST
     line re-establishes the scene coldly ('The scene shows…', 'In a dark
@@ -2642,6 +2713,8 @@ def main() -> int:
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj))
     flags.extend(actor_count_flags(beats_obj, understood_obj, cast_obj))
+    flags.extend(ledger_contradiction_flags(
+        beats_obj, _load_manifest("manifest.ledger.json"), cast_obj))
     flags.extend(cold_open_flags(beats_obj))
     flags.extend(phrase_echo_flags(beats_obj))
 

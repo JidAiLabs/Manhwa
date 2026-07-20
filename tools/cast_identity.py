@@ -196,11 +196,20 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
         specific = _specific(toks)
         appearance = set(specific)
         appearance.update("garment" for t in specific if t in _GARMENT)
+        role = str(m.get("role") or "").strip().lower()
+        raw_name = [t.lower() for t in _WORD_RE.findall(name)]
         profiles.append({
             "name": name,
             "name_tokens": _name_tokens(m),
             "appearance": appearance,
             "pairs": _color_garment_pairs(toks),
+            "role": role,
+            # the FACTION member of a same-faction tie: role says so, or the
+            # canonical name itself is plural ('the assassins') — cast_builder
+            # often labels a group 'antagonist' instead of 'group'.
+            "is_group": (role == "group" or any(
+                len(t) > 3 and t.endswith("s") and _singular(t) != t
+                for t in raw_name)),
         })
     return profiles
 
@@ -256,7 +265,8 @@ def _looks_person(text: str) -> bool:
 
 
 def resolve_figures(understanding: Optional[Dict[str, Any]],
-                    profiles: Sequence[Dict[str, Any]]
+                    profiles: Sequence[Dict[str, Any]],
+                    excluded: Optional[Set[str]] = None
                     ) -> List[Dict[str, str]]:
     """[{cast_name|'unknown', evidence}] for ONE understood panel record.
 
@@ -265,8 +275,13 @@ def resolve_figures(understanding: Optional[Dict[str, Any]],
     only (they mix several figures' features — appearance-matching the blob
     would cross-attribute). Resolution requires score >= 2 AND a strict
     margin of 1 over the runner-up; ties resolve to 'unknown', never a guess
-    (the failure mode being killed is misattribution)."""
+    (the failure mode being killed is misattribution).
+
+    *excluded* names never resolve (story-ledger dead set: a killed leader
+    must stop claiming later look-alike panels — 2026-07-20 wave)."""
     u = understanding or {}
+    if excluded:
+        profiles = [p for p in profiles if p["name"] not in excluded]
     out: List[Dict[str, str]] = []
     seen: Set[str] = set()
 
@@ -290,17 +305,23 @@ def resolve_figures(understanding: Optional[Dict[str, Any]],
                 continue
             # SAME-FACTION tie (the assassin leader vs the assassin group —
             # near-identical appearance BY DESIGN): when every tied top
-            # scorer shares a name-token, they are one narrative identity;
-            # resolve to the first tied member (cast order) instead of
-            # throwing the identity away as 'unknown'.
+            # scorer shares a name-token, they are one narrative identity.
+            # Resolve to the tied GROUP member (the faction — what an
+            # appearance tie MEANS) when one exists; the old
+            # first-in-sort-order pick handed every generic assassin panel
+            # to the LEADER, so a dead leader kept "acting" for the rest of
+            # the chapter. Without a group member, first tied stays.
             if best >= 2.0:
                 tied = [n for (s, _e), n in scored if s == best]
                 if len(tied) > 1:
                     common = set.intersection(
                         *(by_name[n]["name_tokens"] for n in tied))
                     if common:
-                        _add(name, f"{subj[:60]} ~ faction:"
-                                   f"{'+'.join(sorted(common)[:2])}")
+                        grp = [n for n in tied
+                               if by_name[n].get("is_group")]
+                        _add(grp[0] if grp else name,
+                             f"{subj[:60]} ~ faction:"
+                             f"{'+'.join(sorted(common)[:2])}")
                         continue
         if _looks_person(subj):
             _add("unknown", subj[:60])
@@ -315,17 +336,23 @@ def resolve_figures(understanding: Optional[Dict[str, Any]],
     return out
 
 
-def resolve_figures_by_file(understood_obj: Any, cast: Any
+def resolve_figures_by_file(understood_obj: Any, cast: Any,
+                            excluded_by_file: Optional[
+                                Dict[str, Set[str]]] = None
                             ) -> Dict[str, List[Dict[str, str]]]:
     """{scene_file: figures} over a whole manifest.panels.understood.json.
-    {} when either side is missing/empty — consumers stay silent."""
+    {} when either side is missing/empty — consumers stay silent.
+    *excluded_by_file* maps scene_file -> cast names that must not resolve
+    there (the story ledger's per-panel dead set)."""
     profiles = cast_profiles(cast)
     if not profiles:
         return {}
     out: Dict[str, List[Dict[str, str]]] = {}
     for p in ((understood_obj or {}).get("panels") or []):
         if isinstance(p, dict) and p.get("scene_file"):
-            out[str(p["scene_file"])] = resolve_figures(p, profiles)
+            fn = str(p["scene_file"])
+            out[fn] = resolve_figures(
+                p, profiles, excluded=(excluded_by_file or {}).get(fn))
     return out
 
 

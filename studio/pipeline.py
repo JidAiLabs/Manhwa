@@ -289,11 +289,33 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             cast_args = ["--groups-manifest", str(p["groups"]),
                          "--vision-manifest", str(p["vision"]),
                          "--out", str(p["cast"]),
+                         # recurring-figure coverage: every figure the per-panel
+                         # analysis saw repeatedly must land in the cast
+                         "--understood", str(p["understood"]),
                          "--project", project, "--location", location,
                          "--model", cfg.beats_model]
             if cfg.beats_backend == "ollama":
                 cast_args += ["--backend", "ollama"]
             _run_tool("cast_builder.py", cast_args)
+        # Story-state ledger (2026-07-20): ONE arbitration call reconciles the
+        # per-panel visual action guesses against the chapter's dialogue and
+        # records deaths/roles/answered questions — the fact record the writer,
+        # identity gate, and QA all read. Skip-iff-fresh like cast.
+        ledger = ep_dir / "manifest.ledger.json"
+        ledger_stale = (ledger.exists()
+                        and _artifact_is_stale(ep_dir, "manifest.ledger.json"))
+        if not ledger.exists() or ledger_stale:
+            ledger_args = ["--understood", str(p["understood"]),
+                           "--groups", str(p["groups"]),
+                           "--cast", str(p["cast"]),
+                           "--out", str(ledger),
+                           "--project", project, "--location", location,
+                           "--model", cfg.beats_model]
+            if cfg.beats_backend == "ollama":
+                ledger_args += ["--backend", "ollama"]
+            else:
+                ledger_args += ["--backend", "vertex"]
+            _run_tool("story_ledger.py", ledger_args)
         beats_args = ["--groups-manifest", str(p["groups"]),
                       "--vision-manifest", str(p["vision"]),
                       "--out", str(p["beats"]),
@@ -304,6 +326,8 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                       # connect into one story instead of isolated panel captions
                       "--story", str(ep_dir / "manifest.story.json"),
                       "--understood", str(p["understood"]),
+                      # chapter fact record -> per-beat FACTS block + gate
+                      "--ledger", str(ep_dir / "manifest.ledger.json"),
                       # adaptive flow segments vs legacy per_panel — passed
                       # explicitly so config (not the tool's env default) rules
                       "--segmentation", cfg.segmentation or "adaptive"]

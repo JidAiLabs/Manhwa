@@ -155,14 +155,16 @@ def test_derived_lists_match_legacy():
         # survivors — the voiced->planned->prepped re-run rebuilds both
         "scripted": {"tts/tts_index.json", "render.plan.json",
                      "render.plan.clean.json"},
-        # tts_index was only ever deleted via the tts/ dir; now explicit
-        "grouped": {"tts/tts_index.json"},
+        # tts_index was only ever deleted via the tts/ dir; now explicit.
+        # manifest.ledger.json: story-state ledger (2026-07-20, beated stage)
+        # — dies on any rewind past beated, like cast.
+        "grouped": {"tts/tts_index.json", "manifest.ledger.json"},
         # THE bug: everything derived from re-materialized scenes must die
         "detected": {"tts/tts_index.json", "manifest.scenes.json",
                      "manifest.vision.json", "manifest.panels.understood.json",
                      "manifest.groups.json", "manifest.story.json",
-                     "manifest.cast.json"},
-        "downloaded": {"tts/tts_index.json"},
+                     "manifest.cast.json", "manifest.ledger.json"},
+        "downloaded": {"tts/tts_index.json", "manifest.ledger.json"},
     }
     for target, legacy_set in legacy.items():
         derived = set(reset.artifacts_for(target))
