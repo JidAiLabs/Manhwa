@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional, Set
 
@@ -503,6 +504,89 @@ def build_beat_facts(groups: List[Dict[str, Any]],
     return facts
 
 
+# Generic English kill/death vocabulary — NOT series content. Used only to
+# decide whether an event the story pass already reported is fatal, so a
+# missed word costs us a death record, never a false one.
+_KILL_RE = re.compile(
+    r"\b(kill(?:s|ed|ing)?|slay|slain|slew|murder(?:s|ed)?|execut(?:e|es|ed)|"
+    r"finish(?:es|ed)?\s+(?:off|him|her|them)|strikes?\s+down|cuts?\s+down|"
+    r"fatal(?:ly)?|dies?|died|dead|corpse)\b", re.IGNORECASE)
+
+
+def _panel_range(text: str, ordered_files: List[str]) -> List[str]:
+    """'p000036-p000037' (or 'p000036.jpg') -> the scene_files it spans.
+
+    The story pass echoes panel ids from the transcript, which may or may not
+    carry the extension, so matching is by stem against the real reading
+    order. An unparseable or unknown range yields [] — the event is then
+    dropped and LOGGED rather than anchored to a guess."""
+    stems = {os.path.splitext(f)[0]: f for f in ordered_files}
+    order = {f: i for i, f in enumerate(ordered_files)}
+    found = [stems[m] for m in re.findall(r"p\d+", str(text or ""))
+             if m in stems]
+    if not found:
+        return []
+    if len(found) == 1:
+        return found
+    lo, hi = min(order[f] for f in found), max(order[f] for f in found)
+    return ordered_files[lo:hi + 1]
+
+
+def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
+                             understood: Any,
+                             profiles: List[Dict[str, Any]],
+                             log=print) -> tuple:
+    """(raw_events, raw_overrides) derived DETERMINISTICALLY from the
+    whole-chapter story pass — no model call here.
+
+    This replaces the per-window arbitration, which had to cross-reference
+    ~100 visual guesses against every line of dialogue in 12 separate calls
+    and still missed a kill the dialogue stated outright. The story pass sees
+    the entire chapter at once, so its events already carry actor -> target
+    and the proving line; all that is left is anchoring them to panels."""
+    ordered = [str(p["scene_file"]) for p in _panels(understood)]
+    events: List[Dict[str, Any]] = []
+    overrides: List[Dict[str, Any]] = []
+    for ev in ((story or {}).get("events") or []):
+        if not isinstance(ev, dict):
+            continue
+        span = _panel_range(ev.get("panels"), ordered)
+        does = str(ev.get("does") or "")
+        if not span:
+            log(f"[ledger] story event not anchorable to panels "
+                f"({ev.get('panels')!r}): {does[:60]!r}")
+            continue
+        actor, _a = resolve_name(str(ev.get("actor") or ""), profiles)
+        target, _t = resolve_name(str(ev.get("target") or ""), profiles)
+        # direction: every panel in the span gets the story's attribution
+        if actor != "unknown" or target != "unknown":
+            for fn in span:
+                overrides.append({
+                    "scene_file": fn,
+                    "actor": "" if actor == "unknown" else actor,
+                    "target": "" if target == "unknown" else target,
+                    "reason": f"chapter story: {does[:80]} | "
+                              f"{str(ev.get('evidence') or '')[:80]}"})
+        # a fatal event kills the TARGET, anchored at the end of the span
+        if _KILL_RE.search(does) and target != "unknown":
+            events.append({"type": "death", "scene_file": span[-1],
+                           "subject": target, "detail": does[:200],
+                           "evidence_quote": str(ev.get("evidence") or "")[:200]})
+    # cross-check the cast sheet: a character the story says died must have a
+    # death event, else say so out loud (a silent gap is what hid the last bug)
+    for c in ((story or {}).get("cast") or []):
+        if not isinstance(c, dict):
+            continue
+        if not _KILL_RE.search(str(c.get("fate") or "")):
+            continue
+        who, _e = resolve_name(str(c.get("name") or ""), profiles)
+        if who != "unknown" and not any(e["subject"] == who for e in events):
+            log(f"[ledger] cast says {c.get('name')!r} is "
+                f"{str(c.get('fate'))[:40]!r} but no event anchors that death "
+                "to a panel — it will NOT propagate")
+    return events, overrides
+
+
 def dead_sets_by_file(ledger: Any, ordered_files: List[str]
                       ) -> Dict[str, Set[str]]:
     """{scene_file: entities dead STRICTLY BEFORE this panel} — the excluded
@@ -522,15 +606,30 @@ def dead_sets_by_file(ledger: Any, ordered_files: List[str]
 
 
 def build_ledger(understood: Any, groups_m: Any, cast: Any,
-                 arbitrate_fn=None, log=print) -> Dict[str, Any]:
-    """The whole pipeline minus I/O — injectable arbitrate_fn for tests."""
+                 arbitrate_fn=None, log=print,
+                 chapter_story: Any = None) -> Dict[str, Any]:
+    """The whole pipeline minus I/O — injectable arbitrate_fn for tests.
+
+    When *chapter_story* is present (tools/story_pass.py), its events are the
+    fact source and NO model call is made here: one whole-chapter read beats
+    12 windowed arbitrations that each saw a slice. arbitrate_fn remains the
+    fallback for chapters with no story pass."""
     entities = build_entities(understood, cast)
     profiles = entity_profiles(entities)
     panel_actions = build_panel_actions(understood, profiles)
     groups = _read_groups(groups_m or {})
     events: List[Dict[str, Any]] = []
     overrides_applied = 0
-    if arbitrate_fn is not None:
+    if chapter_story:
+        raw_events, raw_overrides = facts_from_chapter_story(
+            chapter_story, entities, understood, profiles, log=log)
+        events = normalize_events(raw_events, entities, understood,
+                                  profiles=profiles, log=log)
+        overrides_applied = apply_overrides(panel_actions, raw_overrides,
+                                            entities, profiles=profiles)
+        log(f"[ledger] from chapter story: {len(events)} death event(s), "
+            f"{overrides_applied} panel attribution(s) — 0 model calls")
+    elif arbitrate_fn is not None:
         raw_events: List[Any] = []
         raw_overrides: List[Any] = []
         windows = _windows(_panels(understood))
@@ -574,6 +673,10 @@ def main() -> int:
     ap.add_argument("--understood", required=True)
     ap.add_argument("--groups", required=True)
     ap.add_argument("--cast", required=True)
+    ap.add_argument("--chapter-story", default="",
+                    help="manifest.chapter_story.json (story_pass). When "
+                         "present its events ARE the facts and no model call "
+                         "is made here.")
     ap.add_argument("--out", required=True)
     ap.add_argument("--backend", choices=["vertex", "ollama"],
                     default="ollama")
@@ -594,9 +697,15 @@ def main() -> int:
                          project=args.project, location=args.location,
                          num_ctx=args.num_ctx)
 
-    ledger = build_ledger(understood, groups_m, cast, arbitrate_fn=_arb)
-    write_manifest(args.out, ledger,
-                   inputs=(args.understood, args.groups, args.cast),
+    story = (_load(args.chapter_story)
+             if args.chapter_story and os.path.exists(args.chapter_story)
+             else None)
+    ledger = build_ledger(understood, groups_m, cast, arbitrate_fn=_arb,
+                          chapter_story=story)
+    inputs = [args.understood, args.groups, args.cast]
+    if story is not None:
+        inputs.append(args.chapter_story)
+    write_manifest(args.out, ledger, inputs=tuple(inputs),
                    tool="story_ledger",
                    extra_meta={"model": args.model, "backend": args.backend})
     s = ledger["stats"]

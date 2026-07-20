@@ -297,10 +297,34 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             if cfg.beats_backend == "ollama":
                 cast_args += ["--backend", "ollama"]
             _run_tool("cast_builder.py", cast_args)
-        # Story-state ledger (2026-07-20): ONE arbitration call reconciles the
-        # per-panel visual action guesses against the chapter's dialogue and
-        # records deaths/roles/answered questions — the fact record the writer,
-        # identity gate, and QA all read. Skip-iff-fresh like cast.
+        # Whole-chapter STORY PASS: read the chapter's own dialogue once, in
+        # reading order, and get the plot — synopsis, cast with fates, events
+        # with actor->target and the proving line. Measured on nano ch1: one
+        # call, ~3 min, correct; the per-panel path spent ~79 min and got the
+        # chapter's central kill backwards. Fail-soft: without it the ledger
+        # falls back to its own windowed arbitration.
+        chapter_story = ep_dir / "manifest.chapter_story.json"
+        story_stale = (chapter_story.exists()
+                       and _artifact_is_stale(ep_dir,
+                                              "manifest.chapter_story.json"))
+        if not chapter_story.exists() or story_stale:
+            story_args = ["--vision-manifest", str(p["vision"]),
+                          "--understood", str(p["understood"]),
+                          "--out", str(chapter_story),
+                          "--project", project, "--location", location,
+                          "--model", cfg.beats_model]
+            story_args += (["--backend", "ollama"]
+                           if cfg.beats_backend == "ollama"
+                           else ["--backend", "vertex"])
+            try:
+                _run_tool("story_pass.py", story_args)
+            except Exception as e:      # never block the chapter on it
+                print(f"[beated] story pass FAILED ({e}) -> the ledger falls "
+                      "back to per-window arbitration")
+        # Story-state ledger (2026-07-20): projects the chapter story onto
+        # per-beat facts (deaths propagate, dead role-holders' titles get
+        # banned) — the record the writer, identity gate, and QA all read.
+        # Skip-iff-fresh like cast.
         ledger = ep_dir / "manifest.ledger.json"
         ledger_stale = (ledger.exists()
                         and _artifact_is_stale(ep_dir, "manifest.ledger.json"))
@@ -308,6 +332,7 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             ledger_args = ["--understood", str(p["understood"]),
                            "--groups", str(p["groups"]),
                            "--cast", str(p["cast"]),
+                           "--chapter-story", str(chapter_story),
                            "--out", str(ledger),
                            "--project", project, "--location", location,
                            "--model", cfg.beats_model]

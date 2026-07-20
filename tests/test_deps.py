@@ -78,13 +78,15 @@ def test_artifacts_beyond_closures():
     assert set(deps.artifacts_beyond("scripted")) == {
         "tts/tts_index.json", "render.plan.json", "render.plan.clean.json"}
     assert set(deps.artifacts_beyond("grouped")) == {
-        "manifest.cast.json", "manifest.ledger.json", "manifest.beats.json",
+        "manifest.cast.json", "manifest.chapter_story.json",
+        "manifest.ledger.json", "manifest.beats.json",
         "manifest.script.json", "manifest.sanitize.json", "render.plan.json",
         "tts/tts_index.json", "render.plan.clean.json"}
     assert set(deps.artifacts_beyond("detected")) == {
         "manifest.scenes.json", "manifest.vision.json",
         "manifest.panels.understood.json", "manifest.groups.json",
-        "manifest.story.json", "manifest.cast.json", "manifest.ledger.json",
+        "manifest.story.json", "manifest.cast.json",
+        "manifest.chapter_story.json", "manifest.ledger.json",
         "manifest.beats.json", "manifest.script.json",
         "manifest.sanitize.json", "render.plan.json",
         "tts/tts_index.json", "render.plan.clean.json"}

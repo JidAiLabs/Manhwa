@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import tools.story_pass as sp
 import tools.cast_builder as cb
 import tools.cast_identity as ci
 import tools.identity_gate as ig
@@ -431,6 +432,136 @@ def test_dead_sets_by_file_strictly_after_death_panel():
     dead = sl.dead_sets_by_file(led, ["p1.jpg", "p2.jpg"])
     assert "p1.jpg" not in dead                  # dies AT p1, not before
     assert dead["p2.jpg"] == {"unnamed assassin"}
+
+
+# ---- story_pass: the whole-chapter read -------------------------------------
+
+def test_transcript_keeps_reading_order_and_drops_only_chrome():
+    vision = {"items": [
+        {"scene_file": "p1.jpg", "ocr_clean": "FIRST LINE"},
+        {"scene_file": "p2.jpg", "ocr_clean": ""},          # wordless: KEPT
+        {"scene_file": "p3.jpg", "ocr_clean": "subscribe!"},  # chrome: dropped
+        {"scene_file": "p4.jpg", "ocr_clean": "LAST LINE"},
+    ]}
+    understood = {"panels": [
+        {"scene_file": "p1.jpg", "panel_kind": "story"},
+        {"scene_file": "p2.jpg", "panel_kind": "story"},
+        {"scene_file": "p3.jpg", "panel_kind": "chrome"},
+        {"scene_file": "p4.jpg", "panel_kind": "story"},
+    ]}
+    t = sp.build_transcript(vision, understood)
+    lines = t.splitlines()
+    assert [line.split()[0] for line in lines] == ["p1.jpg", "p2.jpg", "p4.jpg"]
+    assert "(no text)" in lines[1]          # wordless panels hold their place
+    assert "subscribe" not in t
+    # without an understanding the transcript still works (nothing filtered)
+    assert len(sp.build_transcript(vision).splitlines()) == 4
+
+
+def test_build_story_normalizes_and_refuses_an_empty_answer():
+    out = sp.build_story("t", lambda _p: {
+        "synopsis": " The prince kills an assassin. ",
+        "cast": [{"name": " Prince Cheon ", "role": "protagonist",
+                  "fate": "wounded"}, {"name": "", "role": "x", "fate": "y"}],
+        "events": [{"panels": "p1-p2", "actor": "Prince Cheon",
+                    "does": "kills an assassin", "target": "the assassins",
+                    "evidence": "q"},
+                   {"panels": "p9", "actor": "x", "does": "", "target": ""}]})
+    assert out["synopsis"] == "The prince kills an assassin."
+    assert [c["name"] for c in out["cast"]] == ["Prince Cheon"]   # blank dropped
+    assert len(out["events"]) == 1                                # no-verb dropped
+    assert out["prompt_version"] == sp.PROMPT_VERSION
+    for bad in ({"synopsis": "", "cast": [], "events": []}, "not a dict"):
+        try:
+            sp.build_story("t", lambda _p: bad)
+            assert False, "should have raised"
+        except (ValueError, Exception):
+            pass
+
+
+# ---- story -> ledger derivation (no model call) ------------------------------
+
+_ORDERED = [f"p{i:06d}.jpg" for i in range(30, 42)]
+_U12 = {"panels": [{"scene_file": f, "subjects": [], "actions": [],
+                    "dialogue": ""} for f in _ORDERED]}
+
+
+def test_panel_range_parses_ids_with_or_without_extension():
+    assert sp is not None
+    assert sl._panel_range("p000036-p000037", _ORDERED) == [
+        "p000036.jpg", "p000037.jpg"]
+    assert sl._panel_range("p000036.jpg", _ORDERED) == ["p000036.jpg"]
+    assert sl._panel_range("p000030-p000032", _ORDERED) == [
+        "p000030.jpg", "p000031.jpg", "p000032.jpg"]
+    assert sl._panel_range("nonsense", _ORDERED) == []
+    assert sl._panel_range("p999999", _ORDERED) == []
+
+
+def test_story_events_become_deaths_and_direction_without_a_model_call():
+    ents = sl.build_entities(_U12, CAST)
+    profs = sl.entity_profiles(ents)
+    story = {"cast": [{"name": "the assassins", "role": "antagonist",
+                       "fate": "one member killed by Prince Cheon"}],
+             "events": [{"panels": "p000036-p000037",
+                         "actor": "Prince Cheon",
+                         "does": "kills an assassin with a hidden blade",
+                         "target": "the assassins",
+                         "evidence": "HOW DID A KID KILL ONE OF OUR MEMBERS?"}]}
+    ev, ov = sl.facts_from_chapter_story(story, ents, _U12, profs, log=lambda _m: None)
+    assert len(ev) == 1 and ev[0]["type"] == "death"
+    assert ev[0]["subject"] == "the assassins"
+    assert ev[0]["scene_file"] == "p000037.jpg"     # anchored at span END
+    assert len(ov) == 2                              # both panels attributed
+    assert ov[0]["actor"] == "our protagonist"
+    assert ov[0]["target"] == "the assassins"
+
+
+def test_non_fatal_story_event_sets_direction_but_no_death():
+    ents = sl.build_entities(_U12, CAST)
+    profs = sl.entity_profiles(ents)
+    story = {"cast": [], "events": [
+        {"panels": "p000033", "actor": "the assassins", "does": "lunges at",
+         "target": "Prince Cheon", "evidence": "?!"}]}
+    ev, ov = sl.facts_from_chapter_story(story, ents, _U12, profs, log=lambda _m: None)
+    assert ev == []
+    assert len(ov) == 1 and ov[0]["actor"] == "the assassins"
+
+
+def test_unanchorable_event_and_unpropagated_death_are_logged_not_silent():
+    ents = sl.build_entities(_U12, CAST)
+    profs = sl.entity_profiles(ents)
+    logs = []
+    story = {"cast": [{"name": "the assassins", "role": "antagonist",
+                       "fate": "killed"}],
+             "events": [{"panels": "chapter 4", "actor": "Prince Cheon",
+                         "does": "kills someone", "target": "the assassins",
+                         "evidence": "q"}]}
+    ev, ov = sl.facts_from_chapter_story(story, ents, _U12, profs, log=logs.append)
+    assert ev == [] and ov == []
+    assert any("not anchorable" in m for m in logs)
+    assert any("no event anchors that death" in m for m in logs)
+
+
+def test_build_ledger_prefers_the_chapter_story_and_skips_arbitration():
+    calls = []
+
+    def arb(_digest):
+        calls.append(1)
+        return {"events": [], "overrides": []}
+
+    story = {"cast": [], "events": [
+        {"panels": "p000036-p000037", "actor": "Prince Cheon",
+         "does": "kills an assassin", "target": "the assassins",
+         "evidence": "HOW DID A KID KILL ONE OF OUR MEMBERS?"}]}
+    led = sl.build_ledger(_U12, {"shots": [
+        {"shot_id": 9, "scene_files": ["p000036.jpg", "p000037.jpg"]},
+        {"shot_id": 10, "scene_files": ["p000038.jpg"]}]},
+        CAST, arbitrate_fn=arb, chapter_story=story, log=lambda _m: None)
+    assert calls == []                       # ZERO model calls
+    assert [e["subject"] for e in led["events"]] == ["the assassins"]
+    # and the death propagates to the LATER beat, not its own
+    assert led["beat_facts"]["g0009"]["dead_by_now"] == []
+    assert led["beat_facts"]["g0010"]["dead_by_now"] == ["the assassins"]
 
 
 # ---- identity_gate: ledger-aware cases --------------------------------------

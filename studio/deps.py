@@ -67,6 +67,12 @@ ARTIFACTS: Dict[str, A] = {
                                          # built before understanding existed
                                          # must rebuild once it does
                                          optional=("manifest.panels.understood.json",)),
+    # whole-chapter story pass (2026-07-20): ONE read of the chapter's own
+    # dialogue -> synopsis + cast fates + events. The plot source the ledger
+    # and the writer derive from.
+    "manifest.chapter_story.json":     A(stage="beated",
+                                         inputs=("manifest.vision.json",),
+                                         optional=("manifest.panels.understood.json",)),
     # story-state ledger (2026-07-20): chapter fact record (entities, action
     # attribution, deaths/role transitions) built between cast and the writer.
     # NOT required yet — older chapters predate it; flip once the fleet has
@@ -74,7 +80,8 @@ ARTIFACTS: Dict[str, A] = {
     "manifest.ledger.json":            A(stage="beated",
                                          inputs=("manifest.panels.understood.json",
                                                  "manifest.groups.json",
-                                                 "manifest.cast.json")),
+                                                 "manifest.cast.json"),
+                                         optional=("manifest.chapter_story.json",)),
     "manifest.beats.json":             A(stage="beated", required=True,
                                          inputs=("manifest.groups.json",),
                                          optional=("manifest.cast.json",
