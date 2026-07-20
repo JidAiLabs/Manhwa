@@ -566,9 +566,21 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
     if _stream(gargs, log, env=env) != 0:
         raise RuntimeError("gemini_narrative_pass (heal) failed")
     if (cfg.punchup or "off") != "off":
+        # SCOPE the persona pass to the groups we just re-narrated. Punching
+        # the whole file at temp 0.7 rewrote ~20 unflagged beats every cycle;
+        # that churn is what made narration_accept_better re-judge them all
+        # (serially) and busted the grounding cache, which is keyed on the
+        # narration TEXT — ~40 avoidable model calls per heal cycle.
+        try:
+            _gids = sorted({int(g) for g in
+                            json.loads(Path(corr_path).read_text())})
+        except Exception:
+            _gids = []
         pargs = [PY, str(REPO / "tools" / "narration_punchup.py"),
                  "--beats", beats, "--out", beats, "--cast", cast,
                  "--episode-dir", str(ep), "--humor", cfg.punchup]
+        if _gids:
+            pargs += ["--only-groups", ",".join(str(g) for g in _gids)]
         if cfg.beats_backend == "ollama":
             pargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]
         else:

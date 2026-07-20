@@ -598,6 +598,45 @@ def test_prior_inputs_extra_meta_none_when_beats_unstamped():
     assert npu._prior_inputs_extra_meta({"_meta": {"inputs": {}}}) is None
 
 
+def _punched_beat(gid, line, plain):
+    """A beat as it looks AFTER a punchup pass: segment line = the punched
+    wording, line_plain = the grounded original."""
+    return {"group_id": gid,
+            "segments": [{"span": [f"p{gid}.jpg"], "line": line,
+                          "line_plain": plain}],
+            "narration": line, "narration_plain": plain}
+
+
+def test_no_rewrite_reverts_a_punched_beat_to_its_grounded_line():
+    """Why the scoped heal run must SKIP untouched beats rather than pass them
+    an empty rewrite map: with no candidate, apply_panel_punchup falls back to
+    `line_plain` — the grounded original — silently stripping the channel
+    voice off every beat the heal never flagged."""
+    untouched = _punched_beat(9, "Punched nine.", "Grounded nine.")
+    npu.apply_panel_punchup(untouched, {})
+    assert untouched["segments"][0]["line"] == "Grounded nine."
+    assert untouched["narration"] == "Grounded nine."
+
+
+def test_only_groups_parsing_is_forgiving():
+    parse = lambda s: {int(x) for x in str(s).replace(" ", "").split(",")
+                       if x.strip().lstrip("-").isdigit()}
+    assert parse("5,9, 12") == {5, 9, 12}
+    assert parse("") == set()
+    assert parse("5,,junk,9") == {5, 9}
+
+
+def test_heal_passes_only_groups_to_punchup():
+    """The worker must derive the scope from the corrections map it just
+    wrote, so punchup re-rolls exactly the groups that were re-narrated."""
+    src = Path("studio/worker.py").read_text(encoding="utf-8")
+    assert "--only-groups" in src
+    assert "json.loads(Path(corr_path).read_text())" in src
+    # and the tool must actually accept it
+    assert "--only-groups" in Path(
+        "tools/narration_punchup.py").read_text(encoding="utf-8")
+
+
 def test_rewrite_path_preserves_prior_inputs_meta(tmp_path):
     # Full "run the rewrite path" check: seed a beats manifest stamped with an
     # upstream groups.json sha, write it back through the exact write_manifest

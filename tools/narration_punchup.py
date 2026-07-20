@@ -864,7 +864,18 @@ def main() -> int:
     ap.add_argument("--num-ctx", type=int,
                     default=int(os.environ.get("STUDIO_PUNCHUP_NUM_CTX", "16384")),
                     help="Ollama context window for rewrite calls")
+    ap.add_argument("--only-groups", default="",
+                    help="CSV of group_ids to re-punch; every other beat keeps "
+                         "its existing punched line untouched. The HEAL path "
+                         "passes the regenerated groups — re-punching the rest "
+                         "at temperature 0.7 rewrote ~20 unflagged beats every "
+                         "cycle, which then made accept_better re-judge them "
+                         "and busted the grounding cache (the heal treadmill).")
     args = ap.parse_args()
+    only_groups: Optional[set] = None
+    if str(args.only_groups).strip():
+        only_groups = {int(x) for x in str(args.only_groups).replace(" ", "")
+                       .split(",") if x.strip().lstrip("-").isdigit()}
     if not args.genre and args.script and os.path.exists(args.script):
         try:
             sc = json.load(open(args.script))
@@ -907,6 +918,12 @@ def main() -> int:
                                    or b.get("narration") or "")}
                  for b in beats_obj.get("beats") or []
                  if (b.get("narration_plain") or b.get("narration"))]
+    if only_groups is not None:
+        kept = [x for x in lines if int(x.get("group_id") or 0) in only_groups]
+        print(f"[punchup] scoped to groups {sorted(only_groups)}: "
+              f"{len(kept)}/{len(lines)} line(s) re-punched, the rest keep "
+              "their existing wording")
+        lines = kept
 
     payload_chars = max(8000, int(args.num_ctx * 2.6))
     batches = (_batch_lines(lines, args.batch_size,
@@ -970,6 +987,13 @@ def main() -> int:
         out = copy.deepcopy(beats_obj)
         applied = 0
         for b in out.get("beats") or []:
+            # A scoped (heal) run must SKIP untouched beats entirely, not just
+            # send them no rewrite: with no candidate, apply_panel_punchup
+            # falls back to `line_plain` — the GROUNDED line — which would
+            # quietly strip the channel voice off every unflagged beat.
+            if (only_groups is not None
+                    and int(b.get("group_id") or 0) not in only_groups):
+                continue
             applied += apply_panel_punchup(b, rewrites, cast_names=cast_names,
                                            caption_words=cap_words, classes=classes)
         out.setdefault("stats", {})["punchup_applied"] = applied
