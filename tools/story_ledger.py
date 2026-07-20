@@ -45,9 +45,9 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from cast_identity import (  # noqa: E402
-    _score,
     cast_profiles,
     resolve_figures,
+    resolve_name,
 )
 from identity_gate import _neutral_from_evidence  # noqa: E402
 from manifest_io import write_manifest  # noqa: E402
@@ -190,19 +190,19 @@ def entity_profiles(entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _resolve_name(text: str, profiles: List[Dict[str, Any]]) -> str:
-    """One actor/target string -> entity canonical name, 'unclear', or '' —
-    same score>=2 + margin>=1 discipline as resolve_figures (never a guess)."""
+    """One actor/target string -> entity canonical name, 'unclear', or ''.
+
+    Delegates to cast_identity.resolve_name — THE shared oracle. Its
+    faction-tie rule is what stops two look-alike assassins from erasing each
+    other into 'unclear' (which is how the writer once received the fact
+    'unclear lunges at our protagonist' and narrated the inversion)."""
     text = str(text or "").strip()
     if not text:
         return ""
     if text.lower() == "unclear":
         return "unclear"
-    scored = sorted(((_score(p, text)[0], p["name"]) for p in profiles),
-                    key=lambda t: (-t[0], t[1]))
-    if scored and scored[0][0] >= 2.0 and (
-            len(scored) == 1 or scored[0][0] - scored[1][0] >= 1.0):
-        return scored[0][1]
-    return "unclear"
+    name, _ev = resolve_name(text, profiles)
+    return "unclear" if name == "unknown" else name
 
 
 def build_panel_actions(understood: Any, profiles: List[Dict[str, Any]]
@@ -234,9 +234,16 @@ def build_panel_actions(understood: Any, profiles: List[Dict[str, Any]]
 
 def build_digest(entities: List[Dict[str, Any]],
                  panel_actions: List[Dict[str, Any]],
-                 understood: Any) -> str:
-    """Compact chapter digest the arbiter reads: entities, per-panel resolved
-    actions, and the full dialogue in reading order."""
+                 understood: Any,
+                 panels: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Compact digest the arbiter reads: entities (always the full cast, so
+    names anchor), plus the actions and dialogue of *panels* (default: the
+    whole chapter). Windowing the panels is what makes anchoring reliable —
+    one whole-chapter call had to cross-reference ~100 actions against every
+    line of dialogue at once and returned three trivial events, missing an
+    explicit kill stated in the dialogue."""
+    panels = _panels(understood) if panels is None else panels
+    window = {str(p["scene_file"]) for p in panels}
     lines: List[str] = ["ENTITIES:"]
     for e in entities:
         tag = " (PROTAGONIST)" if e.get("is_protagonist") else ""
@@ -245,20 +252,34 @@ def build_digest(entities: List[Dict[str, Any]],
     lines.append("ANALYZED PANEL ACTIONS (visual guesses, may be wrong):")
     by_file: Dict[str, List[str]] = {}
     for a in panel_actions:
-        by_file.setdefault(a["scene_file"], []).append(
-            f"{a['actor'] or '?'} {a['verb']} {a['target'] or ''}".strip())
-    for p in _panels(understood):
+        if a["scene_file"] in window:
+            by_file.setdefault(a["scene_file"], []).append(
+                f"{a['actor'] or '?'} {a['verb']} {a['target'] or ''}".strip())
+    for p in panels:
         sf = str(p["scene_file"])
         acts = "; ".join(by_file.get(sf, []))
         act = str(p.get("action") or "")[:100]
         lines.append(f"  {sf} [{p.get('panel_kind')}] {acts or act}")
     lines.append("DIALOGUE (verbatim OCR, reading order — the highest-trust "
                  "evidence):")
-    for p in _panels(understood):
+    for p in panels:
         d = str(p.get("dialogue") or "").strip()
         if d:
             lines.append(f"  {p['scene_file']}: {d[:200]}")
     return "\n".join(lines)
+
+
+def _windows(panels: List[Dict[str, Any]], size: int = 14, overlap: int = 4
+             ) -> List[List[Dict[str, Any]]]:
+    """Overlapping reading-order windows. The overlap matters: a kill and the
+    dialogue that proves it can straddle a boundary (nano ch1's strike is at
+    p000033, the 'how did a kid kill one of our members' line at p000037)."""
+    if not panels:
+        return []
+    step = max(1, size - overlap)
+    out = [panels[i:i + size] for i in range(0, len(panels), step)
+           if panels[i:i + size]]
+    return out or [panels]
 
 
 def arbitrate(digest: str, *, backend: str, model: str, project: str = "",
@@ -303,39 +324,74 @@ def arbitrate(digest: str, *, backend: str, model: str, project: str = "",
 # --- deterministic derivation ---------------------------------------------------
 
 def normalize_events(raw: Any, entities: List[Dict[str, Any]],
-                     understood: Any) -> List[Dict[str, Any]]:
-    """Keep only events whose subject copies an entity name (case-insensitive)
-    and whose scene_file exists in the chapter — the arbiter must anchor
-    facts, never invent actors."""
+                     understood: Any, profiles: Optional[List[Dict[str, Any]]]
+                     = None, log=print) -> List[Dict[str, Any]]:
+    """Anchor each event to a real entity + a real panel, and DEDUPE.
+
+    The subject is matched exactly first, then resolved through the identity
+    oracle ('one of our members' / 'an assassin member' must land on the
+    faction entity). Every rejection is LOGGED — the first version dropped
+    non-matching subjects silently, so a missing death looked identical to a
+    model that never claimed one."""
     names = {e["canonical_name"].lower(): e["canonical_name"]
              for e in entities}
     files = {str(p["scene_file"]) for p in _panels(understood)}
+    profiles = profiles if profiles is not None else entity_profiles(entities)
     out: List[Dict[str, Any]] = []
+    seen: Set[tuple] = set()
     for ev in (raw or []):
         if not isinstance(ev, dict):
             continue
         etype = str(ev.get("type") or "").strip()
-        subj = names.get(str(ev.get("subject") or "").strip().lower())
+        raw_subj = str(ev.get("subject") or "").strip()
         sf = str(ev.get("scene_file") or "").strip()
-        if etype in EVENT_TYPES and subj and sf in files:
-            out.append({"type": etype, "scene_file": sf, "subject": subj,
-                        "detail": str(ev.get("detail") or "").strip()[:300],
-                        "evidence_quote":
-                            str(ev.get("evidence_quote") or "").strip()[:200]})
+        subj = names.get(raw_subj.lower())
+        if not subj and raw_subj:
+            got, _ev = resolve_name(raw_subj, profiles)
+            subj = None if got == "unknown" else got
+        if etype not in EVENT_TYPES:
+            log(f"[ledger] dropped event: unknown type {etype!r}")
+            continue
+        if not subj:
+            log(f"[ledger] dropped {etype}: subject {raw_subj!r} matches no "
+                "entity (cast coverage gap?)")
+            continue
+        if sf not in files:
+            log(f"[ledger] dropped {etype} for {subj!r}: scene_file {sf!r} "
+                "is not a panel of this chapter")
+            continue
+        key = (etype, sf, subj)
+        if key in seen:                  # overlapping windows see it twice
+            continue
+        seen.add(key)
+        out.append({"type": etype, "scene_file": sf, "subject": subj,
+                    "detail": str(ev.get("detail") or "").strip()[:300],
+                    "evidence_quote":
+                        str(ev.get("evidence_quote") or "").strip()[:200]})
     return out
 
 
 def apply_overrides(panel_actions: List[Dict[str, Any]], raw: Any,
-                    entities: List[Dict[str, Any]]) -> int:
-    """Flip actor/target on dialogue-arbitrated panels, in place. Only entity
-    names / 'unclear' are accepted; an override for a panel with no recorded
-    action ADDS one (the misread panel may have shipped only free text)."""
+                    entities: List[Dict[str, Any]],
+                    profiles: Optional[List[Dict[str, Any]]] = None) -> int:
+    """Flip actor/target on dialogue-arbitrated panels, in place. Entity names
+    resolve through the oracle (exact first, then appearance/faction), so a
+    natural phrasing like 'the assassin member' still anchors; an override for
+    a panel with no recorded action ADDS one (the misread panel may have
+    shipped only free text)."""
     names = {e["canonical_name"].lower(): e["canonical_name"]
              for e in entities}
+    profiles = profiles if profiles is not None else entity_profiles(entities)
 
     def _n(v: str) -> str:
         v = str(v or "").strip()
-        return names.get(v.lower()) or ("unclear" if v else "")
+        if not v:
+            return ""
+        hit = names.get(v.lower())
+        if hit:
+            return hit
+        got, _ev = resolve_name(v, profiles)
+        return "unclear" if got == "unknown" else got
 
     by_file: Dict[str, List[Dict[str, Any]]] = {}
     for a in panel_actions:
@@ -475,17 +531,32 @@ def build_ledger(understood: Any, groups_m: Any, cast: Any,
     events: List[Dict[str, Any]] = []
     overrides_applied = 0
     if arbitrate_fn is not None:
-        try:
-            digest = build_digest(entities, panel_actions, understood)
-            raw = arbitrate_fn(digest) or {}
-            events = normalize_events(raw.get("events"), entities, understood)
-            overrides_applied = apply_overrides(
-                panel_actions, raw.get("overrides"), entities)
-        except Exception as e:  # fail-soft: visual-only ledger, loud log
-            log(f"[ledger] ARBITRATION FAILED ({e!r}) — writing a "
+        raw_events: List[Any] = []
+        raw_overrides: List[Any] = []
+        windows = _windows(_panels(understood))
+        failed = 0
+        for i, win in enumerate(windows):
+            try:
+                digest = build_digest(entities, panel_actions, understood,
+                                      panels=win)
+                raw = arbitrate_fn(digest) or {}
+                raw_events += list(raw.get("events") or [])
+                raw_overrides += list(raw.get("overrides") or [])
+            except Exception as e:      # one bad window must not lose the rest
+                failed += 1
+                log(f"[ledger] window {i + 1}/{len(windows)} "
+                    f"({win[0]['scene_file']}..{win[-1]['scene_file']}) "
+                    f"arbitration FAILED ({e!r}) — its facts are missing")
+        if failed == len(windows):
+            log("[ledger] ARBITRATION FAILED on EVERY window — writing a "
                 "visual-only ledger (events=[]); direction overrides and "
                 "death propagation are OFF for this chapter")
-            events, overrides_applied = [], 0
+        events = normalize_events(raw_events, entities, understood,
+                                  profiles=profiles, log=log)
+        overrides_applied = apply_overrides(panel_actions, raw_overrides,
+                                            entities, profiles=profiles)
+        log(f"[ledger] {len(windows)} window(s), {failed} failed -> "
+            f"{len(events)} event(s), {overrides_applied} override(s)")
     return {
         "entities": entities,
         "panel_actions": panel_actions,

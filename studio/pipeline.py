@@ -336,11 +336,14 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                            "--ollama-model", cfg.beats_model]
         _run_tool("gemini_narrative_pass.py",
                   beats_args + [
-                   # Send enough panels per group that the scene_selection
-                   # (keep/redundant) judgment can see every candidate — otherwise
-                   # an unseen panel defaults to 'keep' and same-moment dups survive.
-                   # Cheap (a few extra images/chapter); groups average ~3 scenes.
-                   "--max-images-per-group", "6"])
+                   # Panels per group the writer SEES. Not cheap: measured on
+                   # the MLX shim, a writer call costs ~69s at 6 images vs
+                   # ~49s at 3 (~30% of the chapter's dominant serial stage).
+                   # Every panel's understanding still rides scenes_signals,
+                   # so an unattached panel is described, just not re-seen;
+                   # scene_selection defaults it to 'keep' and render_prep's
+                   # dedup (not this judgment) is what drops true twins.
+                   "--max-images-per-group", "3"])
     if (cfg.punchup or "off") != "off":
         # persona pass over the grounded beats, in place: narration gets the
         # channel voice, narration_plain keeps the grounded line, and groups

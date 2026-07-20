@@ -264,6 +264,46 @@ def _looks_person(text: str) -> bool:
     return bool(toks & _PERSONISH) or bool(toks & _GARMENT)
 
 
+def resolve_name(text: str, profiles: Sequence[Dict[str, Any]]
+                 ) -> Tuple[str, str]:
+    """(canonical_name|'unknown', evidence) for ONE figure-describing string.
+
+    THE single resolution rule, shared by resolve_figures (panel subjects) and
+    story_ledger (structured action actors/targets) — two copies drifted once
+    and the ledger's copy erased every look-alike assassin to 'unclear',
+    handing the writer facts like "unclear lunges at our protagonist".
+
+    Requires score >= 2 AND a margin of 1 over the runner-up. A SAME-FACTION
+    tie (every tied member shares a name token — near-identical appearance BY
+    DESIGN) is one narrative identity, resolved to the LEAST SPECIFIC tied
+    member: the faction/group entry when one exists, else the member with the
+    fewest identity tokens. Evidence that fits 'the assassin' and 'the
+    assassin leader' equally cannot claim the leader — that asymmetry is what
+    kept re-crowning a dead leader from a generic hooded-cloak subject."""
+    text = str(text or "").strip()
+    if not text or not profiles:
+        return "unknown", text[:60]
+    by_name = {p["name"]: p for p in profiles}
+    scored = sorted(((_score(p, text), p["name"]) for p in profiles),
+                    key=lambda t: (-t[0][0], t[1]))
+    (best, ev), name = scored[0]
+    runner = scored[1][0][0] if len(scored) > 1 else 0.0
+    if best >= 2.0 and best - runner >= 1.0:
+        return name, f"{text[:60]} ~ {'+'.join(ev[:4])}"
+    if best >= 2.0:
+        tied = [n for (s, _e), n in scored if s == best]
+        if len(tied) > 1:
+            common = set.intersection(*(by_name[n]["name_tokens"]
+                                        for n in tied))
+            if common:
+                pick = sorted(tied, key=lambda n: (
+                    not by_name[n].get("is_group"),
+                    len(by_name[n]["name_tokens"]), n))[0]
+                return pick, (f"{text[:60]} ~ faction:"
+                              f"{'+'.join(sorted(common)[:2])}")
+    return "unknown", text[:60]
+
+
 def resolve_figures(understanding: Optional[Dict[str, Any]],
                     profiles: Sequence[Dict[str, Any]],
                     excluded: Optional[Set[str]] = None
@@ -293,37 +333,11 @@ def resolve_figures(understanding: Optional[Dict[str, Any]],
 
     subjects = [str(s).strip() for s in (u.get("subjects") or [])
                 if str(s).strip()]
-    by_name = {p["name"]: p for p in profiles}
     for subj in subjects:
-        scored = sorted(((_score(p, subj), p["name"]) for p in profiles),
-                        key=lambda t: (-t[0][0], t[1]))
-        if scored:
-            (best, ev), name = scored[0]
-            runner = scored[1][0][0] if len(scored) > 1 else 0.0
-            if best >= 2.0 and best - runner >= 1.0:
-                _add(name, f"{subj[:60]} ~ {'+'.join(ev[:4])}")
-                continue
-            # SAME-FACTION tie (the assassin leader vs the assassin group —
-            # near-identical appearance BY DESIGN): when every tied top
-            # scorer shares a name-token, they are one narrative identity.
-            # Resolve to the tied GROUP member (the faction — what an
-            # appearance tie MEANS) when one exists; the old
-            # first-in-sort-order pick handed every generic assassin panel
-            # to the LEADER, so a dead leader kept "acting" for the rest of
-            # the chapter. Without a group member, first tied stays.
-            if best >= 2.0:
-                tied = [n for (s, _e), n in scored if s == best]
-                if len(tied) > 1:
-                    common = set.intersection(
-                        *(by_name[n]["name_tokens"] for n in tied))
-                    if common:
-                        grp = [n for n in tied
-                               if by_name[n].get("is_group")]
-                        _add(grp[0] if grp else name,
-                             f"{subj[:60]} ~ faction:"
-                             f"{'+'.join(sorted(common)[:2])}")
-                        continue
-        if _looks_person(subj):
+        name, ev = resolve_name(subj, profiles)
+        if name != "unknown":
+            _add(name, ev)
+        elif _looks_person(subj):
             _add("unknown", subj[:60])
 
     blob = " ".join(str(u.get(k) or "") for k in ("description", "action",

@@ -69,7 +69,8 @@ GROUPS = {"shots": [{"shot_id": 8, "scene_files": ["p1.jpg"]},
 
 
 def _arb_kill(digest):
-    assert "HOW DID A KID" in digest          # dialogue reaches the arbiter
+    if "HOW DID A KID" not in digest:         # window without the evidence
+        return {"events": [], "overrides": []}
     return {
         "events": [
             {"type": "death", "scene_file": "p1.jpg",
@@ -166,6 +167,79 @@ def test_reask_keeps_first_read_when_second_still_unclear():
     assert "reask" not in out[0]
 
 
+# ---- pu_v6: direction verification on a CONFIDENT two-person strike ---------
+
+def test_contested_strike_targets_two_person_violence_only():
+    two = {"strikes_or_weapons": "in_use", "subjects": [
+        "a masked figure in a dark hooded cloak",
+        "a young man in a light robe with a blue sash"]}
+    assert pu.contested_strike(two) is True
+    # one person: no direction to get backwards
+    assert pu.contested_strike({**two, "subjects": two["subjects"][:1]}) is False
+    # no strike landing: not the risky class
+    assert pu.contested_strike({**two, "strikes_or_weapons": "visible"}) is False
+    # props are not people
+    assert pu.contested_strike({"strikes_or_weapons": "in_use", "subjects": [
+        "a sword lying on the ground", "a stone wall"]}) is False
+
+
+def test_direction_reask_fires_on_confident_inversion_and_flips_it():
+    """The nano ch1 regression in miniature: pu_v5's re-ask never fired
+    because the model was CONFIDENT, so the inverted actor shipped."""
+    inverted = {"actor": "a masked figure in a dark hooded cloak",
+                "verb": "lunges at",
+                "target": "a young man in a light robe with a blue sash"}
+    corrected = {"actor": "a young man in a light robe with a blue sash",
+                 "verb": "stabs", "target":
+                 "a masked figure in a dark hooded cloak"}
+    first = {"description": "two figures collide", "action": "a strike",
+             "intensity": "intense", "panel_kind": "story",
+             "strikes_or_weapons": "in_use",
+             "subjects": [inverted["actor"], inverted["target"]],
+             "actions": [inverted]}
+    seen = []
+
+    def call_fn(payload, image_path):
+        seen.append(payload)
+        if "forced_choice_notice" in payload:
+            return {**first, "actions": [corrected]}
+        return first
+
+    items = [{"scene_file": "p33.jpg", "ocr_clean": "?!"},
+             {"scene_file": "p37.jpg",
+              "ocr_clean": "HOW DID A KID KILL ONE OF OUR MEMBERS?"}]
+    out = pu.understand_panels(items, call_fn)
+    rec = out[0]
+    assert rec["actions"] == [corrected]        # direction flipped
+    assert rec.get("direction_reask") is True
+    # the neighbouring dialogue — the evidence that settles it — was attached
+    notice_payload = [p for p in seen if "forced_choice_notice" in p][0]
+    assert any("HOW DID A KID" in d
+               for d in notice_payload.get("nearby_dialogue") or [])
+    # description/subjects are NOT taken from the second read (blast radius)
+    assert rec["description"] == "two figures collide"
+
+
+def test_direction_reask_keeps_first_actions_when_second_wont_commit():
+    first = {"description": "d", "action": "a", "intensity": "intense",
+             "panel_kind": "story", "strikes_or_weapons": "in_use",
+             "subjects": ["a masked figure in a dark hooded cloak",
+                          "a young man in a light robe with a blue sash"],
+             "actions": [{"actor": "a masked figure in a dark hooded cloak",
+                          "verb": "lunges at", "target": "a young man in a "
+                          "light robe with a blue sash"}]}
+
+    def call_fn(payload, image_path):
+        if "forced_choice_notice" in payload:
+            return {**first, "actions": [
+                {"actor": "unclear", "verb": "strikes", "target": "unclear"}]}
+        return first
+
+    out = pu.understand_panels([{"scene_file": "p.jpg"}], call_fn)
+    assert out[0]["actions"] == first["actions"]
+    assert "direction_reask" not in out[0]
+
+
 # ---- cast_identity: faction tie + excluded ----------------------------------
 
 def test_faction_tie_resolves_to_group_member_not_leader():
@@ -227,6 +301,93 @@ def test_ledger_death_propagates_forward_only():
     # 'the assassins' survive, so faction nouns are NOT banned
     assert not any("assassin" in h for h in g9["banned_handles"])
     assert g9["answered"] == []          # answered in g9 itself, not before
+
+
+def test_generic_faction_subject_resolves_to_the_least_specific_member():
+    """THE bug behind 'unclear lunges at our protagonist': a generic hooded
+    subject ties between 'unnamed assassin' and 'the assassins', and the old
+    ledger copy erased it to 'unclear'. Evidence that fits a plain member and
+    a titled one equally must never claim the titled one."""
+    profs = ci.cast_profiles(CAST)
+    name, _ev = ci.resolve_name(
+        "a masked figure in a dark hooded cloak with a sword", profs)
+    assert name == "the assassins"
+    # and the ledger's wrapper agrees — one oracle, no drift
+    assert sl._resolve_name(
+        "a masked figure in a dark hooded cloak with a sword", profs) == name
+    # a two-member cast with NO plural entry still avoids the titled one
+    cast2 = {"cast": [
+        {"canonical_name": "the masked assassin", "role": "antagonist",
+         "aliases": [], "visual_description": "a figure in a dark hooded "
+                                              "cloak with a black mask"},
+        {"canonical_name": "the assassin leader", "role": "antagonist",
+         "aliases": [], "visual_description": "a figure in a dark hooded "
+                                              "cloak with a black mask"}]}
+    got, _ = ci.resolve_name("a figure in a dark hooded cloak with a black "
+                             "mask", ci.cast_profiles(cast2))
+    assert got == "the masked assassin"
+
+
+def test_ledger_windows_the_arbitration_and_dedupes():
+    """One whole-chapter call returned three trivial events and missed a kill
+    stated outright in the dialogue; windows keep each call anchorable."""
+    panels = [{"scene_file": f"p{i:03d}.jpg", "panel_kind": "story",
+               "subjects": [], "action": "", "dialogue": "", "actions": []}
+              for i in range(40)]
+    seen = []
+
+    def arb(digest):
+        seen.append(digest)
+        return {"events": [{"type": "death", "scene_file": "p005.jpg",
+                            "subject": "our protagonist", "detail": "d",
+                            "evidence_quote": "q"}], "overrides": []}
+
+    led = sl.build_ledger({"panels": panels}, {"shots": []}, CAST,
+                          arbitrate_fn=arb)
+    assert len(seen) >= 3                    # windowed, not one giant call
+    assert all(len(d) < 6000 for d in seen)  # each call stays small
+    assert len(led["events"]) == 1           # every window claimed it: deduped
+
+
+def test_ledger_survives_one_bad_window():
+    panels = [{"scene_file": f"p{i:03d}.jpg", "panel_kind": "story",
+               "subjects": [], "action": "", "dialogue": "", "actions": []}
+              for i in range(40)]
+    calls = {"n": 0}
+
+    def arb(digest):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("window 2 exploded")
+        return {"events": [{"type": "reveal", "scene_file": "p001.jpg",
+                            "subject": "our protagonist", "detail": "d",
+                            "evidence_quote": "q"}], "overrides": []}
+
+    logged = []
+    led = sl.build_ledger({"panels": panels}, {"shots": []}, CAST,
+                          arbitrate_fn=arb, log=logged.append)
+    assert led["events"]                     # other windows' facts survive
+    assert any("window 2" in m or "arbitration FAILED" in m for m in logged)
+
+
+def test_event_subject_resolves_through_the_oracle_and_rejects_are_logged():
+    logged = []
+
+    def arb(digest):
+        return {"events": [
+            # natural phrasing, not a verbatim cast name -> oracle resolves it
+            {"type": "death", "scene_file": "p1.jpg",
+             "subject": "a masked figure in a dark hooded cloak with a sword",
+             "detail": "killed by the kid", "evidence_quote": "q"},
+            # genuinely unknown -> rejected, and SAID SO (never silent)
+            {"type": "death", "scene_file": "p1.jpg", "subject": "a dragon",
+             "detail": "", "evidence_quote": ""},
+        ], "overrides": []}
+
+    led = sl.build_ledger(UNDERSTOOD, GROUPS, CAST, arbitrate_fn=arb,
+                          log=logged.append)
+    assert [e["subject"] for e in led["events"]] == ["the assassins"]
+    assert any("dragon" in m and "matches no entity" in m for m in logged)
 
 
 def test_ledger_rejects_unanchored_events():

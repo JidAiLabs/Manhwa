@@ -351,12 +351,11 @@ def test_writeback_before_understood_dump_mtime_order(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_prompt_version_bumped_for_impact_fields():
-    # pu_v5 invalidates every pu_v4 resume record (INTENDED — chapters
-    # re-understand under the structured-actions direction contract; pu_v4
-    # did the same for evidence discipline over pu_v3, pu_v3 for
-    # appearance-aware subjects over pu_v2, pu_v2 for the impact-aware
-    # prompt over pu_v1).
-    assert pu.PROMPT_VERSION == "pu_v5"
+    # pu_v6 invalidates every pu_v5 resume record (INTENDED — chapters
+    # re-understand with two-person strikes direction-verified against the
+    # neighbouring dialogue; pu_v5 added structured actions, pu_v4 evidence
+    # discipline, pu_v3 appearance-aware subjects, pu_v2 impact awareness).
+    assert pu.PROMPT_VERSION == "pu_v6"
 
 
 def test_panel_schema_adds_impact_fields_backward_compatibly():
@@ -499,6 +498,6 @@ def test_tall_strip_merges_uncertain_any_window(monkeypatch, tmp_path):
     assert merged["uncertain"] is True         # any-window OR
 
 
-def test_prompt_version_is_pu_v5():
-    assert pu.PROMPT_VERSION == "pu_v5"
-    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v5")
+def test_prompt_version_is_pu_v6():
+    assert pu.PROMPT_VERSION == "pu_v6"
+    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v6")

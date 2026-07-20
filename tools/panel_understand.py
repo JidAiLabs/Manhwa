@@ -143,7 +143,9 @@ SYSTEM = (
     "When unsure between system/story (both are always kept), pick either; only an AUTHOR "
     "narrative caption is 'caption' and only platform furniture is 'chrome'.\n"
     "The 'previous_panels' field is context for continuity only — describe THIS "
-    "panel, not the previous ones."
+    "panel, not the previous ones. 'nearby_dialogue', when present, is what "
+    "characters SAY in the surrounding panels — use it ONLY to settle who does "
+    "what to whom here; never describe those other panels."
 )
 
 # Bump this whenever SYSTEM/PANEL_SCHEMA change materially — it is stamped onto
@@ -169,7 +171,13 @@ SYSTEM = (
 # free-text `action` carried no direction, so a wrong who-struck-whom guess
 # was unstructured and uncheckable. Invalidates ALL pu_v4 records, INTENDED
 # (2026-07-20 story-state wave).
-PROMPT_VERSION = "pu_v5"
+# pu_v6: DIRECTION VERIFICATION. pu_v5 shipped and the kill was STILL
+# inverted — because the model never hedged; it stated the wrong direction
+# confidently, so the 'unclear' re-ask never fired. Every two-person in_use
+# strike now gets one image re-ask with the NEIGHBOURING PANELS' DIALOGUE
+# attached (the evidence that actually settles it, already on disk).
+# Invalidates ALL pu_v5 records, INTENDED.
+PROMPT_VERSION = "pu_v6"
 
 # --- extreme-tall strips: windowed understanding -----------------------------
 # A cover/credits strip (ORV Ep0: 800x7540) downscaled to model resolution is
@@ -390,7 +398,8 @@ def _is_caption_bubble_on_plain(description: Any, subjects: Any) -> bool:
 
 
 def build_payload(panel: Dict[str, Any], prev_descs: List[str],
-                  impact_regions: Optional[List[Dict[str, Any]]] = None
+                  impact_regions: Optional[List[Dict[str, Any]]] = None,
+                  nearby_dialogue: Optional[List[str]] = None
                   ) -> Dict[str, Any]:
     """Pure: the per-panel model input (OCR + cheap vision signals + rolling
     context for continuity). Image is attached separately by the caller.
@@ -420,6 +429,8 @@ def build_payload(panel: Dict[str, Any], prev_descs: List[str],
             f"(region(s): {boxes}). In manhwa this marks a physical impact — "
             "a strike, stab, blow, or crash. Describe the physical action "
             "accordingly, and transcribe the lettering if you can read it.")
+    if nearby_dialogue:
+        payload["nearby_dialogue"] = nearby_dialogue[:8]
     return payload
 
 
@@ -457,6 +468,22 @@ def unclear_strike(rec: Dict[str, Any]) -> bool:
     return any("unclear" in (str(a.get("actor") or "").lower(),
                              str(a.get("target") or "").lower())
                for a in rec.get("actions") or [])
+
+
+def contested_strike(rec: Dict[str, Any]) -> bool:
+    """Pure: a strike is being DELIVERED and TWO OR MORE people are drawn —
+    the panel class where a wrong direction is both likely and invisible.
+
+    pu_v5 verified only HEDGING (an 'unclear' actor), but the nano ch1
+    inversion was stated CONFIDENTLY: 'a masked figure lunges at a young
+    man' when the art shows the counter-kill. A confident wrong answer needs
+    the same second look, with the neighbouring panels' dialogue as evidence
+    — that dialogue is what settles it, and it is already on disk."""
+    if str(rec.get("strikes_or_weapons") or "") != "in_use":
+        return False
+    from cast_identity import _looks_person
+    people = [s for s in (rec.get("subjects") or []) if _looks_person(str(s))]
+    return len(people) >= 2
 
 
 def assemble_record(scene_file: str, parsed: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -563,6 +590,19 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
     out: List[Dict[str, Any]] = []
     prev_descs: List[str] = []
 
+    # Neighbouring OCR per panel (+-3 in reading order): the evidence that
+    # settles who-struck-whom lives a panel or two away ("serves you right",
+    # "how did a kid kill one of our members"). Precomputed, no model cost.
+    _order = [it for it in items if it.get("scene_file")]
+    _near: Dict[str, List[str]] = {}
+    for _i, _it in enumerate(_order):
+        _win = []
+        for _j in range(max(0, _i - 3), min(len(_order), _i + 4)):
+            _d = str(_order[_j].get("ocr_clean") or "").strip()
+            if _d and _j != _i:
+                _win.append(f"{_order[_j].get('scene_file')}: {_d[:160]}")
+        _near[str(_it["scene_file"])] = _win
+
     def _understand(it: Dict[str, Any], ctx: List[str]) -> Dict[str, Any]:
         regions = detect_impact(it.get("scene_path")) or []
         dims = _tall_dims(it.get("scene_path"))
@@ -619,6 +659,45 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
                 rec = second
                 log(f"[panel] {it.get('scene_file')}: forced-choice re-ask "
                     "committed")
+        # pu_v6 DIRECTION VERIFICATION: a confident read of a two-person
+        # strike is the panel class that shipped the inverted kill. Re-ask
+        # ONCE with the neighbouring dialogue attached — that text is what
+        # decides it — and adopt only the ACTIONS from the second read, so a
+        # bad second look can change direction but never corrupt the
+        # description, subjects, or panel_kind.
+        if (contested_strike(rec) and not rec.get("error") and not dims
+                and not rec.get("reask")):
+            near = _near.get(str(it.get("scene_file")) or "", [])
+            payload = build_payload(it, ctx, impact_regions=regions,
+                                    nearby_dialogue=near)
+            payload["forced_choice_notice"] = (
+                "A strike is being DELIVERED here and MORE THAN ONE person is "
+                "drawn, so WHO strikes WHOM is easy to get backwards — and "
+                "getting it backwards inverts the whole story. Re-read the "
+                "panel: follow the weapon/arm direction, who is braced vs "
+                "recoiling, whose body the impact lands on, and where the "
+                "blood or impact marks actually sit (marks on a figure mean "
+                "that figure was HIT). Then check nearby_dialogue: what "
+                "characters SAY about this moment (a taunt, a shocked "
+                "question, an accusation about who killed whom) is stronger "
+                "evidence than the pose. Return `actions` with actor and "
+                "target committed to the exact subject wording; use "
+                "'unclear' ONLY if the evidence genuinely does not settle it.")
+            try:
+                second = assemble_record(
+                    it.get("scene_file"),
+                    call_fn(payload, it.get("scene_path")))
+            except Exception:
+                second = {"scene_file": it.get("scene_file"),
+                          "error": "reask_failed"}
+            new_actions = second.get("actions") or []
+            if (not second.get("error") and new_actions
+                    and not unclear_strike(second)):
+                if new_actions != rec.get("actions"):
+                    log(f"[panel] {it.get('scene_file')}: direction re-ask "
+                        f"CHANGED attribution -> {new_actions}")
+                rec["actions"] = new_actions
+                rec["direction_reask"] = True
         # DETECTOR-owned impact verdict — stamped AFTER assemble_record so the
         # model can never claim or override it (the deterministic signal the
         # impact_mismatch QA gate reads back from understood.json).
