@@ -26,6 +26,7 @@ from typing import Sequence
 
 import studio.sources  # noqa: F401 — triggers adapter self-registration
 from studio.catalog import db as catalog_db
+from studio.catalog import identity
 from studio.catalog import repo
 from studio.catalog.models import Chapter
 from studio import config as studio_config
@@ -97,10 +98,12 @@ def parse_chapter_selector(spec: str, chapters: list[Chapter]) -> list[Chapter]:
 # ---------------------------------------------------------------------------
 
 def _sanitize_label(label: str) -> str:
-    """Convert a chapter label to a filesystem-safe directory name."""
-    safe = re.sub(r"[^\w\-.]", "_", label)
-    safe = re.sub(r"_+", "_", safe).strip("_.")
-    return safe or "chapter"
+    """Convert a chapter label to a filesystem-safe directory name.
+
+    Delegates to catalog.identity so the fetcher and the identity AUDIT can
+    never drift apart — an audit using a different rule would report healthy
+    directories as drifted and vice versa. Behaviour is unchanged."""
+    return identity.canonical_dirname(label)
 
 
 # ---------------------------------------------------------------------------

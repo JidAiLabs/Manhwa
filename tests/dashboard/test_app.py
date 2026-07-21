@@ -733,3 +733,22 @@ def test_htmx_is_vendored_not_cdn():
     assert "/static/htmx.min.js" in base
     assert "unpkg.com" not in base
     assert (HERE / "static" / "htmx.min.js").is_file()
+
+
+def test_safe_next_rejects_every_off_site_destination():
+    """An unvalidated post-login `next` is a textbook open redirect: the
+    operator authenticates normally and the dashboard itself bounces them
+    somewhere hostile with the credibility of a trusted origin. Rejecting a
+    leading '//' alone is NOT enough — browsers normalise backslashes in the
+    authority position, so '/\\evil' escapes a naive prefix check."""
+    from studio.dashboard.app import _safe_next
+    hostile = [
+        "//evil.example", "https://evil.example", "http://evil.example",
+        "/\\evil.example", "/\\/evil.example", "\\\\evil.example",
+        "javascript:alert(1)", "  //evil.example", "/x\r\nLocation: /y",
+        "", None,
+    ]
+    for h in hostile:
+        assert _safe_next(h) == "/", h
+    for ok in ("/", "/chapter/1", "/series/2?x=1", "/partials/queue"):
+        assert _safe_next(ok) == ok, ok

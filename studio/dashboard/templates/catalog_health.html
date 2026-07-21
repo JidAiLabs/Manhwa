@@ -1,0 +1,41 @@
+{% extends "base.html" %}{% set active='catalog' %}{% block body %}
+<h2>Catalog health <small>· does each chapter row agree with the files on disk?</small></h2>
+<div class="note">A chapter's episode directory is named once, from its label, when the images are fetched — but a
+re-discovery may later change that label or renumber the row. Nothing records what a directory actually contains, so
+the two can silently stop agreeing and every page then shows a plausible, wrong episode. This audit is read-only.</div>
+
+{% set total = audits | sum(attribute='errors') %}
+{% if total == 0 and audits | sum(attribute='warnings') == 0 %}
+<div class="row"><span class="b ok">✓ every chapter row agrees with its directory</span></div>
+{% endif %}
+
+{% for a in audits %}
+<h2 style="margin-top:22px">{{ a.title }}
+  <small>· {{ a.chapters }} chapters ·
+  {% if a.errors %}<span class="b err">{{ a.errors }} error{{ '' if a.errors == 1 else 's' }}</span>{% endif %}
+  {% if a.warnings %}<span class="b warn">{{ a.warnings }} warning{{ '' if a.warnings == 1 else 's' }}</span>{% endif %}
+  {% if not a.issues %}<span class="b ok">clean</span>{% endif %}</small></h2>
+{% if a.issues %}
+<table>
+<tr><th>severity</th><th>issue</th><th>chapter</th><th>what is wrong</th></tr>
+{% for i in a.issues %}
+<tr>
+<td><span class="b {{ 'err' if i.severity == 'error' else 'warn' }}">{{ i.severity }}</span></td>
+<td><code>{{ i.code }}</code></td>
+<td>{% if i.chapter_id %}<a href="/chapter/{{ i.chapter_id }}" style="color:var(--acc)">#{{ '%g'|format(i.number) }} {{ i.label }}</a>{% else %}#{{ '%g'|format(i.number) }} {{ i.label }}{% endif %}</td>
+<td class="kv" style="white-space:normal">{{ i.detail }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endfor %}
+
+<div class="note" style="margin-top:20px">
+Directory-name drift is repairable mechanically — the images are fine, only the folder name is stale:
+<code>python -m studio.catalog.repair --series &lt;id&gt;</code> reports, and
+<code>--apply --journal r.json</code> performs it reversibly (<code>--undo r.json</code>).
+<b>url_duplicate</b>, <b>ep_dir_shared</b> and <b>canonical_collision</b> mean two rows disagree about which chapter is
+which; no rule can settle that from metadata, so the tool refuses to touch them until you have opened the directories
+and confirmed the contents yourself.
+</div>
+{% endblock %}

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from html import escape
 from typing import Any, Dict, List, Optional, Union
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
@@ -71,6 +71,31 @@ def _served_rel(p: Optional[Union[str, Path]]) -> Optional[str]:
         return str(Path(p).resolve().relative_to((REPO / "ongoing").resolve()))
     except Exception:
         return None
+
+
+def _safe_next(nxt: Optional[str]) -> str:
+    """A caller-supplied post-login destination, reduced to a same-site path.
+
+    An unvalidated `next` is a textbook open redirect: an attacker sends the
+    operator a /login?next=<their site> link, the operator authenticates as
+    normal, and the dashboard itself bounces them somewhere hostile with the
+    credibility of a trusted origin.
+
+    Rejecting only a leading '//' is NOT enough. Browsers normalise
+    backslashes to forward slashes in the authority position, so '/\\evil'
+    and '/\\/evil' are treated as protocol-relative URLs and escape a naive
+    prefix check. Anything with a scheme, an authority, a backslash, or a
+    control character is discarded outright and the user lands on '/'.
+    """
+    s = (nxt or "").strip()
+    if not s.startswith("/") or s.startswith("//"):
+        return "/"
+    if "\\" in s or any(ord(c) < 0x20 or ord(c) == 0x7f for c in s):
+        return "/"
+    parsed = urlparse(s)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    return s
 
 
 def _http_url(u: Optional[str]) -> Optional[str]:
@@ -393,10 +418,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.post("/login")
     def login(token: str = Form(""), next: str = Form("/")):
-        # only same-site paths: a caller-supplied 'next' is an open-redirect
-        # vector otherwise ("//evil.example" is protocol-relative).
-        dest = next if next.startswith("/") and not next.startswith("//") else "/"
-        resp = RedirectResponse(dest, status_code=303)
+        resp = RedirectResponse(_safe_next(next), status_code=303)
         expected = os.environ.get("STUDIO_DASH_TOKEN", "")
         if token and expected and _secrets.compare_digest(token, expected):
             resp.set_cookie("studio_token", token, httponly=True,
@@ -627,6 +649,16 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         if refresh:
             discovery.fetch_trending(c)
         return page("discovery.html", request, titles=discovery.listing(c))
+
+    @app.get("/catalog-health", response_class=HTMLResponse)
+    def catalog_health_page(request: Request):
+        """Read-only chapter-identity audit: where the catalog and the files
+        on disk disagree about which episode is which. This is the page that
+        answers "why is this showing the wrong episode number" with evidence
+        instead of a guess."""
+        from studio.catalog import identity
+        return page("catalog_health.html", request,
+                    audits=identity.audit_all(con()))
 
     @app.get("/health", response_class=HTMLResponse)
     def health_page(request: Request):
