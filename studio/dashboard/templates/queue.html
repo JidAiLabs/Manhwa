@@ -1,4 +1,9 @@
 {% extends "base.html" %}{% set active='queue' %}{% block body %}
+{# Its OWN 5s poll, independent of the queue table: liveness must stay true
+   even when nothing in the queue itself changes. #}
+<div hx-get="/partials/health" hx-trigger="load, every 5s" hx-swap="innerHTML">
+{% include "partials/health_strip.html" ignore missing %}
+</div>
 <div class="cards">
 {% for s in series %}<div class="card"><div class="k">{{ s.title }}</div>
 <div class="v">{{ s.done }}/{{ s.total }}</div>
@@ -11,7 +16,30 @@
 </div>
 <div class="note">Worker enforces: serial GPU · QA exit-0 before render · approval before render/concat.</div>
 </div><div>
-<div class="kv" style="margin-bottom:6px"><b>live log</b> (click a running job)</div>
-<div class="log" id="log">(no job selected)</div>
+<div class="kv" style="margin-bottom:6px"><b>live log</b> — follows the running job
+  <a href="#" id="unpin" hidden onclick="followActive();return false" style="color:var(--acc)">↻ follow the running job again</a></div>
+<div class="log" id="log"
+     hx-get="/partials/log/active" hx-trigger="load, every 3s" hx-swap="innerHTML">(no job running)</div>
 </div></div>
+<script>
+// The pane follows whatever is running. Clicking a specific job's "log"
+// button PINS that job — otherwise the 3s poll would overwrite your choice a
+// moment after you made it. The link above un-pins.
+function followActive() {
+  var el = document.getElementById('log');
+  el.setAttribute('hx-get', '/partials/log/active');
+  el.setAttribute('hx-trigger', 'load, every 3s');
+  document.getElementById('unpin').hidden = true;
+  htmx.process(el);
+}
+document.body.addEventListener('click', function (e) {
+  var b = e.target.closest('[hx-target="#log"]');
+  if (!b) return;
+  var el = document.getElementById('log');
+  el.removeAttribute('hx-trigger');       // stop following
+  el.setAttribute('hx-get', b.getAttribute('hx-get'));
+  document.getElementById('unpin').hidden = false;
+  htmx.process(el);
+});
+</script>
 {% endblock %}

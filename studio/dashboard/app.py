@@ -483,18 +483,33 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def queue_page(request: Request):
         c = con()
-        return page("queue.html", request, jobs=jobs.queue_view(c),
-                    series=_series_rows(c))
+        return page("queue.html", request, series=_series_rows(c),
+                    **_queue_ctx(c))
+
+    def _queue_ctx(c: sqlite3.Connection) -> Dict[str, Any]:
+        """Queue rows ANNOTATED with health, so a stuck job looks stuck.
+        Without this the UI cannot distinguish 'running for 40 minutes
+        because that is how long it takes' from 'running for 40 minutes
+        because its process died 38 minutes ago'."""
+        h = jobs.health(c)
+        stale = {s["id"]: s for s in h["stale"]}
+        overdue = {o["id"] for o in h["overdue"]}
+        rows = jobs.queue_view(c)
+        for j in rows:
+            j["is_stale"] = j["id"] in stale
+            j["is_overdue"] = j["id"] in overdue and j["id"] not in stale
+        return {"jobs": rows, "health": h}
 
     @app.get("/partials/queue", response_class=HTMLResponse)
     def queue_partial(request: Request):
-        c = con()
-        return page("partials/queue_table.html", request,
-                    jobs=jobs.queue_view(c))
+        return page("partials/queue_table.html", request, **_queue_ctx(con()))
 
-    @app.get("/partials/log/{job_id}", response_class=PlainTextResponse)
-    def log_partial(job_id: int):
-        c = con()
+    @app.get("/partials/health", response_class=HTMLResponse)
+    def health_strip(request: Request):
+        return page("partials/health_strip.html", request,
+                    health=jobs.health(con()))
+
+    def _log_tail(c: sqlite3.Connection, job_id: int) -> str:
         r = c.execute("SELECT log_path FROM job WHERE id=?",
                       (job_id,)).fetchone()
         if not r or not r[0]:
@@ -511,6 +526,24 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             size = f.tell()
             f.seek(max(0, size - 8192))
             return f.read().decode("utf-8", "replace")
+
+    @app.get("/partials/log/active", response_class=PlainTextResponse)
+    def log_active():
+        """The log of whatever is running right now. The pane used to say
+        '(no job selected)' until you clicked something — so the default view
+        of a busy machine showed no evidence it was doing anything."""
+        c = con()
+        r = c.execute(
+            "SELECT id FROM job WHERE type!='heartbeat' AND state IN "
+            "('running','cancelling') ORDER BY started_at DESC, id DESC "
+            "LIMIT 1").fetchone()
+        if not r:
+            return "(nothing running)"
+        return f"── job #{r[0]} ──\n" + _log_tail(c, r[0])
+
+    @app.get("/partials/log/{job_id}", response_class=PlainTextResponse)
+    def log_partial(job_id: int):
+        return _log_tail(con(), job_id)
 
     @app.get("/runs", response_class=HTMLResponse)
     def runs_page(request: Request):
@@ -589,11 +622,24 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         v_allowed, v_why = gates.voice_allowed(c, cid, ch["ep_dir"])
         # the chapter's live job, if any — approving a gate kicks off work the
         # operator could previously only find on the queue page or in the logs
+        # 'cancelling' included: its child is still running, so from this
+        # page's point of view the chapter IS busy. Leaving it out made a
+        # cancelled-but-not-yet-reaped chapter look idle while a process was
+        # still writing its manifests.
         aj = c.execute(
             "SELECT id, type, state FROM job WHERE chapter_id=? AND "
-            "state IN ('running','queued') ORDER BY id DESC LIMIT 1",
-            (cid,)).fetchone()
+            "state IN ('running','cancelling','queued') ORDER BY id DESC "
+            "LIMIT 1", (cid,)).fetchone()
         active_job = dict(zip(("id", "type", "state"), aj)) if aj else None
+        if active_job:
+            # the SAME stale/overdue verdict the queue page uses, from the
+            # same jobs.health() call — two pages computing "is it stuck"
+            # separately is how they end up disagreeing
+            _h = jobs.health(c)
+            active_job["is_stale"] = any(s["id"] == active_job["id"]
+                                         for s in _h["stale"])
+            active_job["is_overdue"] = any(o["id"] == active_job["id"]
+                                           for o in _h["overdue"])
         # full per-phase run history with timings — the stage_run rows always
         # had this; there was just no per-chapter view exposing it
         run_history = [dict(zip(("stage", "started_at", "dur", "ok"), r))

@@ -855,3 +855,81 @@ def test_gallery_honours_the_plans_scenes_subdir(client, tmp_path):
         "timeline": [{"segment_id": "g0001_p01", "tts_text": "x",
                       "cuts": [{"file": "p1.jpg"}], "duration_sec": 3}]}))
     assert _gallery(str(ep))[0]["src_dir"] == "scenes"
+
+
+# --- Phase I: a stuck job must LOOK stuck -------------------------------------
+
+def _stuck(con, jid=90, cid=1):
+    """A job whose lease is old and whose process group is confirmed dead."""
+    con.execute("INSERT INTO job (id, type, chapter_id, series_id, state, "
+                "pgid, started_at) VALUES (?, 'prepare', ?, 1, 'running', "
+                "999999, datetime('now','-3 hours'))", (jid, cid))
+    con.commit()
+    return jid
+
+
+def test_queue_shows_a_stuck_job_as_stuck_with_a_requeue_button(client):
+    """THE highest-value UI change: a job whose child died looked identical to
+    a healthy long-running one, so the only cure anyone knew was restarting
+    the worker."""
+    c, con = client
+    jid = _stuck(con)
+    body = c.get("/partials/queue").text
+    assert "STUCK" in body
+    assert f"/jobs/{jid}/requeue" in body
+
+
+def test_cancelling_job_is_visible_in_the_queue_html(client):
+    """Groups were derived as 'not running and not queued', which silently
+    swallowed cancelling — pressing Cancel made the row vanish."""
+    c, con = client
+    from studio.dashboard import jobs
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.claim_next(con, lane="gpu")
+    jobs.cancel(con, jid)
+    body = c.get("/partials/queue").text
+    assert "CANCELLING" in body and str(jid) in body
+
+
+def test_health_strip_reports_worker_down_and_recovers(client):
+    c, con = client
+    assert "DOWN" in c.get("/partials/health").text
+    con.execute("INSERT INTO job (type, state, started_at) VALUES "
+                "('heartbeat','running',datetime('now'))")
+    con.commit()
+    body = c.get("/partials/health").text
+    assert "alive" in body and "nothing needs you" in body
+
+
+def test_health_strip_counts_stuck_jobs(client):
+    c, con = client
+    _stuck(con)
+    assert "1 STUCK" in c.get("/partials/health").text
+
+
+def test_chapter_page_and_queue_agree_that_a_job_is_stuck(client):
+    """Two pages computing 'is it stuck' separately is how they end up
+    disagreeing — both read the same jobs.health()."""
+    c, con = client
+    _stuck(con)
+    assert "STUCK" in c.get("/partials/queue").text
+    assert "STUCK" in c.get("/chapter/1").text
+
+
+def test_log_pane_follows_the_running_job(client, tmp_path):
+    """The pane said '(no job selected)' until you clicked something, so a
+    busy machine showed no evidence it was doing anything."""
+    c, con = client
+    log = tmp_path / "j.log"
+    log.write_text("understanding panel 12/40\n")
+    con.execute("INSERT INTO job (id, type, chapter_id, state, started_at, "
+                "log_path) VALUES (91,'prepare',1,'running',datetime('now'),?)",
+                (str(log),))
+    con.commit()
+    body = c.get("/partials/log/active").text
+    assert "understanding panel 12/40" in body and "#91" in body
+
+
+def test_log_active_is_calm_when_nothing_runs(client):
+    c, _ = client
+    assert "nothing running" in c.get("/partials/log/active").text

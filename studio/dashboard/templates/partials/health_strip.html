@@ -1,0 +1,37 @@
+{# The one strip that answers "is the factory alive right now?" — refreshed on
+   its own timer so it stays true even when nothing else on the page changes.
+   Every value is an AGE with a verdict attached, never a raw UTC timestamp:
+   "alive 6s ago" is readable at a glance, "2026-07-21T13:04:11Z" is not. #}
+<div class="hstrip">
+  <div class="hitem">
+    <span class="k">worker</span>
+    {% if health.worker_down %}
+      <span class="b err">DOWN</span>
+      <span class="kv">{% if health.heartbeat_age_sec is none %}never started{% else %}no heartbeat for {{ fmt_eta(health.heartbeat_age_sec) }}{% endif %}</span>
+    {% else %}
+      <span class="b ok">alive</span>
+      <span class="kv">{{ health.heartbeat_age_sec }}s ago</span>
+    {% endif %}
+  </div>
+
+  <div class="hitem">
+    <span class="k">lanes</span>
+    {% for name, l in health.lanes | dictsort %}<span class="lane {{ 'busy' if l.busy else '' }}">{{ name }} {{ l.busy }}/{{ l.width }}</span>{% endfor %}
+  </div>
+
+  <div class="hitem">
+    <span class="k">queue</span>
+    {% if health.queued %}
+      <span class="kv"><b>{{ health.queued }}</b> waiting · oldest {{ fmt_eta(health.queued_oldest_sec) }}</span>
+    {% else %}<span class="kv">empty</span>{% endif %}
+  </div>
+
+  <div class="hitem">
+    <span class="k">attention</span>
+    {% if health.stale or health.overdue or health.failed_recent %}
+      {% if health.stale %}<span class="b stale">{{ health.stale|length }} STUCK</span>{% endif %}
+      {% if health.overdue %}<span class="b warn">{{ health.overdue|length }} overdue</span>{% endif %}
+      {% if health.failed_recent %}<span class="b err">{{ health.failed_recent }} failed today</span>{% endif %}
+    {% else %}<span class="b ok">✓ nothing needs you</span>{% endif %}
+  </div>
+</div>

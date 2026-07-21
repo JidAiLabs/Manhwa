@@ -70,3 +70,15 @@ tr.overdue td{background:#2a220c33}
   table{display:block;overflow-x:auto;white-space:nowrap}
   .cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
 }
+
+/* --- health strip: is the factory alive right now? ----------------------- */
+.hstrip{display:flex;gap:26px;flex-wrap:wrap;align-items:center;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:10px 16px;margin-bottom:14px}
+.hitem{display:flex;gap:8px;align-items:center}
+.hitem .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.7px;
+  color:var(--dim)}
+.lane{font-size:11.5px;color:var(--dim);background:var(--panel2);
+  border-radius:6px;padding:2px 8px;margin-right:4px}
+.lane.busy{color:var(--run);background:#221640}
+.bar > i{transition:width .4s ease}

@@ -1,44 +1,85 @@
-{% set running = jobs | selectattr('state','equalto','running') | list %}
-{% set queued  = jobs | selectattr('state','equalto','queued')  | list %}
+{# Groups are driven by EXPLICIT state sets. Deriving "finished" as
+   "not running and not queued" silently swallowed 'cancelling' — a job with a
+   live child — so pressing Cancel made the row vanish from the UI entirely
+   while the process kept going. Every state must land in exactly one group. #}
+{% set live    = jobs | selectattr('state','in',['running','cancelling']) | list %}
+{% set queued  = jobs | selectattr('state','equalto','queued') | list %}
+{% set finished = jobs | selectattr('state','in',['done','failed','cancelled']) | list %}
+
+{% macro scope(j) -%}
+{% if j.chapter_id %}<a href="/chapter/{{ j.chapter_id }}" style="color:var(--acc)">{{ j.scope_name or ('ch#' ~ j.chapter_id|string) }}</a>
+{%- elif j.bundle_id %}bundle#{{ j.bundle_id }}
+{%- elif j.series_id %}{{ j.scope_name or ('series#' ~ j.series_id|string) }}
+{%- else %}—{% endif %}
+{%- endmacro %}
+
+{% macro logbtn(j) -%}
+{% if j.log_path %}<button class="ghost" hx-get="/partials/log/{{ j.id }}" hx-target="#log" hx-swap="innerHTML">log</button>{% endif %}
+{%- endmacro %}
+
 <div class="kv" style="margin-bottom:4px"><b>running</b></div>
 <table>
 <tr><th>#</th><th>job</th><th>scope</th><th>state</th><th>error</th><th></th></tr>
-{% for j in running %}
-<tr><td>{{ j.id }}</td><td>{{ j.type }}{% if j.payload.target %} → {{ j.payload.target }}{% endif %}</td>
-<td class="kv">{% if j.chapter_id %}<a href="/chapter/{{ j.chapter_id }}" style="color:var(--acc)">{{ j.scope_name or ('ch#' ~ j.chapter_id|string) }}</a>{% elif j.bundle_id %}bundle#{{ j.bundle_id }}{% elif j.series_id %}{{ j.scope_name or ('series#' ~ j.series_id|string) }}{% else %}—{% endif %}</td>
-<td><span class="b run">RUNNING</span><div class="kv" style="margin-top:2px">⏱ {{ fmt_eta(j.elapsed_sec) }}{% if j.est_total_sec %} / ~{{ fmt_eta(j.est_total_sec) }}{% endif %}</div></td>
+{% for j in live %}
+<tr class="{{ 'stale' if j.is_stale else ('overdue' if j.is_overdue else '') }}">
+<td>{{ j.id }}</td>
+<td>{{ j.type }}{% if j.payload.target %} → {{ j.payload.target }}{% endif %}</td>
+<td class="kv">{{ scope(j) }}</td>
+<td>
+  {% if j.is_stale %}
+    {# lease is old AND the process group is confirmed gone: nothing will
+       ever finish this job, and it holds its lane and chapter lease. #}
+    <span class="b stale">STUCK</span>
+    <div class="kv" style="margin-top:2px">no process for {{ fmt_eta(j.elapsed_sec) }} — its child is gone</div>
+  {% elif j.state == 'cancelling' %}
+    <span class="b cancel">CANCELLING</span>
+    <div class="kv" style="margin-top:2px">killing its process tree…</div>
+  {% else %}
+    <span class="b run">RUNNING</span>
+    <div class="kv" style="margin-top:2px">⏱ {{ fmt_eta(j.elapsed_sec) }}{% if j.est_total_sec %} / ~{{ fmt_eta(j.est_total_sec) }}{% endif %}{% if j.is_overdue %} · <span style="color:var(--warn)">over estimate</span>{% endif %}</div>
+    {% if j.est_total_sec %}
+    <div class="bar" style="min-width:120px;margin-top:3px"><i style="display:block;height:100%;width:{{ [100, (j.elapsed_sec * 100 / j.est_total_sec) | round | int] | min }}%;background:{{ 'var(--warn)' if j.is_overdue else 'var(--run)' }}"></i></div>
+    {% endif %}
+  {% endif %}
+</td>
 <td class="kv">{{ j.error or '' }}</td>
-<td><form class="inline" method="post" action="/jobs/{{ j.id }}/cancel" onsubmit="return confirm('Cancel this RUNNING job? It is killed and marked cancelled — no auto-retry.')"><button class="red">cancel</button></form>
-{% if j.log_path %}<button class="ghost" hx-get="/partials/log/{{ j.id }}" hx-target="#log" hx-swap="innerHTML">log</button>{% endif %}</td></tr>
+<td>
+  {% if j.is_stale %}
+  <form class="inline" method="post" action="/jobs/{{ j.id }}/requeue" onsubmit="return confirm('Requeue this job? Any leftover child process is killed first, then it goes back on the queue.')"><button class="green">requeue</button></form>
+  {% elif j.state == 'running' %}
+  <form class="inline" method="post" action="/jobs/{{ j.id }}/cancel" onsubmit="return confirm('Cancel this RUNNING job? It is killed and marked cancelled — no auto-retry.')"><button class="red">cancel</button></form>
+  {% endif %}
+  {{ logbtn(j) }}
+</td></tr>
 {% else %}<tr><td colspan="6" class="kv">nothing running</td></tr>{% endfor %}
 </table>
 
 {% if queued %}
 <div class="kv" style="margin:14px 0 4px"><b>queued</b> — {{ queued|length }} job{{ 's' if queued|length != 1 }} waiting</div>
 <table>
-<tr><th>#</th><th>job</th><th>scope</th><th></th></tr>
+<tr><th>#</th><th>job</th><th>scope</th><th>waiting</th><th></th></tr>
 {% for j in queued[:8] %}
 <tr><td>{{ j.id }}</td><td>{{ j.type }}{% if j.payload.target %} → {{ j.payload.target }}{% endif %}</td>
-<td class="kv">{% if j.chapter_id %}<a href="/chapter/{{ j.chapter_id }}" style="color:var(--acc)">{{ j.scope_name or ('ch#' ~ j.chapter_id|string) }}</a>{% elif j.bundle_id %}bundle#{{ j.bundle_id }}{% elif j.series_id %}{{ j.scope_name or ('series#' ~ j.series_id|string) }}{% else %}—{% endif %}</td>
+<td class="kv">{{ scope(j) }}</td>
+<td class="kv">{% if j.elapsed_sec %}{{ fmt_eta(j.elapsed_sec) }}{% endif %}</td>
 <td><form class="inline" method="post" action="/jobs/{{ j.id }}/up"><button class="ghost">↑</button></form>
 <form class="inline" method="post" action="/jobs/{{ j.id }}/cancel"><button class="red">cancel</button></form></td></tr>
 {% endfor %}
-{% if queued|length > 8 %}<tr><td colspan="4" class="kv">…and {{ queued|length - 8 }} more queued</td></tr>{% endif %}
+{% if queued|length > 8 %}<tr><td colspan="5" class="kv">…and {{ queued|length - 8 }} more queued</td></tr>{% endif %}
 </table>
 {% endif %}
 
-{% set finished = jobs | rejectattr('state','in',['running','queued']) | list %}
 {% if finished %}
 <div class="kv" style="margin:14px 0 4px"><b>finished</b> — recent runs (<a href="/runs" style="color:var(--acc)">full history</a>)</div>
 <table>
 <tr><th>#</th><th>job</th><th>scope</th><th>state</th><th>took</th><th>error</th><th></th></tr>
 {% for j in finished %}
 <tr><td>{{ j.id }}</td><td>{{ j.type }}{% if j.payload.target %} → {{ j.payload.target }}{% endif %}</td>
-<td class="kv">{% if j.chapter_id %}<a href="/chapter/{{ j.chapter_id }}" style="color:var(--acc)">{{ j.scope_name or ('ch#' ~ j.chapter_id|string) }}</a>{% elif j.bundle_id %}bundle#{{ j.bundle_id }}{% elif j.series_id %}{{ j.scope_name or ('series#' ~ j.series_id|string) }}{% else %}—{% endif %}</td>
-<td><span class="b {{ 'run' if j.state == 'done' else 'err' }}">{{ j.state | upper }}</span></td>
+<td class="kv">{{ scope(j) }}</td>
+<td><span class="b {% if j.state == 'done' %}ok{% elif j.state == 'cancelled' %}cancel{% else %}err{% endif %}">{{ j.state | upper }}</span></td>
 <td class="kv">{% if j.duration_sec is defined %}⏱ {{ fmt_eta(j.duration_sec) }}{% endif %}</td>
 <td class="kv">{{ (j.error or '')[:120] }}</td>
-<td>{% if j.log_path %}<button class="ghost" hx-get="/partials/log/{{ j.id }}" hx-target="#log" hx-swap="innerHTML">log</button>{% endif %}</td></tr>
+<td>{{ logbtn(j) }}</td></tr>
 {% endfor %}
 </table>
 {% endif %}
