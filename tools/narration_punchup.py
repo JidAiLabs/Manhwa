@@ -47,6 +47,7 @@ from manifest_io import (  # noqa: E402
 )
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
+    cap_protagonist_name,
     dedupe_consecutive_panel_lines,
     is_cold_opener,
     is_spoken_fragment,
@@ -810,10 +811,12 @@ def apply_post_punchup_backstop(
     n_dups = dedupe_consecutive_panel_lines(out)
     n_actor = 0
     from cast_identity import actor_noun_map, cast_profiles, resolve_figures
-    from identity_gate import enforce_actor_handles, protagonist_names
+    from identity_gate import (enforce_actor_handles,
+                               protagonist_names, spoken_names)
     profiles = cast_profiles(cast_obj or {"cast": []})
     noun_map = actor_noun_map(cast_obj or {"cast": []})
     prot = protagonist_names(cast_obj or {"cast": []})
+    spoken = spoken_names(cast_obj or {"cast": []})
     if profiles and noun_map:
         excluded: Dict[str, Any] = {}
         if ledger:
@@ -826,12 +829,18 @@ def apply_post_punchup_backstop(
         if figures_by_file:
             for b in out.get("beats") or []:
                 n_actor += len(enforce_actor_handles(
-                    b, figures_by_file, noun_map, prot, ledger=ledger))
+                    b, figures_by_file, noun_map, prot, ledger=ledger,
+                    spoken=spoken))
+    # Deterministic name budget, LAST: the prompt rule moved naming from 20%
+    # of lines to 13% and stalled there; the cap lands it exactly.
+    n_name = cap_protagonist_name(out, cast_obj or {"cast": []})
     stats = out.setdefault("stats", {})
+    stats["protagonist_name_capped"] = n_name
     stats["identity_reveals_neutralized"] = n_ident
     stats["consecutive_dups_merged"] = n_dups
     stats["actor_handles_rewritten"] = n_actor
-    return {"identity_reveals_neutralized": n_ident,
+    return {"protagonist_name_capped": n_name,
+            "identity_reveals_neutralized": n_ident,
             "consecutive_dups_merged": n_dups,
             "actor_handles_rewritten": n_actor}
 

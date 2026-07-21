@@ -67,17 +67,38 @@ def _neutral_from_evidence(figs) -> str:
     return "the figure"
 
 
-def _figure_handle(name: str) -> str:
-    """Speakable handle for a resolved cast name: 'unnamed assassin' ->
-    'the assassin'; the cast_builder protagonist convention keeps its own
-    handle; real names are used as-is."""
+def spoken_names(cast: Any) -> Dict[str, str]:
+    """{canonical_name: spoken_name} for cast entries that carry one. The
+    gate REWRITES lines, so it must speak the same prose the writer does —
+    otherwise it reintroduces the catalogue label ('the Assassin Member')
+    it was meant to keep out."""
+    if isinstance(cast, dict):
+        cast = cast.get("cast")
+    out: Dict[str, str] = {}
+    for m in (cast or []):
+        if not isinstance(m, dict):
+            continue
+        key = str(m.get("canonical_name") or "").strip()
+        say = str(m.get("spoken_name") or "").strip()
+        if key and say:
+            out[key] = say
+    return out
+
+
+def _figure_handle(name: str, spoken: Optional[Dict[str, str]] = None) -> str:
+    """Speakable handle for a resolved cast name: the cast's own spoken form
+    when it has one, else 'unnamed assassin' -> 'the assassin'; the
+    cast_builder protagonist convention keeps its own handle; real names are
+    used as-is."""
+    if spoken and name in spoken:
+        return spoken[name]
     if name.lower().startswith("unnamed "):
         return "the " + name.split(" ", 1)[1]
     return name
 
 
 def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
-                          ledger=None):
+                          ledger=None, spoken=None):
     """Deterministic identity gate (2026-07-16 wave): a line may claim the
     protagonist ('our guy'/'our protagonist'/a protagonist name-noun) ONLY
     when the span's cast_identity-resolved figures include the protagonist;
@@ -136,7 +157,7 @@ def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
                     and not (present & protagonist_names)
                     and len(span_actors) == 1
                     and _PROT_HANDLE_RE.search(line)):
-                repl = _figure_handle(next(iter(span_actors)))
+                repl = _figure_handle(next(iter(span_actors)), spoken)
                 new = _PROT_HANDLE_RE.sub(repl, line, count=1)
                 if new != line:
                     rewrites.append(
@@ -148,11 +169,11 @@ def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
 
         def _repl_for() -> str:
             if len(named) == 1:
-                return _figure_handle(next(iter(named)))
+                return _figure_handle(next(iter(named)), spoken)
             if not named:
                 return _neutral_from_evidence(span_figs)
             if len(span_actors) == 1:         # ledger breaks the tie
-                return _figure_handle(next(iter(span_actors)))
+                return _figure_handle(next(iter(span_actors)), spoken)
             return ""                         # multi-figure: ambiguous
 
         # 1. protagonist handle over a span that doesn't resolve them

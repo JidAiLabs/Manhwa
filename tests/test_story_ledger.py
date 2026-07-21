@@ -946,3 +946,74 @@ def test_target_is_not_repeated_when_the_verb_already_names_it():
     line = (facts["g0009"]["actions"] or [""])[0]
     assert "kills an assassin" in line
     assert line.count("assassin") == 1        # not appended a second time
+
+
+# ---- spoken handles, name budget, first-person speech ----------------------
+
+def test_spoken_name_is_what_the_gate_says():
+    """canonical_name is an identity KEY that must separate look-alikes
+    ('Assassin Member' vs 'Assassin Leader'); read aloud it produced 'The
+    Assassin Member watches him with a sharp gaze'. The gate rewrites lines,
+    so it must speak the same prose the writer does."""
+    cast = {"cast": [
+        {"canonical_name": "Assassin Member", "spoken_name": "one of the assassins",
+         "role": "antagonist", "aliases": [], "visual_description": "dark cloak"},
+        {"canonical_name": "unnamed assassin", "role": "antagonist",
+         "aliases": [], "visual_description": "dark cloak"}]}
+    m = ig.spoken_names(cast)
+    assert m == {"Assassin Member": "one of the assassins"}
+    assert ig._figure_handle("Assassin Member", m) == "one of the assassins"
+    # no spoken_name -> the old transform still applies (back-compat)
+    assert ig._figure_handle("unnamed assassin", m) == "the assassin"
+    assert ig._figure_handle("Assassin Member") == "Assassin Member"
+
+
+def test_name_budget_keeps_the_introduction_and_caps_the_tail():
+    import tools.recap_style as rs
+    cast = {"cast": [{"canonical_name": "our protagonist", "role": "protagonist",
+                      "is_protagonist": True, "aliases": ["Prince Cheon"]}]}
+
+    def beat(g, *ls):
+        return {"group_id": g, "segments": [
+            {"span": [f"p{g}_{i}.jpg"], "line": l} for i, l in enumerate(ls)]}
+
+    B = {"beats": [beat(1, "Prince Cheon flees through the night.",
+                        "The blow leaves Prince Cheon gasping."),
+                   beat(2, "Prince Cheon draws his blade.",
+                        "Throwing Prince Cheon back into the debris.",
+                        "Prince Cheon's eyes widen in terror.")]}
+    assert rs.cap_protagonist_name(B, cast, keep=3) == 2
+    lines = [s["line"] for b in B["beats"] for s in b["segments"]]
+    assert lines[:3] == ["Prince Cheon flees through the night.",
+                         "The blow leaves Prince Cheon gasping.",
+                         "Prince Cheon draws his blade."]      # introduction kept
+    # a HANDLE substitutes cleanly in object and possessive position, where a
+    # pronoun would need he/him/his and could ship "throwing he back"
+    assert lines[3] == "Throwing our guy back into the debris."
+    assert lines[4] == "our guy's eyes widen in terror."
+
+
+def test_name_budget_is_a_noop_without_a_real_name():
+    import tools.recap_style as rs
+    cast = {"cast": [{"canonical_name": "our protagonist", "role": "protagonist",
+                      "is_protagonist": True, "aliases": ["the kid"]}]}
+    B = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["p1.jpg"], "line": "our guy runs."}]}]}
+    assert rs.cap_protagonist_name(B, cast) == 0     # epithet is not a name
+
+
+def test_first_person_dialogue_is_flagged_for_the_writer():
+    """p000089: the OCR is the dying protagonist's own words, but the panel
+    DRAWS the stranger — so the narration said 'the mysterious figure's
+    vision begins to fail'."""
+    import tools.gemini_narrative_pass as g
+    u = {"p1.jpg": {"scene_file": "p1.jpg", "description": "a figure stands",
+                    "dialogue": "MY EYESIGHT IS GETTING FUZZY SO I CAN'T SEE...",
+                    "subjects": [], "action": ""},
+         "p2.jpg": {"scene_file": "p2.jpg", "description": "they shout",
+                    "dialogue": "HE'S BEHIND US!!!", "subjects": [], "action": ""}}
+    payload = g._pack_group_payload(
+        {"shot_id": 1, "scene_files": ["p1.jpg", "p2.jpg"]}, {}, u)
+    sig = {s["scene_file"]: s for s in payload["scenes_signals"]}
+    assert "first-person" in sig["p1.jpg"]["dialogue_voice"]
+    assert "dialogue_voice" not in sig["p2.jpg"]      # third person: untouched

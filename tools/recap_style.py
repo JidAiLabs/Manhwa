@@ -1051,3 +1051,68 @@ def analyze_recap_style(
         },
         "issues": issues,
     }
+
+
+# --- protagonist name budget (deterministic) --------------------------------
+# The prompt budget (rule 3) moved naming from 20% of lines to 13% and stopped;
+# the target is 3-4 uses in a chapter. Prompts ration unreliably, so the cap is
+# enforced here instead. Substituting a HANDLE ("our guy") rather than a
+# pronoun is what makes this safe: a noun phrase drops into every grammatical
+# position, while he/him/his depends on role and "throwing he back" ships.
+
+def _proper_alias(member) -> str:
+    """The protagonist's real NAME from their aliases — a capitalised alias
+    that is not an epithet ('the kid', 'descendant'). '' when they have none,
+    in which case there is nothing to ration."""
+    for a in (member.get("aliases") or []):
+        a = str(a).strip()
+        if a and a[0].isupper() and not a.lower().startswith(("the ", "a ", "an ")):
+            return a
+    return ""
+
+
+def cap_protagonist_name(beats_obj, cast, keep: int = 3,
+                         handle: str = "our guy") -> int:
+    """Keep the FIRST *keep* uses of the protagonist's real name in reading
+    order; replace the rest with *handle*. Returns the number replaced.
+
+    Both failure modes are real: never naming him leaves the audience not
+    knowing who he is, and naming him every few lines reads as a label. This
+    guarantees the first uses survive (the introduction) and caps the tail."""
+    members = cast.get("cast") if isinstance(cast, dict) else cast
+    prot = next((m for m in (members or []) if isinstance(m, dict)
+                 and (m.get("is_protagonist")
+                      or str(m.get("role") or "").lower() == "protagonist")), None)
+    if not prot:
+        return 0
+    name = _proper_alias(prot)
+    if not name:
+        return 0
+    pat = re.compile(r"\b" + re.escape(name) + r"(?P<poss>'s)?\b")
+    seen = 0
+    replaced = 0
+    for b in (beats_obj or {}).get("beats") or []:
+        segs = beat_segments(b)
+        if not segs:
+            continue
+        lines = [s["line"] or "" for s in segs]
+        new = list(lines)
+        for i, line in enumerate(lines):
+            if not line:
+                continue
+            out = []
+            last = 0
+            for m in pat.finditer(line):
+                seen += 1
+                if seen <= keep:
+                    continue
+                out.append(line[last:m.start()])
+                out.append(handle + (m.group("poss") or ""))
+                last = m.end()
+                replaced += 1
+            if out:
+                out.append(line[last:])
+                new[i] = "".join(out)
+        if new != lines and all(x.strip() for x in new):
+            write_segment_lines(b, new)
+    return replaced

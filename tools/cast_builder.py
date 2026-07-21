@@ -137,6 +137,13 @@ CAST_SCHEMA = {
                 "properties": {
                     "id": {"type": "STRING"},
                     "canonical_name": {"type": "STRING"},
+                    # What the NARRATOR says aloud. canonical_name is an
+                    # identity KEY (it must distinguish a leader from a
+                    # member); spoken_name is prose. "Assassin Member" is a
+                    # fine key and unusable narration — a viewer heard "The
+                    # Assassin Member watches him with a sharp gaze". NOT in
+                    # `required`: older casts fall back to canonical_name.
+                    "spoken_name": {"type": "STRING"},
                     "aliases": {"type": "ARRAY", "items": {"type": "STRING"}},
                     "role": {"type": "STRING"},
                     "visual_description": {"type": "STRING"},
@@ -161,6 +168,14 @@ SYSTEM = (
     "    EXCEPTION — the PROTAGONIST: if the main character has no real name in the text,\n"
     "    canonical_name MUST be exactly 'our protagonist' (recap-native). NEVER a descriptive\n"
     "    phrase like 'the web novel reader' or 'the young man'.\n"
+    "  spoken_name: what a NARRATOR would actually SAY out loud for this\n"
+    "    character — natural spoken prose, not a catalogue label. A viewer\n"
+    "    hears this sentence, so 'one of the assassins', 'their leader', 'the\n"
+    "    stranger', 'the old master' are right; 'Assassin Member',\n"
+    "    'Mysterious Figure', 'Character 2' are WRONG. When the character has\n"
+    "    a real name, the spoken_name IS that name. canonical_name may stay a\n"
+    "    precise label for telling look-alikes apart; spoken_name is the\n"
+    "    words that get read aloud.\n"
     "  aliases: other ways they're named/addressed in the text.\n"
     "  role: one of protagonist | antagonist | ally | mentor | minor | group (for a faceless band).\n"
     "  visual_description: appearance cues a downstream model can MATCH in a panel — age, hair,\n"

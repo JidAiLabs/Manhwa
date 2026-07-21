@@ -272,15 +272,26 @@ def _build_cast_block(cast_path: str) -> str:
         "Refer to each character by their NAME or a natural pronoun inline — NEVER "
         "output a bracketed token like [protagonist] or [antagonist]; never invent "
         "a generic descriptor (e.g. 'an injured man') for a character who is in "
-        "this cast:"
+        "this cast. Where an entry shows 'SAY: ...', speak THOSE words — the "
+        "name before it is an internal label for telling look-alikes apart and "
+        "must never be read aloud (a viewer should hear 'one of the assassins', "
+        "never 'the Assassin Member'):"
     ]
     for c in cast:
         name = c.get("canonical_name") or c.get("id") or "?"
+        # SAY the spoken form, not the identity key. canonical_name has to
+        # tell look-alikes apart ("Assassin Member" vs "Assassin Leader"),
+        # which makes it a catalogue label; read aloud it produced "The
+        # Assassin Member watches him with a sharp gaze". Older casts carry
+        # no spoken_name and fall back to the key, as before.
+        spoken = (c.get("spoken_name") or "").strip()
         role = c.get("role") or ""
         desc = (c.get("visual_description") or "").strip()
         aliases = ", ".join(c.get("aliases") or [])
         tag = f" (aka {aliases})" if aliases else ""
-        lines.append(f"  - {name} ({role}){tag}: {desc}")
+        say = (f" — SAY: {spoken}"
+               if spoken and spoken.lower() != name.lower() else "")
+        lines.append(f"  - {name} ({role}){tag}{say}: {desc}")
     lines.append("")  # trailing blank so it reads cleanly before the next section
     return "\n".join(lines) + "\n"
 
@@ -517,6 +528,14 @@ def _pack_group_payload(
         # flagged, byte-compatible otherwise).
         if understood.get("uncertain"):
             scenes[-1]["uncertain"] = True
+        # FIRST-PERSON dialogue is spoken BY a character about themselves, and
+        # a reaction shot often draws the LISTENER instead. Binding the words
+        # to whoever is in frame produced "the mysterious figure's vision
+        # begins to fail" over the dying protagonist's own line.
+        if _FIRST_PERSON_RE.search(str(understood.get("dialogue") or "")):
+            scenes[-1]["dialogue_voice"] = (
+                "first-person — spoken BY a character ABOUT THEMSELVES; the "
+                "speaker is often NOT the figure drawn here")
         # zoom/echo: the later panel of a story_group echo pair repeats the
         # earlier one's art re-framed — one moment, narrated once.
         if sf in echo_of:
@@ -542,6 +561,10 @@ def _pack_group_payload(
         payload["facts"] = ledger_facts
     return payload
 
+
+# First-person speech markers (generic English, OCR is upper-case).
+_FIRST_PERSON_RE = re.compile(
+    r"\b(I|I'm|I've|I'll|my|me|mine|myself)\b", re.IGNORECASE)
 
 _MD_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.S)
@@ -1968,6 +1991,12 @@ def main() -> int:
         "      facts.banned_handles (e.g. 'the leader' after the leader died — a surviving\n"
         "      underling does NOT inherit the title); NEVER re-ask a question facts.answered\n"
         "      already resolves — build on the answer instead.\n"
+        "    - WHO IS SPEAKING: a panel marked 'dialogue_voice' carries FIRST-PERSON\n"
+        "      speech — the words are ABOUT THE SPEAKER, and manhwa often draws the\n"
+        "      LISTENER reacting instead. Attribute such a line using facts/figures and\n"
+        "      the surrounding story, NEVER automatically to the figure drawn in that\n"
+        "      panel. A dying character's 'my sight is fading' belongs to the dying\n"
+        "      character even when someone else is on screen.\n"
         "    - DIALOGUE — quote selectively, recap-style: PARAPHRASE the bulk into narration but\n"
         "      DO quote occasionally for impact. QUOTE a SHORT (<=6 words), COMPLETE, punchy real\n"
         "      line (a threat, a name, a key line) in clean sentence case, attributed — e.g. he\n"
@@ -2092,6 +2121,7 @@ def main() -> int:
     if cast_list and u_by_file:
         from cast_identity import actor_noun_map, resolve_figures_by_file
         from identity_gate import protagonist_names as _prot_names
+        from identity_gate import spoken_names as _spoken_names
         # Ledger dead-sets: a killed entity must stop resolving on later
         # panels (the oracle fix — a dead leader kept claiming look-alike
         # assassin panels via the faction tie).
@@ -2106,6 +2136,7 @@ def main() -> int:
             understood_m, cast_list, excluded_by_file=excluded_by_file)
         actor_nouns = actor_noun_map(cast_list)
         protagonist_names = _prot_names(cast_list)
+        spoken_map = _spoken_names(cast_list)
     story_block = _build_story_block(args.story)
     system_body = system_body.replace("{CAST_BLOCK}", cast_block)
     system_body = system_body.replace("{STORY_SPINE}", story_block)
@@ -2410,7 +2441,8 @@ def main() -> int:
         if figures_by_file and actor_nouns:
             rw = enforce_actor_handles(beat, figures_by_file, actor_nouns,
                                        protagonist_names,
-                                       ledger=ledger_m or None)
+                                       ledger=ledger_m or None,
+                                       spoken=spoken_map)
             if rw:
                 beat["actor_rewrites"] = rw
                 for msg in rw:
