@@ -13,8 +13,8 @@ Reference panels are auto-picked from manifest.beats.json scene_selection
 overridable with --refs. Uses the ORIGINAL scenes/ art (the model is told to
 ignore speech bubbles and on-page text).
 
-Auth: Vertex AI with the repo service account (same as the beats stage);
-falls back to a GEMINI_API_KEY client if Vertex does not serve the model.
+Auth: GEMINI_API_KEY only (owner decision 2026-07-22). Vertex is deliberately
+NOT used — see _make_client for why the fallback chain was removed.
 
 Cost: ~$0.13-0.24 per generated image (1K/2K vs 4K). Prints what it does.
 
@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
@@ -115,32 +116,64 @@ def _load_ref_images(episode_dir: str, refs: List[str], *,
     return out
 
 
-def _make_client(location: str):
-    """Vertex with the repo SA first; GEMINI_API_KEY client as fallback."""
-    from google import genai
-    attempts = []
-    repo_sa = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "keys", "gcp-vision.json")
-    sa = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or repo_sa
-    if not os.path.exists(sa) and os.path.exists(repo_sa):
-        print(f"[warn] GOOGLE_APPLICATION_CREDENTIALS stale ({sa}) — "
-              f"using repo key {repo_sa}")
-        sa = repo_sa
-    if os.path.exists(sa):
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa
+_KEYCHAIN_SERVICE = "GEMINI_API_KEY"
+
+
+def resolve_api_key() -> Tuple[str, str]:
+    """The Gemini key and WHERE it came from, as (key, source).
+
+    Two sources, in order:
+      1. the GEMINI_API_KEY environment variable (creds.env, CI, a shell)
+      2. the macOS keychain, service 'GEMINI_API_KEY' — how the production
+         Mini stores it; it is deliberately NOT in creds.env there
+
+    The key itself is never printed or logged anywhere: only the SOURCE is
+    reported, so a run can be diagnosed without the secret landing in a job
+    log that the dashboard then serves over the network.
+    """
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        return key, "env"
+    if sys.platform == "darwin":
         try:
-            project = json.load(open(sa))["project_id"]
-            attempts.append(("vertex", genai.Client(
-                vertexai=True, project=project, location=location)))
-        except Exception as e:  # pragma: no cover - env specific
-            print(f"[warn] vertex client failed: {e}")
-    if os.environ.get("GEMINI_API_KEY"):
-        attempts.append(("api-key", genai.Client(
-            api_key=os.environ["GEMINI_API_KEY"])))
-    if not attempts:
-        print("[err] no auth: neither a service-account key on disk nor "
-              "GEMINI_API_KEY in the environment")
-    return attempts
+            out = subprocess.run(
+                ["security", "find-generic-password",
+                 "-s", _KEYCHAIN_SERVICE, "-w"],
+                capture_output=True, text=True, timeout=15)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip(), "keychain"
+        except Exception as e:
+            print(f"[warn] keychain lookup failed: {type(e).__name__}")
+    return "", ""
+
+
+def _make_client():
+    """GEMINI_API_KEY only — Vertex is deliberately NOT used.
+
+    This used to try Vertex with the repo service account first and fall back
+    to the API key. Two reasons that is gone (owner decision 2026-07-22):
+
+    * Vertex silently changed WHICH account pays. The repo SA is the Vision
+      key; routing image generation through it billed a different project
+      than the one the API key belongs to, with no signal in the output.
+    * A fallback chain hides failure. "Vertex refused, the key worked" and
+      "Vertex worked" produce the same image and the same exit code, so a
+      broken Vertex path could sit unnoticed for months — which is exactly
+      what could have happened, since this stage has never run in production.
+
+    One credential, one billing account, one failure mode.
+    """
+    from google import genai
+    key, source = resolve_api_key()
+    if not key:
+        print("[err] no GEMINI_API_KEY — thumbnail generation is the only "
+              "paid step in the pipeline and it needs that key. Set the env "
+              "var, or store it in the macOS keychain:\n"
+              f"      security add-generic-password -s {_KEYCHAIN_SERVICE} "
+              f"-a $USER -w '<key>'")
+        return []
+    print(f"[..] gemini key from {source}")
+    return [("api-key", genai.Client(api_key=key))]
 
 
 def build_art_prompt(style_art_prompt: str) -> str:
@@ -162,7 +195,7 @@ STYLE: maximum-contrast YouTube thumbnail look — saturated colors, crisp edges
 
 
 def generate(episode_dir: str, *, hook_text: str, refs: List[str],
-             models: List[str], location: str, aspect: str, size: str,
+             models: List[str], aspect: str, size: str,
              out_path: str, prompt_override: str = "") -> Optional[str]:
     from google.genai import types
 
@@ -177,7 +210,7 @@ def generate(episode_dir: str, *, hook_text: str, refs: List[str],
     )
 
     last_err: Optional[Exception] = None
-    for kind, client in _make_client(location):
+    for kind, client in _make_client():
         for model in models:
             try:
                 print(f"[..] {kind} client, model={model}, "
@@ -227,7 +260,6 @@ def main() -> int:
                          "beats scene_selection)")
     ap.add_argument("--models", default="gemini-3-pro-image,"
                                         "gemini-3-pro-image-preview")
-    ap.add_argument("--location", default="global")
     ap.add_argument("--aspect", default="16:9")
     ap.add_argument("--size", default="2K", choices=["1K", "2K", "4K"])
     ap.add_argument("--out", default="",
@@ -249,7 +281,7 @@ def main() -> int:
     out_png = args.out or os.path.join(ep, "render", "thumbnail.png")
     model = generate(ep, hook_text=args.hook_text, refs=refs,
                      models=[m.strip() for m in args.models.split(",")],
-                     location=args.location, aspect=args.aspect,
+                     aspect=args.aspect,
                      size=args.size, out_path=out_png)
     if not model:
         return 1

@@ -18,7 +18,7 @@ _SPEC.loader.exec_module(tb)  # type: ignore[union-attr]
 
 
 def _patch(monkeypatch, calls):
-    def fake_generate(episode_dir, *, hook_text, refs, models, location,
+    def fake_generate(episode_dir, *, hook_text, refs, models,
                       aspect, size, out_path, prompt_override=""):
         calls.update(episode_dir=episode_dir, refs=refs, out_path=out_path,
                      prompt=prompt_override, aspect=aspect)

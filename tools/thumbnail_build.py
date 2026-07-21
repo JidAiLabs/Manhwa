@@ -25,7 +25,7 @@ import thumbnail_gen as tg                                              # noqa: 
 
 
 def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
-                     out_dir: str, models: List[str], location: str = "global",
+                     out_dir: str, models: List[str],
                      size: str = "2K", refs: List[str] = None) -> Dict[str, Any]:
     """Core: an explicit concept (style + hook + refs) + the chapter dir that
     HOLDS the reference scene files -> text-free Nano-Banana art + deterministic
@@ -43,7 +43,7 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
     os.makedirs(out_dir, exist_ok=True)
     art_path = os.path.join(out_dir, "thumbnail_art.png")
     used = tg.generate(ref_episode_dir, hook_text="", refs=refs, models=models,
-                       location=location, aspect="16:9", size=size,
+                       aspect="16:9", size=size,
                        out_path=art_path, prompt_override=art_prompt)
     if not used:
         raise RuntimeError("Nano Banana returned no image")
@@ -58,7 +58,7 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
 
 
 def build_thumbnail(episode_dir: str, *, models: List[str],
-                    location: str = "global", size: str = "2K",
+                    size: str = "2K",
                     refs: List[str] = None) -> Dict[str, Any]:
     """Chapter mode: the concept (render/publish_meta.json) and the ref scene
     files both live in one chapter's dir. (The channel ships ONE thumbnail per
@@ -67,7 +67,7 @@ def build_thumbnail(episode_dir: str, *, models: List[str],
     render = os.path.join(episode_dir, "render")
     concept = json.load(open(os.path.join(render, "publish_meta.json")))
     return render_thumbnail(concept, ref_episode_dir=episode_dir,
-                            out_dir=render, models=models, location=location,
+                            out_dir=render, models=models,
                             size=size, refs=refs)
 
 
@@ -82,7 +82,6 @@ def main() -> int:
     ap.add_argument("--out-dir", default="", help="series mode: where to write "
                     "thumbnail_yt.jpg (e.g. dist/series_<id>)")
     ap.add_argument("--models", default="gemini-3-pro-image,gemini-3-pro-image-preview")
-    ap.add_argument("--location", default="global")
     ap.add_argument("--size", default="2K", choices=["1K", "2K", "4K"])
     ap.add_argument("--refs", default="", help="comma-separated scene files")
     args = ap.parse_args()
@@ -94,11 +93,11 @@ def main() -> int:
             os.path.dirname(os.path.abspath(args.concept)))
         out_dir = args.out_dir or os.path.dirname(os.path.abspath(args.concept))
         rep = render_thumbnail(concept, ref_episode_dir=ref_ep, out_dir=out_dir,
-                               models=models, location=args.location,
+                               models=models,
                                size=args.size, refs=refs)
     elif args.episode_dir:
         rep = build_thumbnail(args.episode_dir, models=models,
-                              location=args.location, size=args.size, refs=refs)
+                              size=args.size, refs=refs)
     else:
         ap.error("need --episode-dir (chapter) or --concept (series)")
     print(f"[ok] thumbnail={rep['thumbnail']} style={rep['style']} "
