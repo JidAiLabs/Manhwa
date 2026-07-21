@@ -26,12 +26,12 @@
 <input type="hidden" name="type" value="prepare_range">
 <input type="hidden" name="series_id" value="{{ sid }}">
 <b>bulk run</b> ep
-<select name="num_from" id="rf" style="max-width:11em">
-{% for c in chapters %}<option value="{{ '%g'|format(c.number) }}"{% if loop.first %} selected{% endif %}>{{ '%g'|format(c.number) }}{% if c.number == 0 %} ({{ c.label }}){% endif %}</option>{% endfor %}
+<select name="num_from" id="rf" style="max-width:14em">
+{% for o in chapter_options %}<option value="{{ o.value }}"{% if loop.first %} selected{% endif %}>{{ o.text }}{% if o.undownloaded %} ⬇{% endif %}</option>{% endfor %}
 </select>
 →
-<select name="num_to" id="rt" style="max-width:11em">
-{% for c in chapters %}<option value="{{ '%g'|format(c.number) }}"{% if loop.last %} selected{% endif %}>{{ '%g'|format(c.number) }}</option>{% endfor %}
+<select name="num_to" id="rt" style="max-width:14em">
+{% for o in chapter_options %}<option value="{{ o.value }}"{% if loop.last %} selected{% endif %}>{{ o.text }}{% if o.undownloaded %} ⬇{% endif %}</option>{% endfor %}
 </select>
 <select name="target" id="rtgt">
 <option value="qa">to QA report</option>

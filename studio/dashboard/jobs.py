@@ -360,6 +360,65 @@ def runs_view(con: sqlite3.Connection, limit: int = 100) -> List[Dict[str, Any]]
     return [_with_timing(con, _row(r)) for r in rows]
 
 
+# stage that proves a chapter is already finished at a given bulk-run target
+DONE_STAGE = {"qa": "qa_scan", "voice": "voiced", "video": "render_segment"}
+
+
+def range_chapter_ids(con: sqlite3.Connection, series_id: int, *,
+                      num_from: Optional[float] = None,
+                      num_to: Optional[float] = None,
+                      target: str = "qa") -> List[int]:
+    """The chapters a bulk run over [num_from..num_to] would ACTUALLY build.
+
+    ONE definition, shared by the estimate and the enqueue. They used to run
+    two different queries — the estimate omitted the already-queued filter —
+    so the estimate promised more work than the button performed, and the
+    numbers on screen never matched what happened.
+
+    Bounds are Optional, resolved via COALESCE against the series' real
+    min/max. The old 0.0 / 1e12 sentinels were indistinguishable from a real
+    selection on a series that HAS a chapter 0 (Omniscient Reader does), so
+    "from chapter 0" and "from the beginning" were the same value and a
+    0-based series could not express the difference. Reversed bounds are
+    swapped rather than silently returning nothing.
+    """
+    lo, hi = num_from, num_to
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    done_stage = DONE_STAGE.get(target or "qa", "qa_scan")
+    rows = con.execute(
+        "SELECT id FROM chapter WHERE series_id=? "
+        " AND number >= COALESCE(?, (SELECT MIN(number) FROM chapter "
+        "                            WHERE series_id=?)) "
+        " AND number <= COALESCE(?, (SELECT MAX(number) FROM chapter "
+        "                            WHERE series_id=?)) "
+        " AND id NOT IN (SELECT chapter_id FROM stage_run "
+        "                WHERE stage=? AND ok=1) "
+        f" AND id NOT IN (SELECT chapter_id FROM job WHERE type='prepare' "
+        f"                AND state IN {_PENDING_SQL} "
+        "                 AND chapter_id IS NOT NULL) "
+        "ORDER BY number",
+        (series_id, lo, series_id, hi, series_id, done_stage)).fetchall()
+    return [r[0] for r in rows]
+
+
+def range_total(con: sqlite3.Connection, series_id: int, *,
+                num_from: Optional[float] = None,
+                num_to: Optional[float] = None) -> List[Any]:
+    """Every chapter row in the selected range (ep_dir, status), regardless of
+    whether a run would rebuild it — the denominator for "N of M"."""
+    lo, hi = num_from, num_to
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    return con.execute(
+        "SELECT ep_dir, status FROM chapter WHERE series_id=? "
+        " AND number >= COALESCE(?, (SELECT MIN(number) FROM chapter "
+        "                            WHERE series_id=?)) "
+        " AND number <= COALESCE(?, (SELECT MAX(number) FROM chapter "
+        "                            WHERE series_id=?)) ORDER BY number",
+        (series_id, lo, series_id, hi, series_id)).fetchall()
+
+
 def _pgid_alive(pgid: Optional[int]) -> bool:
     """Is a process group still alive? signal 0 delivers nothing — it only
     performs the permission/existence check. Used to distinguish 'the job is

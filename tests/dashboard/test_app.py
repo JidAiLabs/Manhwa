@@ -1,4 +1,5 @@
 """Dashboard routes: every page renders; actions only insert rows."""
+import json
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,15 @@ def test_all_pages_render(client):
         r = c.get(path)
         assert r.status_code == 200, path
     assert "Nano Machine" in c.get("/series").text
+
+
+def _pass_qa(con, cid=1):
+    """A chapter that has actually passed QA. /approve now ENFORCES the render
+    gate rather than only hiding the button, so a render-approval test must
+    set up a chapter that is genuinely approvable."""
+    con.execute("INSERT INTO stage_run (chapter_id, stage, ok) "
+                "VALUES (?, 'qa_scan', 1)", (cid,))
+    con.commit()
 
 
 def _insert_finished_job(con, jid=77, state="done"):
@@ -71,6 +81,7 @@ def test_post_job_inserts_queued_row(client):
 def test_approve_and_chapter_lock_state(client):
     c, con = client
     assert "approval" in c.get("/chapter/1").text or "QA" in c.get("/chapter/1").text
+    _pass_qa(con)
     c.post("/approve", data={"gate": "render", "chapter_id": 1},
            follow_redirects=False)
     assert con.execute("SELECT COUNT(*) FROM approval WHERE gate='render'"
@@ -88,6 +99,7 @@ def test_approve_endpoint_stores_content_sha(client, tmp_path):
     (ep / "tts" / "tts_index.json").write_text('{"clips": []}')
     con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
     con.commit()
+    _pass_qa(con)
     c.post("/approve", data={"gate": "render", "chapter_id": 1},
            follow_redirects=False)
     stored = con.execute("SELECT content_sha FROM approval WHERE gate='render' "
@@ -243,6 +255,7 @@ def test_approvals_auto_advance_the_pipeline(client):
     """The user's flow: approving IS the trigger. Story approval enqueues
     voiceover; voiceover approval enqueues the render."""
     c, con = client
+    _pass_qa(con)
     c.post("/approve", data={"gate": "voice", "chapter_id": 1},
            follow_redirects=False)
     c.post("/approve", data={"gate": "render", "chapter_id": 1},
@@ -752,3 +765,93 @@ def test_safe_next_rejects_every_off_site_destination():
         assert _safe_next(h) == "/", h
     for ok in ("/", "/chapter/1", "/series/2?x=1", "/partials/queue"):
         assert _safe_next(ok) == ok, ok
+
+
+def test_approve_render_is_refused_when_qa_is_not_green(client):
+    """The gate is ENFORCED, not merely hidden in the template. Approving with
+    red QA used to insert an approval row and enqueue a job that failed a
+    minute later inside the worker's own gate check — a manufactured
+    dead-letter plus an approval record for something never approvable."""
+    c, con = client
+    con.execute("INSERT INTO stage_run (chapter_id, stage, ok) "
+                "VALUES (1, 'qa_scan', 0)")          # QA FAILED
+    con.commit()
+    c.post("/approve", data={"gate": "render", "chapter_id": 1},
+           follow_redirects=False)
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE gate='render'"
+                       ).fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='render_segment'"
+                       ).fetchone()[0] == 0
+
+
+def test_range_estimate_and_enqueue_agree(client):
+    """They ran two different queries — the estimate omitted the
+    already-queued filter — so the estimate promised more work than the button
+    performed."""
+    c, con = client
+    from studio.dashboard import jobs
+    for n in (2, 3, 4):
+        con.execute("INSERT INTO chapter (series_id, number, label, url, "
+                    "status, updated_at) VALUES (1,?,?,'u','downloaded','t')",
+                    (n, f"Chapter {n}"))
+    con.commit()
+    ids = jobs.range_chapter_ids(con, 1, target="qa")
+    c.post("/jobs", data={"type": "prepare_range", "series_id": 1,
+                          "target": "qa"}, follow_redirects=False)
+    enqueued = [r[0] for r in con.execute(
+        "SELECT chapter_id FROM job WHERE type='prepare' ORDER BY chapter_id")]
+    assert sorted(ids) == sorted(enqueued)
+    # and a second click enqueues NOTHING new (already queued)
+    assert jobs.range_chapter_ids(con, 1, target="qa") == []
+
+
+def test_range_bounds_are_optional_not_sentinels(client):
+    """0.0/1e12 sentinels were indistinguishable from a real selection on a
+    series that HAS a chapter 0."""
+    c, con = client
+    from studio.dashboard import jobs
+    con.execute("INSERT INTO chapter (series_id, number, label, url, status, "
+                "updated_at) VALUES (1,0,'Episode 0','u','downloaded','t')")
+    con.commit()
+    assert len(jobs.range_chapter_ids(con, 1)) == 2            # both
+    assert len(jobs.range_chapter_ids(con, 1, num_from=1)) == 1  # excl. ch 0
+    assert len(jobs.range_chapter_ids(con, 1, num_to=0)) == 1    # only ch 0
+    # reversed bounds are swapped, not silently empty
+    assert jobs.range_chapter_ids(con, 1, num_from=1, num_to=0) == \
+        jobs.range_chapter_ids(con, 1, num_from=0, num_to=1)
+
+
+def test_both_range_selects_render_identical_options(client):
+    """One select appended the chapter label, the other did not, so the same
+    chapter read differently depending on which dropdown you looked at."""
+    c, con = client
+    body = c.get("/series/1").text
+    import re
+    selects = re.findall(r'<select name="num_(?:from|to)".*?</select>', body,
+                         re.S)
+    assert len(selects) == 2
+    opts = [re.findall(r'<option value="([^"]*)"[^>]*>([^<]*)</option>', s)
+            for s in selects]
+    assert opts[0] == opts[1]
+
+
+def test_chapter_page_shouts_when_the_episode_directory_is_gone(client):
+    """'never downloaded' and 'the images are GONE' rendered identically —
+    both just an empty gallery. The second is an emergency."""
+    c, con = client
+    con.execute("UPDATE chapter SET ep_dir='/tmp/gone-forever', "
+                "status='planned' WHERE id=1")
+    con.commit()
+    body = c.get("/chapter/1").text
+    assert "GONE" in body and "/tmp/gone-forever" in body
+
+
+def test_gallery_honours_the_plans_scenes_subdir(client, tmp_path):
+    from studio.dashboard.app import _gallery
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    (ep / "render.plan.clean.json").write_text(json.dumps({
+        "scenes_subdir": "scenes",
+        "timeline": [{"segment_id": "g0001_p01", "tts_text": "x",
+                      "cuts": [{"file": "p1.jpg"}], "duration_sec": 3}]}))
+    assert _gallery(str(ep))[0]["src_dir"] == "scenes"

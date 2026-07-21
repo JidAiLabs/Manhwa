@@ -165,9 +165,14 @@ def _gallery(ep_dir: Optional[str]) -> List[Dict[str, Any]]:
                         files[-1]["n"] += 1
                     else:
                         files.append({"name": str(f), "n": 1})
+            # honour the plan's OWN scenes_subdir, which is what prep_qa and
+            # Remotion both read (prep_qa.py:2639). Hardcoding "scenes_clean"
+            # here meant that any chapter whose plan pointed elsewhere showed
+            # a gallery of broken images on the one page you use to review it.
             out.append({"segment_id": item.get("segment_id"),
                         "narration": item.get("tts_text") or "",
-                        "files": files, "src_dir": "scenes_clean",
+                        "files": files,
+                        "src_dir": plan.get("scenes_subdir") or "scenes_clean",
                         "duration": item.get("duration_sec") or 0})
         return out
 
@@ -446,6 +451,29 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def con() -> sqlite3.Connection:
         return connect(db_path)
 
+    def rcon(series_id: Optional[int] = None) -> sqlite3.Connection:
+        """A connection for a READ page, reconciled first.
+
+        /series/{sid}, /videos and /runs never reconciled, while /series and
+        /chapter/{id} always did — so the same chapter could show 'voiced' on
+        one page and 'scripted' on another depending only on which you opened
+        first. Reconcile repairs the DB against the artifacts actually on
+        disk; doing it on one page and not its neighbour is what made the UI
+        contradict itself. POST handlers deliberately keep plain con(): an
+        action must not silently rewrite state on its way to doing something
+        else.
+        """
+        c = connect(db_path)
+        try:
+            if series_id is None:
+                for (sid,) in c.execute("SELECT id FROM series"):
+                    _reconcile_throttled(c, sid)
+            else:
+                _reconcile_throttled(c, series_id)
+        except Exception:
+            pass        # a reconcile failure must never take a page down
+        return c
+
     def page(name: str, request: Request, **ctx) -> HTMLResponse:
         ctx["fmt_eta"] = eta.fmt_eta
         return templates.TemplateResponse(request, name, ctx)
@@ -486,7 +514,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.get("/runs", response_class=HTMLResponse)
     def runs_page(request: Request):
-        return page("runs.html", request, jobs=jobs.runs_view(con()))
+        return page("runs.html", request, jobs=jobs.runs_view(rcon()))
 
     @app.get("/series", response_class=HTMLResponse)
     def series_page(request: Request, error: str = ""):
@@ -495,7 +523,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.get("/series/{sid}", response_class=HTMLResponse)
     def series_detail(request: Request, sid: int):
-        c = con()
+        c = rcon(sid)
         chs = [dict(zip(("id", "number", "label", "status", "season",
                          "ep_dir", "url"), r))
                for r in c.execute(
@@ -511,8 +539,19 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         thumb_ready = any(
             ch["ep_dir"] and (Path(ch["ep_dir"]) / "manifest.beats.json").exists()
             for ch in chs)
+        # ONE option label for BOTH range selects. They were rendered by two
+        # separate template loops with different rules — the "from" select
+        # appended the label for chapter 0, the "to" select did not — so the
+        # same chapter read differently depending on which dropdown you were
+        # looking at. Both now iterate this.
+        opts = [{"value": f"{ch['number']:g}",
+                 "text": f"{ch['number']:g} · {ch['label']}"
+                         if ch["label"] else f"{ch['number']:g}",
+                 "undownloaded": ch["status"] == "discovered"}
+                for ch in chs]
         return page("series_detail.html", request, sid=sid, title=title,
                     series_url=_http_url(series_url), chapters=chs,
+                    chapter_options=opts,
                     failed=jobs.failed_chapters(c, sid),
                     autopilot=bool(autopilot),
                     narration_style=style or "default",
@@ -586,9 +625,24 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         video_stale = bool(video_stale_issues)
         video_stale_detail = next(
             (i["detail"] for i in video_stale_issues), "")
+        # "never downloaded" and "the images are GONE" look identical on this
+        # page otherwise — both just render an empty gallery. The second is an
+        # emergency (a rename, a failed sync, a deleted directory) and has to
+        # be unmissable.
+        files_missing = ""
+        if ch["ep_dir"] and not Path(ch["ep_dir"]).is_dir():
+            files_missing = (
+                f"the episode directory for this chapter is GONE: "
+                f"{ch['ep_dir']} — the catalog says status {ch['status']!r}, "
+                f"but nothing is on disk. Nothing here can be rebuilt until "
+                f"it is re-fetched or the path is repaired (see Catalog).")
+        elif not ch["ep_dir"]:
+            files_missing = ""      # simply never downloaded — not an error
         return page("chapter.html", request, ch=ch, series_title=title,
                     timeline=_stage_timeline(c, ch),
                     active_job=active_job, run_history=run_history,
+                    files_missing=files_missing,
+                    error=request.query_params.get("error", ""),
                     qa_ok=gates.latest_qa_ok(c, cid),
                     render_allowed=allowed, render_block_reason=why,
                     voice_allowed=v_allowed, voice_block_reason=v_why,
@@ -603,7 +657,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.get("/videos", response_class=HTMLResponse)
     def videos_page(request: Request):
-        c = con()
+        c = rcon()
         rows = []
         for r in c.execute("SELECT id, series_id, title, kind, season_no, "
                            "state, output_path, teaser_state FROM bundle "
@@ -695,29 +749,27 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     # ---------------- actions (insert-only) ----------------
 
     @app.get("/partials/duration-estimate", response_class=HTMLResponse)
-    def duration_estimate(series_id: int, num_from: float = 0.0,
-                          num_to: float = 1e12, target: str = "qa"):
+    def duration_estimate(series_id: int, num_from: Optional[float] = None,
+                          num_to: Optional[float] = None, target: str = "qa"):
         """Two estimates for a selected range: ~processing time to build it, and
         the ~length of the final video. Rough (seed/median based)."""
         from studio.dashboard import eta as _eta
         seed = getattr(_eta, "SEED_SEC", {})
         c = con()
-        rows = c.execute(
-            "SELECT ep_dir FROM chapter WHERE series_id=? AND number BETWEEN ? "
-            "AND ? ORDER BY number", (series_id, num_from, num_to)).fetchall()
+        rows = jobs.range_total(c, series_id, num_from=num_from, num_to=num_to)
         n_total = len(rows)
-        # chapters NOT yet done at the target — what a bulk run ACTUALLY builds
-        # (resume semantics; matches the prepare_range filter).
-        done_stage = {"qa": "qa_scan", "voice": "voiced",
-                      "video": "render_segment"}.get(target or "qa")
-        n_missing = c.execute(
-            "SELECT COUNT(*) FROM chapter WHERE series_id=? AND number BETWEEN ? "
-            "AND ? AND id NOT IN (SELECT chapter_id FROM stage_run WHERE "
-            "stage=? AND ok=1)",
-            (series_id, num_from, num_to, done_stage)).fetchone()[0]
+        # EXACTLY the rows the button will enqueue — same helper, so the
+        # estimate can no longer promise work the enqueue then skips.
+        to_build = jobs.range_chapter_ids(c, series_id, num_from=num_from,
+                                          num_to=num_to, target=target)
+        n_missing = len(to_build)
+        # chapters in range that still need downloading — a bulk run DOES
+        # fetch them (the prepare handler fetches first), but they cost extra
+        # wall-clock and the operator should not be surprised by it
+        n_undownloaded = sum(1 for _, st in rows if st == "discovered")
         vid = 0.0
         have = 0
-        for (ep_dir,) in rows:
+        for (ep_dir, _st) in rows:
             p = Path(ep_dir or "") / "render.plan.clean.json"
             if p.exists():
                 try:
@@ -740,16 +792,19 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             h, m = divmod(s // 60, 60)
             return f"{h}h {m}m" if h else f"{m}m"
 
+        note = (f' · <b>{n_undownloaded}</b> need downloading first'
+                if n_undownloaded else "")
         return HTMLResponse(
             f'<span class="kv">{n_missing} of {n_total} chapters to build · '
-            f'~<b>{fmt(proc)}</b> · ~<b>{fmt(vid)}</b> final video</span>')
+            f'~<b>{fmt(proc)}</b> · ~<b>{fmt(vid)}</b> final video{note}</span>')
 
     @app.post("/jobs")
     def post_job(type: str = Form(...), chapter_id: Optional[int] = Form(None),
                  series_id: Optional[int] = Form(None),
                  bundle_id: Optional[int] = Form(None),
                  target: str = Form(""), branding: str = Form("both"),
-                 num_from: float = Form(0.0), num_to: float = Form(1e12)):
+                 num_from: Optional[float] = Form(None),
+                 num_to: Optional[float] = Form(None)):
         c = con()
         if type == "prepare_range":
             # bulk: run chapters in [num_from..num_to] up to a target stage —
@@ -757,19 +812,11 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             # auto_to is carried on each prepare job; the worker advances past the
             # approval gates only as far as the target (QA must stay green).
             auto_to = {"voice": "voice", "video": "video"}.get(target or "qa")
-            # RESUME semantics: only enqueue chapters NOT already done at the
-            # target stage (and not already queued/running), so a 1..N bulk run
-            # picks up "whatever is missing" instead of redoing finished chapters.
-            done_stage = {"qa": "qa_scan", "voice": "voiced",
-                          "video": "render_segment"}.get(target or "qa")
-            rows = c.execute(
-                "SELECT id FROM chapter WHERE series_id=? AND number BETWEEN ? "
-                "AND ? AND id NOT IN (SELECT chapter_id FROM stage_run WHERE "
-                "stage=? AND ok=1) AND id NOT IN (SELECT chapter_id FROM job "
-                "WHERE type='prepare' AND state IN ('queued','running') AND "
-                "chapter_id IS NOT NULL) ORDER BY number",
-                (series_id, num_from, num_to, done_stage)).fetchall()
-            for (cid,) in rows:
+            # RESUME semantics live in jobs.range_chapter_ids — the SAME call
+            # the estimate makes, so what the estimate promised is exactly
+            # what gets enqueued.
+            for cid in jobs.range_chapter_ids(c, series_id, num_from=num_from,
+                                              num_to=num_to, target=target):
                 jobs.enqueue(c, "prepare", chapter_id=cid, series_id=series_id,
                              payload={"auto_to": auto_to} if auto_to else {})
             c.execute("UPDATE series SET new_pending=0 WHERE id=?", (series_id,))
@@ -829,6 +876,18 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                      note: str = Form("")):
         c = con()
         ep_dir = gates.chapter_ep_dir(c, chapter_id) if chapter_id else None
+        # Enforce the gate HERE, not only by hiding the button in the
+        # template. Approving with red QA used to insert an approval row and
+        # enqueue a job that failed a minute later inside the worker's own
+        # gate check — a manufactured dead-letter, and an approval record for
+        # something that was never approvable.
+        if gate == "render" and chapter_id and not gates.latest_qa_ok(
+                c, chapter_id):
+            return RedirectResponse(
+                f"/chapter/{chapter_id}?error="
+                + quote_plus("cannot approve render: the latest QA scan is "
+                             "missing or failed — re-run prepare → QA first"),
+                status_code=303)
         gates.approve(c, gate, series_id=series_id, chapter_id=chapter_id,
                       bundle_id=bundle_id, note=note,
                       content_sha=gates.gate_sha(gate, ep_dir))

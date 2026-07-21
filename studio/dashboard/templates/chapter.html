@@ -1,5 +1,7 @@
 {% extends "base.html" %}{% set active='series' %}{% block body %}
 <h2>{{ series_title }} — {{ ch.label }}{% if ch.url %} <a href="{{ ch.url }}" target="_blank" rel="noopener" title="read this chapter on the source site" style="color:var(--acc);text-decoration:none;font-size:.7em">↗ source</a>{% endif %} <small>· status {{ ch.status }} · LLM cost ${{ '%.3f'|format(cost) }}</small></h2>
+{% if files_missing %}<div class="row"><span class="b err" style="background:var(--err);color:#fff;white-space:normal;line-height:1.5;padding:8px 12px">🚨 {{ files_missing }}</span></div>{% endif %}
+{% if error %}<div class="row"><span class="b warn" style="white-space:normal">⚠ {{ error }}</span></div>{% endif %}
 <div class="stage">
 {% for s in timeline %}
 <div class="st {{ 'done' if s.done else '' }}">
