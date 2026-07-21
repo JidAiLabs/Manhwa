@@ -79,18 +79,47 @@ def enqueue(con: sqlite3.Connection, type: str, *, series_id: Optional[int] = No
     always a fresh row (this is how the worker's auto-retry stays unaffected).
     A dedupe hit adopts the more urgent (lower) priority so expedite call sites
     keep working.
+
+    Two properties this depends on, both fixed 2026-07-21:
+
+    * It matches every PENDING-OR-LIVE state, not just 'queued'. Matching only
+      'queued' meant that once the worker claimed the job, the guard stopped
+      working: a second browser tab (or an impatient double-click) sailed past
+      it and enqueued a duplicate of a ~40 GPU-minute prepare.
+    * The check and the insert are ONE atomic step (BEGIN IMMEDIATE). The
+      dashboard opens a fresh connection per request, so concurrent requests
+      could both run the SELECT, both miss, and both INSERT.
     """
-    if dedupe:
+    def _insert() -> int:
+        cur = con.execute(
+            "INSERT INTO job (type, series_id, chapter_id, bundle_id, "
+            "payload_json, priority) VALUES (?,?,?,?,?,?)",
+            (type, series_id, chapter_id, bundle_id,
+             json.dumps(payload or {}), priority))
+        return int(cur.lastrowid)
+
+    if not dedupe:
+        rid = _insert()
+        con.commit()
+        return rid
+
+    if con.in_transaction:
+        con.commit()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError:
+        pass            # already inside a transaction — still serialized
+    try:
         if chapter_id is not None or bundle_id is not None:
             existing = con.execute(
-                "SELECT id, priority FROM job WHERE state='queued' AND type=? AND "
-                "chapter_id IS ? AND bundle_id IS ? LIMIT 1",
+                f"SELECT id, priority FROM job WHERE state IN {_PENDING_SQL} "
+                "AND type=? AND chapter_id IS ? AND bundle_id IS ? LIMIT 1",
                 (type, chapter_id, bundle_id)).fetchone()
         else:
             existing = con.execute(
-                "SELECT id, priority FROM job WHERE state='queued' AND type=? AND "
-                "chapter_id IS NULL AND bundle_id IS NULL AND series_id IS ? "
-                "LIMIT 1", (type, series_id)).fetchone()
+                f"SELECT id, priority FROM job WHERE state IN {_PENDING_SQL} "
+                "AND type=? AND chapter_id IS NULL AND bundle_id IS NULL AND "
+                "series_id IS ? LIMIT 1", (type, series_id)).fetchone()
         if existing:
             existing_id, existing_priority = existing
             # adopt lower (more urgent) priority if the new call is more urgent
@@ -98,15 +127,14 @@ def enqueue(con: sqlite3.Connection, type: str, *, series_id: Optional[int] = No
                 con.execute(
                     "UPDATE job SET priority=? WHERE id=? AND state='queued'",
                     (priority, existing_id))
-                con.commit()
-            return int(existing_id)
-    cur = con.execute(
-        "INSERT INTO job (type, series_id, chapter_id, bundle_id, payload_json,"
-        " priority) VALUES (?,?,?,?,?,?)",
-        (type, series_id, chapter_id, bundle_id,
-         json.dumps(payload or {}), priority))
-    con.commit()
-    return int(cur.lastrowid)
+            rid = int(existing_id)
+        else:
+            rid = _insert()
+        con.commit()
+        return rid
+    except BaseException:
+        con.rollback()
+        raise
 
 
 # 'cancelling' is a LIVE state, not a finished one: the row's child process is
@@ -117,6 +145,8 @@ def enqueue(con: sqlite3.Connection, type: str, *, series_id: Optional[int] = No
 # job's child was still writing that chapter's manifests.
 LIVE_STATES = ("running", "cancelling")
 _LIVE_SQL = "('running','cancelling')"
+# live + not-yet-started: "this work is already on the books" — the dedupe key
+_PENDING_SQL = "('queued','running','cancelling')"
 
 # chapter lease: a chapter with any LIVE job (any type/lane) is not
 # eligible — closes the multi-writer hole where e.g. prepare(gpu) and

@@ -15,6 +15,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
@@ -30,6 +31,10 @@ from studio.dashboard import bundles, discovery, eta, gates, jobs
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
+# the venv interpreter, NOT sys.executable: the dashboard may be launched by a
+# system python (launchd, a bare uvicorn) that lacks the pipeline's deps, and
+# the subprocess would then fail on import with a confusing traceback.
+PY = str(REPO / ".eval_venv" / "bin" / "python")
 
 # manifest_freshness / beats_segments live in tools/ — add to path once at import time
 _TOOLS = str(REPO / "tools")
@@ -209,6 +214,23 @@ def _stage_timeline(con: sqlite3.Connection, ch: Dict[str, Any]) -> List[Dict[st
     return rows
 
 
+# reconcile WRITES (it repairs drifted statuses and prunes dead stage_run
+# rows), and it ran on every single page load of a page listing every series —
+# so idle browser tabs generated a steady stream of write transactions
+# competing with the worker for the database. Throttled per series: the
+# artifacts on disk do not change faster than the worker can change them.
+_RECONCILE_THROTTLE_SEC = int(os.environ.get("STUDIO_RECONCILE_SEC", "60"))
+_reconciled_at: Dict[int, float] = {}
+
+
+def _reconcile_throttled(con: sqlite3.Connection, sid: int) -> None:
+    now = time.time()
+    if now - _reconciled_at.get(sid, 0.0) < _RECONCILE_THROTTLE_SEC:
+        return
+    _reconciled_at[sid] = now
+    reconcile.reconcile_series(con, sid)
+
+
 def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
     rows = []
     for sid, title, source, surl, autopilot, new_pending in con.execute(
@@ -217,7 +239,7 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
         # reconcile-on-load: prune dead stage_run rows + repair drifted statuses
         # so the readiness counts below reflect the artifacts on disk, not stale
         # rows (the "prep 2 · voice 1" lie). Skips chapters the worker is running.
-        reconcile.reconcile_series(con, sid)
+        _reconcile_throttled(con, sid)
         chs = con.execute(
             "SELECT status, season FROM chapter WHERE series_id=?",
             (sid,)).fetchall()
@@ -399,8 +421,9 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         return page("runs.html", request, jobs=jobs.runs_view(con()))
 
     @app.get("/series", response_class=HTMLResponse)
-    def series_page(request: Request):
-        return page("series.html", request, series=_series_rows(con()))
+    def series_page(request: Request, error: str = ""):
+        return page("series.html", request, series=_series_rows(con()),
+                    error=error)
 
     @app.get("/series/{sid}", response_class=HTMLResponse)
     def series_detail(request: Request, sid: int):
@@ -876,22 +899,35 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.post("/series/{sid}/refresh")
     def post_refresh(sid: int):
-        # SYNC re-discovery. The old button enqueued an async /jobs refresh that
-        # updated nothing in the view, so the total never moved and the NEW badge
-        # never cleared. Run discovery inline (reuses cmd_refresh — idempotent
-        # upsert, only new chapters add rows), then clear the alert: a manual
-        # refresh means "I'm looking now".
+        # Re-discovery runs INLINE so the view updates immediately (an async
+        # job left the total unmoved and the NEW badge uncleared, which is why
+        # this was made synchronous). It reuses cmd_refresh — an idempotent
+        # upsert, so only genuinely new chapters add rows.
+        #
+        # The return code is now CHECKED. Previously every failure mode was
+        # swallowed by a bare `except Exception: pass` and the NEW badge was
+        # cleared anyway — so a source site being down looked exactly like
+        # "no new chapters", and the alert you needed was destroyed. On
+        # failure the badge stays put and the error is surfaced.
         import subprocess
-        import sys
         c = con()
         try:
-            subprocess.run([sys.executable, "-m", "studio", "refresh",
-                            "--series", str(sid)], cwd=str(REPO), timeout=90)
-        except Exception:
-            pass
-        c.execute("UPDATE series SET new_pending=0 WHERE id=?", (sid,))
-        c.commit()
-        return RedirectResponse("/series", status_code=303)
+            r = subprocess.run([PY, "-m", "studio", "refresh",
+                                "--series", str(sid)], cwd=str(REPO),
+                               capture_output=True, text=True, timeout=90)
+            ok, detail = r.returncode == 0, (r.stderr or "")[-300:]
+        except subprocess.TimeoutExpired:
+            ok, detail = False, "discovery timed out after 90s"
+        except Exception as e:
+            ok, detail = False, str(e)[:300]
+        if ok:
+            # a manual refresh means "I'm looking now"
+            c.execute("UPDATE series SET new_pending=0 WHERE id=?", (sid,))
+            c.commit()
+            return RedirectResponse("/series", status_code=303)
+        return RedirectResponse(
+            f"/series?error=refresh+failed:+{quote_plus(detail)}",
+            status_code=303)
 
     def _series_running_jobs(c: sqlite3.Connection, sid: int) -> int:
         # 'cancelling' counts as live: its child is still running until the

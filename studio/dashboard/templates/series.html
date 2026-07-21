@@ -1,5 +1,6 @@
 {% extends "base.html" %}{% set active='series' %}{% block body %}
 <h2>Series board</h2>
+{% if error %}<div class="row"><span class="b warn" style="background:#e74c3c;color:#fff">⚠ {{ error }}</span></div>{% endif %}
 <div class="row">
 <form class="inline" method="post" action="/add-series-direct">
 <select name="source"><option value="asura">asura</option><option value="webtoon">webtoon</option><option value="elftoon">elftoon</option></select>

@@ -196,11 +196,32 @@ def test_enqueue_dedupe_off_inserts(tmp_path):
                        "chapter_id=1").fetchone()[0] == 2
 
 
-def test_enqueue_retry_not_deduped_while_original_running(tmp_path):
+def test_enqueue_dedupes_against_a_RUNNING_job(tmp_path):
+    """The dedupe key covers queued AND live rows. Matching only 'queued' meant
+    the guard stopped working the instant the worker claimed the job, so a
+    second browser tab or an impatient double-click enqueued a duplicate of a
+    ~40 GPU-minute prepare. (The worker's own auto-retry does not rely on
+    slipping past this — it passes dedupe=False explicitly; see below.)"""
     con = _con(tmp_path)
     a = jobs.enqueue(con, "prepare", chapter_id=1)
     jobs.claim_next(con, lane="gpu")                     # a -> running
-    b = jobs.enqueue(con, "prepare", chapter_id=1)       # retry-style re-enqueue
+    assert jobs.enqueue(con, "prepare", chapter_id=1) == a
+    jobs.cancel(con, a)                                  # a -> cancelling
+    assert jobs.enqueue(con, "prepare", chapter_id=1) == a, \
+        "a cancelling job's work is still on the books"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='prepare'"
+                       ).fetchone()[0] == 1
+
+
+def test_retry_style_reenqueue_forces_a_fresh_row(tmp_path):
+    """The worker's auto-retry MUST get its own row: dedupe ignores the
+    payload, so folding onto an existing row would drop the incremented
+    _attempt counter and loop a failing chapter forever."""
+    con = _con(tmp_path)
+    a = jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.claim_next(con, lane="gpu")
+    b = jobs.enqueue(con, "prepare", chapter_id=1,
+                     payload={"_attempt": 1}, dedupe=False)
     assert b != a
     assert con.execute("SELECT state FROM job WHERE id=?",
                        (b,)).fetchone()[0] == "queued"
