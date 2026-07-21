@@ -317,6 +317,16 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
     from studio.dashboard.app import create_app
     db = args.db or str(_db_path())
+    # Binding beyond loopback with no shared secret would publish full control
+    # of the pipeline — including the irreversible delete-series action — to
+    # anyone on the network. The convenient default is only safe BECAUSE of
+    # this guard; never relax one without the other.
+    loopback = args.host in ("127.0.0.1", "localhost", "::1")
+    if not loopback and not os.environ.get("STUDIO_DASH_TOKEN"):
+        print(f"refusing to bind {args.host} with no STUDIO_DASH_TOKEN set.\n"
+              "  set one:  export STUDIO_DASH_TOKEN=$(openssl rand -hex 16)\n"
+              "  or bind loopback only:  --host 127.0.0.1", file=sys.stderr)
+        return 2
     uvicorn.run(create_app(db_path=db), host=args.host, port=args.port)
     return 0
 
@@ -465,9 +475,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # dashboard / worker
     p_dash = sub.add_parser("dashboard", help="Run the control dashboard UI")
     p_dash.add_argument("--port", type=int, default=8170)
-    p_dash.add_argument("--host", default="127.0.0.1",
-                        help="0.0.0.0 for LAN access (pair with "
-                             "STUDIO_DASH_TOKEN)")
+    p_dash.add_argument("--host", default="0.0.0.0",
+                        help="default 0.0.0.0 (LAN/Tailscale); requires "
+                             "STUDIO_DASH_TOKEN for any non-loopback bind")
     p_dash.add_argument("--db", default=None,
                         help="default: repo-anchored studio.db ($STUDIO_DB)")
     p_worker = sub.add_parser("worker", help="Run the job queue executor")

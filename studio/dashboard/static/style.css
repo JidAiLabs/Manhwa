@@ -41,3 +41,32 @@ input,select{background:var(--panel2);border:1px solid var(--line);color:var(--t
 input::placeholder{color:var(--dim)}
 input:focus,select:focus{outline:0;border-color:var(--acc)}
 select{cursor:pointer}
+
+/* --- connection truth: the page must never look alive while it is not ---- */
+#netbanner{position:sticky;top:0;z-index:50;background:var(--err);color:#fff;
+  padding:7px 22px;font-size:12.5px;font-weight:600;letter-spacing:.2px}
+/* 1px top progress line — continuous proof the page is still talking to the
+   host. Absence of motion is now information, not ambiguity. */
+html.loading::before{content:"";position:fixed;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--acc),transparent);
+  background-size:40% 100%;background-repeat:no-repeat;z-index:100;
+  animation:sweep .9s ease-in-out infinite}
+@keyframes sweep{0%{background-position:-40% 0}100%{background-position:140% 0}}
+
+/* live-state badges: cancelling and stale had no visual at all, so a job in
+   either state was indistinguishable from a healthy one */
+.b.cancel{background:#3a2a10;color:var(--warn)}
+.b.stale{background:#371511;color:var(--err);
+  box-shadow:0 0 0 1px var(--err) inset}
+tr.stale td{background:#2a0f0c33}
+tr.overdue td{background:#2a220c33}
+
+/* the Air runs this in a split window — keep it usable narrow */
+@media (max-width:900px){
+  main{padding:12px}
+  header{flex-wrap:wrap;gap:8px;padding:8px 12px}
+  nav{flex-wrap:wrap}
+  .cols{grid-template-columns:1fr}
+  table{display:block;overflow-x:auto;white-space:nowrap}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+}

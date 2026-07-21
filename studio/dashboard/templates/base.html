@@ -1,8 +1,45 @@
 <!doctype html><html><head><meta charset="utf-8">
 <title>OriginPower Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/static/style.css">
-<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+<!-- htmx is VENDORED, not loaded from a CDN. Every live update on this
+     dashboard is an hx-get, so a CDN the host cannot reach (offline Mini,
+     captive wifi, DNS hiccup) meant the entire UI silently stopped
+     refreshing while still looking perfectly healthy. -->
+<script src="/static/htmx.min.js"></script>
 </head><body>
+<div id="netbanner" hidden>connection lost — retrying…</div>
+<script>
+// A page that cannot reach the server must SAY so. htmx does not swap a
+// non-2xx response, so before this an auth expiry or a dropped tunnel just
+// froze the page on stale content with no visible change at all.
+(function () {
+  var b = document.getElementById('netbanner'), t = null;
+  function show(msg) { b.textContent = msg; b.hidden = false; }
+  function hide() { b.hidden = true; }
+  document.body.addEventListener('htmx:responseError', function (e) {
+    show(e.detail.xhr.status === 401
+      ? 'session expired — redirecting to login…'
+      : 'server error ' + e.detail.xhr.status + ' — retrying…');
+  });
+  document.body.addEventListener('htmx:sendError', function () {
+    show('connection lost — retrying…');
+  });
+  document.body.addEventListener('htmx:afterRequest', function (e) {
+    if (e.detail.successful) hide();
+  });
+  // a 1px progress line: continuous proof the page is still talking to the host
+  document.body.addEventListener('htmx:beforeRequest', function () {
+    document.documentElement.classList.add('loading');
+    clearTimeout(t);
+  });
+  document.body.addEventListener('htmx:afterRequest', function () {
+    t = setTimeout(function () {
+      document.documentElement.classList.remove('loading');
+    }, 150);
+  });
+})();
+</script>
 <header><h1><b>OriginPower</b> Studio</h1>
 <nav>
 <a href="/" class="{{ 'on' if active=='queue' else '' }}">Queue</a>

@@ -14,7 +14,8 @@ import shutil
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from html import escape
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote_plus
 
 from fastapi import FastAPI, Form, Request
@@ -52,6 +53,24 @@ from manifest_freshness import verify_chapter as _verify_chapter_freshness  # no
 TIMELINE = ["downloaded", "stitched", "detected", "scened", "visioned",
             "grouped", "beated", "scripted", "voiced", "planned",
             "prepped", "qa_scan", "render_segment"]
+
+
+def _served_rel(p: Optional[Union[str, Path]]) -> Optional[str]:
+    """A path's position under ongoing/, for building a /media URL — or None
+    when it does not live there.
+
+    Every caller used a bare `Path(...).relative_to(ongoing)`, which RAISES
+    on a path outside the tree and took the whole chapter page down with a
+    500. That is not a rare case: it is what every DB copied between the Air
+    and the Mini looks like, since ep_dir is stored as an absolute path from
+    whichever machine did the fetch. The page must degrade to "images
+    unavailable", never to a stack trace."""
+    if not p:
+        return None
+    try:
+        return str(Path(p).resolve().relative_to((REPO / "ongoing").resolve()))
+    except Exception:
+        return None
 
 
 def _http_url(u: Optional[str]) -> Optional[str]:
@@ -171,20 +190,15 @@ def _teaser_card(bid: int) -> Optional[Dict[str, Any]]:
         t = json.loads(mf.read_text())
     except Exception:
         return None
-    ongoing = (REPO / "ongoing").resolve()
     lines: Dict[str, str] = {}
     for seg in beat_segments(t):        # legacy teaser shape adapts to segments
         for sf in seg["span"]:
             lines.setdefault(sf, seg["line"])
     panels = []
     for sf in (t.get("scene_files") or []):
-        img = None
-        try:
-            rel = (tdir / "scenes" / sf).resolve().relative_to(ongoing)
-            img = f"/media/{rel}"
-        except Exception:
-            img = None
-        panels.append({"file": sf, "line": lines.get(sf, ""), "img": img})
+        rel = _served_rel(tdir / "scenes" / sf)
+        panels.append({"file": sf, "line": lines.get(sf, ""),
+                       "img": f"/media/{rel}" if rel else None})
     return {"reason": t.get("reason") or "",
             "rewind_line": t.get("rewind_line") or "",
             "spoiler_boundary": t.get("spoiler_boundary") or "",
@@ -343,25 +357,46 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             if not (path.startswith("/static") or path.startswith("/login")):
                 cookie = request.cookies.get("studio_token") or ""
                 if not _secrets.compare_digest(cookie, token):
+                    # THE FROZEN-DASHBOARD ROOT CAUSE. htmx does not swap a
+                    # non-2xx response, so a bare 401 made the 2s queue poller
+                    # fail silently: the page kept displaying whatever it last
+                    # got and looked alive while showing state minutes or
+                    # hours old. This happens routinely across machines —
+                    # LAN, Tailscale and WireGuard are three different origins
+                    # and therefore three separate cookie jars, so walking the
+                    # Air from one network to another logs you out mid-view.
+                    # Tell htmx to navigate instead of silently doing nothing.
+                    if request.headers.get("HX-Request"):
+                        return PlainTextResponse(
+                            "", status_code=401,
+                            headers={"HX-Redirect": "/login"})
+                    if request.method == "GET":
+                        nxt = quote_plus(str(request.url.path))
+                        return RedirectResponse(f"/login?next={nxt}",
+                                                status_code=303)
                     return PlainTextResponse(
                         "locked — open /login and enter the token",
                         status_code=401)
         return await call_next(request)
 
     @app.get("/login", response_class=HTMLResponse)
-    def login_form():
+    def login_form(next: str = "/"):
         # token travels in a POST body, never in a URL (history/logs/referer)
         return HTMLResponse(
             '<form method="post" action="/login" '
             'style="margin:20vh auto;width:280px;font-family:sans-serif">'
+            f'<input type="hidden" name="next" value="{escape(next)}">'
             '<input type="password" name="token" placeholder="dashboard '
             'token" autofocus style="width:100%;padding:8px">'
             '<button style="margin-top:8px;width:100%;padding:8px">'
             'unlock</button></form>')
 
     @app.post("/login")
-    def login(token: str = Form("")):
-        resp = RedirectResponse("/", status_code=303)
+    def login(token: str = Form(""), next: str = Form("/")):
+        # only same-site paths: a caller-supplied 'next' is an open-redirect
+        # vector otherwise ("//evil.example" is protocol-relative).
+        dest = next if next.startswith("/") and not next.startswith("//") else "/"
+        resp = RedirectResponse(dest, status_code=303)
         expected = os.environ.get("STUDIO_DASH_TOKEN", "")
         if token and expected and _secrets.compare_digest(token, expected):
             resp.set_cookie("studio_token", token, httponly=True,
@@ -371,9 +406,20 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     app.mount("/static", StaticFiles(directory=str(HERE / "static")),
               name="static")
-    if (REPO / "ongoing").is_dir():
-        app.mount("/media", StaticFiles(directory=str(REPO / "ongoing")),
-                  name="media")
+    # UNCONDITIONAL mounts. /media used to be mounted only if ongoing/ already
+    # existed at startup — but the templates emit /media/... regardless, so on
+    # a fresh checkout (or a host where the data lives elsewhere and the dir is
+    # created later) every scene image and every video 404'd with no
+    # explanation. mkdir first, then mount, so the route always exists.
+    # /dist is the same story for finished bundle videos, which the Videos page
+    # previously showed as an unclickable host path.
+    for _url, _dir in (("/media", REPO / "ongoing"), ("/dist", REPO / "dist")):
+        try:
+            _dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            continue        # read-only checkout: skip rather than fail boot
+        app.mount(_url, StaticFiles(directory=str(_dir)),
+                  name=_url.lstrip("/"))
 
     def con() -> sqlite3.Connection:
         return connect(db_path)
@@ -477,8 +523,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             ch["status"] = _rec["status_to"]
         title = (c.execute("SELECT title FROM series WHERE id=?",
                            (ch["series_id"],)).fetchone() or ["?"])[0]
-        ep_rel = (Path(ch["ep_dir"]).resolve().relative_to(
-            (REPO / "ongoing").resolve()) if ch["ep_dir"] else None)
+        ep_rel = _served_rel(ch["ep_dir"])
         allowed, why = gates.render_allowed(c, cid, ch["ep_dir"])
         v_allowed, v_why = gates.voice_allowed(c, cid, ch["ep_dir"])
         # the chapter's live job, if any — approving a gate kicks off work the
@@ -588,16 +633,24 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         c = con()
         hb = c.execute("SELECT started_at FROM job WHERE type='heartbeat' "
                        "ORDER BY id DESC LIMIT 1").fetchone()
+        # Probe the endpoint the WORKER actually uses. This was hardcoded to
+        # localhost:11434 while the worker runs against OLLAMA_HOST — on both
+        # machines that is the MLX shim on :11500 — so the health page happily
+        # reported "(not running)" for a perfectly working pipeline, and would
+        # equally have reported green while the real backend was down. Label
+        # the probe with the URL so the answer is never ambiguous again.
+        host = (os.environ.get("OLLAMA_HOST") or "localhost:11434").strip()
+        if not host.startswith(("http://", "https://")):
+            host = "http://" + host
         ollama = ""
         try:
             import httpx
-            tags = httpx.get("http://localhost:11434/api/tags",
-                             timeout=2).json()
+            tags = httpx.get(f"{host}/api/tags", timeout=2).json()
             ollama = ", ".join(m["name"] for m in tags.get("models", [])[:4])
         except Exception:
             ollama = "(not running)"
         checks = {
-            "ollama models": ollama,
+            f"ollama models @ {host}": ollama,
             "qwen venv": str((REPO / ".qwen_venv").is_dir()),
             "kokoro venv": str((REPO / ".kokoro_venv").is_dir()),
             "narrator ref": str((REPO / "assets/voice/narrator_ref.wav").exists()),

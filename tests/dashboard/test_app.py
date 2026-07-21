@@ -286,12 +286,49 @@ def test_token_auth_when_env_set(client, monkeypatch, tmp_path):
     db = tmp_path / "t.db"
     _c(db)
     c = TestClient(create_app(db_path=str(db)))
-    assert c.get("/").status_code == 401              # locked
-    assert "form" in c.get("/login").text             # GET shows the form
+    # a locked GET now REDIRECTS to the login form rather than dead-ending on
+    # a bare 401 — but it must still never serve the page itself
+    r = c.get("/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/login")
+    assert "dashboard token" in c.get("/").text       # lands on the form
+    assert "form" in c.get("/login").text
+    # a POST with no cookie is still a hard 401 (no redirect dance)
+    assert c.post("/jobs/1/cancel", follow_redirects=False).status_code == 401
     c.post("/login", data={"token": "wrong"}, follow_redirects=False)
-    assert c.get("/").status_code == 401
+    assert c.get("/", follow_redirects=False).status_code == 303
     c.post("/login", data={"token": "sekret"}, follow_redirects=False)
     assert c.get("/").status_code == 200              # cookie set (POST only)
+
+
+def test_locked_htmx_request_gets_hx_redirect_not_a_silent_freeze(
+        client, monkeypatch, tmp_path):
+    """THE frozen-dashboard bug: htmx does not swap a non-2xx response, so a
+    bare 401 made the 2s queue poller fail silently and the page kept showing
+    state that could be hours old while looking perfectly alive."""
+    from studio.catalog.db import connect as _c
+    from studio.dashboard.app import create_app
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("STUDIO_DASH_TOKEN", "sekret")
+    db = tmp_path / "t.db"
+    _c(db)
+    c = TestClient(create_app(db_path=str(db)))
+    r = c.get("/partials/queue", headers={"HX-Request": "true"},
+              follow_redirects=False)
+    assert r.headers.get("HX-Redirect") == "/login"
+
+
+def test_login_next_cannot_be_an_open_redirect(client, monkeypatch, tmp_path):
+    from studio.catalog.db import connect as _c
+    from studio.dashboard.app import create_app
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("STUDIO_DASH_TOKEN", "sekret")
+    db = tmp_path / "t.db"
+    _c(db)
+    c = TestClient(create_app(db_path=str(db)))
+    for hostile in ("//evil.example", "https://evil.example", "http://x"):
+        r = c.post("/login", data={"token": "sekret", "next": hostile},
+                   follow_redirects=False)
+        assert r.headers["location"] == "/", hostile
 
 
 def test_no_token_env_means_open(client):
@@ -640,3 +677,59 @@ def test_chapter_badges_render_as_html_not_literal_text(client):
     body = c.get("/chapter/1").text
     assert 'class="b warn"' in body or 'class="b ok"' in body
     assert "class=”" not in body
+
+
+# --- Phase E: cross-machine ---------------------------------------------------
+
+def test_media_mount_exists_even_without_ongoing_dir(tmp_path, monkeypatch):
+    """Templates emit /media/... unconditionally, but the mount used to be
+    added only if ongoing/ already existed at startup — so on a fresh host
+    every scene image 404'd with no explanation."""
+    from studio.dashboard import app as appmod
+    from studio.catalog.db import connect as _c
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(appmod, "REPO", tmp_path)
+    db = tmp_path / "t.db"
+    _c(db)
+    assert not (tmp_path / "ongoing").exists()
+    c = TestClient(appmod.create_app(db_path=str(db)))
+    # mounted -> a MISSING file is a 404 from StaticFiles, not a routing 404
+    assert (tmp_path / "ongoing").is_dir()
+    assert (tmp_path / "dist").is_dir()
+    routes = {getattr(r, "path", "") for r in c.app.routes}
+    assert "/media" in routes and "/dist" in routes
+
+
+def test_chapter_page_survives_an_ep_dir_outside_the_tree(client):
+    """ep_dir is stored absolute from whichever machine fetched it, so any DB
+    copied between the Air and the Mini has out-of-tree paths. That used to
+    raise from relative_to and 500 the whole page."""
+    c, con = client
+    con.execute("UPDATE chapter SET ep_dir='/tmp/definitely-not-here' "
+                "WHERE id=1")
+    con.commit()
+    assert c.get("/chapter/1").status_code == 200
+
+
+def test_served_rel_returns_none_outside_tree():
+    from studio.dashboard.app import _served_rel, REPO
+    assert _served_rel(None) is None
+    assert _served_rel("/tmp/nope") is None
+    assert _served_rel(REPO / "ongoing" / "S" / "Ep1") == "S/Ep1"
+
+
+def test_health_probes_the_ollama_host_the_worker_uses(client, monkeypatch):
+    """Hardcoded localhost:11434 while the worker runs against the MLX shim on
+    :11500 — the health page reported '(not running)' for a working pipeline."""
+    c, _ = client
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11500")
+    body = c.get("/health").text
+    assert "11500" in body
+
+
+def test_htmx_is_vendored_not_cdn():
+    from studio.dashboard.app import HERE
+    base = (HERE / "templates" / "base.html").read_text()
+    assert "/static/htmx.min.js" in base
+    assert "unpkg.com" not in base
+    assert (HERE / "static" / "htmx.min.js").is_file()
