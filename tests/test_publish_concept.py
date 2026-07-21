@@ -135,3 +135,88 @@ def test_climax_scan_stays_exhaustive():
         {"scene_file": "boom.jpg", "intensity": "explosive"}]}]}
     ci, refs = pc.select_bundle_climax(beats)
     assert ci == 287 and refs == ["boom.jpg"]
+
+
+# --- before_after needs an actual "before" --------------------------------
+
+def _arc_beats():
+    """A 5-chapter arc: weak opening, transformation climax in chapter 4."""
+    weak = {"beats": [{"what_happens": "a mocked weakling is humiliated",
+                       "scene_selection": [
+                           {"scene_file": "w1.jpg", "intensity": "calm"},
+                           {"scene_file": "w2.jpg", "intensity": "tense"}]}]}
+    filler = {"beats": [{"what_happens": "training",
+                         "scene_selection": [
+                             {"scene_file": "f.jpg", "intensity": "tense"}]}]}
+    payoff = {"beats": [{"what_happens": "he transforms, from zero, and "
+                                        "breaks every record",
+                         "scene_selection": [
+                             {"scene_file": "boom.jpg",
+                              "intensity": "explosive"}]}]}
+    return [weak, filler, filler, payoff, filler]
+
+
+def test_before_after_refs_include_a_weak_panel_from_before_the_climax():
+    """The composition promises the same character weak AND transformed. Refs
+    used to come only from the climax beat, so both halves were painted from
+    the SAME moment — there was no 'before' at all."""
+    beats = _arc_beats()
+    eps = [f"/x/ongoing/s/Chapter_{i + 1}" for i in range(len(beats))]
+    c = pc.build_bundle_concept(
+        beats, {"title": "t", "hooks": ["WEAK|GOD"], "synopsis": "s",
+                "hashtags": ["#m"]},
+        durations=[10.0] * len(beats), series_title="S", ep_dirs=eps)
+    assert c["style"] == "before_after"
+    assert c["climax_chapter_index"] == 3
+    # the climax panel is still there...
+    assert "boom.jpg" in c["refs"]
+    # ...and now a weak panel from an EARLIER chapter leads
+    assert c["refs"][0] == "/x/ongoing/s/Chapter_1/scenes/w1.jpg"
+
+
+def test_before_ref_is_absolute_because_it_crosses_chapters():
+    """Refs resolve against the CLIMAX chapter's scenes/ dir, so a panel from
+    another chapter can only be expressed as an absolute path."""
+    beats = _arc_beats()
+    eps = [f"/x/ongoing/s/Chapter_{i + 1}" for i in range(len(beats))]
+    before = pc.select_before_ref(beats, eps, climax_ci=3)
+    import os as _os
+    assert _os.path.isabs(before) and before.endswith("Chapter_1/scenes/w1.jpg")
+
+
+def test_non_before_after_styles_keep_climax_only_refs():
+    """Only the split composition needs a contrasting panel; don't spend a
+    reference slot elsewhere."""
+    beats = [{"beats": [{"what_happens": "a giant dragon boss attacks",
+                         "scene_selection": [
+                             {"scene_file": "d.jpg", "intensity": "explosive"}]}]}]
+    c = pc.build_bundle_concept(
+        beats, {"title": "t", "hooks": ["RUN"], "synopsis": "s",
+                "hashtags": ["#m"]},
+        durations=[10.0], series_title="S", ep_dirs=["/x/Chapter_1"])
+    assert c["style"] == "vs_monster"
+    assert c["refs"] == ["d.jpg"]
+
+
+def test_before_ref_absent_when_climax_is_the_first_chapter():
+    beats = _arc_beats()[3:4]
+    c = pc.build_bundle_concept(
+        beats, {"title": "t", "hooks": ["A|B"], "synopsis": "s",
+                "hashtags": ["#m"]},
+        durations=[10.0], series_title="S", ep_dirs=["/x/Chapter_1"])
+    assert all(not r.startswith("/") for r in c["refs"])
+
+
+def test_hook_prompt_asks_for_the_shape_each_style_needs():
+    """pick_hook has style branches (a piped pair for before_after, a number
+    for stat_callout) but the prompt only said 'punchy', so those branches
+    were unreachable and before_after always fell back to a literal
+    BEFORE / AFTER."""
+    p_ba = pc.build_concept_prompt("d", "Banned", "before_after")
+    assert "|" in p_ba and "PAIR" in p_ba
+    p_stat = pc.build_concept_prompt("d", "Banned", "stat_callout")
+    assert "NUMBER" in p_stat or "RANK" in p_stat
+    p_def = pc.build_concept_prompt("d", "Banned", "power_reveal")
+    assert "punchy" in p_def
+    for p in (p_ba, p_stat, p_def):
+        assert "Banned" in p          # ban list survives in every variant

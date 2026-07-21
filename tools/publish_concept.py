@@ -40,7 +40,22 @@ _BASE_TAGS = ("manhwa recap, manhwa, webtoon, manhwa recaps, manga recap, "
               "manhua recap, anime recap, recap, manhwa summary, webtoon recap")
 
 
+# What a hook must LOOK LIKE for each style, so pick_hook's style branches are
+# actually reachable. Without this the model was only told "punchy", so the
+# before_after branch (which looks for an "A|B" pair) never matched and the
+# split composition always fell back to a generic literal BEFORE / AFTER.
+_HOOK_SHAPE = {
+    "before_after": ('3 thumbnail labels. EVERY one must be a contrasting PAIR '
+                     'written as "WEAK SIDE|STRONG SIDE" (1-2 words per side), '
+                     'e.g. "TRASH|MONSTER"'),
+    "stat_callout": ('3 thumbnail labels, 1-4 words each; at least two must '
+                     'contain a NUMBER or rank (e.g. "LEVEL 999", "RANK SSS")'),
+}
+_HOOK_DEFAULT = "3 thumbnail labels, 1-4 words each, punchy"
+
+
 def build_concept_prompt(digest: str, banned: str, style: str) -> str:
+    hook_spec = _HOOK_SHAPE.get(style, _HOOK_DEFAULT)
     return (
         "You write copyright-safe metadata for a manhwa RECAP video. NEVER use "
         f"this licensed title (or any part of it): {banned or '(none)'}.\n"
@@ -49,7 +64,7 @@ def build_concept_prompt(digest: str, banned: str, style: str) -> str:
         "{\n"
         '  "title": "clickbait recap title, 60-95 chars, trope-based, CAPS for '
         'emphasis, NO real names",\n'
-        '  "hooks": ["3 thumbnail labels, 1-4 words each, punchy"],\n'
+        f'  "hooks": ["{hook_spec}"],\n'
         '  "synopsis": "2-4 sentence teaser with emojis, trope framing, NO real '
         'names",\n'
         '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
@@ -178,6 +193,43 @@ def select_bundle_climax(beats_objs: List[Dict[str, Any]]):
     return best[1], best[2]
 
 
+def _kept_panels(beats_obj: Dict[str, Any]):
+    """(scene_file, intensity) for kept panels, in reading order."""
+    out = []
+    for bt in beats_obj.get("beats") or []:
+        for s in bt.get("scene_selection") or []:
+            if not isinstance(s, dict):
+                continue
+            if str(s.get("role") or "keep") == "redundant":
+                continue
+            f = str(s.get("scene_file") or "")
+            if f:
+                out.append((f, str(s.get("intensity") or "calm").lower()))
+    return out
+
+
+def select_before_ref(beats_objs: List[Dict[str, Any]], ep_dirs: List[str], *,
+                      climax_ci: int) -> str:
+    """A 'weakest moment' reference panel from BEFORE the climax, as an
+    ABSOLUTE path (it usually lives in a different chapter than the climax).
+
+    The before_after style promises the same character weak on the left and
+    transformed on the right. But bundle refs all came from the single climax
+    beat, so both halves were painted from the SAME moment — there was no
+    "before" at all, and the composition's whole premise was unsupported.
+
+    Searches the earliest chapters first for a calm/tense kept panel, which is
+    where a protagonist is most likely to be shown at their weakest.
+    """
+    for ci in range(0, max(1, min(climax_ci, len(beats_objs)))):
+        for fn, inten in _kept_panels(beats_objs[ci]):
+            if inten in ("calm", "tense"):
+                if ci < len(ep_dirs):
+                    return os.path.join(ep_dirs[ci], "scenes", fn)
+                return fn
+    return ""
+
+
 def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
                      series_title: str, genre: str = "",
                      official_link: str = "") -> Dict[str, Any]:
@@ -220,7 +272,8 @@ def parts_timestamps(durations: List[float],
 def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
                          *, durations: List[float], series_title: str,
                          genre: str = "", official_link: str = "",
-                         labels: Optional[List[str]] = None) -> Dict[str, Any]:
+                         labels: Optional[List[str]] = None,
+                         ep_dirs: Optional[List[str]] = None) -> Dict[str, Any]:
     """Concept for a VIDEO (bundle of N chapters): arc title/synopsis from the
     aggregated chapters, style+refs from the bundle's CLIMAX chapter, and the
     Parts (YouTube-chapter) timestamps appended to the description."""
@@ -230,7 +283,16 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
                          genre=genre, official_link=official_link)
     c["parts"] = parts_timestamps(durations, labels)
     c["climax_chapter_index"] = climax_ci
-    c["refs"] = refs                      # thumbnail art comes from the climax
+    # The before_after composition needs BOTH halves: a weak "before" panel and
+    # the transformed climax. Climax refs alone painted both halves from one
+    # moment. The before panel usually lives in an earlier chapter, so it is an
+    # ABSOLUTE path — refs from the climax chapter stay bare filenames.
+    if c.get("style") == "before_after":
+        before = select_before_ref(beats_list, ep_dirs or [],
+                                   climax_ci=climax_ci)
+        if before:
+            refs = [before] + [r for r in refs if r != before]
+    c["refs"] = refs
     c["description"] = c["description"] + "\n\n" + "\n".join(c["parts"])
     return c
 
@@ -288,7 +350,8 @@ def main() -> int:
                      args.ollama_model)
         concept = build_bundle_concept(beats_list, llm, durations=durations,
                                        series_title=args.series_title, genre=args.genre,
-                                       official_link=args.official_link)
+                                       official_link=args.official_link,
+                                       ep_dirs=eps)
         out = args.out or os.path.join(eps[0], "render", "bundle_publish_meta.json")
     else:
         if not args.episode_dir:

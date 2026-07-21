@@ -103,7 +103,14 @@ def _load_ref_images(episode_dir: str, refs: List[str], *,
     from PIL import Image
     out = []
     for fn in refs:
-        path = os.path.join(episode_dir, "scenes", fn)
+        # A ref is normally a bare scene filename inside THIS chapter. It may
+        # also be an ABSOLUTE path, because a cross-chapter reference (the
+        # before_after style needs a "weak" panel from an earlier chapter than
+        # the climax) cannot be expressed as a filename here. Handled
+        # explicitly rather than leaning on os.path.join's absolute-component
+        # behaviour, which is easy to break by accident.
+        path = fn if os.path.isabs(fn) else os.path.join(episode_dir,
+                                                         "scenes", fn)
         if not os.path.exists(path):
             print(f"[warn] ref missing, skipped: {path}")
             continue
