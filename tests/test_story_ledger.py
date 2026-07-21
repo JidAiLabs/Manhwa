@@ -838,3 +838,26 @@ def test_punchup_backstop_ledger_threads_dead_exclusion():
         out, CAST, {}, understood_by_file, ledger=led)
     assert stats["actor_handles_rewritten"] >= 1
     assert "leader" not in out["beats"][0]["segments"][0]["line"].lower()
+
+
+# ---- heal cap knob (measure or disable the loop without a deploy) -----------
+
+def test_heal_max_is_env_tunable_and_zero_disables_the_loop():
+    """One heal cycle costs ~35 min and kept 2 of 14 rewrites on nano ch1, so
+    the loop has to be measurable rather than assumed. 0 must be a clean
+    no-op: range(1, 0+1) is empty."""
+    import importlib
+    import os as _os
+    import studio.worker as w
+    try:
+        _os.environ["STUDIO_HEAL_MAX"] = "0"
+        importlib.reload(w)
+        assert w._HEAL_MAX == 0
+        assert list(range(1, w._HEAL_MAX + 1)) == []      # loop never runs
+        _os.environ["STUDIO_HEAL_MAX"] = "-3"             # clamped, never < 0
+        importlib.reload(w)
+        assert w._HEAL_MAX == 0
+    finally:
+        _os.environ.pop("STUDIO_HEAL_MAX", None)
+        importlib.reload(w)
+    assert w._HEAL_MAX == 4                                # default unchanged

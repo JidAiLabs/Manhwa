@@ -671,7 +671,16 @@ def _replan(ep: Path, log: TextIO) -> None:
         raise RuntimeError("timeline_planner (heal) failed")
 
 
-_HEAL_MAX = 4
+# Auto-heal cycle cap. Env-tunable (same posture as STUDIO_QA_CONC /
+# STUDIO_GPU_WIDTH) so the loop can be measured or switched off WITHOUT a
+# deploy. 0 disables it: range(1, 1) is empty, so the loop is a clean no-op
+# and the post-loop render-fixable re-prep still runs.
+#
+# Why this knob exists (measured, nano ch1 job 65): one heal cycle costs ~35
+# min and narration_accept_better reverted 12 of its 14 rewrites — the loop
+# bought 2 improved lines out of ~85. Whether that trade is worth it varies by
+# chapter, so it needs to be measurable rather than assumed.
+_HEAL_MAX = max(0, int(os.environ.get("STUDIO_HEAL_MAX", "4")))
 
 # ERROR codes that live in the PLAN, not the narration: a render_prep re-run
 # (whose passes are cap-aware) clears them; re-narration never can. The heal
