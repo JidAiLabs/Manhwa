@@ -69,7 +69,10 @@ def test_select_bundle_climax_picks_highest_intensity_chapter():
 def test_bundle_digest_spans_chapters():
     chs = [{"beats": [{"group_id": 1, "hook": f"hook {i}"}]} for i in range(3)]
     d = pc.bundle_digest(chs)
-    assert "[Chapter 1]" in d and "[Chapter 3]" in d
+    # labels carry the arc POSITION ("1 of 3"), so a sampled digest still
+    # tells the model where each excerpt sits in the series
+    assert "[Chapter 1 of 3]" in d and "[Chapter 3 of 3]" in d
+    assert "hook 0" in d and "hook 2" in d
 
 
 def test_build_bundle_concept_arc_title_climax_refs_and_parts():
@@ -86,3 +89,49 @@ def test_build_bundle_concept_arc_title_climax_refs_and_parts():
     assert c["parts"][0].startswith("0:00") and "1:00:00" in c["parts"][1]
     assert "0:00" in c["description"]               # parts appended to desc
     assert "Hidden Series" not in c["description"]  # still copyright-safe
+
+
+# --- digest bounding: the prompt must not grow with the series -------------
+
+def _beats_n(n):
+    return [{"beats": [{"hook": f"chapter {i} hook " + "x" * 800}]}
+            for i in range(n)]
+
+
+def test_digest_is_bounded_regardless_of_series_length():
+    """It used to describe EVERY chapter: ~713 chars each, so 300 chapters
+    produced ~213,000 chars (~53,000 tokens). MLX ignores num_ctx and simply
+    processes that — ~3 minutes of prefill to write a title."""
+    small = pc.bundle_digest(_beats_n(10), max_chapters=24)
+    huge = pc.bundle_digest(_beats_n(300), max_chapters=24)
+    assert huge.count("[Chapter ") == 24
+    assert small.count("[Chapter ") == 10          # under the cap: untouched
+    assert len(huge) < 30_000
+
+
+def test_digest_keeps_opening_climax_and_ending():
+    """Sampled, not truncated — the arc shape is what a title needs."""
+    d = pc.bundle_digest(_beats_n(300), max_chapters=24, climax_index=176)
+    assert "[Chapter 1 of 300]" in d
+    assert "[Chapter 300 of 300]" in d
+    assert "[Chapter 177 of 300 (CLIMAX)]" in d
+
+
+def test_sampling_is_spread_not_front_loaded():
+    idxs = pc.sample_arc_indices(300, max_chapters=24)
+    assert idxs[0] == 0 and idxs[-1] == 299
+    assert len(idxs) <= 24
+    # the middle of the arc must be represented, not just the first chapters
+    assert any(100 <= i <= 200 for i in idxs)
+    assert idxs == sorted(set(idxs))
+
+
+def test_climax_scan_stays_exhaustive():
+    """Bounding the DIGEST must not change which moment the thumbnail shows:
+    the climax is found in pure Python over every chapter."""
+    beats = [{"beats": [{"scene_selection": [
+        {"scene_file": f"p{i}.jpg", "intensity": "calm"}]}]} for i in range(300)]
+    beats[287] = {"beats": [{"scene_selection": [
+        {"scene_file": "boom.jpg", "intensity": "explosive"}]}]}
+    ci, refs = pc.select_bundle_climax(beats)
+    assert ci == 287 and refs == ["boom.jpg"]

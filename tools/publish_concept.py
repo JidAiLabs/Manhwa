@@ -98,13 +98,55 @@ def pinned_comment(real_title: str, official_link: str = "") -> str:
 _INTENSITY = {"calm": 0, "unknown": 0, "tense": 1, "intense": 2, "explosive": 3}
 
 
+def sample_arc_indices(n: int, *, max_chapters: int,
+                       climax_index: Optional[int] = None) -> List[int]:
+    """Which chapter indices to describe, preserving the ARC SHAPE.
+
+    Always keeps the opening, the ending and the climax — the three points a
+    title/synopsis actually needs — then spreads the remaining budget evenly
+    across the middle so setup->payoff stays visible.
+    """
+    if n <= max_chapters:
+        return list(range(n))
+    keep = {0, n - 1}
+    if climax_index is not None and 0 <= climax_index < n:
+        keep.add(climax_index)
+    remaining = max_chapters - len(keep)
+    if remaining > 0:
+        step = (n - 1) / (remaining + 1)
+        for k in range(1, remaining + 1):
+            keep.add(min(n - 1, max(0, round(k * step))))
+    return sorted(keep)[:max_chapters]
+
+
 def bundle_digest(beats_objs: List[Dict[str, Any]], *,
-                  per_chapter_chars: int = 700) -> str:
+                  per_chapter_chars: int = 700,
+                  max_chapters: int = 24,
+                  climax_index: Optional[int] = None) -> str:
     """Aggregate MANY chapters into one arc digest that fits the LLM context:
     a compact per-chapter summary (hooks + the punchiest beats), so the title
-    can span the whole arc (setup -> payoff), which a single chapter can't."""
+    can span the whole arc (setup -> payoff), which a single chapter can't.
+
+    BOUNDED at max_chapters. This used to describe EVERY chapter, which grew
+    the prompt linearly and without limit: measured at ~713 chars/chapter, a
+    300-chapter series produced ~213,000 chars ≈ 53,000 tokens. The MLX
+    backend ignores num_ctx and simply processes that, so it did not fail
+    loudly — it just spent ~3 minutes of prefill (at the ~307 tok/s measured
+    on this hardware) and a large KV cache to write a title and three hooks.
+
+    Chapters are SAMPLED, not truncated: the opening, the ending and the
+    climax are always kept, with the rest spread evenly across the middle.
+    Labels carry the REAL chapter position so the model still sees where each
+    excerpt sits in the arc. The climax itself is chosen separately, in pure
+    Python over ALL chapters (select_bundle_climax) — that scan is cheap and
+    stays exhaustive, so bounding the digest does not affect which moment the
+    thumbnail depicts.
+    """
+    idxs = sample_arc_indices(len(beats_objs), max_chapters=max_chapters,
+                              climax_index=climax_index)
     parts: List[str] = []
-    for i, b in enumerate(beats_objs, 1):
+    for i in idxs:
+        b = beats_objs[i]
         lines: List[str] = []
         for bt in b.get("beats") or []:
             t = (str(bt.get("hook") or "").strip()
@@ -113,7 +155,8 @@ def bundle_digest(beats_objs: List[Dict[str, Any]], *,
                 lines.append(t)
         blob = " ".join(lines)[:per_chapter_chars]
         if blob:
-            parts.append(f"[Chapter {i}] {blob}")
+            tag = " (CLIMAX)" if i == climax_index else ""
+            parts.append(f"[Chapter {i + 1} of {len(beats_objs)}{tag}] {blob}")
     return "\n".join(parts)
 
 
@@ -219,6 +262,10 @@ def main() -> int:
     ap.add_argument("--genre", default="")
     ap.add_argument("--official-link", default="")
     ap.add_argument("--ollama-model", default="gemma4:26b")
+    ap.add_argument("--digest-chapters", type=int, default=24,
+                    help="max chapters described to the LLM (bundle mode). "
+                         "Sampled to keep opening/climax/ending — the climax "
+                         "SCAN still covers every chapter.")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
@@ -226,9 +273,18 @@ def main() -> int:
         eps = [e for e in args.episode_dirs.split(",") if e]
         beats_list = [json.load(open(os.path.join(e, "manifest.beats.json"))) for e in eps]
         durations = [_plan_duration(e) for e in eps]
-        style = select_style(beats_list[select_bundle_climax(beats_list)[0]] if beats_list else {},
+        # the climax scan is exhaustive (cheap, pure Python over every
+        # chapter); only the LLM DIGEST is bounded — see bundle_digest
+        climax_ci = select_bundle_climax(beats_list)[0] if beats_list else 0
+        style = select_style(beats_list[climax_ci] if beats_list else {},
                              genre=args.genre)
-        llm = _gemma(build_concept_prompt(bundle_digest(beats_list), args.series_title, style),
+        digest = bundle_digest(beats_list, max_chapters=args.digest_chapters,
+                               climax_index=climax_ci)
+        if len(beats_list) > args.digest_chapters:
+            print(f"[..] digest: sampled {args.digest_chapters} of "
+                  f"{len(beats_list)} chapters (climax #{climax_ci + 1} kept) "
+                  f"— {len(digest):,} chars")
+        llm = _gemma(build_concept_prompt(digest, args.series_title, style),
                      args.ollama_model)
         concept = build_bundle_concept(beats_list, llm, durations=durations,
                                        series_title=args.series_title, genre=args.genre,
