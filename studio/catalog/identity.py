@@ -66,6 +66,8 @@ def canonical_ep_dir(slug: str, label: str) -> Path:
             / canonical_dirname(label))
 
 
+_SEASON_LABEL_RE = re.compile(r"\bseason\s*\d+", re.IGNORECASE)
+
 _NUM_RE = re.compile(
     r"(?:chapter|chap|ch|episode|ep|part|#)\s*\.?\s*(\d+(?:\.\d+)?)",
     re.IGNORECASE)
@@ -108,6 +110,7 @@ def audit_series(con: sqlite3.Connection, series_id: int) -> Dict[str, Any]:
                          r)) for r in rows]
 
     issues: List[Dict[str, Any]] = []
+    offsets: List[tuple] = []
     by_dir: Dict[str, List[Dict[str, Any]]] = {}
     by_url: Dict[str, List[Dict[str, Any]]] = {}
     by_canon: Dict[str, List[Dict[str, Any]]] = {}
@@ -135,15 +138,18 @@ def audit_series(con: sqlite3.Connection, series_id: int) -> Dict[str, Any]:
                 f"never be fetched. Delete it; a refresh will re-add the "
                 f"chapter once the source publishes a real link."))
 
-        # a label that names a DIFFERENT number than the row it is filed under
+        # A label naming a different number than its row is only a DEFECT when
+        # it disagrees with the rest of its series — see the post-pass below.
+        #
+        # A SEASON-RELATIVE label is excluded entirely: "Season 2 Episode 0"
+        # restarts at 0 while `number` keeps counting globally, so the two are
+        # not on the same scale and no offset between them means anything.
+        # Tower of God's offsets run -1, -80, -81, -418 across its seasons;
+        # comparing them would manufacture hundreds of false anomalies.
         claimed = label_number(ch["label"] or "")
-        if claimed is not None and ch["number"] is not None \
-                and abs(claimed - float(ch["number"])) > 1e-9:
-            issues.append(_issue(
-                "label_number_mismatch", ch,
-                f"row is number {ch['number']:g} but the label says "
-                f"{claimed:g} — one of the two is wrong, and every page that "
-                f"shows an episode number is picking arbitrarily"))
+        if (claimed is not None and ch["number"] is not None
+                and not _SEASON_LABEL_RE.search(ch["label"] or "")):
+            offsets.append((ch, claimed - float(ch["number"])))
 
         ep = ch["ep_dir"]
         if not ep:
@@ -196,6 +202,32 @@ def audit_series(con: sqlite3.Connection, series_id: int) -> Dict[str, Any]:
                                 for c in chs if c["id"] != ch["id"])
                     + f" ({u}) — two rows were discovered from one page, so "
                       "at least one is numbered wrong"))
+    # label-vs-number: flag DEVIATION FROM THE SERIES' OWN CONVENTION, not the
+    # convention itself.
+    #
+    # `number` is not always the published episode number. For webtoon it is
+    # gallery-dl's episode_no — a sequence index that is deliberately offset
+    # from the label, because it is the UNIQUE key and the refresh upsert key
+    # and therefore must not move (see sources/webtoon._label_from_slug).
+    # A uniform offset across a series is a NUMBERING CONVENTION and is
+    # silent; ORV would otherwise report 309 warnings and bury real findings.
+    # A row that disagrees with its own series' convention is a genuine
+    # anomaly — exactly the one-off drift this audit exists to catch.
+    if offsets:
+        counts: Dict[float, int] = {}
+        for _ch, off in offsets:
+            counts[off] = counts.get(off, 0) + 1
+        convention = max(counts, key=lambda k: counts[k])
+        for ch, off in offsets:
+            if abs(off - convention) < 1e-9:
+                continue
+            issues.append(_issue(
+                "label_number_mismatch", ch,
+                f"row is number {ch['number']:g} and the label says "
+                f"{ch['number'] + off:g} (offset {off:+g}), but the rest of "
+                f"this series uses offset {convention:+g} — this row "
+                f"disagrees with its own series, so one of the two is wrong"))
+
     for canon, chs in by_canon.items():
         if len(chs) > 1:
             for ch in chs:

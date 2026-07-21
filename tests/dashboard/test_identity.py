@@ -93,16 +93,52 @@ def test_detects_a_db_copied_from_another_machine(cat):
     assert codes == ["ep_dir_outside_tree"]
 
 
-def test_label_number_mismatch_only_fires_when_provable(cat):
+def test_label_number_flags_deviation_from_the_series_convention(cat):
+    """A row that disagrees with its OWN series' numbering is a real anomaly."""
     con, root, _ = cat
     (root / "ongoing" / "orv").mkdir(parents=True)
-    _chapter(con, 1, 4, "Episode 5", "u1")      # provably inconsistent
-    _chapter(con, 2, 7, "Prologue", "u2")       # no number claimed -> silent
-    codes = [i["code"] for i in identity.audit_series(con, 1)["issues"]]
-    assert codes == ["label_number_mismatch"]
-    assert identity.label_number("Prologue") is None
+    for i, n in enumerate((1, 2, 3), start=1):          # convention: offset 0
+        _chapter(con, i, n, f"Episode {n}", f"u{i}")
+    _chapter(con, 9, 4, "Episode 77", "u9")             # the odd one out
+    issues = identity.audit_series(con, 1)["issues"]
+    assert [i["code"] for i in issues] == ["label_number_mismatch"]
+    assert issues[0]["chapter_id"] == 9
+
+
+def test_a_uniform_offset_is_a_convention_not_a_defect(cat):
+    """webtoon's `number` is gallery-dl's episode_no — a sequence index that
+    is DELIBERATELY offset from the label, because it is the UNIQUE key and
+    the refresh upsert key and must not move. Flagging that would have put
+    309 warnings on Omniscient Reader and buried every real finding."""
+    con, root, _ = cat
+    (root / "ongoing" / "orv").mkdir(parents=True)
+    _chapter(con, 1, 1, "Episode 0 (Prologue)", "u1")   # every row offset -1
+    for i, n in enumerate((2, 3, 4), start=2):
+        _chapter(con, i, n, f"Episode {n - 1}", f"u{i}")
+    assert identity.audit_series(con, 1)["issues"] == []
+
+
+def test_label_number_parsing(cat):
+    assert identity.label_number("Prologue") is None    # no claim -> silent
     assert identity.label_number("Ch. 12.5") == 12.5
     assert identity.label_number("Episode 0 (Prologue)") == 0.0
+    # the EPISODE number, not the season — 141 is what a reader would call it
+    assert identity.label_number("Season 2 Episode 141") == 141.0
+
+
+def test_multi_season_labels_are_never_offset_checked(cat):
+    """"Season 2 Episode 0" restarts at 0 while `number` keeps counting
+    globally, so no offset between them means anything. Tower of God's
+    offsets run -1, -80, -81, -418 across its seasons; comparing them would
+    manufacture hundreds of false anomalies."""
+    con, root, _ = cat
+    (root / "ongoing" / "orv").mkdir(parents=True)
+    for cid, (num, label) in enumerate([
+            (1, "Season 1 Episode 0"), (80, "Season 2 Episode 0"),
+            (222, "Season 2 Episode 141"), (419, "Season 3 Episode 1")],
+            start=1):
+        _chapter(con, cid, num, label, f"u{cid}")
+    assert identity.audit_series(con, 1)["issues"] == []
 
 
 def test_never_flags_a_chapter_that_was_never_fetched(cat):
