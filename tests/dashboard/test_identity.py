@@ -199,3 +199,75 @@ def test_cli_apply_requires_a_journal(cat):
     _chapter(con, 1, 0, "Episode 0 (Prologue)", "u0", d)
     assert repair.main(["--db", str(db), "--apply"]) == 2
     assert d.is_dir()
+
+
+def test_repair_orders_a_chained_rename(cat):
+    """An off-by-one drift is a CHAIN, not independent moves. Checked
+    independently the second rename looks impossible ('Episode_1 already
+    exists') though it becomes trivial once the first runs. This is the exact
+    shape of the live Omniscient Reader data."""
+    con, root, db = cat
+    base = root / "ongoing" / "orv"
+    (base / "Episode_1").mkdir(parents=True)
+    (base / "Episode_1" / "p.jpg").write_bytes(b"prologue pages")
+    (base / "Episode_2").mkdir()
+    (base / "Episode_2" / "p.jpg").write_bytes(b"episode one pages")
+    _chapter(con, 1, 0, "Episode 0 (Prologue)", "u0", base / "Episode_1")
+    _chapter(con, 2, 1, "Episode 1", "u1", base / "Episode_2")
+
+    plan = repair.plan_series(con, 1)
+    assert not plan["blockers"], plan["blockers"]
+    assert len(plan["actions"]) == 2
+    # the vacating rename must be ordered FIRST
+    assert Path(plan["actions"][0]["to"]).name == "Episode_0_Prologue"
+
+    repair.apply_plan(con, [plan], root / "j.json", db_path=str(db))
+    assert (base / "Episode_0_Prologue" / "p.jpg").read_bytes() == b"prologue pages"
+    assert (base / "Episode_1" / "p.jpg").read_bytes() == b"episode one pages"
+    assert not (base / "Episode_2").exists()
+    assert identity.audit_series(con, 1)["issues"] == []
+
+    repair.undo(con, root / "j.json")
+    assert (base / "Episode_1" / "p.jpg").read_bytes() == b"prologue pages"
+    assert (base / "Episode_2" / "p.jpg").read_bytes() == b"episode one pages"
+    assert not (base / "Episode_0_Prologue").exists()
+
+
+def test_repair_breaks_a_true_rename_cycle(cat):
+    """A -> B and B -> A cannot be done in any order without staging."""
+    con, root, db = cat
+    base = root / "ongoing" / "orv"
+    (base / "Episode_1").mkdir(parents=True)
+    (base / "Episode_1" / "p.jpg").write_bytes(b"content A")
+    (base / "Episode_2").mkdir()
+    (base / "Episode_2" / "p.jpg").write_bytes(b"content B")
+    _chapter(con, 1, 1, "Episode 2", "u1", base / "Episode_1")   # wants Ep_2
+    _chapter(con, 2, 2, "Episode 1", "u2", base / "Episode_2")   # wants Ep_1
+
+    plan = repair.plan_series(con, 1)
+    assert not plan["blockers"], plan["blockers"]
+    repair.apply_plan(con, [plan], root / "j.json", db_path=str(db))
+    assert (base / "Episode_2" / "p.jpg").read_bytes() == b"content A"
+    assert (base / "Episode_1" / "p.jpg").read_bytes() == b"content B"
+    assert not list(base.glob("*.__swap")), "staging dir must not survive"
+    # the DRIFT is gone. (This fixture's rows deliberately carry contradictory
+    # labels — number 1 labelled "Episode 2" — to force a cycle at all, so a
+    # label_number_mismatch legitimately remains and is not this test's
+    # concern.)
+    codes = [i["code"] for i in identity.audit_series(con, 1)["issues"]]
+    assert "ep_dir_name_drift" not in codes
+
+
+def test_repair_still_blocks_on_a_genuine_collision(cat):
+    """A destination occupied by something that is NOT itself moving stays
+    blocked — the ordering fix must not become a licence to overwrite."""
+    con, root, db = cat
+    base = root / "ongoing" / "orv"
+    (base / "Episode_1").mkdir(parents=True)
+    (base / "Episode_0_Prologue").mkdir()     # squatter, no chapter row
+    (base / "Episode_0_Prologue" / "x.jpg").write_bytes(b"someone else")
+    _chapter(con, 1, 0, "Episode 0 (Prologue)", "u0", base / "Episode_1")
+    plan = repair.plan_series(con, 1)
+    assert plan["actions"] == []
+    assert plan["blockers"]
+    assert (base / "Episode_0_Prologue" / "x.jpg").read_bytes() == b"someone else"

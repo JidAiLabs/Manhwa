@@ -63,11 +63,6 @@ def plan_series(con: sqlite3.Connection, series_id: int) -> Dict[str, Any]:
                 f"chapter {i['chapter_id']} ({i['label']}) has a live job — "
                 f"refusing to move a directory a running process is using")
             continue
-        if dst.exists():
-            blockers.append(
-                f"{dst} already exists — cannot rename {src.name} onto it "
-                f"without deciding which content is correct")
-            continue
         actions.append({"chapter_id": i["chapter_id"], "label": i["label"],
                         "number": i["number"], "from": str(src),
                         "to": str(dst)})
@@ -79,9 +74,58 @@ def plan_series(con: sqlite3.Connection, series_id: int) -> Dict[str, Any]:
             blockers.append(f"two chapters both want {a['to']}")
         seen[a["to"]] = a["chapter_id"]
 
+    actions, unresolved = _order_actions(actions)
+    for a in unresolved:
+        blockers.append(
+            f"{a['to']} already exists and nothing is moving out of it — "
+            f"cannot rename {Path(a['from']).name} onto it without deciding "
+            f"which content is correct")
+
     return {"series_id": series_id, "title": audit["title"],
             "actions": actions, "blockers": blockers,
             "ambiguous": ambiguous, "audit": audit}
+
+
+def _order_actions(actions: List[Dict[str, Any]]):
+    """Order renames so every destination is free when its turn comes.
+
+    An off-by-one drift produces a CHAIN, not a set of independent moves:
+    Episode_1 -> Episode_0_Prologue and Episode_2 -> Episode_1. Checked
+    independently, the second looks impossible ("Episode_1 already exists")
+    even though it becomes trivially possible the moment the first one runs.
+    Live Omniscient Reader data is exactly this shape, and the naive check
+    blocked the whole repair on it.
+
+    Returns (ordered, unresolved). A destination occupied by something that
+    is NOT itself moving is genuinely unresolvable and stays in unresolved.
+    A true cycle (A->B, B->A) is broken by staging one directory through a
+    temporary name.
+    """
+    pending = list(actions)
+    ordered: List[Dict[str, Any]] = []
+    vacated: set = set()
+
+    while pending:
+        ready = [a for a in pending
+                 if not Path(a["to"]).exists() or a["to"] in vacated]
+        if ready:
+            for a in ready:
+                ordered.append(a)
+                vacated.add(a["from"])
+                pending.remove(a)
+            continue
+        # nothing is ready: either a true cycle, or a real collision
+        movers = {a["from"] for a in pending}
+        cyclic = [a for a in pending if a["to"] in movers]
+        if not cyclic:
+            break                       # all genuinely blocked
+        a = cyclic[0]
+        stage = str(Path(a["from"]).parent / (Path(a["from"]).name + ".__swap"))
+        ordered.append({**a, "to": stage, "_staged_for": a["to"]})
+        pending.remove(a)
+        pending.append({**a, "from": stage})
+        vacated.add(a["from"])
+    return ordered, pending
 
 
 def apply_plan(con: sqlite3.Connection, plans: List[Dict[str, Any]],
