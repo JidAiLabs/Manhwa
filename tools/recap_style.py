@@ -46,13 +46,16 @@ line must remain an independently speakable complete clause.
 movie, superhero, internet, or everyday-life reference, one short comparison
 can replace a paragraph of description. It is figurative framing, never a new
 plot fact, and must fit the genre and visible moment.
-3. RATION NAMES: introduce the protagonist by name once, then usually use a
-pronoun or a relaxed genre-appropriate stand-in such as "our guy" or "our boy".
-Repeat the real name only for clarity or emotional weight. Never let the full
-name become a label repeated line after line. "Our guy"/"our boy"/"our man"
-refers to EXACTLY ONE person — the protagonist; never use it for any other
-character (a helper, ally, or stranger gets their cast name or a neutral
-handle).
+3. RATION NAMES — HARD BUDGET: say the protagonist's full name AT MOST 3-4
+TIMES IN THE WHOLE CHAPTER. Use it the first time he appears, and after that
+only where it genuinely lands (a reveal, a turning point, the final beat).
+Every other line uses a pronoun or a relaxed genre-appropriate stand-in such as
+"our guy" or "our boy". A full name arriving every few lines reads as a label,
+not as recognition — that is the failure this budget exists to stop. Naming
+OTHER cast members is unaffected: name them as often as clarity needs.
+"Our guy"/"our boy"/"our man" refers to EXACTLY ONE person — the protagonist;
+never use it for any other character (a helper, ally, or stranger gets their
+cast name or a neutral handle).
 4. ADD TEXTURE, NOT JOKES: eligible connective lines should occasionally carry
 one dry observation, intimate aside, ironic understatement, or concise familiar
 comparison. Aim for roughly one textured touch per four eligible lines. Serious

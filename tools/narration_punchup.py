@@ -82,8 +82,14 @@ HARD RULES:
 - "Our guy"/"our boy"/"our man" = the PROTAGONIST, exactly one person. Never
   re-point it at a different character than the original line names; a line
   about a helper, ally, or stranger keeps that character's handle.
-- Paraphrase dialogue in clean narrator language. Never preserve or create a
-  quoted run of ALL-CAPS bubble OCR, a truncated fragment, or onomatopoeia.
+- KEEP a short quoted line the way you found it. If the line you are given
+  already quotes a character in clean sentence case — he whispers 'Serves you
+  right.', she spits 'Damn you.' — PRESERVE that quote verbatim. Those land
+  hard and they are the point; do NOT convert them into reported speech
+  ("saying that it serves them right"). What you must never preserve or create
+  is a quoted run of ALL-CAPS bubble OCR, a truncated fragment, garbled text,
+  or onomatopoeia. Paraphrase the REST of the dialogue in clean narrator
+  language.
 - Keep the original meaning and emotional turn of the line — an injured
   character stays injured, a defeat stays a defeat.
 - Compress visible-only drag aggressively. A rewrite may be 35% of the original
