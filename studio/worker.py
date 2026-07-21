@@ -31,6 +31,19 @@ REPO = Path(__file__).resolve().parent.parent
 PY = str(REPO / ".eval_venv" / "bin" / "python")
 
 
+class JobCancelled(BaseException):
+    """An operator cancelled this job; raised by _stream's cancel checkpoint.
+
+    Derives from BaseException, NOT Exception, DELIBERATELY. Stage handlers
+    wrap their shell-outs in broad `except Exception` (the heal loop, for
+    one, swallows a failed child and simply carries on to the next cycle), so
+    an Exception subclass would be caught there and the job would go on to
+    report DONE after the operator had cancelled it — and the heal loop would
+    respawn a fresh child on every cycle, which is exactly the "I cancelled
+    it and it kept running" symptom. BaseException passes straight through
+    those handlers to run_once, which records the job 'cancelled'."""
+
+
 class NonRetryableError(RuntimeError):
     """A DETERMINISTIC failure that re-running the identical pipeline will only
     reproduce — e.g. a prep-QA BLOCKING flag (`_CRITICAL_QA_CODES` such as
@@ -97,24 +110,70 @@ _ACTIVE: "Dict[int, subprocess.Popen]" = {}
 _ACTIVE_LK = threading.Lock()
 
 
+# A job stuck in 'cancelling' holds its lane and its chapter lease. If the
+# handler never reaches another cancel checkpoint (it is between shell-outs,
+# or the worker restarted and nothing is left to kill), force it terminal
+# after this long so a cancel can never wedge a lane.
+_CANCEL_GRACE_SEC = int(os.environ.get("STUDIO_CANCEL_GRACE_SEC", "120"))
+
+
 def _cancel_monitor(db_path: str) -> None:
+    """Reap the process tree of any job the dashboard marked 'cancelling'.
+
+    Three fixes over the original, which explained most "I cancelled it and
+    the child kept running":
+
+    1. PGID FALLBACK. The original only acted when the live Popen was in this
+       process's _ACTIVE map. After a worker restart that map is empty, so a
+       cancel issued against a surviving orphan did literally nothing. The
+       persisted job.pgid is then the only handle left, and _pgid_is_ours
+       identity-checks it against pid reuse before we signal anything.
+    2. SIGTERM, then SIGKILL on the next pass — a child gets one chance to
+       clean up its temp files instead of always being shot in the head.
+    3. A DEADLINE. Nothing to kill and the handler never checkpoints (it is
+       doing pure-Python work between shell-outs)? Record it cancelled rather
+       than leaving the lane leased to a job that will never move.
+    """
     import signal
     from studio.catalog.db import connect
     mcon = connect(db_path)
+    since: Dict[int, float] = {}
     while True:
         try:
-            for (jid,) in mcon.execute(
-                    "SELECT id FROM job WHERE state='cancelling'").fetchall():
+            rows = mcon.execute("SELECT id, pgid FROM job "
+                                "WHERE state='cancelling'").fetchall()
+            for gone in set(since) - {r[0] for r in rows}:
+                since.pop(gone, None)
+            for jid, pgid in rows:
+                waited = time.time() - since.setdefault(jid, time.time())
                 with _ACTIVE_LK:
                     p = _ACTIVE.get(jid)
+                target = None
                 if p is not None and p.poll() is None:
                     try:
-                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                        target = os.getpgid(p.pid)
                     except Exception:
-                        try:
-                            p.kill()
-                        except Exception:
-                            pass
+                        target = None
+                elif pgid is not None and _pgid_is_ours(pgid):
+                    target = pgid
+                if target is not None:
+                    try:
+                        os.killpg(target,
+                                  signal.SIGTERM if waited < 3 else signal.SIGKILL)
+                    except Exception:
+                        if p is not None:
+                            try:
+                                p.kill()
+                            except Exception:
+                                pass
+                elif waited >= _CANCEL_GRACE_SEC:
+                    mcon.execute(
+                        "UPDATE job SET state='cancelled', pgid=NULL, "
+                        "finished_at=datetime('now'), error='cancelled by "
+                        "operator (no live child)' "
+                        "WHERE id=? AND state='cancelling'", (jid,))
+                    mcon.commit()
+                    since.pop(jid, None)
         except Exception:
             pass
         time.sleep(3)
@@ -132,10 +191,35 @@ def _record_pgid(con: sqlite3.Connection, job_id: int,
     con.commit()
 
 
+def _cancel_checkpoint() -> None:
+    """Raise JobCancelled if an operator cancelled the job this thread is
+    running. Called by _stream on both sides of every shell-out.
+
+    The worker makes NO in-process model calls — all 31 stage invocations
+    shell out through _stream — so this ONE checkpoint covers essentially the
+    whole wall-clock of every job, without editing a single stage handler. It
+    is also what makes the five ignored-return-code call sites safe: a
+    handler that ignores rc and loops (the heal loop respawning a child every
+    cycle after the monitor killed the last one) now stops at the top of the
+    next _stream instead of running to completion and reporting DONE."""
+    jid = getattr(_CUR, "job_id", None)
+    jcon = getattr(_CUR, "con", None)
+    if jid is None or jcon is None:
+        return
+    try:
+        row = jcon.execute("SELECT state FROM job WHERE id=?",
+                           (jid,)).fetchone()
+    except Exception:
+        return              # bookkeeping must never fail a job on its own
+    if row and row[0] in ("cancelling", "cancelled"):
+        raise JobCancelled(f"job {jid} cancelled by operator")
+
+
 def _stream(cmd, log: TextIO, cwd: str = str(REPO),
             env: Optional[Dict[str, str]] = None,
             timeout: Optional[int] = None) -> int:
     import signal
+    _cancel_checkpoint()        # don't start a new child for a cancelled job
     log.write("$ " + " ".join(str(c) for c in cmd) + "\n")
     log.flush()
     to = _STAGE_TIMEOUT_SEC if timeout is None else timeout
@@ -151,7 +235,7 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO),
         if jcon is not None:
             _record_pgid(jcon, jid, p.pid)     # start_new_session -> pgid==pid
     try:
-        return p.wait(timeout=to)
+        rc = p.wait(timeout=to)
     except subprocess.TimeoutExpired:
         log.write(f"\n[worker] HANG BACKSTOP: stage exceeded {to}s wall-clock — "
                   f"killing the process tree and failing the stage.\n")
@@ -171,6 +255,10 @@ def _stream(cmd, log: TextIO, cwd: str = str(REPO),
                 _ACTIVE.pop(jid, None)
             if jcon is not None:
                 _record_pgid(jcon, jid, None)  # this child is no longer live
+    # The child is gone. If it died because the operator cancelled, stop HERE
+    # rather than handing an exit code back to a handler that may ignore it.
+    _cancel_checkpoint()
+    return rc
 
 
 def _series_env(con: sqlite3.Connection,
@@ -1678,6 +1766,17 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
                 raise RuntimeError(f"no handler for job type {job['type']!r}")
             handler(con, job, log)
         jobs.finish(con, job["id"], ok=True)
+    except JobCancelled:
+        # BaseException, so it reached us past every handler's `except
+        # Exception`. The monitor has already killed the child; just record
+        # the terminal state and free the lane.
+        with open(log_path, "a", encoding="utf-8") as log:
+            log.write("\n[worker] cancelled by operator\n")
+        con.execute("UPDATE job SET state='cancelled', pgid=NULL, "
+                    "finished_at=datetime('now'), error='cancelled by "
+                    "operator' WHERE id=?", (job["id"],))
+        con.commit()
+        return True
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as log:
             log.write("\n" + traceback.format_exc())
@@ -1710,12 +1809,18 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
                 and not isinstance(e, NonRetryableError)):
             payload = dict(job.get("payload") or {})
             payload["_attempt"] = attempt + 1
+            # dedupe=False DELIBERATELY: dedupe folds onto an existing queued
+            # row and IGNORES the payload, so a retry could silently land on a
+            # row carrying _attempt=0. The counter would reset and a
+            # permanently-failing chapter would loop past max_attempts
+            # forever, at front-of-queue priority. Do not "fix" this to True.
             rid = jobs.enqueue(con, job["type"],
                                series_id=job.get("series_id"),
                                chapter_id=job.get("chapter_id"),
                                bundle_id=job.get("bundle_id"),
                                payload=payload,
-                               priority=retry_priority)
+                               priority=retry_priority,
+                               dedupe=False)
             jobs.finish(con, job["id"], ok=False,
                         error=f"{str(e)[:260]} — auto-retry {attempt + 2}/{max_attempts} (job {rid})")
         else:
@@ -1736,26 +1841,32 @@ def _heartbeat(con: sqlite3.Connection) -> None:
     con.commit()
 
 
-def _reap_pgid(pgid: int) -> bool:
-    """Identity-checked kill of a leftover child process GROUP from a worker
-    that died mid-job. NEVER kills blind: a pid/pgid can be recycled by an
-    unrelated process once the original exits, so this only fires when a live
-    member of the group is still running a command FROM THIS REPO (`ps`'s
-    command line contains the repo path) — otherwise it's a no-op (the
-    pid-reuse guard). Returns True only when a kill signal was actually
-    delivered.
+def _pgid_is_ours(pgid: int) -> bool:
+    """The pid-reuse guard, shared by EVERY path that signals a pgid (the
+    cancel monitor and the boot-time orphan reaper). A pid/pgid is recycled
+    by the OS once the original exits, so a stored pgid may by then belong to
+    an unrelated process — killing it blind would shoot a stranger. True only
+    when a live member of the group is running a command FROM THIS REPO.
+    Fails CLOSED: if identity cannot be confirmed, the answer is no.
 
     `ps -o command= -g <pgid>` was verified live on macOS (Darwin) to filter
     correctly by process group and to NOT truncate long command lines when
     piped (non-tty) — no pgrep fallback needed here.
     """
-    import signal
     try:
         out = subprocess.run(["ps", "-o", "command=", "-g", str(pgid)],
                              capture_output=True, text=True, timeout=5)
     except Exception:
         return False    # can't confirm identity -> do nothing, fail closed
-    if not any(str(REPO) in line for line in out.stdout.splitlines()):
+    return any(str(REPO) in line for line in out.stdout.splitlines())
+
+
+def _reap_pgid(pgid: int) -> bool:
+    """Identity-checked kill of a leftover child process GROUP from a worker
+    that died mid-job. Returns True only when a kill signal was actually
+    delivered."""
+    import signal
+    if not _pgid_is_ours(pgid):
         return False    # no line is ours -> recycled pgid or already gone
     try:
         os.killpg(pgid, signal.SIGKILL)
@@ -1775,9 +1886,13 @@ def requeue_orphans(con: sqlite3.Connection) -> int:
     start_new_session=True, so pgid == pid): otherwise the still-running old
     child and the fresh retry both write the same chapter's artifacts at
     once."""
+    # 'cancelling' MUST be reaped too. It used to be flipped straight to
+    # 'cancelled' below WITHOUT reaping, which destroyed the pgid — the only
+    # handle on that child — and guaranteed an orphan that outlived the
+    # worker and kept writing its chapter's manifests.
     for jid, pgid in con.execute(
-            "SELECT id, pgid FROM job WHERE state='running' AND "
-            "pgid IS NOT NULL").fetchall():
+            "SELECT id, pgid FROM job WHERE state IN ('running','cancelling') "
+            "AND pgid IS NOT NULL").fetchall():
         try:
             reaped = _reap_pgid(pgid)
         except Exception as e:      # this loop must never block the requeue
@@ -1789,8 +1904,8 @@ def requeue_orphans(con: sqlite3.Connection) -> int:
     cur = con.execute("UPDATE job SET state='queued', started_at=NULL, "
                       "pgid=NULL WHERE state='running' AND type!='heartbeat'")
     # a cancel in flight when the worker died -> just record it cancelled
-    con.execute("UPDATE job SET state='cancelled', finished_at=datetime('now') "
-                "WHERE state='cancelling'")
+    con.execute("UPDATE job SET state='cancelled', pgid=NULL, "
+                "finished_at=datetime('now') WHERE state='cancelling'")
     con.commit()
     return cur.rowcount
 
@@ -1807,22 +1922,65 @@ def main(db_path: str = "studio.db") -> int:
     threading.Thread(target=_cancel_monitor, args=(db_path,),
                      daemon=True).start()
 
+    def autoreap_loop() -> None:
+        """OPT-IN (STUDIO_LEASE_AUTOREAP=1). Requeue a live job whose lease is
+        old AND whose process group is confirmed dead. Off by default on
+        purpose: the manual Requeue button is the day-one path, because an
+        automatic requeue of a job that is merely SLOW would start a second
+        writer on the same chapter. jobs.health only reports 'stale' when
+        both conditions hold, so this acts on proof, not on a timeout."""
+        acon = connect(db_path)
+        while True:
+            try:
+                for s in jobs.health(acon).get("stale", []):
+                    if jobs.requeue(acon, s["id"]):
+                        print(f"[worker] auto-reaped stale job {s['id']} "
+                              f"({s['type']}, pgid {s['pgid']} gone)")
+            except Exception as e:
+                print(f"[worker] autoreap: {e!r}")
+            time.sleep(60)
+
+    def heartbeat_loop() -> None:
+        """The liveness signal gets its OWN thread. It used to tick only
+        BETWEEN jobs on the main loop — and run_once blocks for the entire
+        job — so during a normal 30-40min prepare the heartbeat went stale
+        and a perfectly healthy worker reported itself dead."""
+        hcon = connect(db_path)
+        while True:
+            try:
+                _heartbeat(hcon)
+            except Exception as e:
+                print(f"[worker] heartbeat: {e!r}")
+            time.sleep(15)
+
     def lane_loop(lane: str) -> None:
+        """A lane thread must OUTLIVE any single failure. claim_next /
+        set_log / finish all sit outside run_once's own try, so one
+        'database is locked' used to kill this thread outright — and because
+        the worker PROCESS stayed alive, launchd never restarted it and the
+        boot-time orphan reaper never ran. The lane just silently stopped
+        claiming work forever, which is most of "jobs look stuck"."""
         lcon = connect(db_path)
         while True:
-            if not run_once(lcon, lane=lane):
-                time.sleep(2)
+            try:
+                if not run_once(lcon, lane=lane):
+                    time.sleep(2)
+            except Exception as e:
+                print(f"[worker] lane {lane}: {e!r} — continuing")
+                traceback.print_exc()
+                time.sleep(5)
 
     try:
+        threading.Thread(target=heartbeat_loop, daemon=True).start()
+        if os.environ.get("STUDIO_LEASE_AUTOREAP") == "1":
+            print("[worker] lease auto-reap ENABLED")
+            threading.Thread(target=autoreap_loop, daemon=True).start()
         for lane, width in widths.items():
             extra = width - 1 if lane == "gpu" else width
             for _ in range(max(0, extra)):
                 threading.Thread(target=lane_loop, args=(lane,),
                                  daemon=True).start()
-        while True:                      # gpu slot #1 on the main thread
-            _heartbeat(con)
-            if not run_once(con, lane="gpu"):
-                time.sleep(2)
+        lane_loop("gpu")                 # gpu slot #1 on the main thread
     except KeyboardInterrupt:
         print("\n[worker] stopped")
         return 0

@@ -109,14 +109,23 @@ def enqueue(con: sqlite3.Connection, type: str, *, series_id: Optional[int] = No
     return int(cur.lastrowid)
 
 
-# chapter lease: a chapter with any RUNNING job (any type/lane) is not
+# 'cancelling' is a LIVE state, not a finished one: the row's child process is
+# still running until the worker's cancel-monitor reaps it. Every query that
+# asks "is this job occupying a resource?" must therefore count it — the lease,
+# the lane width, the claim re-check, and the delete-series guard. Treating it
+# as finished let a second job claim the same chapter/lane while the first
+# job's child was still writing that chapter's manifests.
+LIVE_STATES = ("running", "cancelling")
+_LIVE_SQL = "('running','cancelling')"
+
+# chapter lease: a chapter with any LIVE job (any type/lane) is not
 # eligible — closes the multi-writer hole where e.g. prepare(gpu) and
 # voiceover(tts) for the SAME chapter could otherwise run at once and both
 # write the same manifests. NULL chapter_id (series/bundle-scoped jobs) is
 # never leased. Appended to a queued-job SELECT's WHERE clause.
 _CHAPTER_LEASE_FILTER = (
     " AND (chapter_id IS NULL OR chapter_id NOT IN "
-    "(SELECT chapter_id FROM job WHERE state='running' AND "
+    f"(SELECT chapter_id FROM job WHERE state IN {_LIVE_SQL} AND "
     "chapter_id IS NOT NULL))")
 
 
@@ -131,7 +140,7 @@ def claim_next(con: sqlite3.Connection,
     cpu lane at width 1, so bundle jobs are serialized by the lane alone."""
     if lane is None:
         running = con.execute(
-            "SELECT COUNT(*) FROM job WHERE state='running' AND "
+            f"SELECT COUNT(*) FROM job WHERE state IN {_LIVE_SQL} AND "
             "type!='heartbeat'").fetchone()[0]
         if running:
             return None
@@ -143,7 +152,7 @@ def claim_next(con: sqlite3.Connection,
         types = _lane_types(lane)
         qs = ",".join("?" for _ in types)
         running = con.execute(
-            f"SELECT COUNT(*) FROM job WHERE state='running' AND type IN "
+            f"SELECT COUNT(*) FROM job WHERE state IN {_LIVE_SQL} AND type IN "
             f"({qs})", types).fetchone()[0]
         if running >= LANE_WIDTH.get(lane, 1):
             return None
@@ -156,7 +165,7 @@ def claim_next(con: sqlite3.Connection,
     cur = con.execute(
         "UPDATE job SET state='running', started_at=datetime('now') "
         "WHERE id=? AND state='queued' AND (chapter_id IS NULL OR NOT EXISTS "
-        "(SELECT 1 FROM job j2 WHERE j2.state='running' AND "
+        f"(SELECT 1 FROM job j2 WHERE j2.state IN {_LIVE_SQL} AND "
         "j2.chapter_id = job.chapter_id))", (r[0],))
     con.commit()
     if cur.rowcount == 0:
@@ -166,11 +175,17 @@ def claim_next(con: sqlite3.Connection,
 
 
 def finish(con: sqlite3.Connection, job_id: int, *, ok: bool,
-           error: str = "") -> None:
-    con.execute("UPDATE job SET state=?, finished_at=datetime('now'), error=? "
-                "WHERE id=?",
-                ("done" if ok else "failed", error or None, job_id))
+           error: str = "") -> bool:
+    """Record a terminal outcome. Only a 'running' job may be finished, so a
+    handler that returns normally can never overwrite an operator's cancel
+    ('cancelling') with 'done' — the race that made Cancel look like it did
+    nothing. Returns whether the row was actually moved."""
+    cur = con.execute(
+        "UPDATE job SET state=?, finished_at=datetime('now'), error=?, "
+        "pgid=NULL WHERE id=? AND state='running'",
+        ("done" if ok else "failed", error or None, job_id))
     con.commit()
+    return cur.rowcount > 0
 
 
 def cancel(con: sqlite3.Connection, job_id: int) -> bool:
@@ -186,6 +201,33 @@ def cancel(con: sqlite3.Connection, job_id: int) -> bool:
     cur = con.execute(
         "UPDATE job SET state='cancelling' WHERE id=? AND state='running'",
         (job_id,))
+    con.commit()
+    return cur.rowcount > 0
+
+
+def requeue(con: sqlite3.Connection, job_id: int) -> bool:
+    """Put a stuck LIVE job back on the queue after reaping whatever is left
+    of its child. This is the manual recovery for a job whose process died
+    without the worker noticing — before this, the only cure was restarting
+    the whole worker, because the row held its lane and chapter lease forever.
+
+    Reaps FIRST and only then requeues: requeuing while an old child is still
+    alive would put two processes on the same chapter's manifests, which is
+    the exact corruption the chapter lease exists to prevent.
+    """
+    row = con.execute(f"SELECT state, pgid FROM job WHERE id=? AND state IN "
+                      f"{_LIVE_SQL}", (job_id,)).fetchone()
+    if not row:
+        return False
+    if row[1]:
+        from studio.worker import _reap_pgid     # identity-checked kill
+        try:
+            _reap_pgid(int(row[1]))
+        except Exception:
+            pass                # never block recovery on a reap failure
+    cur = con.execute(
+        f"UPDATE job SET state='queued', started_at=NULL, pgid=NULL "
+        f"WHERE id=? AND state IN {_LIVE_SQL}", (job_id,))
     con.commit()
     return cur.rowcount > 0
 
@@ -219,7 +261,7 @@ def _with_timing(con: sqlite3.Connection, job: Dict[str, Any]) -> Dict[str, Any]
     finished jobs get ``duration_sec``. All computed in SQL so UTC stored
     times never collide with the local clock."""
     st = job.get("state")
-    if st == "running":
+    if st in LIVE_STATES:
         job["elapsed_sec"] = 0
         if job.get("started_at"):
             row = con.execute(
@@ -263,10 +305,12 @@ def _with_timing(con: sqlite3.Connection, job: Dict[str, Any]) -> Dict[str, Any]
 def queue_view(con: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Running first, then the queue, then the most recent finished jobs —
     a job must never silently vanish the moment it completes."""
+    # 'cancelling' MUST be listed: it was in no query at all, so pressing
+    # Cancel made a job vanish from the UI while its child kept running.
     active = con.execute(
         f"SELECT {_COLS} FROM job WHERE type!='heartbeat' AND "
-        "state IN ('running','queued') "
-        "ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END, priority, id"
+        "state IN ('running','cancelling','queued') "
+        "ORDER BY CASE state WHEN 'queued' THEN 1 ELSE 0 END, priority, id"
     ).fetchall()
     recent = con.execute(
         f"SELECT {_COLS} FROM job WHERE type!='heartbeat' AND "
@@ -284,6 +328,95 @@ def runs_view(con: sqlite3.Connection, limit: int = 100) -> List[Dict[str, Any]]
         "state IN ('done','failed','cancelled') "
         "ORDER BY finished_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
     return [_with_timing(con, _row(r)) for r in rows]
+
+
+def _pgid_alive(pgid: Optional[int]) -> bool:
+    """Is a process group still alive? signal 0 delivers nothing — it only
+    performs the permission/existence check. Used to distinguish 'the job is
+    slow' from 'the job's process is GONE', which the dashboard could not
+    tell apart before (both looked like a healthy running row forever)."""
+    if not pgid:
+        return False
+    try:
+        os.killpg(int(pgid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True     # exists, owned by someone else — do not call it dead
+    except Exception:
+        return True     # cannot prove it is dead -> fail closed, stay silent
+
+
+def health(con: sqlite3.Connection, *, stale_after_sec: int = 300,
+           worker_down_after_sec: int = 90) -> Dict[str, Any]:
+    """The one place three DIFFERENT 'looks stuck' signals are computed, so
+    the queue page, the chapter page and the health strip can never disagree:
+
+      worker_down — the worker's heartbeat row has not ticked recently. The
+                    worker process itself is gone or wedged.
+      overdue     — a live job has run past 2x its estimate. Slow, not dead;
+                    informational only.
+      stale       — a live job whose lease is old AND whose process group is
+                    confirmed GONE. This is the real "stuck child": nothing
+                    will ever finish it, and it holds its lane and chapter
+                    lease forever. Requeue is safe here and nowhere else.
+
+    Every query excludes type='heartbeat' — that row is 'running' by design
+    and would otherwise report itself permanently stale.
+    """
+    hb = con.execute(
+        "SELECT CAST((julianday('now') - julianday(started_at)) * 86400 AS "
+        "INT) FROM job WHERE type='heartbeat' ORDER BY id LIMIT 1").fetchone()
+    hb_age = int(hb[0]) if hb and hb[0] is not None else None
+
+    live = con.execute(
+        f"SELECT id, type, chapter_id, series_id, pgid, started_at, "
+        "CAST((julianday('now') - julianday(started_at)) * 86400 AS INT) "
+        f"FROM job WHERE type!='heartbeat' AND state IN {_LIVE_SQL}"
+    ).fetchall()
+
+    stale: List[Dict[str, Any]] = []
+    overdue: List[Dict[str, Any]] = []
+    for jid, jtype, cid, sid, pgid, started, elapsed in live:
+        elapsed = int(elapsed or 0)
+        est = eta.job_eta(con, jtype, sid)
+        if est and elapsed > 2 * est:
+            overdue.append({"id": jid, "type": jtype, "chapter_id": cid,
+                            "elapsed_sec": elapsed, "est_total_sec": est})
+        # A job with NO pgid is between shell-outs (or has not started one
+        # yet) — that is normal, not stale. Only a job whose recorded child
+        # is confirmed dead counts.
+        if elapsed > stale_after_sec and pgid and not _pgid_alive(pgid):
+            stale.append({"id": jid, "type": jtype, "chapter_id": cid,
+                          "elapsed_sec": elapsed, "pgid": pgid})
+
+    queued = con.execute(
+        "SELECT COUNT(*), CAST((julianday('now') - julianday(MIN(created_at)))"
+        " * 86400 AS INT) FROM job WHERE state='queued'").fetchone()
+    failed = con.execute(
+        "SELECT COUNT(*) FROM job WHERE state='failed' AND "
+        "finished_at > datetime('now','-1 day')").fetchone()[0]
+
+    lanes = {}
+    for lane in set(LANES.values()):
+        types = _lane_types(lane)
+        qs = ",".join("?" for _ in types)
+        n = con.execute(f"SELECT COUNT(*) FROM job WHERE state IN {_LIVE_SQL} "
+                        f"AND type IN ({qs})", types).fetchone()[0]
+        lanes[lane] = {"busy": int(n), "width": LANE_WIDTH.get(lane, 1)}
+
+    return {
+        "heartbeat_age_sec": hb_age,
+        "worker_down": hb_age is None or hb_age > worker_down_after_sec,
+        "live": len(live),
+        "stale": stale,
+        "overdue": overdue,
+        "lanes": lanes,
+        "queued": int(queued[0] or 0),
+        "queued_oldest_sec": int(queued[1] or 0) if queued[0] else 0,
+        "failed_recent": int(failed),
+    }
 
 
 def failed_chapters(con: sqlite3.Connection,

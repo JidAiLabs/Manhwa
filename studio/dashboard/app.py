@@ -703,6 +703,11 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         jobs.cancel(con(), job_id)
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/jobs/{job_id}/requeue")
+    def post_requeue(job_id: int):
+        jobs.requeue(con(), job_id)
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/jobs/{job_id}/up")
     def post_bump(job_id: int):
         jobs.bump(con(), job_id)
@@ -889,8 +894,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         return RedirectResponse("/series", status_code=303)
 
     def _series_running_jobs(c: sqlite3.Connection, sid: int) -> int:
+        # 'cancelling' counts as live: its child is still running until the
+        # worker reaps it, so deleting the series out from under it would
+        # leave a process writing into a directory we just removed.
         return c.execute(
-            "SELECT COUNT(*) FROM job WHERE state='running' AND type!='heartbeat'"
+            "SELECT COUNT(*) FROM job WHERE state IN ('running','cancelling') "
+            "AND type!='heartbeat'"
             " AND (series_id=? OR chapter_id IN (SELECT id FROM chapter WHERE "
             "series_id=?))", (sid, sid)).fetchone()[0]
 

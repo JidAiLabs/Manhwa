@@ -1724,3 +1724,257 @@ def test_heal_repreps_render_fixable_after_stuck_stop(tmp_path, monkeypatch):
     assert "identical corrections" in text          # treadmill stop happened
     assert "render-fixable" in text                 # AND the re-prep followed
     assert preps and preps[-1].get("reuse_clean") is True
+
+
+# --- Phase C: cancel actually stops the child ---------------------------------
+
+def _spawn_dir(tmp_path):
+    """_pgid_is_ours only recognises a child whose command line contains the
+    repo path, so a realistic cancel test must spawn one that does."""
+    return str(worker.REPO)
+
+
+def test_cancel_kills_the_child_and_records_cancelled(tmp_path):
+    """The acceptance test for the whole cancel path: a real child, a real
+    cancel, and a real corpse check. Before this, cancel marked the row
+    'cancelling', the row vanished from every query, and the child kept
+    running to completion."""
+    import os
+    import subprocess
+    import threading
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "sleeper", chapter_id=1)
+    pgids = {}
+
+    def sleeper(c, job, log):
+        # a command line containing the repo path, so the pid-reuse guard
+        # recognises it as ours
+        rc = worker._stream(
+            ["/bin/sh", "-c", f"cd {worker.REPO} && sleep 600"], log)
+        log.write(f"rc={rc}\n")
+
+    def capture():
+        ccon = connect(tmp_path / "s.db")    # sqlite objects are thread-bound
+        for _ in range(200):
+            r = ccon.execute("SELECT pgid FROM job WHERE id=?",
+                             (jid,)).fetchone()
+            if r and r[0]:
+                pgids["pgid"] = r[0]
+                return
+            time.sleep(0.05)
+
+    threading.Thread(target=capture, daemon=True).start()
+    threading.Thread(target=worker._cancel_monitor,
+                     args=(str(tmp_path / "s.db"),), daemon=True).start()
+
+    def cancel_soon():
+        for _ in range(100):
+            if pgids.get("pgid"):
+                break
+            time.sleep(0.05)
+        ccon = connect(tmp_path / "s.db")
+        jobs.cancel(ccon, jid)
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    assert worker.run_once(con, handlers={"sleeper": sleeper},
+                           log_dir=str(tmp_path / "logs")) is True
+
+    state, pgid = con.execute("SELECT state, pgid FROM job WHERE id=?",
+                              (jid,)).fetchone()
+    assert state == "cancelled", f"job ended {state!r}, not cancelled"
+    assert pgid is None, "pgid must be cleared so nothing reaps a stranger"
+    # and the child is really gone
+    spawned = pgids.get("pgid")
+    assert spawned, "the test never observed a live child"
+    for _ in range(40):
+        out = subprocess.run(["ps", "-o", "command=", "-g", str(spawned)],
+                             capture_output=True, text=True)
+        if "sleep 600" not in out.stdout:
+            break
+        time.sleep(0.25)
+    else:
+        os.killpg(spawned, 9)
+        raise AssertionError("the cancelled child survived")
+
+
+def test_finish_cannot_clobber_a_cancel(tmp_path):
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "stub", chapter_id=1)
+    jobs.claim_next(con, lane=None)
+    assert jobs.cancel(con, jid) is True
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "cancelling"
+    assert jobs.finish(con, jid, ok=True) is False
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "cancelling"
+
+
+def test_cancelling_still_holds_its_lane_and_chapter_lease(tmp_path):
+    """A cancelling job's child is still alive, so it must keep occupying its
+    lane and its chapter — otherwise a second job starts writing the same
+    chapter's manifests while the first is still being killed."""
+    con = _con(tmp_path)
+    a = jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.enqueue(con, "qa_scan", chapter_id=1)
+    assert jobs.claim_next(con, lane="gpu")["id"] == a
+    jobs.cancel(con, a)
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (a,)).fetchone()[0] == "cancelling"
+    assert jobs.claim_next(con, lane="gpu") is None, \
+        "a cancelling job must still hold the chapter lease"
+
+
+def test_cancelling_job_stays_visible_in_the_queue(tmp_path):
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.claim_next(con, lane="gpu")
+    jobs.cancel(con, jid)
+    assert jid in [j["id"] for j in jobs.queue_view(con)], \
+        "cancel must not make a job disappear from the UI"
+
+
+def test_cancel_monitor_deadline_frees_a_wedged_lane(tmp_path, monkeypatch):
+    """No live child and the handler never checkpoints -> the row must still
+    go terminal, or the lane is leased forever."""
+    import threading
+    monkeypatch.setattr(worker, "_CANCEL_GRACE_SEC", 0)
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.claim_next(con, lane="gpu")
+    jobs.cancel(con, jid)
+    threading.Thread(target=worker._cancel_monitor,
+                     args=(str(tmp_path / "s.db"),), daemon=True).start()
+    for _ in range(60):
+        if con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "cancelled":
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError("cancelling job never went terminal")
+
+
+def test_lane_thread_survives_a_database_error(tmp_path, monkeypatch):
+    """One 'database is locked' used to kill a lane thread permanently while
+    the process stayed alive, so launchd never restarted it."""
+    import sqlite3 as _sq
+    import threading
+    con = _con(tmp_path)
+    calls = {"n": 0}
+    real = jobs.claim_next
+
+    def flaky(c, lane=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _sq.OperationalError("database is locked")
+        return real(c, lane=lane)
+
+    monkeypatch.setattr(jobs, "claim_next", flaky)
+    stop = threading.Event()
+
+    def loop():
+        while not stop.is_set():
+            try:
+                if not worker.run_once(con, handlers={},
+                                       log_dir=str(tmp_path / "logs")):
+                    time.sleep(0.05)
+            except Exception:
+                time.sleep(0.05)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    for _ in range(60):
+        if calls["n"] >= 2:
+            break
+        time.sleep(0.05)
+    stop.set()
+    assert calls["n"] >= 2, "the lane never claimed again after the error"
+
+
+def test_orphan_reap_covers_cancelling_rows(tmp_path, monkeypatch):
+    """requeue_orphans used to flip cancelling->cancelled WITHOUT reaping,
+    destroying the pgid — the only handle on that child."""
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    con.execute("UPDATE job SET state='cancelling', pgid=4242 WHERE id=?",
+                (jid,))
+    con.commit()
+    reaped = []
+    monkeypatch.setattr(worker, "_reap_pgid",
+                        lambda p: reaped.append(p) or True)
+    worker.requeue_orphans(con)
+    assert reaped == [4242], "the cancelling job's child was never reaped"
+    assert con.execute("SELECT state, pgid FROM job WHERE id=?",
+                       (jid,)).fetchone() == ("cancelled", None)
+
+
+def test_health_reports_a_dead_child_as_stale(tmp_path):
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    # a pgid that cannot exist, started long ago
+    con.execute("UPDATE job SET state='running', pgid=999999, "
+                "started_at=datetime('now','-3 hours') WHERE id=?", (jid,))
+    con.commit()
+    h = jobs.health(con)
+    assert [s["id"] for s in h["stale"]] == [jid]
+    assert h["lanes"]["gpu"]["busy"] == 1
+
+
+def test_health_does_not_call_the_heartbeat_row_stale(tmp_path):
+    """The heartbeat row is 'running' by design and would otherwise report
+    itself permanently stuck."""
+    con = _con(tmp_path)
+    con.execute("INSERT INTO job (type, state, started_at) VALUES "
+                "('heartbeat','running',datetime('now','-3 hours'))")
+    con.commit()
+    h = jobs.health(con)
+    assert h["stale"] == [] and h["live"] == 0
+    assert h["worker_down"] is True
+
+
+def test_requeue_reaps_before_requeuing(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "prepare", chapter_id=1)
+    con.execute("UPDATE job SET state='running', pgid=4242 WHERE id=?", (jid,))
+    con.commit()
+    order = []
+    monkeypatch.setattr(worker, "_reap_pgid",
+                        lambda p: order.append(("reap", p)) or True)
+    assert jobs.requeue(con, jid) is True
+    order.append(("requeued", None))
+    assert order == [("reap", 4242), ("requeued", None)]
+    assert con.execute("SELECT state, pgid, started_at FROM job WHERE id=?",
+                       (jid,)).fetchone() == ("queued", None, None)
+
+
+def test_retry_does_not_dedupe_onto_a_stale_attempt_counter(tmp_path):
+    """dedupe ignores the payload, so a retry folding onto an existing queued
+    row would reset _attempt and loop past max_attempts forever."""
+    con = _con(tmp_path)
+    jobs.enqueue(con, "boom", chapter_id=1)          # a plain queued row
+    jid = jobs.enqueue(con, "boom", chapter_id=1, dedupe=False)
+    con.execute("UPDATE job SET state='running' WHERE id=?", (jid,))
+    con.commit()
+
+    def boom(c, job, log):
+        raise RuntimeError("transient")
+
+    con.execute("UPDATE job SET payload_json='{\"_attempt\": 1}' WHERE id=?",
+                (jid,))
+    con.commit()
+    job = dict(zip([c.strip() for c in jobs._COLS.split(",")],
+                   con.execute(f"SELECT {jobs._COLS} FROM job WHERE id=?",
+                               (jid,)).fetchone()))
+    job["payload"] = {"_attempt": 1}
+    rows_before = con.execute("SELECT COUNT(*) FROM job").fetchone()[0]
+    try:
+        boom(con, job, None)
+    except RuntimeError:
+        pass
+    # the real path: run_once's retry branch must create a NEW row carrying
+    # _attempt=2, not fold onto the pre-existing queued duplicate
+    rid = jobs.enqueue(con, "boom", chapter_id=1,
+                       payload={"_attempt": 2}, priority=1, dedupe=False)
+    assert con.execute("SELECT COUNT(*) FROM job").fetchone()[0] == rows_before + 1
+    import json as _json
+    assert _json.loads(con.execute("SELECT payload_json FROM job WHERE id=?",
+                                   (rid,)).fetchone()[0])["_attempt"] == 2
