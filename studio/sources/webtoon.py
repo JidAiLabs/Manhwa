@@ -79,12 +79,76 @@ def _genres_from_meta(meta: dict) -> tuple[str, ...]:
         return ()
 
 
+def _episode_slug(url: str) -> str:
+    """The human-facing slug from a viewer URL.
+
+    .../omniscient-reader/episode-0-prologue/viewer?title_no=2154
+      -> 'episode-0-prologue'
+    """
+    parts = url.split("?")[0].rstrip("/").split("/")
+    if len(parts) >= 2 and parts[-1] == "viewer":
+        return parts[-2]
+    return parts[-1] if parts else ""
+
+
+_SEASON_SLUG_RE = re.compile(
+    r"^season[-_]?(\d+)[-_]?(?:episode|ep)[-_]?(\d+)(?:[-_](.+))?$", re.I)
+_EPISODE_SLUG_RE = re.compile(
+    r"^(?:episode|ep|chapter|ch)[-_]?(\d+)(?:[-_](.+))?$", re.I)
+
+
+def _prettify(text: str) -> str:
+    """'prologue' -> 'Prologue'; 'the-beginning' -> 'The Beginning'."""
+    return " ".join(w.capitalize() for w in re.split(r"[-_]+", text) if w)
+
+
+def _label_from_slug(slug: str, episode_no) -> str:
+    """The episode name a HUMAN would use, taken from the URL slug.
+
+    gallery-dl's ``episode_no`` is an internal 1-based sequence index, NOT the
+    published episode number, so labelling from it made every episode read one
+    too high: the prologue (slug 'episode-0-prologue', episode_no=1) was
+    labelled "Episode 1" and everything after it shifted by one.
+
+    The slug carries the number the site itself shows the reader, so it is the
+    label authority. It is used for the LABEL ONLY — ``number`` stays
+    ``episode_no``, because that is the UNIQUE key and the refresh-cron upsert
+    key, and it is the one value guaranteed unique and monotonic.
+
+    That separation is load-bearing, not stylistic. Slug numbers COLLIDE on
+    multi-season series: Tower of God yields only 338 distinct slug numbers
+    across 652 episodes (236 collisions), because 'season-1-ep-0' and
+    'season-2-ep-0' both parse to 0. Using them as ``number`` would violate
+    UNIQUE(series_id, number) wholesale. Season is carried in the LABEL, where
+    a collision is impossible.
+
+    Falls back to the old episode_no label when a slug carries no number
+    (specials, titled side stories) — strictly no worse than the old behaviour.
+    """
+    s = (slug or "").strip()
+    m = _SEASON_SLUG_RE.match(s)
+    if m:
+        season, ep, suffix = m.group(1), m.group(2), m.group(3)
+        label = f"Season {int(season)} Episode {int(ep)}"
+        return f"{label} ({_prettify(suffix)})" if suffix else label
+    m = _EPISODE_SLUG_RE.match(s)
+    if m:
+        ep, suffix = m.group(1), m.group(2)
+        label = f"Episode {int(ep)}"
+        return f"{label} ({_prettify(suffix)})" if suffix else label
+    return f"Episode {episode_no}"
+
+
 def _parse_chapters(entries: list) -> list[ChapterRef]:
     """
     Parse gallery-dl -j entries into ordered ChapterRefs.
 
     Each entry from the list URL is: [6, viewer_url, {episode_no, comic, ...}]
     They are ordered newest-first; we sort ascending by episode_no.
+
+    ``number`` is episode_no (stable, unique, monotonic — the upsert key);
+    ``label`` comes from the URL slug (what the site shows the reader). See
+    _label_from_slug for why these must not be the same value.
     """
     chapters: list[ChapterRef] = []
     for entry in entries:
@@ -99,7 +163,7 @@ def _parse_chapters(entries: list) -> list[ChapterRef]:
         chapters.append(
             ChapterRef(
                 number=float(episode_no),
-                label=f"Episode {episode_no}",
+                label=_label_from_slug(_episode_slug(url), episode_no),
                 url=url,
             )
         )
