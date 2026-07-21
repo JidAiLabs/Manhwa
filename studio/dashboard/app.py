@@ -25,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 from studio import paths
 from studio.catalog import reconcile, reset
 from studio.catalog.db import connect
-from studio.catalog.models import STATUS_ORDER
+from studio.catalog.models import STATUS_ORDER, STATUS_RANK
 from studio.dashboard import bundles, discovery, eta, gates, jobs
 
 HERE = Path(__file__).resolve().parent
@@ -38,10 +38,15 @@ if _TOOLS not in __import__("sys").path:
 from beats_segments import beat_segments  # noqa: E402
 from manifest_freshness import verify_chapter as _verify_chapter_freshness  # noqa: E402
 
-# stages shown on the chapter timeline, in pipeline order
-TIMELINE = ["fetched", "stitched", "detected", "scened", "visioned",
+# Stages shown on the chapter timeline, in pipeline order. EVERY entry must be
+# either a STATUS_ORDER status (satisfied from chapter.status) or a stage name
+# something actually writes to stage_run — an entry that is neither renders
+# permanently red on every chapter. 'fetched' was exactly that: nothing has
+# ever written it (the status is 'downloaded'), so step 1 was red forever.
+# 'prepped' is the reverse case — written by _run_prep_and_qa but never shown.
+TIMELINE = ["downloaded", "stitched", "detected", "scened", "visioned",
             "grouped", "beated", "scripted", "voiced", "planned",
-            "qa_scan", "render_segment"]
+            "prepped", "qa_scan", "render_segment"]
 
 
 def _http_url(u: Optional[str]) -> Optional[str]:
@@ -53,10 +58,15 @@ def _http_url(u: Optional[str]) -> Optional[str]:
 
 
 def _status_idx(status: str) -> int:
+    """Rank a chapter status for progress display. -1, NOT 0, for an unknown
+    status: 0 is 'discovered' — a real rung — so a failure status like
+    'voiced_failed' used to read as legitimate early progress. Ranks against
+    STATUS_RANK so a 'rendered' chapter shows every pill done instead of
+    none."""
     try:
-        return STATUS_ORDER.index(status)
+        return STATUS_RANK.index(status)
     except ValueError:
-        return 0
+        return -1
 
 
 def _chapter_costs(ep_dir: Optional[str]) -> float:

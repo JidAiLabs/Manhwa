@@ -11,7 +11,7 @@ from typing import List, Optional
 # voiced/render_segment were previously SEEDED at the old "~40min render"
 # guess (1200/2400); the real validated numbers are ~7min TTS, ~2.5-5min render.
 SEED_SEC = {
-    "fetched": 30, "stitched": 40, "detected": 60, "scened": 10,
+    "downloaded": 30, "stitched": 40, "detected": 60, "scened": 10,
     "visioned": 120, "grouped": 5, "beated": 1980, "scripted": 5,
     "voiced": 430, "planned": 10, "prepped": 80, "qa_scan": 200,
     "render_segment": 300, "concat": 60,
@@ -119,7 +119,7 @@ def chapter_eta(con: sqlite3.Connection, chapter_id: int,
 def chapter_wall_median(con: sqlite3.Connection,
                         series_id: Optional[int] = None) -> float:
     """Full-chapter wall estimate = sum of per-stage estimates."""
-    stages = ["fetched", "stitched", "detected", "scened", "visioned",
+    stages = ["downloaded", "stitched", "detected", "scened", "visioned",
               "grouped", "beated", "scripted", "voiced", "planned",
               "prepped", "qa_scan", "render_segment"]
     return sum(stage_eta(con, s, series_id) for s in stages)

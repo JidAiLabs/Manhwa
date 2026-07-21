@@ -576,3 +576,67 @@ def test_gallery_collapses_ken_variety_subcuts(tmp_path):
         ]}]}))
     rows = _app._gallery(str(ep))
     assert rows[0]["files"] == [{"name": "p31.jpg", "n": 3}]
+
+
+# --- Phase B: progress display told the truth about nothing ------------------
+
+def test_timeline_stages_are_all_reachable(client):
+    """Every TIMELINE entry must be satisfiable — either a catalog status or a
+    stage something writes to stage_run. 'fetched' was neither, so step 1 was
+    red on every chapter forever."""
+    from studio.catalog.models import STATUS_RANK
+    from studio.dashboard.app import TIMELINE
+    # stages written to stage_run by the worker (grep record_stage / INSERT)
+    written = {"prepped", "qa_scan", "render_segment", "voiced", "planned",
+               "concat", "plan_teaser", "series_thumbnail"}
+    for s in TIMELINE:
+        assert s in STATUS_RANK or s in written, f"{s} is never satisfied"
+
+
+def test_downloaded_chapter_shows_first_step_done(client):
+    c, con = client
+    con.execute("UPDATE chapter SET status='downloaded' WHERE id=1")
+    con.commit()
+    from studio.dashboard.app import _stage_timeline
+    ch = dict(zip(("id", "series_id", "status", "ep_dir"),
+                  con.execute("SELECT id, series_id, status, ep_dir FROM "
+                              "chapter WHERE id=1").fetchone()))
+    rows = {r["stage"]: r["done"] for r in _stage_timeline(con, ch)}
+    assert rows["downloaded"] is True
+    assert rows["stitched"] is False
+
+
+def test_rendered_chapter_shows_pipeline_steps_done(client):
+    """'rendered' sits ABOVE 'planned' but is not in STATUS_ORDER — it used to
+    rank as unknown (0 = 'discovered'), so a finished chapter displayed as
+    barely started."""
+    c, con = client
+    con.execute("UPDATE chapter SET status='rendered' WHERE id=1")
+    con.commit()
+    from studio.dashboard.app import _stage_timeline
+    ch = dict(zip(("id", "series_id", "status", "ep_dir"),
+                  con.execute("SELECT id, series_id, status, ep_dir FROM "
+                              "chapter WHERE id=1").fetchone()))
+    rows = {r["stage"]: r["done"] for r in _stage_timeline(con, ch)}
+    assert rows["planned"] is True and rows["visioned"] is True
+
+
+def test_failed_status_does_not_read_as_progress(client):
+    c, con = client
+    con.execute("UPDATE chapter SET status='voiced_failed' WHERE id=1")
+    con.commit()
+    from studio.dashboard.app import _stage_timeline
+    ch = dict(zip(("id", "series_id", "status", "ep_dir"),
+                  con.execute("SELECT id, series_id, status, ep_dir FROM "
+                              "chapter WHERE id=1").fetchone()))
+    rows = {r["stage"]: r["done"] for r in _stage_timeline(con, ch)}
+    assert not any(rows.values())
+
+
+def test_chapter_badges_render_as_html_not_literal_text(client):
+    """chapter.html used typographic quotes in class=/title= attributes, which
+    silently disabled the STALE MANIFESTS + QA badges."""
+    c, _ = client
+    body = c.get("/chapter/1").text
+    assert 'class="b warn"' in body or 'class="b ok"' in body
+    assert "class=”" not in body

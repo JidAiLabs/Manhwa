@@ -3,6 +3,12 @@ from dataclasses import dataclass
 STATUS_ORDER = ["discovered","downloaded","stitched","detected","scened",
                 "visioned","grouped","beated","scripted","voiced","planned"]
 
+# STATUS_ORDER drives the PIPELINE (next_status walks it, so 'planned' must
+# stay its last rung). Progress DISPLAY needs one more: render_segment sets
+# chapter.status='rendered', which is above 'planned' but not a pipeline
+# stage. Rank by this, advance by STATUS_ORDER.
+STATUS_RANK = STATUS_ORDER + ["rendered"]
+
 def next_status(s: str) -> str | None:
     i = STATUS_ORDER.index(s)
     return STATUS_ORDER[i+1] if i+1 < len(STATUS_ORDER) else None
