@@ -1358,6 +1358,20 @@ def narration_offset_flags(beats_obj: Any, understood_obj: Any
     return flags
 
 
+# Reporting speech rather than acting: the speaker may be off-panel while the
+# panel shows the listener reacting. Generic English verbs, no series content.
+_SPEECH_ACT_RE = re.compile(
+    r"\b(say|says|said|tell|tells|told|ask|asks|asked|shout|shouts|shouted|"
+    r"yell|yells|yelled|sneer|sneers|sneered|mock|mocks|mocked|taunt|taunts|"
+    r"taunted|jeer|jeers|jeered|warn|warns|warned|order|orders|ordered|"
+    r"call|calls|called|whisper|whispers|whispered|explain|explains|"
+    r"explained|declare|declares|declared|announce|announces|announced|"
+    r"demand|demands|demanded|promise|promises|promised|laugh|laughs|"
+    r"laughed|scoff|scoffs|scoffed|snarl|snarls|snarled|hiss|hisses|hissed|"
+    r"spits|spat|mutter|mutters|muttered|reply|replies|replied)\b",
+    re.IGNORECASE)
+
+
 def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                          cast_obj: Any) -> List[Dict[str, Any]]:
     """CAST-GROUNDED actor gate (ERROR, heal-target, deliberately NOT in the
@@ -1379,7 +1393,7 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     the regenerated group's payload carries the figures lines the original
     roll lacked. Silent without cast or understanding."""
     from cast_identity import (actor_noun_map, resolve_figures_by_file,
-                               subject_actor_nouns)
+                               shares_faction, subject_actor_nouns)
     flags: List[Dict[str, Any]] = []
     noun_map = actor_noun_map(cast_obj)
     figures = resolve_figures_by_file(understood_obj, cast_obj)
@@ -1387,6 +1401,9 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
         return flags
     fig_by_base = {_base_scene(os.path.basename(f)): v
                    for f, v in figures.items()}
+    u_by_sf = {_base_scene(os.path.basename(str(p.get("scene_file") or ""))): p
+               for p in ((understood_obj or {}).get("panels") or [])
+               if isinstance(p, dict) and p.get("scene_file")}
     for b in beats_obj.get("beats") or []:
         seg = f"g{int(b.get('group_id') or 0):04d}"
         for s in beat_segments(b):
@@ -1399,8 +1416,22 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                           if f.get("name") and f["name"] != "unknown"}
             if not span_names:
                 continue
+            # A panel whose text the narration is REPORTING (a taunt, an
+            # order, a shout) can name a speaker who is not drawn in it —
+            # a reaction shot of the listener is not a mismatch.
+            span_has_dialogue = any(
+                str((u_by_sf.get(_base_scene(fn)) or {}).get("dialogue")
+                    or "").strip() for fn in s["span"])
             for noun, members in subject_actor_nouns(line, noun_map):
                 if members & span_names:
+                    continue
+                # SAME FACTION: the oracle resolves an ambiguous look-alike to
+                # the least specific member, so 'leader' over a generic hooded
+                # panel is not evidence of a wrong actor — we simply cannot
+                # tell them apart. Shared authority with cast_identity.
+                if shares_faction(members, span_names, cast_obj):
+                    continue
+                if span_has_dialogue and _SPEECH_ACT_RE.search(line):
                     continue
                 flags.append(_flag(
                     "actor_mismatch", ERROR,

@@ -497,6 +497,85 @@ def test_panel_range_parses_ids_with_or_without_extension():
     assert sl._panel_range("p999999", _ORDERED) == []
 
 
+def test_a_threat_is_not_a_death():
+    """THE job-64 bug. The story pass reported 'Assassin Leader explains that
+    they must kill Cheon'; the old code matched the word 'kill' and recorded
+    the PROTAGONIST as dead, which banned his handles and let the identity
+    gate rewrite 'our guy' into 'the assassin leader'."""
+    for intent in ("explains that they must kill Cheon because of his right "
+                   "to the throne",
+                   "orders his men to kill the prince",
+                   "vows to kill the brat",
+                   "is sent to kill the descendant",
+                   "plans to kill him quietly"):
+        assert sl.is_completed_death(intent) is False, intent
+
+
+def test_a_survivor_whose_fate_mentions_someone_elses_death_is_not_dead():
+    """The mirror image: the leader's fate is 'Alive; retreats after the
+    Prince kills one of his men' — that 'kills' is someone ELSE dying."""
+    for alive in ("Alive; retreats after the Prince kills one of his men",
+                  "Wounded and near death, but survives via nano-machine "
+                  "activation",
+                  "Alive; disappears after the injection",
+                  "Unknown"):
+        assert sl.is_completed_death(alive) is False, alive
+
+
+def test_a_real_death_still_registers():
+    for dead in ("Killed by Prince Cheon",
+                 "kills an assassin through a deceptive strike.",
+                 "is slain in the ambush",
+                 "Murdered by the hooded figure"):
+        assert sl.is_completed_death(dead) is True, dead
+
+
+def test_death_requires_BOTH_the_fate_sheet_and_a_killing_event():
+    """Fates are the authority on WHO died; events only anchor WHERE. Either
+    signal alone must not create a death record."""
+    ents = sl.build_entities(_U12, CAST)
+    profs = sl.entity_profiles(ents)
+    kill_event = {"panels": "p000036-p000037", "actor": "Prince Cheon",
+                  "does": "kills an assassin", "target": "the assassins",
+                  "evidence": "q"}
+    # event says kill, but the fate sheet says that character LIVES -> no death
+    ev, ov = sl.facts_from_chapter_story(
+        {"cast": [{"name": "the assassins", "role": "antagonist",
+                   "fate": "Alive; they retreat"}],
+         "events": [kill_event]}, ents, _U12, profs, log=lambda _m: None)
+    assert ev == []
+    assert len(ov) == 2            # direction is STILL applied
+    # fate says killed AND an event describes it -> death, anchored
+    ev, _ = sl.facts_from_chapter_story(
+        {"cast": [{"name": "the assassins", "role": "antagonist",
+                   "fate": "Killed by Prince Cheon"}],
+         "events": [kill_event]}, ents, _U12, profs, log=lambda _m: None)
+    assert [(e["subject"], e["scene_file"]) for e in ev] == [
+        ("the assassins", "p000037.jpg")]
+
+
+def test_the_exact_job64_scenario_no_longer_kills_the_protagonist():
+    ents = sl.build_entities(_U12, CAST)
+    profs = sl.entity_profiles(ents)
+    story = {
+        "cast": [{"name": "Prince Cheon", "role": "protagonist",
+                  "fate": "Wounded and near death, but survives"},
+                 {"name": "the assassins", "role": "antagonist",
+                  "fate": "One member killed by Prince Cheon"}],
+        "events": [
+            {"panels": "p000030-p000031", "actor": "the assassins",
+             "does": "explains that they must kill Cheon because of his "
+                     "right to the throne",
+             "target": "Prince Cheon", "evidence": "..."},
+            {"panels": "p000036-p000037", "actor": "Prince Cheon",
+             "does": "kills an assassin through a deceptive strike",
+             "target": "the assassins", "evidence": "HOW DID A KID..."}]}
+    ev, _ov = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                          log=lambda _m: None)
+    assert "our protagonist" not in [e["subject"] for e in ev]
+    assert [e["subject"] for e in ev] == ["the assassins"]
+
+
 def test_story_events_become_deaths_and_direction_without_a_model_call():
     ents = sl.build_entities(_U12, CAST)
     profs = sl.entity_profiles(ents)
@@ -549,7 +628,9 @@ def test_build_ledger_prefers_the_chapter_story_and_skips_arbitration():
         calls.append(1)
         return {"events": [], "overrides": []}
 
-    story = {"cast": [], "events": [
+    story = {"cast": [{"name": "the assassins", "role": "antagonist",
+                       "fate": "One member killed by Prince Cheon"}],
+             "events": [
         {"panels": "p000036-p000037", "actor": "Prince Cheon",
          "does": "kills an assassin", "target": "the assassins",
          "evidence": "HOW DID A KID KILL ONE OF OUR MEMBERS?"}]}
@@ -627,6 +708,41 @@ def test_gate_zero_figure_span_repoints_protagonist_handle():
     rw = ig.enforce_actor_handles(b, {}, _NM, _PROT, ledger=led2)
     assert rw and "(ledger)" in rw[0]
     assert b["segments"][0]["line"] == "the assassins recoils in disbelief."
+
+
+# ---- actor_mismatch false positives (the 21 that drove the heal loop) -------
+
+def test_same_faction_is_agreement_not_a_mismatch():
+    """A generic hooded panel resolves to the LEAST specific member, so a line
+    saying 'leader' is not evidence of a wrong actor — we simply cannot tell
+    the two apart. 21 of these dragged 18 of 25 groups into heal on job 64."""
+    assert ci.shares_faction({"unnamed assassin"}, {"the assassins"}, CAST)
+    assert not ci.shares_faction({"our protagonist"}, {"the assassins"}, CAST)
+    beats = _beats(("The leader lunges forward with lethal intent.",
+                    ["p000011.jpg"], 9))
+    u = {"panels": [{"scene_file": "p000011.jpg", "dialogue": "",
+                     "subjects": ["a masked figure in a dark hooded cloak "
+                                  "with a sword"],
+                     "action": "", "description": ""}]}
+    assert pq.actor_mismatch_flags(beats, u, CAST) == []
+
+
+def test_reported_speech_over_a_reaction_shot_is_not_a_mismatch():
+    """'The assassins mock his lineage' over a panel showing only the
+    protagonist reacting: the speaker is off-panel, the narration is right."""
+    u = {"panels": [{"scene_file": "p000019.jpg",
+                     "dialogue": "PEASANT BLOOD CHANGES NOTHING.",
+                     "subjects": ["a young man in a light robe with a blue "
+                                  "sash, wide-eyed and shocked"],
+                     "action": "", "description": ""}]}
+    beats = _beats(("The assassins mock his lineage, sneering that peasant "
+                    "blood changes nothing.", ["p000019.jpg"], 5))
+    assert pq.actor_mismatch_flags(beats, u, CAST) == []
+    # but a non-speech action claim over that same panel STILL flags
+    beats2 = _beats(("The assassins drag him across the stones.",
+                     ["p000019.jpg"], 5))
+    assert [f["code"] for f in pq.actor_mismatch_flags(beats2, u, CAST)] == [
+        "actor_mismatch"]
 
 
 # ---- prep_qa: dead_actor / role_stale ---------------------------------------

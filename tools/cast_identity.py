@@ -370,6 +370,29 @@ def resolve_figures_by_file(understood_obj: Any, cast: Any,
     return out
 
 
+def shares_faction(names_a: Any, names_b: Any, cast: Any) -> bool:
+    """True when any member of *names_a* shares an identity token with any of
+    *names_b* — they are the SAME narrative faction and appearance evidence
+    cannot separate them ('the assassin leader' vs 'the masked assassin' both
+    carry 'assassin').
+
+    resolve_name deliberately answers such a tie with the LEAST specific
+    member, so a generic hooded panel resolves to the plain member. Any gate
+    comparing a line's actor-noun against that resolution must therefore treat
+    a same-faction pair as agreement, not a mismatch — otherwise every line
+    that says 'leader' over an ambiguous panel is flagged wrong. (Measured:
+    that produced 21 false actor_mismatch errors on nano ch1, which dragged 18
+    of 25 groups into the heal loop.)"""
+    by_name = {m_name: toks for m_name, toks in (
+        (str(m.get("canonical_name") or m.get("id") or "").strip(),
+         _name_tokens(m)) for m in _members(cast)) if m_name}
+    a = set().union(*(by_name.get(n, set()) for n in (names_a or []))) \
+        if names_a else set()
+    b = set().union(*(by_name.get(n, set()) for n in (names_b or []))) \
+        if names_b else set()
+    return bool(a & b)
+
+
 def actor_noun_map(cast: Any) -> Dict[str, Set[str]]:
     """{actor-noun: set(canonical_names)} derived from the cast manifest —
     NO hardcoded per-series word list. From the real Nano ch1 cast this

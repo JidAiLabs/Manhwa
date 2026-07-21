@@ -504,13 +504,60 @@ def build_beat_facts(groups: List[Dict[str, Any]],
     return facts
 
 
-# Generic English kill/death vocabulary — NOT series content. Used only to
-# decide whether an event the story pass already reported is fatal, so a
-# missed word costs us a death record, never a false one.
-_KILL_RE = re.compile(
-    r"\b(kill(?:s|ed|ing)?|slay|slain|slew|murder(?:s|ed)?|execut(?:e|es|ed)|"
-    r"finish(?:es|ed)?\s+(?:off|him|her|them)|strikes?\s+down|cuts?\s+down|"
-    r"fatal(?:ly)?|dies?|died|dead|corpse)\b", re.IGNORECASE)
+# Generic English death vocabulary — NOT series content.
+#
+# HISTORY (2026-07-20, a bug I shipped): this used to be matched against the
+# free text of any event, and a death was recorded whenever the word "kill"
+# appeared. The story pass reported "Assassin Leader explains that they must
+# kill Cheon" — a THREAT — and the ledger recorded the PROTAGONIST as dead at
+# p000017. His handles were then banned and the identity gate rewrote "our
+# guy" into "the assassin leader", inverting the narration.
+#
+# So a kill word is now necessary but NOT sufficient. Deaths come from the
+# story pass's structured per-character `fate` field (its explicit answer to
+# "what happened to this character"), events only supply the anchor panel, and
+# anything phrased as intent//attempt/order is never a death.
+_DEATH_RE = re.compile(
+    r"\b(kill(?:s|ed)|slain|slew|murder(?:s|ed)|execut(?:es|ed)|"
+    r"died|dies|dead|deceased|killed\s+off|struck\s+down|cut\s+down|corpse)\b",
+    re.IGNORECASE)
+
+# Intent, attempt, order, or plan — a stated wish to kill is not a killing.
+_INTENT_RE = re.compile(
+    r"\b(must|will|would|shall|should|could|can|may|might|"
+    r"wants?\s+to|plans?\s+to|intends?\s+to|tries?\s+to|attempts?\s+to|"
+    r"seeks?\s+to|hopes?\s+to|decides?\s+to|about\s+to|going\s+to|"
+    r"orders?|commands?|threatens?|vows?|swears?|promises?|"
+    r"to\s+kill|for\s+killing|so\s+they\s+can)\b", re.IGNORECASE)
+
+
+# Explicit survival. A fate sentence often mentions SOMEONE ELSE's death:
+# "Alive; retreats after the Prince kills one of his men" is the LEADER
+# surviving, and reading its "kills" as his own death is the same mistake in
+# mirror image. Survival stated about this character always wins.
+_SURVIVES_RE = re.compile(
+    r"\b(alive|survives?|survived|lives|living|escapes?|escaped|flees|fled|"
+    r"retreats?|retreated|withdraws?|unharmed|unhurt|recovers?|recovered|"
+    r"spared|rescued|saved|wounded\s+but|injured\s+but|near\s+death\s+but|"
+    r"unknown)\b", re.IGNORECASE)
+
+
+def is_completed_death(text: str) -> bool:
+    """Pure: does *text* say THIS character died, and that it already happened?
+
+    Three gates, all necessary:
+      - a death word is present ("killed", "died", "slain");
+      - it is not intent/attempt/order ("must kill", "vows to kill");
+      - the text does not state survival ("alive", "retreats", "survives").
+
+    "kills an assassin through a deceptive strike" -> True (as an EVENT verb;
+    the caller pairs it with the victim's own fate). "Killed by Prince Cheon"
+    -> True. "they must kill Cheon" -> False. "Alive; retreats after the
+    Prince kills one of his men" -> False."""
+    t = str(text or "")
+    if not _DEATH_RE.search(t):
+        return False
+    return not _INTENT_RE.search(t) and not _SURVIVES_RE.search(t)
 
 
 def _panel_range(text: str, ordered_files: List[str]) -> List[str]:
@@ -547,6 +594,27 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
     ordered = [str(p["scene_file"]) for p in _panels(understood)]
     events: List[Dict[str, Any]] = []
     overrides: List[Dict[str, Any]] = []
+
+    # STEP 1 — who actually died? The story pass answers this per character in
+    # `fate`. That is the ONLY death authority: a character dies when their own
+    # fate says so, never because some event sentence contains the word "kill"
+    # (a villain's threat is not a death).
+    dead: Dict[str, str] = {}
+    for c in ((story or {}).get("cast") or []):
+        if not isinstance(c, dict):
+            continue
+        fate = str(c.get("fate") or "")
+        if not is_completed_death(fate):
+            continue
+        who, _e = resolve_name(str(c.get("name") or ""), profiles)
+        if who == "unknown":
+            log(f"[ledger] {c.get('name')!r} is {fate[:50]!r} but matches no "
+                "entity — that death cannot propagate")
+            continue
+        dead[who] = fate
+
+    # STEP 2 — walk the events for panel attribution, and anchor each death to
+    # the panel where the story says it happens.
     for ev in ((story or {}).get("events") or []):
         if not isinstance(ev, dict):
             continue
@@ -567,23 +635,20 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                     "target": "" if target == "unknown" else target,
                     "reason": f"chapter story: {does[:80]} | "
                               f"{str(ev.get('evidence') or '')[:80]}"})
-        # a fatal event kills the TARGET, anchored at the end of the span
-        if _KILL_RE.search(does) and target != "unknown":
+        # A death is recorded ONLY when the fate sheet already says this
+        # character died AND this event describes the killing actually
+        # happening. Both gates must pass; either alone was the old bug.
+        if (target in dead and is_completed_death(does)
+                and not any(e["subject"] == target for e in events)):
             events.append({"type": "death", "scene_file": span[-1],
-                           "subject": target, "detail": does[:200],
+                           "subject": target,
+                           "detail": f"{does[:150]} (fate: {dead[target][:60]})",
                            "evidence_quote": str(ev.get("evidence") or "")[:200]})
-    # cross-check the cast sheet: a character the story says died must have a
-    # death event, else say so out loud (a silent gap is what hid the last bug)
-    for c in ((story or {}).get("cast") or []):
-        if not isinstance(c, dict):
-            continue
-        if not _KILL_RE.search(str(c.get("fate") or "")):
-            continue
-        who, _e = resolve_name(str(c.get("name") or ""), profiles)
-        if who != "unknown" and not any(e["subject"] == who for e in events):
-            log(f"[ledger] cast says {c.get('name')!r} is "
-                f"{str(c.get('fate'))[:40]!r} but no event anchors that death "
-                "to a panel — it will NOT propagate")
+
+    for who, fate in dead.items():
+        if not any(e["subject"] == who for e in events):
+            log(f"[ledger] {who!r} is {fate[:50]!r} per the cast sheet but no "
+                "event anchors that death to a panel — it will NOT propagate")
     return events, overrides
 
 
