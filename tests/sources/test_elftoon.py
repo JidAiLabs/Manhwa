@@ -94,7 +94,30 @@ def test_list_chapters_last_chapter():
             "https://elftoon.com/manga/infinite-evolution-from-zero/"
         )
 
-    assert chapters[-1].number == 98.0
+    # 95, NOT 98. The fixture's three highest entries (96, 97, 98) are
+    # ANNOUNCED but unpublished: real titles and dates, href="#". This
+    # assertion used to read 98.0, which pinned the bug — a placeholder was
+    # being turned into a chapter row whose URL became "https://elftoon.com#",
+    # a link that returns HTTP 200 and serves the homepage. 95 is the highest
+    # chapter that actually has a page.
+    assert chapters[-1].number == 95.0
+
+
+def test_unpublished_chapters_never_become_rows():
+    """The same three-placeholder shape appears in this fixture (96-98) and on
+    the live site today (108-110), so this is the site's normal behaviour for
+    upcoming chapters, not a one-off."""
+    from studio.sources.base import is_fetchable_url
+    from studio.sources.elftoon import ElftoonAdapter
+
+    mock_resp = _mock_response(FIXTURES / "elftoon_series.html")
+    with patch("httpx.get", return_value=mock_resp):
+        chapters = ElftoonAdapter().list_chapters(
+            "https://elftoon.com/manga/infinite-evolution-from-zero/"
+        )
+    assert {96.0, 97.0, 98.0}.isdisjoint({c.number for c in chapters})
+    assert all(is_fetchable_url(c.url) for c in chapters)
+    assert not any(c.url.rstrip("/").endswith("elftoon.com#") for c in chapters)
 
 
 def test_list_chapters_urls_are_absolute():
@@ -126,7 +149,7 @@ def test_list_chapters_label_contains_number():
         )
 
     assert "1" in chapters[0].label
-    assert "98" in chapters[-1].label
+    assert "95" in chapters[-1].label      # 96-98 are unpublished placeholders
 
 
 # ---------------------------------------------------------------------------

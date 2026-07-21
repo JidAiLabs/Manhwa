@@ -37,6 +37,36 @@ class ChapterRef:
     url: str
 
 
+def is_fetchable_url(url: str) -> bool:
+    """Is this a URL we could actually download a chapter from?
+
+    Sites list UPCOMING chapters with a placeholder link — elftoon renders
+    the newest three as `href="#"` with a real title and date, plus an
+    unrendered `{{number}}` template row. Naive `if not href` does not catch
+    "#", because "#" is a non-empty string, so the adapter happily stored
+    "https://elftoon.com" + "#".
+
+    That is worse than a broken link: it returns HTTP 200 and serves the
+    HOMEPAGE, so nothing downstream can tell it apart from a real chapter
+    page until image extraction fails deep inside a fetch — after the row
+    has already inflated the chapter count and joined every bulk-run range.
+
+    An announced-but-unpublished chapter is not a chapter. Skip it; the daily
+    refresh adds it for real once the site publishes a link.
+    """
+    u = (url or "").strip()
+    if not u or u.startswith(("#", "javascript:", "data:", "mailto:")):
+        return False
+    if "{{" in u or "}}" in u:          # unrendered template row
+        return False
+    # a bare origin with nothing but a fragment ("https://site.com#")
+    without_scheme = u.split("://", 1)[-1]
+    path = without_scheme.split("/", 1)[1] if "/" in without_scheme else ""
+    if not path.strip("#?") and "#" in u:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class SeriesMeta:
     """Metadata for a series as returned by a source."""

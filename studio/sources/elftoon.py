@@ -41,6 +41,7 @@ from studio.sources.base import (
     ChapterRef,
     SeriesMeta,
     SourceAdapter,
+    is_fetchable_url,
     register,
     slugify,
 )
@@ -127,6 +128,7 @@ def _parse_series(tree: HTMLParser) -> tuple[str, list[ChapterRef]]:
     # list (it now names an unrelated element), which silently yielded zero
     # chapters. data-num + a chapter link is the stable signature.
     chapters: list[ChapterRef] = []
+    skipped_unpublished: list[float] = []
     for li in tree.css("li[data-num]"):
         # data-num is the chapter number
         num_str = li.attributes.get("data-num", "")
@@ -140,14 +142,32 @@ def _parse_series(tree: HTMLParser) -> tuple[str, list[ChapterRef]]:
         if a is None:
             continue
         href = a.attributes.get("href", "")
-        if not href:
+        # Elftoon lists UPCOMING chapters with href="#" (real title and date,
+        # no page yet). "#" is a non-empty string, so a bare `if not href`
+        # let it through and we stored "https://elftoon.com#" — which returns
+        # HTTP 200 serving the HOMEPAGE, indistinguishable from a real
+        # chapter until image extraction fails inside a fetch. Reject the
+        # placeholder BEFORE it becomes a row; the daily refresh picks the
+        # chapter up for real once the site publishes a link.
+        if not is_fetchable_url(href):
+            skipped_unpublished.append(num)
             continue
 
         # URLs in elftoon_series.html are already absolute
         abs_url = href if href.startswith("http") else f"https://elftoon.com{href}"
+        if not is_fetchable_url(abs_url):
+            skipped_unpublished.append(num)
+            continue
 
         label = f"Chapter {int(num)}" if num == int(num) else f"Chapter {num}"
         chapters.append(ChapterRef(number=num, label=label, url=abs_url))
+
+    # Never silent: a chapter that vanishes from discovery must say so, or
+    # "110 chapters exist but only 107 are listed" looks like a scraper bug.
+    if skipped_unpublished:
+        nums = ", ".join(f"{n:g}" for n in sorted(skipped_unpublished))
+        print(f"[elftoon] skipped {len(skipped_unpublished)} announced but "
+              f"unpublished chapter(s) (no link yet): {nums}")
 
     # Sort ascending by chapter number
     chapters.sort(key=lambda c: c.number)

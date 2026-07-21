@@ -271,3 +271,25 @@ def test_repair_still_blocks_on_a_genuine_collision(cat):
     assert plan["actions"] == []
     assert plan["blockers"]
     assert (base / "Episode_0_Prologue" / "x.jpg").read_bytes() == b"someone else"
+
+
+def test_flags_a_placeholder_url_as_unfetchable(cat):
+    """elftoon lists UPCOMING chapters with href="#". Appending that to the
+    origin yields "https://elftoon.com#", which returns HTTP 200 and serves
+    the HOMEPAGE — indistinguishable from a real chapter until a fetch dies
+    inside image extraction."""
+    con, root, _ = cat
+    (root / "ongoing" / "orv").mkdir(parents=True)
+    _chapter(con, 1, 108, "Chapter 108", "https://elftoon.com#",
+             status="discovered")
+    codes = [i["code"] for i in identity.audit_series(con, 1)["issues"]]
+    assert codes == ["url_unfetchable"]
+
+
+def test_real_urls_are_not_flagged(cat):
+    con, root, _ = cat
+    (root / "ongoing" / "orv").mkdir(parents=True)
+    _chapter(con, 1, 107, "Chapter 107",
+             "https://elftoon.com/infinite-evolution-from-zero-chapter-107/",
+             status="discovered")
+    assert identity.audit_series(con, 1)["issues"] == []

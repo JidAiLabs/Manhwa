@@ -30,11 +30,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from studio import config as studio_config
+from studio.sources.base import is_fetchable_url
 
 # Issue codes, most severe first. Severity is about how badly a human is
 # likely to be misled, not about how hard it is to fix.
 SEVERITY = {
     "ep_dir_shared": "error",         # two chapters, one directory
+    "url_unfetchable": "error",       # a placeholder link, not a chapter page
     "url_duplicate": "error",         # two rows claim the same source page
     "canonical_collision": "error",   # repairing would collide
     "ep_dir_outside_tree": "error",   # a DB copied from another machine
@@ -117,6 +119,21 @@ def audit_series(con: sqlite3.Connection, series_id: int) -> Dict[str, Any]:
         by_canon.setdefault(canon, []).append(ch)
         if ch["url"]:
             by_url.setdefault(ch["url"], []).append(ch)
+
+        # A placeholder link stored as if it were a chapter page. This is how
+        # elftoon's announced-but-unpublished chapters got in: "#" appended to
+        # the origin yields a URL that returns HTTP 200 and serves the
+        # HOMEPAGE, so nothing downstream can tell it apart from a real
+        # chapter until a fetch fails deep inside image extraction — after the
+        # row has already inflated the chapter count and joined every bulk-run
+        # range. Checked here so ANY adapter regressing this way is caught.
+        if ch["url"] and not is_fetchable_url(ch["url"]):
+            issues.append(_issue(
+                "url_unfetchable", ch,
+                f"{ch['url']} is a placeholder, not a chapter page — the row "
+                f"was created from an announced-but-unpublished entry and can "
+                f"never be fetched. Delete it; a refresh will re-add the "
+                f"chapter once the source publishes a real link."))
 
         # a label that names a DIFFERENT number than the row it is filed under
         claimed = label_number(ch["label"] or "")
