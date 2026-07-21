@@ -781,8 +781,21 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             ollama = ", ".join(m["name"] for m in tags.get("models", [])[:4])
         except Exception:
             ollama = "(not running)"
+        # Thumbnail generation is the ONLY paid step, and its key lives in the
+        # macOS keychain on the Mini. A keychain read needs an UNLOCKED login
+        # keychain: a `gui/` launchd agent inherits one, a non-interactive ssh
+        # session does not. Reporting the source here answers "can the daemon
+        # actually see it?" from inside the daemon — the only context whose
+        # answer matters. Never shows the key itself.
+        try:
+            from thumbnail_gen import resolve_api_key as _gemini_key
+            _k, _src = _gemini_key()
+            gemini = f"found (from {_src})" if _k else "NOT FOUND — thumbnails will fail"
+        except Exception as e:
+            gemini = f"(probe failed: {type(e).__name__})"
         checks = {
             f"ollama models @ {host}": ollama,
+            "gemini key (thumbnails)": gemini,
             "qwen venv": str((REPO / ".qwen_venv").is_dir()),
             "kokoro venv": str((REPO / ".kokoro_venv").is_dir()),
             "narrator ref": str((REPO / "assets/voice/narrator_ref.wav").exists()),
