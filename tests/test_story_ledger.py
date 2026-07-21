@@ -544,7 +544,10 @@ def test_death_requires_BOTH_the_fate_sheet_and_a_killing_event():
                    "fate": "Alive; they retreat"}],
          "events": [kill_event]}, ents, _U12, profs, log=lambda _m: None)
     assert ev == []
-    assert len(ov) == 2            # direction is STILL applied
+    # direction is STILL applied, now across the silent panels the
+    # dialogue is reacting to (this fixture is entirely wordless, so the
+    # max_back=4 cap is what bounds it)
+    assert len(ov) == 6
     # fate says killed AND an event describes it -> death, anchored
     ev, _ = sl.facts_from_chapter_story(
         {"cast": [{"name": "the assassins", "role": "antagonist",
@@ -590,7 +593,7 @@ def test_story_events_become_deaths_and_direction_without_a_model_call():
     assert len(ev) == 1 and ev[0]["type"] == "death"
     assert ev[0]["subject"] == "the assassins"
     assert ev[0]["scene_file"] == "p000037.jpg"     # anchored at span END
-    assert len(ov) == 2                              # both panels attributed
+    assert len(ov) == 6            # 2 anchored + 4 silent panels before them
     assert ov[0]["actor"] == "our protagonist"
     assert ov[0]["target"] == "the assassins"
 
@@ -603,7 +606,7 @@ def test_non_fatal_story_event_sets_direction_but_no_death():
          "target": "Prince Cheon", "evidence": "?!"}]}
     ev, ov = sl.facts_from_chapter_story(story, ents, _U12, profs, log=lambda _m: None)
     assert ev == []
-    assert len(ov) == 1 and ov[0]["actor"] == "the assassins"
+    assert len(ov) == 4 and ov[0]["actor"] == "the assassins"
 
 
 def test_unanchorable_event_and_unpropagated_death_are_logged_not_silent():
@@ -861,3 +864,41 @@ def test_heal_max_is_env_tunable_and_zero_disables_the_loop():
         _os.environ.pop("STUDIO_HEAL_MAX", None)
         importlib.reload(w)
     assert w._HEAL_MAX == 4                                # default unchanged
+
+
+# ---- silent-panel extension (why the fight stayed inverted) -----------------
+
+def test_event_attribution_extends_back_over_wordless_panels():
+    """THE gap that let the inversion survive the story pass. The story pass
+    reads TEXT, so it anchored the kill at p36-37 where the dialogue is —
+    but the strike is DRAWN at p33, which is wordless, so it got no
+    attribution and the writer fell back to the inverted understanding."""
+    ordered = [f"p{i:06d}.jpg" for i in range(30, 40)]
+    dialogue = {f: "" for f in ordered}
+    dialogue["p000032.jpg"] = "WATCH OUT!!"
+    dialogue["p000033.jpg"] = "?!"          # punctuation only == silent
+    dialogue["p000036.jpg"] = "HEHE... SERVES YOU RIGHT!"
+    dialogue["p000037.jpg"] = "HOW DID A KID KILL ONE OF OUR MEMBERS?"
+    span = sl.extend_over_silent(["p000036.jpg", "p000037.jpg"], ordered,
+                                 dialogue, anchored={"p000036.jpg",
+                                                     "p000037.jpg"})
+    # reaches the strike panel...
+    assert "p000033.jpg" in span
+    assert "p000034.jpg" in span and "p000035.jpg" in span
+    # ...and STOPS at the panel that speaks
+    assert "p000032.jpg" not in span
+
+
+def test_extension_stops_at_another_events_anchor():
+    ordered = [f"p{i:06d}.jpg" for i in range(30, 40)]
+    dialogue = {f: "" for f in ordered}
+    span = sl.extend_over_silent(["p000035.jpg"], ordered, dialogue,
+                                 anchored={"p000032.jpg", "p000035.jpg"})
+    assert span == ["p000033.jpg", "p000034.jpg", "p000035.jpg"]
+
+
+def test_is_silent_treats_punctuation_and_sfx_as_wordless():
+    for quiet in ("", "?!", "...", "!!", None, "—"):
+        assert sl._is_silent(quiet) is True
+    for spoken in ("WATCH OUT!!", "kill", "no way"):
+        assert sl._is_silent(spoken) is False

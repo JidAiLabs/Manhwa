@@ -207,6 +207,10 @@ def main() -> int:
     ap.add_argument("--location", default="us-central1")
     ap.add_argument("--num-ctx", type=int,
                     default=int(os.environ.get("STUDIO_STORY_NUM_CTX", "16384")))
+    ap.add_argument("--retries", type=int, default=3,
+                    help="re-ask on an unusable answer (the call is cheap and "
+                         "non-deterministic; a single bad roll must not cost "
+                         "the chapter its story)")
     args = ap.parse_args()
 
     vision = _load(args.vision_manifest)
@@ -221,7 +225,20 @@ def main() -> int:
     call = (_ollama_call(args.model, args.num_ctx)
             if args.backend == "ollama"
             else _vertex_call(args.model, args.project, args.location))
-    story = build_story(transcript, call)
+    # RETRY: one unparseable roll must not drop the whole chapter back to the
+    # ledger's per-window fallback (nano ch1 job 68 did exactly that — the
+    # stage exited 1 and the chapter silently lost its story). The call is
+    # cheap and non-deterministic, so a re-ask is the right response.
+    story = None
+    for attempt in range(1, args.retries + 1):
+        try:
+            story = build_story(transcript, call)
+            break
+        except Exception as e:
+            print(f"[story] attempt {attempt}/{args.retries} unusable: {e}")
+            if attempt == args.retries:
+                raise
+    assert story is not None
 
     inputs = [args.vision_manifest]
     if args.understood and os.path.exists(args.understood):

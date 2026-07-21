@@ -169,6 +169,20 @@ SYSTEM = (
     "Ignore anonymous crowds. Prefer 6-14 entries. Return ONLY JSON matching the schema."
 )
 
+STORY_CAST_RULE = (
+    "CHARACTERS THE CHAPTER'S DIALOGUE ALREADY IDENTIFIED (authoritative):\n"
+    "{CHARS}\n"
+    "Use THESE names as canonical_name — they were read from what the "
+    "characters actually say, so they are the names the audience hears. In "
+    "particular, if a real name appears here (e.g. a proper name used in "
+    "dialogue), that name is the canonical_name; do NOT replace it with a "
+    "generic handle like 'our protagonist'. EVERY character listed must "
+    "appear in the cast, including one-scene figures such as a stranger or "
+    "rescuer — a missing character cannot be recognised in a panel later. "
+    "Your job is to add the APPEARANCE (visual_description) for each, which "
+    "the dialogue could not provide."
+)
+
 RECURRING_RULE = (
     "RECURRING FIGURES OBSERVED (from per-panel analysis of the whole chapter):\n"
     "{FIGURES}\n"
@@ -211,6 +225,11 @@ def main() -> int:
     ap.add_argument("--understood", default="",
                     help="manifest.panels.understood.json — recurring-figure "
                          "coverage (every recurring figure must land in the cast)")
+    ap.add_argument("--chapter-story", default="",
+                    help="manifest.chapter_story.json (story_pass) — the "
+                         "character list read from the chapter's own dialogue. "
+                         "Its NAMES are authoritative; this pass supplies the "
+                         "appearance the story pass cannot see.")
     args = ap.parse_args()
 
     project = args.project
@@ -226,6 +245,17 @@ def main() -> int:
     images = _sample_images(items, args.max_images)
     ocr = _all_ocr(items)
 
+    story_block = ""
+    if args.chapter_story and os.path.exists(args.chapter_story):
+        try:
+            chars = (_load(args.chapter_story).get("cast") or [])
+        except Exception:
+            chars = []
+        if chars:
+            story_block = STORY_CAST_RULE.replace("{CHARS}", "\n".join(
+                f"  - {c.get('name')} — {c.get('role')}" for c in chars
+                if isinstance(c, dict) and c.get("name")))
+
     figures_block = ""
     if args.understood and os.path.exists(args.understood):
         try:
@@ -237,6 +267,8 @@ def main() -> int:
                 "{FIGURES}", "\n".join(f"  - {f}" for f in figs))
 
     parts: List[types.Part] = [_text_part(SYSTEM)]
+    if story_block:
+        parts.append(_text_part(story_block))
     if figures_block:
         parts.append(_text_part(figures_block))
     parts.append(_text_part("ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n" + "\n".join(ocr)))
@@ -249,6 +281,8 @@ def main() -> int:
     if args.backend == "ollama":
         import ollama
         text_blobs = [SYSTEM]
+        if story_block:
+            text_blobs.append(story_block)
         if figures_block:
             text_blobs.append(figures_block)
         text_blobs += ["ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n"
@@ -293,6 +327,8 @@ def main() -> int:
     inputs = [args.groups_manifest, args.vision_manifest]
     if args.understood and os.path.exists(args.understood):
         inputs.append(args.understood)
+    if args.chapter_story and os.path.exists(args.chapter_story):
+        inputs.append(args.chapter_story)
     write_manifest(args.out, cast, inputs=tuple(inputs),
                    tool="cast_builder",
                    extra_meta={"model": args.model, "images_used": len(images),

@@ -274,35 +274,19 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         print(f"[beated] keep-base marker present -> reuse {p['beats'].name}, "
               "skipping cast + beats regeneration")
     else:
-        cast_stale = (p["cast"].exists()
-                      and _artifact_is_stale(ep_dir, "manifest.cast.json"))
-        if cast_stale:
-            print("[beated] manifest.cast.json predates its groups/vision "
-                  "inputs -> rebuilding cast (stale names would leak into "
-                  "the narration)")
-        if not p["cast"].exists() or cast_stale:
-            # One Gemini call → chapter cast registry (manifest.cast.json) so the
-            # narration names the same character consistently. Skipped when the
-            # file exists AND is fresh w.r.t. its deps-declared inputs, so a
-            # beated retry never re-pays for it — but a re-grouped chapter
-            # never reuses a cast built from the old grouping.
-            cast_args = ["--groups-manifest", str(p["groups"]),
-                         "--vision-manifest", str(p["vision"]),
-                         "--out", str(p["cast"]),
-                         # recurring-figure coverage: every figure the per-panel
-                         # analysis saw repeatedly must land in the cast
-                         "--understood", str(p["understood"]),
-                         "--project", project, "--location", location,
-                         "--model", cfg.beats_model]
-            if cfg.beats_backend == "ollama":
-                cast_args += ["--backend", "ollama"]
-            _run_tool("cast_builder.py", cast_args)
-        # Whole-chapter STORY PASS: read the chapter's own dialogue once, in
-        # reading order, and get the plot — synopsis, cast with fates, events
-        # with actor->target and the proving line. Measured on nano ch1: one
-        # call, ~3 min, correct; the per-panel path spent ~79 min and got the
-        # chapter's central kill backwards. Fail-soft: without it the ledger
-        # falls back to its own windowed arbitration.
+        # Whole-chapter STORY PASS runs FIRST: read the chapter's own dialogue
+        # once, in reading order, and get the plot — synopsis, cast with fates,
+        # events with actor->target and the proving line. Measured on nano ch1:
+        # one call, ~3 min, correct; the per-panel path spent ~79 min and got
+        # the chapter's central kill backwards.
+        #
+        # It precedes cast_builder because its NAMES are read from what the
+        # characters actually say: cast_builder alone produced canonical_name
+        # 'our protagonist' while "PRINCE CHEON" sat in the dialogue (so the
+        # audience never heard his name), and it omitted the stranger entirely
+        # (so nothing could resolve him and the narration called him "our
+        # guy"). Fail-soft: without it the ledger falls back to per-window
+        # arbitration and cast_builder to its own judgement.
         chapter_story = ep_dir / "manifest.chapter_story.json"
         story_stale = (chapter_story.exists()
                        and _artifact_is_stale(ep_dir,
@@ -321,6 +305,32 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             except Exception as e:      # never block the chapter on it
                 print(f"[beated] story pass FAILED ({e}) -> the ledger falls "
                       "back to per-window arbitration")
+        cast_stale = (p["cast"].exists()
+                      and _artifact_is_stale(ep_dir, "manifest.cast.json"))
+        if cast_stale:
+            print("[beated] manifest.cast.json predates its groups/vision "
+                  "inputs -> rebuilding cast (stale names would leak into "
+                  "the narration)")
+        if not p["cast"].exists() or cast_stale:
+            # One call → chapter cast registry (manifest.cast.json) so the
+            # narration names the same character consistently. Skipped when the
+            # file exists AND is fresh w.r.t. its deps-declared inputs, so a
+            # beated retry never re-pays for it — but a re-grouped chapter
+            # never reuses a cast built from the old grouping.
+            cast_args = ["--groups-manifest", str(p["groups"]),
+                         "--vision-manifest", str(p["vision"]),
+                         "--out", str(p["cast"]),
+                         # recurring-figure coverage: every figure the per-panel
+                         # analysis saw repeatedly must land in the cast
+                         "--understood", str(p["understood"]),
+                         # names + completeness from the chapter's dialogue;
+                         # this pass supplies the appearance it cannot see
+                         "--chapter-story", str(chapter_story),
+                         "--project", project, "--location", location,
+                         "--model", cfg.beats_model]
+            if cfg.beats_backend == "ollama":
+                cast_args += ["--backend", "ollama"]
+            _run_tool("cast_builder.py", cast_args)
         # Story-state ledger (2026-07-20): projects the chapter story onto
         # per-beat facts (deaths propagate, dead role-holders' titles get
         # banned) — the record the writer, identity gate, and QA all read.

@@ -579,6 +579,46 @@ def _panel_range(text: str, ordered_files: List[str]) -> List[str]:
     return ordered_files[lo:hi + 1]
 
 
+def _is_silent(text: Any) -> bool:
+    """A panel carries no usable dialogue: empty, or punctuation/SFX-only
+    ('?!', '...'). Fewer than 3 letters or digits means nothing was said."""
+    return len(re.findall(r"[A-Za-z0-9]", str(text or ""))) < 3
+
+
+def extend_over_silent(span: List[str], ordered: List[str],
+                       dialogue: Dict[str, Any],
+                       anchored: Set[str], max_back: int = 4) -> List[str]:
+    """Widen an event's span BACKWARD across adjacent wordless panels.
+
+    THE fix for the nano ch1 inversion surviving the story pass. The story
+    pass reads text, so it anchors an event where the DIALOGUE is — the kill
+    landed on p000036-37 ("serves you right", "how did a kid kill one of our
+    members"). But the strike is DRAWN at p000033, which is wordless, so it
+    received no attribution at all and the writer fell back to the per-panel
+    understanding, which had the direction backwards.
+
+    A silent action panel immediately before a dialogue panel is the moment
+    that dialogue is reacting to, so it belongs to that event. Extension stops
+    at the first panel that speaks (its own event owns it), at another event's
+    anchor, or after *max_back* panels — a line reacts to the action just
+    before it, not to something fifteen panels earlier, and without the cap a
+    long wordless stretch would be swallowed whole by the next event."""
+    if not span:
+        return span
+    pos = {f: i for i, f in enumerate(ordered)}
+    start = pos.get(span[0])
+    if start is None:
+        return span
+    i = start - 1
+    while i >= 0 and (start - i) <= max_back:
+        fn = ordered[i]
+        if fn in anchored or not _is_silent(dialogue.get(fn)):
+            break
+        span = [fn] + span
+        i -= 1
+    return span
+
+
 def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                              understood: Any,
                              profiles: List[Dict[str, Any]],
@@ -615,6 +655,12 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
 
     # STEP 2 — walk the events for panel attribution, and anchor each death to
     # the panel where the story says it happens.
+    dialogue = {str(p["scene_file"]): p.get("dialogue")
+                for p in _panels(understood)}
+    raw_spans = [_panel_range(ev.get("panels"), ordered)
+                 for ev in ((story or {}).get("events") or [])
+                 if isinstance(ev, dict)]
+    anchored = {f for s in raw_spans for f in s}
     for ev in ((story or {}).get("events") or []):
         if not isinstance(ev, dict):
             continue
@@ -624,6 +670,12 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
             log(f"[ledger] story event not anchorable to panels "
                 f"({ev.get('panels')!r}): {does[:60]!r}")
             continue
+        # the wordless action panels this dialogue is reacting to
+        anchor = span[0]
+        span = extend_over_silent(span, ordered, dialogue, anchored)
+        if span[0] != anchor:
+            log(f"[ledger] event at {anchor} extended back to {span[0]} "
+                f"over silent panel(s): {does[:50]!r}")
         actor, _a = resolve_name(str(ev.get("actor") or ""), profiles)
         target, _t = resolve_name(str(ev.get("target") or ""), profiles)
         # direction: every panel in the span gets the story's attribution

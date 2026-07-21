@@ -60,19 +60,22 @@ ARTIFACTS: Dict[str, A] = {
                                          inputs=("manifest.panels.understood.json",)),
     "manifest.story.json":             A(stage="grouped",
                                          inputs=("manifest.panels.understood.json",)),
+    # whole-chapter story pass (2026-07-20): ONE read of the chapter's own
+    # dialogue -> synopsis + cast fates + events. The plot source the ledger
+    # and the writer derive from, and the NAME source for the cast — so it is
+    # declared before the cast it feeds.
+    "manifest.chapter_story.json":     A(stage="beated",
+                                         inputs=("manifest.vision.json",),
+                                         optional=("manifest.panels.understood.json",)),
     "manifest.cast.json":              A(stage="beated",
                                          inputs=("manifest.groups.json",
                                                  "manifest.vision.json"),
                                          # recurring-figure coverage: a cast
                                          # built before understanding existed
-                                         # must rebuild once it does
-                                         optional=("manifest.panels.understood.json",)),
-    # whole-chapter story pass (2026-07-20): ONE read of the chapter's own
-    # dialogue -> synopsis + cast fates + events. The plot source the ledger
-    # and the writer derive from.
-    "manifest.chapter_story.json":     A(stage="beated",
-                                         inputs=("manifest.vision.json",),
-                                         optional=("manifest.panels.understood.json",)),
+                                         # must rebuild once it does; and the
+                                         # story pass supplies its names
+                                         optional=("manifest.panels.understood.json",
+                                                   "manifest.chapter_story.json")),
     # story-state ledger (2026-07-20): chapter fact record (entities, action
     # attribution, deaths/role transitions) built between cast and the writer.
     # NOT required yet — older chapters predate it; flip once the fleet has
