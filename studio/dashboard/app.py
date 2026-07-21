@@ -369,9 +369,16 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         c = con()
         r = c.execute("SELECT log_path FROM job WHERE id=?",
                       (job_id,)).fetchone()
-        if not r or not r[0] or not os.path.exists(r[0]):
+        if not r or not r[0]:
             return "(no log yet)"
-        with open(r[0], "rb") as f:
+        # rows written before log paths were absolutized are relative to the
+        # WORKER's cwd (the repo root), not ours
+        path = r[0]
+        if not os.path.exists(path) and not os.path.isabs(path):
+            path = str(REPO / path)
+        if not os.path.exists(path):
+            return "(no log yet)"
+        with open(path, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - 8192))

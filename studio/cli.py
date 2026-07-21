@@ -17,6 +17,7 @@ and repo functions never call datetime directly.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -37,6 +38,13 @@ from tools.niche_modules import classify_niche, pick_primary_secondary
 # ---------------------------------------------------------------------------
 
 def _db_path() -> Path:
+    """The catalog. Repo-anchored so the cwd can never silently mint a SECOND
+    empty studio.db (a launchd job with the wrong WorkingDirectory used to do
+    exactly that, and the dashboard then showed zero series). STUDIO_DB
+    overrides for a per-host catalog."""
+    env = os.environ.get("STUDIO_DB")
+    if env:
+        return Path(env).expanduser()
     return studio_config.REPO_ROOT / "studio.db"
 
 
@@ -308,13 +316,14 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     import uvicorn
 
     from studio.dashboard.app import create_app
-    uvicorn.run(create_app(db_path=args.db), host=args.host, port=args.port)
+    db = args.db or str(_db_path())
+    uvicorn.run(create_app(db_path=db), host=args.host, port=args.port)
     return 0
 
 
 def cmd_worker(args: argparse.Namespace) -> int:
     from studio import worker
-    return worker.main(args.db)
+    return worker.main(args.db or str(_db_path()))
 
 
 # ---------------------------------------------------------------------------
@@ -459,9 +468,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_dash.add_argument("--host", default="127.0.0.1",
                         help="0.0.0.0 for LAN access (pair with "
                              "STUDIO_DASH_TOKEN)")
-    p_dash.add_argument("--db", default="studio.db")
+    p_dash.add_argument("--db", default=None,
+                        help="default: repo-anchored studio.db ($STUDIO_DB)")
     p_worker = sub.add_parser("worker", help="Run the job queue executor")
-    p_worker.add_argument("--db", default="studio.db")
+    p_worker.add_argument("--db", default=None,
+                          help="default: repo-anchored studio.db ($STUDIO_DB)")
 
     # status
     p_reset = sub.add_parser(

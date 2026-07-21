@@ -1663,7 +1663,11 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
     if not job:
         return False
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, f"{job['id']}-{job['type']}.log")
+    # absolute: the dashboard opens this path from ITS process, whose cwd is
+    # not necessarily the worker's (separate launchd jobs) — a relative path
+    # made every log read "(no log yet)".
+    log_path = os.path.abspath(
+        os.path.join(log_dir, f"{job['id']}-{job['type']}.log"))
     jobs.set_log(con, job["id"], log_path)
     _CUR.job_id = job["id"]                     # for the operator-cancel monitor
     _CUR.con = con                              # for _stream's pgid persistence

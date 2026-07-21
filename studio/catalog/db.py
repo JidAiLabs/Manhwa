@@ -5,7 +5,16 @@ from pathlib import Path
 def connect(path: Path | str) -> sqlite3.Connection:
     con = sqlite3.connect(str(path))
     con.execute("PRAGMA foreign_keys=ON")
-    con.execute("PRAGMA busy_timeout=5000")  # daily refresh cron + worker share the db
+    # WAL: the dashboard reads on EVERY request while the worker holds long
+    # write transactions. Under the default rollback journal a reader blocks a
+    # writer (and vice versa), and the 'database is locked' that follows used
+    # to kill a worker lane thread outright. WAL lets readers run concurrently
+    # with the writer; the raised busy_timeout absorbs the writer-vs-writer
+    # case (worker + refresh cron + a dashboard POST).
+    # NOTE: WAL means a plain `cp studio.db` backup is NOT self-consistent —
+    # use `VACUUM INTO 'studio.db.bak-…'` instead.
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=15000")
     con.executescript("""
         CREATE TABLE IF NOT EXISTS series (
           id INTEGER PRIMARY KEY,
