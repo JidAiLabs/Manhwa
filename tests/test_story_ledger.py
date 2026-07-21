@@ -902,3 +902,47 @@ def test_is_silent_treats_punctuation_and_sfx_as_wordless():
         assert sl._is_silent(quiet) is True
     for spoken in ("WATCH OUT!!", "kill", "no way"):
         assert sl._is_silent(spoken) is False
+
+
+# ---- the story's VERB must reach the writer, not just the actor ------------
+
+def test_story_verb_replaces_the_visual_verb():
+    """The override used to correct actor/target and leave the per-panel
+    VISUAL verb in place, so the writer got 'our protagonist lunges at the
+    masked assassin' when the story said he KILLS him — right actor, lost
+    outcome, and the chapter's turning point never reached the page."""
+    ents = sl.build_entities(_U12, CAST)
+    profs = sl.entity_profiles(ents)
+    story = {"cast": [{"name": "the assassins", "role": "antagonist",
+                       "fate": "One member killed by Prince Cheon"}],
+             "events": [{"panels": "p000036-p000037", "actor": "Prince Cheon",
+                         "does": "kills an assassin using a deceptive strike",
+                         "target": "the assassins", "evidence": "q"}]}
+    _ev, ov = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                          log=lambda _m: None)
+    assert ov and all("kills an assassin" in o["verb"] for o in ov)
+
+    actions = [{"scene_file": "p000036.jpg", "actor": "someone",
+                "verb": "lunges at", "target": "x", "evidence": "visual",
+                "raw": {}}]
+    sl.apply_overrides(actions, ov, ents, profiles=profs)
+    a = actions[0]
+    assert a["verb"].startswith("kills an assassin")     # outcome carried
+    assert a["actor"] == "our protagonist"
+
+
+def test_target_is_not_repeated_when_the_verb_already_names_it():
+    assert sl._mentions("kills an assassin using a deceptive strike",
+                        "the masked assassin") is True
+    assert sl._mentions("lunges forward", "the masked assassin") is False
+    # rendered fact stays readable rather than doubling the object
+    facts = sl.build_beat_facts(
+        [{"shot_id": 9, "scene_files": ["p000036.jpg"]}], [],
+        [{"scene_file": "p000036.jpg", "actor": "our protagonist",
+          "verb": "kills an assassin using a deceptive strike",
+          "target": "the masked assassin", "evidence": "dialogue_arbitrated",
+          "raw": {}}],
+        sl.build_entities(_U12, CAST), _U12)
+    line = (facts["g0009"]["actions"] or [""])[0]
+    assert "kills an assassin" in line
+    assert line.count("assassin") == 1        # not appended a second time

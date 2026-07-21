@@ -355,7 +355,7 @@ def test_prompt_version_bumped_for_impact_fields():
     # re-understand with two-person strikes direction-verified against the
     # neighbouring dialogue; pu_v5 added structured actions, pu_v4 evidence
     # discipline, pu_v3 appearance-aware subjects, pu_v2 impact awareness).
-    assert pu.PROMPT_VERSION == "pu_v6"
+    assert pu.PROMPT_VERSION == "pu_v7"
 
 
 def test_panel_schema_adds_impact_fields_backward_compatibly():
@@ -498,6 +498,6 @@ def test_tall_strip_merges_uncertain_any_window(monkeypatch, tmp_path):
     assert merged["uncertain"] is True         # any-window OR
 
 
-def test_prompt_version_is_pu_v6():
-    assert pu.PROMPT_VERSION == "pu_v6"
-    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v6")
+def test_prompt_version_is_pu_v7():
+    assert pu.PROMPT_VERSION == "pu_v7"
+    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v7")

@@ -405,14 +405,18 @@ def apply_overrides(panel_actions: List[Dict[str, Any]], raw: Any,
         actor, target = _n(ov.get("actor")), _n(ov.get("target"))
         if not sf or not (actor or target):
             continue
+        verb = str(ov.get("verb") or "").strip()
         acts = by_file.get(sf)
         if acts:
             for a in acts:
                 a["actor"], a["target"] = actor, target
+                if verb:                       # the OUTCOME, from the story
+                    a["verb"] = verb
                 a["evidence"] = "dialogue_arbitrated"
                 a["reason"] = str(ov.get("reason") or "").strip()[:200]
         else:
-            entry = {"scene_file": sf, "actor": actor, "verb": "acts on",
+            entry = {"scene_file": sf, "actor": actor,
+                     "verb": verb or "acts on",
                      "target": target, "evidence": "dialogue_arbitrated",
                      "reason": str(ov.get("reason") or "").strip()[:200],
                      "raw": {}}
@@ -479,8 +483,15 @@ def build_beat_facts(groups: List[Dict[str, Any]],
         actions = []
         for f in files:
             for a in acts_by_file.get(f, []):
-                s = " ".join(x for x in (a["actor"] or "someone", a["verb"],
-                                         a["target"]) if x).strip()
+                # A story verb is a whole phrase that usually names its own
+                # object ("kills an assassin using a deceptive strike"), so
+                # re-appending the target would read as word salad. Only add
+                # it when the verb does not already refer to it.
+                verb, tgt = a["verb"], a["target"]
+                if tgt and _mentions(verb, tgt):
+                    tgt = ""
+                s = " ".join(x for x in (a["actor"] or "someone", verb, tgt)
+                             if x).strip()
                 mark = (" [dialogue-arbitrated]"
                         if a.get("evidence") == "dialogue_arbitrated" else "")
                 actions.append(f"{f}: {s}{mark}")
@@ -577,6 +588,16 @@ def _panel_range(text: str, ordered_files: List[str]) -> List[str]:
         return found
     lo, hi = min(order[f] for f in found), max(order[f] for f in found)
     return ordered_files[lo:hi + 1]
+
+
+def _mentions(verb: str, target: str) -> bool:
+    """Does *verb* already refer to *target*? Compares identity tokens, so
+    'kills an assassin using a deceptive strike' covers 'the masked
+    assassin' (shared 'assassin') and the target is not appended twice."""
+    from cast_identity import _name_tokens
+    vt = {t for t in re.findall(r"[a-z]+", str(verb or "").lower())}
+    tt = _name_tokens({"canonical_name": str(target or ""), "aliases": []})
+    return bool(tt) and bool(tt & vt)
 
 
 def _is_silent(text: Any) -> bool:
@@ -685,6 +706,13 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                     "scene_file": fn,
                     "actor": "" if actor == "unknown" else actor,
                     "target": "" if target == "unknown" else target,
+                    # WHAT happened, not just who. Without this the override
+                    # replaced actor/target but left the per-panel VISUAL verb
+                    # in place, so the writer was handed "our protagonist
+                    # lunges at the masked assassin" when the story said he
+                    # KILLS him — corrected the actor and lost the outcome,
+                    # and the chapter's turning point never reached the page.
+                    "verb": does[:120],
                     "reason": f"chapter story: {does[:80]} | "
                               f"{str(ev.get('evidence') or '')[:80]}"})
         # A death is recorded ONLY when the fate sheet already says this

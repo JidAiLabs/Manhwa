@@ -46,12 +46,14 @@ line must remain an independently speakable complete clause.
 movie, superhero, internet, or everyday-life reference, one short comparison
 can replace a paragraph of description. It is figurative framing, never a new
 plot fact, and must fit the genre and visible moment.
-3. RATION NAMES — HARD BUDGET: say the protagonist's full name AT MOST 3-4
-TIMES IN THE WHOLE CHAPTER. Use it the first time he appears, and after that
-only where it genuinely lands (a reveal, a turning point, the final beat).
-Every other line uses a pronoun or a relaxed genre-appropriate stand-in such as
-"our guy" or "our boy". A full name arriving every few lines reads as a label,
-not as recognition — that is the failure this budget exists to stop. Naming
+3. RATION NAMES — INTRODUCE ONCE, THEN A HANDLE: the protagonist's cast entry
+carries his real name in its "aka" list. INTRODUCE him by that real name the
+first time he appears so the audience learns it, then say it AT MOST 3-4 TIMES
+in the whole chapter — only where it genuinely lands (a reveal, a turning
+point, the final beat). Every other line uses a pronoun or a relaxed
+genre-appropriate stand-in such as "our guy" or "our boy". Both failures are
+real: never naming him leaves the audience not knowing who he is, and a full
+name arriving every few lines reads as a label rather than recognition. Naming
 OTHER cast members is unaffected: name them as often as clarity needs.
 "Our guy"/"our boy"/"our man" refers to EXACTLY ONE person — the protagonist;
 never use it for any other character (a helper, ally, or stranger gets their

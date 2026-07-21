@@ -255,8 +255,32 @@ def _score(profile: Dict[str, Any], text: str) -> Tuple[float, List[str]]:
     return score, ev
 
 
-_PERSONISH = _GENERIC_PERSON | {"stranger", "warrior", "assassin", "prince",
-                                "king", "lord", "master", "servant"}
+# Person-denoting role/occupation nouns, used only to decide whether a subject
+# string describes a PERSON (so an unresolved one is recorded as an unknown
+# figure rather than ignored as a prop). Deliberately broad across genres —
+# the earlier list was murim/fantasy-only, which read a doctor or a detective
+# as scenery. Generic English, no series content.
+_PERSONISH = _GENERIC_PERSON | {
+    # family / relations
+    "mother", "father", "son", "daughter", "brother", "sister", "child",
+    "wife", "husband", "parent", "elder", "grandfather", "grandmother",
+    # martial / fantasy
+    "stranger", "warrior", "assassin", "prince", "princess", "king", "queen",
+    "lord", "lady", "master", "servant", "knight", "swordsman", "fighter",
+    "monk", "priest", "priestess", "mage", "wizard", "witch", "healer",
+    "hunter", "ranger", "thief", "bandit", "mercenary", "guard", "soldier",
+    "general", "commander", "captain", "chief", "noble", "commoner", "slave",
+    "demon", "god", "goddess",
+    # modern / everyday
+    "doctor", "nurse", "teacher", "student", "officer", "detective", "agent",
+    "spy", "driver", "worker", "clerk", "manager", "boss", "employee",
+    "scientist", "engineer", "reporter", "lawyer", "judge", "merchant",
+    "shopkeeper", "chef", "athlete", "idol", "singer", "actor", "artist",
+    "pilot", "sailor", "neighbour", "neighbor",
+    # story roles
+    "hero", "villain", "rival", "friend", "enemy", "ally", "companion",
+    "partner", "leader", "member", "survivor", "victim", "witness",
+}
 
 
 def _looks_person(text: str) -> bool:

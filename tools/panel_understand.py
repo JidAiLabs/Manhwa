@@ -125,7 +125,8 @@ SYSTEM = (
     "readable text.\n"
     "    'caption' = TEXT WITHOUT A SCENE: either the story's narrative VOICE as "
     "text on a plain card (an author monologue or scene-setting / transition line, "
-    "e.g. a black card 'BACK THEN, I HAD NO IDEA.'), OR a lone speech / shout / "
+    "e.g. a plain card carrying a retrospective or scene-setting line in the "
+    "narrator's own voice), OR a lone speech / shout / "
     "dialogue bubble (or any text) floating on a PLAIN / BLANK / WHITE / EMPTY "
     "background with NO drawn scene, character, or object behind it (e.g. 'a single "
     "white speech bubble against a plain white background'). Its words go in "
@@ -133,9 +134,10 @@ SYSTEM = (
     "an object) AND a bubble/caption is 'story', not 'caption'.\n"
     "    'system' = an IN-WORLD GAME / SYSTEM INTERFACE the CHARACTER perceives — "
     "a QUEST window, a STATUS / STAT / SKILL screen, a NOTIFICATION / ALARM / level-up "
-    "toast, or a SYSTEM MESSAGE (e.g. 'QUEST DIRECTIONS', 'STATUS', 'NOTIFICATION — You "
-    "have defeated a [Steel-Fanged Lycan]', '7TH GENERATION NANO MACHINE, STARTING "
-    "ACTIVATION'). It can be ANY length, ANY case, ANY color/art style, and may be drawn "
+    "toast, or a SYSTEM MESSAGE — for instance a quest or objective window, a status or "
+    "stat readout, a level-up toast, or a message announcing that something has been "
+    "acquired, defeated, unlocked, or activated. "
+    "It can be ANY length, ANY case, ANY color/art style, and may be drawn "
     "OVER character art. These are PLOT and MUST be kept and shown.\n"
     "    'story' = the STORY WORLD — real scene art AND in-world device screens a "
     "character uses in-story (a reader app, chat, feed), a place/organization name card. "
@@ -177,7 +179,12 @@ SYSTEM = (
 # strike now gets one image re-ask with the NEIGHBOURING PANELS' DIALOGUE
 # attached (the evidence that actually settles it, already on disk).
 # Invalidates ALL pu_v5 records, INTENDED.
-PROMPT_VERSION = "pu_v6"
+# pu_v7: series-derived examples stripped from SYSTEM — the system-card and
+# caption illustrations quoted lines from specific works, which both biases
+# the classifier toward one series' vocabulary and puts source text in our
+# prompt. Replaced with descriptions of the pattern. Examples steer
+# classification, so this is a material prompt change.
+PROMPT_VERSION = "pu_v7"
 
 # --- extreme-tall strips: windowed understanding -----------------------------
 # A cover/credits strip (ORV Ep0: 800x7540) downscaled to model resolution is
