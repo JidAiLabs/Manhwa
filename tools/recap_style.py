@@ -1084,7 +1084,8 @@ _TITLE_RE = re.compile(
 
 # generic protagonist handles the WRITER may already have used — varied too so
 # they don't dominate (matches _FAMILIAR_HANDLE_RE + "our man")
-_PROT_HANDLE_ALT = (r"our guy|our boy|our hero|our man|our protagonist|my guy")
+_PROT_HANDLE_ALT = (r"our guy|our boy|our hero|our man|our protagonist|"
+                    r"the protagonist|our mc|the mc|my guy")
 
 
 def _title_epithet(name: str, members, prot) -> str:
@@ -1109,10 +1110,12 @@ def _title_epithet(name: str, members, prot) -> str:
 
 def _protagonist_handles(title_epithet: str) -> list:
     """Ordered pool of SAFE noun-phrase handles: an optional unique title
-    epithet ('the prince') then the generic 'our guy'/'our boy' (always
+    epithet ('the prince') then 'the protagonist' and 'our MC' (always
     present, so an untitled protagonist still gets variety). ALL are noun
-    phrases — no pronoun-case risk."""
-    pool = ([title_epithet] if title_epithet else []) + ["our guy", "our boy"]
+    phrases — no pronoun-case risk. 'MC' is in script_expander._CAPS_KEEP so
+    it survives shout-caps normalization; how TTS *voices* 'MC' is an audio
+    judgment ('the main character' is the spelled-out fallback)."""
+    pool = ([title_epithet] if title_epithet else []) + ["the protagonist", "our MC"]
     out, seen = [], set()
     for h in pool:
         if h and h.lower() not in seen:
@@ -1136,11 +1139,11 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
     """Ration the protagonist's proper NAME to its first *keep* uses (the
     introduction), then give the tail VARIETY: each later protagonist
     reference — an over-cap name OR a generic handle the writer already wrote
-    ('our guy', 'our boy', ...) — is rotated deterministically through
+    ('our guy', 'our protagonist', ...) — is rotated deterministically through
     _protagonist_handles(name). Turns "our guy" repeated many times into a mix
-    of 'the prince' / 'our guy' / 'our boy'. Every option is a noun phrase, so
-    the grammatical-safety property of the original single-handle design is
-    preserved. vary=False restores the legacy always-*handle* behaviour.
+    of 'the prince' / 'the protagonist' / 'our MC'. Every option is a noun
+    phrase, so the grammatical-safety property of the original single-handle
+    design is preserved. vary=False restores the legacy always-*handle* behaviour.
 
     Returns the number of references rewritten."""
     members = cast.get("cast") if isinstance(cast, dict) else cast

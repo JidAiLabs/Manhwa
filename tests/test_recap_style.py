@@ -885,7 +885,7 @@ def _lines(B):
 def test_handle_pool_derives_a_title_epithet():
     import tools.recap_style as rs
     assert rs._protagonist_handles("the prince")[0] == "the prince"
-    assert rs._protagonist_handles("") == ["our guy", "our boy"]
+    assert rs._protagonist_handles("") == ["the protagonist", "our MC"]
 
 
 def test_title_epithet_only_when_unambiguous():
