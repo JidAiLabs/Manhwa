@@ -18,6 +18,7 @@ INTRO_OUTRO_SEC = 26.0   # measured intro 7s+pad + outro 12s+pad
 def create_bundle(con: sqlite3.Connection, series_id: int, kind: str, *,
                   season_no: Optional[int] = None,
                   chapter_range: Optional[Tuple[float, float]] = None,
+                  chapter_ids: Optional[List[int]] = None,
                   title: str = "") -> int:
     if kind == "season":
         rows = con.execute(
@@ -28,10 +29,20 @@ def create_bundle(con: sqlite3.Connection, series_id: int, kind: str, *,
             "SELECT id FROM chapter WHERE series_id=? ORDER BY number",
             (series_id,)).fetchall()
     elif kind == "manual":
-        lo, hi = chapter_range or (0, 0)
-        rows = con.execute(
-            "SELECT id FROM chapter WHERE series_id=? AND number BETWEEN ? "
-            "AND ? ORDER BY number", (series_id, lo, hi)).fetchall()
+        if chapter_ids is not None:
+            # an EXPLICIT set — used by the debut-bundle auto-proposer, whose
+            # "first N prepared" chapters are not guaranteed to be a gapless
+            # number range (a failed chapter mid-run leaves a hole, and a
+            # BETWEEN range would then silently pull the unprepared chapter in).
+            qs = ",".join("?" for _ in chapter_ids)
+            rows = con.execute(
+                f"SELECT id FROM chapter WHERE series_id=? AND id IN ({qs}) "
+                "ORDER BY number", (series_id, *chapter_ids)).fetchall()
+        else:
+            lo, hi = chapter_range or (0, 0)
+            rows = con.execute(
+                "SELECT id FROM chapter WHERE series_id=? AND number BETWEEN ? "
+                "AND ? ORDER BY number", (series_id, lo, hi)).fetchall()
     else:
         raise ValueError(f"bundle kind {kind!r}")
     cur = con.execute(
@@ -43,6 +54,48 @@ def create_bundle(con: sqlite3.Connection, series_id: int, kind: str, *,
                     "position) VALUES (?,?,?)", (bid, cid, pos))
     con.commit()
     return bid
+
+
+def create_debut_bundle_once(con: sqlite3.Connection, series_id: int,
+                             chapter_ids: List[int], *,
+                             title: str = "") -> Optional[int]:
+    """Atomically create a 'manual' debut bundle of *chapter_ids* IFF *series_id*
+    has NO bundle yet. Returns the new bundle id, or None if one already existed.
+
+    The auto-proposer runs from _h_prepare, which the worker executes on TWO gpu
+    lane threads concurrently (STUDIO_GPU_WIDTH=2), each with its own connection.
+    A plain 'SELECT COUNT(*) FROM bundle' then 'INSERT' is a check-and-create
+    race: under WAL both threads read 0 before either commits, and both insert —
+    two debut bundles, two teaser proposals. This serializes the check and the
+    insert under one BEGIN IMMEDIATE write lock (the same idiom jobs.enqueue
+    uses), so the loser observes the winner's committed row and does nothing.
+    """
+    if not chapter_ids:
+        return None
+    if con.in_transaction:
+        con.commit()
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        if con.execute("SELECT COUNT(*) FROM bundle WHERE series_id=?",
+                       (series_id,)).fetchone()[0]:
+            con.commit()
+            return None                       # someone already owns the layout
+        qs = ",".join("?" for _ in chapter_ids)
+        rows = con.execute(
+            f"SELECT id FROM chapter WHERE series_id=? AND id IN ({qs}) "
+            "ORDER BY number", (series_id, *chapter_ids)).fetchall()
+        cur = con.execute(
+            "INSERT INTO bundle (series_id, title, kind, season_no) "
+            "VALUES (?,?,'manual',NULL)", (series_id, title))
+        bid = int(cur.lastrowid)
+        for pos, (cid,) in enumerate(rows):
+            con.execute("INSERT INTO bundle_chapter (bundle_id, chapter_id, "
+                        "position) VALUES (?,?,?)", (bid, cid, pos))
+        con.commit()
+        return bid
+    except BaseException:
+        con.rollback()
+        raise
 
 
 def bundle_chapters(con: sqlite3.Connection, bundle_id: int) -> List[int]:

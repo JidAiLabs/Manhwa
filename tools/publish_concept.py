@@ -176,9 +176,16 @@ def bundle_digest(beats_objs: List[Dict[str, Any]], *,
 
 
 def select_bundle_climax(beats_objs: List[Dict[str, Any]]):
-    """Pick the single most thumbnail-worthy moment across the bundle: the
-    highest-intensity kept beat. Returns (chapter_index, scene_files) so the
-    thumbnail art comes from the ARC's climax — usually NOT chapter 1."""
+    """Pick the most thumbnail-worthy moment across the bundle from BEATS: the
+    highest-intensity kept beat. Returns (chapter_index, scene_files).
+
+    This is the FALLBACK path — a plain argmax over a 4-value intensity enum,
+    so on a long arc many beats tie at 'explosive' and the strict '>' keeps the
+    FIRST one, i.e. the earliest, not the best. When the understood-panel
+    manifests are available (the normal case) build_bundle_concept prefers
+    select_bundle_climax_scored, which ranks by the same weighted signal model
+    the teaser uses so the two agree on the arc's peak.
+    """
     best = (-1, 0, [])  # (intensity, chapter_index, scene_files)
     for ci, b in enumerate(beats_objs):
         for bt in b.get("beats") or []:
@@ -191,6 +198,42 @@ def select_bundle_climax(beats_objs: List[Dict[str, Any]]):
                          if s.get("role", "keep") != "redundant" and s.get("scene_file")]
                 best = (inten, ci, files[:3])
     return best[1], best[2]
+
+
+def select_bundle_climax_scored(ep_dirs: List[str]):
+    """Pick the arc's peak from the UNDERSTOOD PANELS, scored by the same
+    weighted signal model the teaser uses (teaser_planner.score_panel), so the
+    thumbnail and the cold open agree on what the climax is.
+
+    Returns (ep_index, [ref_basename]) matching select_bundle_climax's shape,
+    or None when no understood manifests exist (caller falls back to beats
+    intensity). ref is a bare basename resolved against that chapter's scenes/.
+    """
+    try:
+        import teaser_planner as _tp
+    except Exception:
+        return None
+    panels: List[Dict[str, Any]] = []
+    for i, d in enumerate(ep_dirs or []):
+        man = os.path.join(d, "manifest.panels.understood.json")
+        if not os.path.exists(man):
+            continue
+        try:
+            data = json.load(open(man))
+        except Exception:
+            continue
+        for p in data.get("panels") or []:
+            q = dict(p)
+            q["_ep_index"] = i        # rides back on the returned climax panel
+            q["scene_file"] = os.path.basename(str(p.get("scene_file") or ""))
+            panels.append(q)
+    if not panels:
+        return None
+    climax = _tp.select_climax_panel(panels)
+    if not climax:
+        return None
+    sf = climax.get("scene_file")
+    return climax["_ep_index"], ([sf] if sf else [])
 
 
 def _kept_panels(beats_obj: Dict[str, Any]):
@@ -277,8 +320,11 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
     """Concept for a VIDEO (bundle of N chapters): arc title/synopsis from the
     aggregated chapters, style+refs from the bundle's CLIMAX chapter, and the
     Parts (YouTube-chapter) timestamps appended to the description."""
-    climax_ci, refs = select_bundle_climax(beats_list)
-    style_beats = beats_list[climax_ci] if beats_list else {}
+    # prefer the weighted understood-panel scorer (agrees with the teaser);
+    # fall back to beats intensity when understood manifests aren't present
+    scored = select_bundle_climax_scored(ep_dirs or [])
+    climax_ci, refs = scored if scored else select_bundle_climax(beats_list)
+    style_beats = beats_list[climax_ci] if 0 <= climax_ci < len(beats_list) else {}
     c = assemble_concept(style_beats, llm, series_title=series_title,
                          genre=genre, official_link=official_link)
     c["parts"] = parts_timestamps(durations, labels)
@@ -336,8 +382,12 @@ def main() -> int:
         beats_list = [json.load(open(os.path.join(e, "manifest.beats.json"))) for e in eps]
         durations = [_plan_duration(e) for e in eps]
         # the climax scan is exhaustive (cheap, pure Python over every
-        # chapter); only the LLM DIGEST is bounded — see bundle_digest
-        climax_ci = select_bundle_climax(beats_list)[0] if beats_list else 0
+        # chapter); only the LLM DIGEST is bounded — see bundle_digest. Same
+        # scorer build_bundle_concept uses, so style/digest/refs all agree on
+        # which chapter is the peak.
+        _sc = select_bundle_climax_scored(eps)
+        climax_ci = (_sc[0] if _sc
+                     else (select_bundle_climax(beats_list)[0] if beats_list else 0))
         style = select_style(beats_list[climax_ci] if beats_list else {},
                              genre=args.genre)
         digest = bundle_digest(beats_list, max_chapters=args.digest_chapters,

@@ -220,3 +220,64 @@ def test_hook_prompt_asks_for_the_shape_each_style_needs():
     assert "punchy" in p_def
     for p in (p_ba, p_stat, p_def):
         assert "Banned" in p          # ban list survives in every variant
+
+
+# --- thumbnail + teaser agree on the arc peak -----------------------------
+
+def test_scored_climax_prefers_transformation_over_earlier_combat(tmp_path):
+    """The old beats picker was argmax over a 4-value enum: many beats tie at
+    'explosive' and the strict '>' keeps the FIRST. The scored picker ranks by
+    the same weighted model the teaser uses, so a late transformation reveal
+    beats an earlier, more violent combat frame."""
+    import json as _json
+    eps = []
+    for i, panels in enumerate([
+            # chapter 1: violent combat, explosive intensity, NO transform cue
+            [{"scene_file": "c.jpg", "panel_kind": "story", "intensity":
+              "explosive", "description": "he swings his blade with brutal force",
+              "action": "a savage strike"}],
+            # chapter 2: the genre-defining transformation reveal
+            [{"scene_file": "reveal.jpg", "panel_kind": "story", "intensity":
+              "intense", "description": "the nano core activates and his power "
+              "awakens", "action": "system window: awakening unlocked"}]]):
+        d = tmp_path / f"ch{i}"
+        d.mkdir()
+        (d / "manifest.panels.understood.json").write_text(
+            _json.dumps({"panels": panels}))
+        eps.append(str(d))
+    ci, refs = pc.select_bundle_climax_scored(eps)
+    assert ci == 1                                   # the transformation chapter
+    assert refs == ["reveal.jpg"]
+
+
+def test_scored_climax_none_without_understood_manifests(tmp_path):
+    d = tmp_path / "ch0"
+    d.mkdir()
+    assert pc.select_bundle_climax_scored([str(d)]) is None
+
+
+def test_bundle_concept_uses_scored_climax_when_available(tmp_path):
+    """build_bundle_concept must prefer the understood-panel scorer so the
+    thumbnail agrees with the teaser."""
+    import json as _json
+    d0, d1 = tmp_path / "c0", tmp_path / "c1"
+    for d, panels in [
+        (d0, [{"scene_file": "a.jpg", "panel_kind": "story",
+               "intensity": "explosive", "description": "loud fight"}]),
+        (d1, [{"scene_file": "boom.jpg", "panel_kind": "story",
+               "intensity": "intense",
+               "description": "he awakens a hidden power, transformed"}])]:
+        d.mkdir()
+        (d / "manifest.panels.understood.json").write_text(
+            _json.dumps({"panels": panels}))
+    beats = [{"beats": [{"scene_selection": [
+                {"scene_file": "a.jpg", "intensity": "explosive"}]}]},
+             {"beats": [{"scene_selection": [
+                {"scene_file": "boom.jpg", "intensity": "intense"}]}]}]
+    c = pc.build_bundle_concept(
+        beats, {"title": "t", "hooks": ["X"], "synopsis": "s",
+                "hashtags": ["#m"]},
+        durations=[10.0, 10.0], series_title="S", ep_dirs=[str(d0), str(d1)])
+    # scored picker chose the transformation (chapter 2); beats argmax would
+    # have chosen chapter 1 (explosive, first)
+    assert c["climax_chapter_index"] == 1

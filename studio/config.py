@@ -68,6 +68,14 @@ class Config:
                                              # Gemini / ollama Gemma) — NOT an
                                              # OpenAI id; the model call reuses
                                              # _call_model_with_backoff.
+    publish_auto_after_chapters: int = 12   # [publish]: once this many chapters
+                                             # of a series are PREPARED (beats on
+                                             # disk), auto-PROPOSE the channel
+                                             # thumbnail + a debut-arc intro
+                                             # teaser for review. 0 = off (manual
+                                             # buttons only). Both are proposals,
+                                             # not auto-approvals, and neither
+                                             # blocks chapter processing.
     segmentation: str = "adaptive"          # [narration] segmentation: beats
                                              # writer mode. "adaptive" = flow
                                              # segments spanning 1-4 panels,
@@ -169,6 +177,7 @@ def load(path: Path | None = None) -> Config:
     tr = data.get("teaser", {})
     n = data.get("narration", {})
     r = data.get("render", {})
+    pub = data.get("publish", {})
     return Config(
         sites=sites,
         yolo_weights=(lambda _w: _w if _w.is_absolute()
@@ -213,4 +222,7 @@ def load(path: Path | None = None) -> Config:
         teaser_payoff_tail_frac=float(tr.get("payoff_tail_frac", 0.20)),
         teaser_model=(os.environ.get("STUDIO_TEASER_MODEL")
                       or tr.get("model", "gemini-2.5-flash")),
+        publish_auto_after_chapters=int(
+            os.environ.get("STUDIO_PUBLISH_AUTO_AFTER")
+            or pub.get("auto_after_chapters", 12)),
     )

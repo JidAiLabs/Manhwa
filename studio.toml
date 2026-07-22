@@ -71,3 +71,12 @@ max_hook_scan_chapters = 12   # cost guard only
 max_seconds = 90              # cost guard only
 payoff_tail_frac = 0.20       # spoiler guard: never pull from the last 20%
 model = "gemini-2.5-flash"    # beats backend model (Vertex/ollama), not OpenAI
+
+[publish]
+# Once this many chapters of a series are PREPARED (beats on disk), the worker
+# auto-PROPOSES the channel thumbnail + a debut-arc intro teaser for review in
+# the dashboard. Both are proposals (you still approve them), and NEITHER
+# blocks chapter processing — thumbnail runs on the api lane, the teaser on the
+# cpu lane, while chapters keep preparing on the gpu lane. 0 = off (manual
+# "generate thumbnail" / "Plan teaser" buttons only).
+auto_after_chapters = 12

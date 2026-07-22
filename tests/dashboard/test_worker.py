@@ -1978,3 +1978,215 @@ def test_retry_does_not_dedupe_onto_a_stale_attempt_counter(tmp_path):
     import json as _json
     assert _json.loads(con.execute("SELECT payload_json FROM job WHERE id=?",
                                    (rid,)).fetchone()[0])["_attempt"] == 2
+
+
+# --- auto-propose publish assets after N chapters -----------------------------
+
+def _cfg_pub(**kw):
+    base = dict(publish_auto_after_chapters=3, teaser_enabled=True)
+    base.update(kw)
+    return _fake_cfg(**base)
+
+
+def _series_with_prepared(con, tmp_path, n, *, sid=1):
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (?,'asura','u','s','S','t')", (sid,))
+    for i in range(1, n + 1):
+        ep = tmp_path / f"ch{i}"
+        ep.mkdir()
+        (ep / "manifest.beats.json").write_text('{"beats": []}')
+        con.execute("INSERT INTO chapter (series_id, number, label, url, "
+                    "status, ep_dir, updated_at) VALUES (?,?,?,'u','beated',"
+                    "?,'t')", (sid, i, f"Chapter {i}", str(ep)))
+    con.commit()
+
+
+def test_autopropose_thumbnail_once_threshold_reached(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    _series_with_prepared(con, tmp_path, 3)
+    import io
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail' "
+                       "AND series_id=1").fetchone()[0] == 1
+
+
+def test_autopropose_does_nothing_below_threshold(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    _series_with_prepared(con, tmp_path, 2)          # threshold is 3
+    import io
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    assert con.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 0
+
+
+def test_autopropose_is_idempotent(tmp_path, monkeypatch):
+    """Firing on every prepare must not pile up duplicate jobs or bundles."""
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    _series_with_prepared(con, tmp_path, 3)
+    import io
+    for _ in range(4):
+        worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail'"
+                       ).fetchone()[0] == 1
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
+                       ).fetchone()[0] == 1
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 1
+
+
+def test_autopropose_creates_a_debut_bundle_of_exactly_n_chapters(tmp_path,
+                                                                  monkeypatch):
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    _series_with_prepared(con, tmp_path, 5)          # threshold 3 -> first 3
+    import io
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    bid = con.execute("SELECT id FROM bundle WHERE series_id=1").fetchone()[0]
+    from studio.dashboard import bundles
+    assert len(bundles.bundle_chapters(con, bid)) == 3
+
+
+def test_autopropose_teaser_is_a_proposal_not_auto_intro(tmp_path, monkeypatch):
+    """The teaser must land as a REVIEW proposal (teaser_state -> planned via
+    the handler), never auto-approved behind the operator's back."""
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    _series_with_prepared(con, tmp_path, 3)
+    import io, json as _json
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    payload = con.execute("SELECT payload_json FROM job WHERE "
+                          "type='plan_teaser'").fetchone()[0]
+    assert "auto_intro" not in _json.loads(payload)
+
+
+def test_autopropose_respects_an_existing_bundle_layout(tmp_path, monkeypatch):
+    """If the operator already made bundles, don't auto-create a debut one."""
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    _series_with_prepared(con, tmp_path, 3)
+    from studio.dashboard import bundles
+    bundles.create_bundle(con, 1, "full", title="mine")
+    import io
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    # thumbnail still proposed, but NO new bundle and NO teaser job
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 1
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
+                       ).fetchone()[0] == 0
+
+
+def test_autopropose_skips_thumbnail_that_already_exists(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    _series_with_prepared(con, tmp_path, 3)
+    thumb = worker.REPO / "dist" / "series_1" / "thumbnail_yt.jpg"
+    thumb.parent.mkdir(parents=True, exist_ok=True)
+    thumb.write_bytes(b"x")
+    try:
+        import io
+        worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+        assert con.execute("SELECT COUNT(*) FROM job WHERE "
+                           "type='series_thumbnail'").fetchone()[0] == 0
+    finally:
+        thumb.unlink()
+        try:
+            thumb.parent.rmdir()
+        except OSError:
+            pass
+
+
+def test_autopropose_off_when_threshold_zero(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg",
+                        lambda: (_cfg_pub(publish_auto_after_chapters=0), "p", "l"))
+    _series_with_prepared(con, tmp_path, 5)
+    import io
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    assert con.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 0
+
+
+def test_debut_bundle_creation_survives_concurrent_prepares(tmp_path,
+                                                            monkeypatch):
+    """THE race the review caught: gpu width is 2 and the chapter lease is
+    per-chapter, so two different chapters of one series prepare concurrently
+    on two connections. A plain check-then-create would make TWO debut bundles
+    and TWO teaser proposals. create_debut_bundle_once serializes on
+    BEGIN IMMEDIATE, so exactly one bundle + one teaser survive."""
+    import threading
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 3)
+    db = str(tmp_path / "s.db")
+
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def fire():
+        import io
+        c = connect(db)                      # its OWN connection, like a lane
+        try:
+            barrier.wait(timeout=5)
+            worker._autopropose_publish_if_ready(c, 1, io.StringIO())
+        except Exception as e:               # noqa: BLE001
+            errors.append(e)
+
+    ts = [threading.Thread(target=fire) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout=20)
+
+    assert not errors, errors
+    assert con.execute("SELECT COUNT(*) FROM bundle WHERE series_id=1"
+                       ).fetchone()[0] == 1, "debut bundle double-created"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
+                       ).fetchone()[0] == 1, "teaser double-proposed"
+
+
+def test_failed_thumbnail_proposal_is_not_re_fired_every_prepare(tmp_path,
+                                                                 monkeypatch):
+    """A permanently-failing thumbnail (e.g. no API key) must not re-enqueue on
+    every subsequent chapter prepare — propose ONCE, ever."""
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 3)
+    import io
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    # the proposed thumbnail job fails
+    con.execute("UPDATE job SET state='failed' WHERE type='series_thumbnail'")
+    con.commit()
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())  # next prepare
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail'"
+                       ).fetchone()[0] == 1
+
+
+def test_autostart_intro_leaves_a_failed_proposed_teaser_alone(tmp_path,
+                                                               monkeypatch):
+    """A proposed teaser that FAILED leaves teaser_state='none'. The autopilot
+    auto-intro path must NOT then re-plan it as an auto_intro (which would
+    auto-approve a teaser the operator never reviewed)."""
+    monkeypatch.setattr(worker, "_beats_cfg",
+                        lambda: (_cfg_pub(teaser_enabled=True), "p", "l"))
+    con = _con(tmp_path)
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at, autopilot) VALUES (1,'a','u','s','S','t',1)")
+    ep = tmp_path / "ch1"
+    ep.mkdir()
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at) VALUES (1,1,1,'C1','u','rendered',"
+                "?,'t')", (str(ep),))
+    bid = con.execute("INSERT INTO bundle (series_id, kind, teaser_state) "
+                      "VALUES (1,'manual','none')").lastrowid
+    con.execute("INSERT INTO bundle_chapter (bundle_id, chapter_id, position) "
+                "VALUES (?,1,0)", (bid,))
+    # a prior PROPOSED teaser that failed
+    con.execute("INSERT INTO job (type, bundle_id, state) VALUES "
+                "('plan_teaser', ?, 'failed')", (bid,))
+    con.commit()
+    import io
+    worker._autostart_intro_if_ready(con, 1, io.StringIO())
+    autos = con.execute(
+        "SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND bundle_id=? "
+        "AND state='queued'", (bid,)).fetchone()[0]
+    assert autos == 0, "autopilot re-planned a failed proposal as auto_intro"

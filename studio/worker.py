@@ -1073,6 +1073,87 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
                               ep_dir=ch["ep_dir"], note="autopilot")
         jobs.enqueue(con, "voiceover", chapter_id=ch["id"])
 
+    # once enough chapters are prepared, PROPOSE the channel thumbnail + a
+    # debut-arc intro teaser for review (never auto-approved, never blocking)
+    _autopropose_publish_if_ready(con, ch["series_id"], log)
+
+
+def _chapters_with_beats(con: sqlite3.Connection, series_id: int) -> List[int]:
+    """Chapter ids of a series that are actually PREPARED — beats on disk, in
+    reading order. This is the honest 'ready' count: chapter.status can lag or
+    lead the files, but the thumbnail and teaser both read manifest.beats.json,
+    so that file's existence is exactly the precondition that matters."""
+    out: List[int] = []
+    for cid, ep in con.execute(
+            "SELECT id, ep_dir FROM chapter WHERE series_id=? AND ep_dir IS "
+            "NOT NULL ORDER BY number", (series_id,)):
+        if ep and (Path(ep) / "manifest.beats.json").exists():
+            out.append(cid)
+    return out
+
+
+def _autopropose_publish_if_ready(con: sqlite3.Connection, series_id: int,
+                                  log: TextIO) -> None:
+    """After a chapter is prepared: once a series has >= N prepared chapters
+    ([publish].auto_after_chapters), PROPOSE its two publish assets for review.
+    Both are proposals a human still approves in the dashboard, and NEITHER
+    blocks chapter processing — the thumbnail runs on the api lane and the
+    teaser on the cpu lane while chapters keep preparing on the gpu lane.
+
+      * THUMBNAIL — enqueue series_thumbnail once. Idempotent: skipped if a
+        thumbnail already exists on disk, is approved, or a thumbnail job is
+        already pending/done. Building it clears any approval, so it always
+        lands as 'needs review'.
+      * TEASER — the cold open is bundle-scoped, so if the series has NO bundle
+        yet, auto-create a 'debut' bundle of exactly those first N chapters,
+        then enqueue plan_teaser as a PROPOSAL (no auto_intro -> teaser_state
+        becomes 'planned' -> shows a review card, and blocks only THAT bundle's
+        concat, never chapter work). If the operator already made bundles, we
+        respect their layout and do nothing.
+
+    A no-op when auto_after_chapters == 0.
+    """
+    cfg, _, _ = _beats_cfg()
+    threshold = int(getattr(cfg, "publish_auto_after_chapters", 0) or 0)
+    if threshold <= 0:
+        return
+    ready = _chapters_with_beats(con, series_id)
+    if len(ready) < threshold:
+        return
+
+    # --- thumbnail (series-level) --- propose exactly ONCE, ever. The guard
+    # counts a series_thumbnail job in ANY state (incl. 'failed'/'cancelled'):
+    # a failed or cancelled auto-proposal must NOT be re-fired on every
+    # subsequent prepare (e.g. a permanently-missing GEMINI_API_KEY would
+    # otherwise re-enqueue a doomed thumbnail job on each chapter). The
+    # operator retries via the manual 'generate thumbnail' button. The enqueue
+    # itself is race-safe — series-scoped, BEGIN IMMEDIATE + dedupe on
+    # series_id — so two concurrent prepares fold to one row.
+    thumb = REPO / "dist" / f"series_{series_id}" / "thumbnail_yt.jpg"
+    approved = con.execute(
+        "SELECT COUNT(*) FROM approval WHERE gate='thumbnail' AND series_id=?",
+        (series_id,)).fetchone()[0]
+    ever_proposed = con.execute(
+        "SELECT COUNT(*) FROM job WHERE type='series_thumbnail' AND series_id=?",
+        (series_id,)).fetchone()[0]
+    if not thumb.exists() and not approved and not ever_proposed:
+        jobs.enqueue(con, "series_thumbnail", series_id=series_id)
+        log.write(f"[auto-publish] {len(ready)} chapters prepared -> proposing "
+                  "channel thumbnail for review\n")
+
+    # --- teaser (debut bundle) --- atomic get-or-create closes the two-thread
+    # check-and-create race; only the thread that actually creates the bundle
+    # enqueues its (proposal, no auto_intro) teaser.
+    if not cfg.teaser_enabled:
+        return
+    bid = bundles.create_debut_bundle_once(
+        con, series_id, ready[:threshold], title=f"Debut — first {threshold}")
+    if bid is not None:
+        jobs.enqueue(con, "plan_teaser", bundle_id=bid)
+        log.write(f"[auto-publish] created debut bundle {bid} "
+                  f"({len(ready[:threshold])} chapters) -> proposing arc teaser "
+                  "for review\n")
+
 
 def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
                  log: TextIO) -> None:
@@ -1396,10 +1477,15 @@ def _autostart_intro_if_ready(con: sqlite3.Connection, chapter_id: int,
             "status='rendered'", cids).fetchone()[0]
         if n_rendered != len(cids):
             continue                          # bundle not finished yet
-        # dedupe: never enqueue a second plan_teaser for the same bundle
+        # dedupe: never enqueue a second plan_teaser for the same bundle.
+        # 'failed' is included: an auto-PROPOSED teaser (from the publish
+        # auto-proposer) that failed leaves teaser_state='none', so without
+        # counting 'failed' here this autopilot path would re-plan it as an
+        # auto_intro — silently AUTO-APPROVING a teaser the operator never
+        # reviewed. A bundle with ANY prior teaser attempt is left alone.
         if con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                       "bundle_id=? AND state IN ('queued','running','done')",
-                       (bid,)).fetchone()[0]:
+                       "bundle_id=? AND state IN ('queued','running','done',"
+                       "'failed')", (bid,)).fetchone()[0]:
             continue
         jobs.enqueue(con, "plan_teaser", bundle_id=bid,
                      payload={"auto_intro": True})

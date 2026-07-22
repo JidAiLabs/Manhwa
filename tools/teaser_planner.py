@@ -262,6 +262,47 @@ def _scene_base(panel: Dict[str, Any]) -> str:
     return os.path.basename(str(panel.get("scene_file") or ""))
 
 
+def _pick_climax(scored: List[tuple]) -> tuple:
+    """(index, panel) of the arc CLIMAX among pre-scored (i, panel, score)
+    tuples.
+
+    CLIMAX = the LATEST STRONG TRANSFORMATION beat. A teased arc builds TO the
+    genre-defining reveal, so among the panels that actually carry the reveal
+    we bias to the late-arc one rather than the global power argmax (which
+    would wrongly grab an earlier, more violent combat frame). With NO
+    transformation cue anywhere, fall back to the single highest
+    (power_reveal, intensity, score) so calm/non-power bundles still work.
+    """
+    if any(t[2]["transform_hits"] > 0 for t in scored):
+        max_tp = max(t[2]["power_reveal"] for t in scored)
+        band = [t for t in scored
+                if t[2]["transform_hits"] > 0 and t[2]["power_reveal"] >= 0.8 * max_tp]
+        i, p, _ = max(band, key=lambda t: (_chapter_key(t[1]), t[0]))
+        return i, p
+    i, p, _ = max(scored, key=lambda t: (t[2]["power_reveal"],
+                                         t[2]["intensity_rank"],
+                                         t[2]["score"], t[0]))
+    return i, p
+
+
+def select_climax_panel(
+        panels: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The single most thumbnail/teaser-worthy panel across the pool.
+
+    The SHARED climax picker: the series thumbnail and the arc teaser both call
+    this, so they agree on where the arc peaks instead of each guessing. It
+    replaces the thumbnail's old argmax-over-a-4-value-enum, whose strict '>'
+    tie broke toward whichever explosive beat came FIRST — the earliest, not
+    the best. Returns the panel dict unchanged (any caller-set keys, e.g. an
+    ep-dir index, ride back on it), or None for an empty/ineligible pool.
+    """
+    pool = eligible_panels(panels)
+    if not pool:
+        return None
+    scored = [(i, p, score_panel(p)) for i, p in enumerate(pool)]
+    return _pick_climax(scored)[1]
+
+
 def select_montage(
     panels: List[Dict[str, Any]],
     *,
@@ -311,25 +352,7 @@ def select_montage(
 
     # score every panel once, carrying its reading-order index
     scored = [(i, p, score_panel(p)) for i, p in enumerate(pool)]
-
-    # CLIMAX = the LATEST STRONG TRANSFORMATION beat. A teased arc builds TO the
-    # genre-defining reveal, so among the panels that actually carry the reveal we
-    # bias to the late-arc one rather than the global power argmax (which would
-    # wrongly grab an earlier, more violent combat frame).
-    if any(t[2]["transform_hits"] > 0 for t in scored):
-        max_tp = max(t[2]["power_reveal"] for t in scored)
-        band = [t for t in scored
-                if t[2]["transform_hits"] > 0 and t[2]["power_reveal"] >= 0.8 * max_tp]
-        # latest in reading order: max (chapter_number, index)
-        climax_i, climax_p, _csc = max(band, key=lambda t: (_chapter_key(t[1]), t[0]))
-    else:
-        # no transformation cue anywhere — fall back to the single highest
-        # (power_reveal, intensity, score) so calm/non-power bundles still work.
-        climax_i, climax_p, _csc = max(
-            scored,
-            key=lambda t: (t[2]["power_reveal"], t[2]["intensity_rank"],
-                           t[2]["score"], t[0]),
-        )
+    climax_i, climax_p = _pick_climax(scored)
 
     n_chapters = len({_chapter_key(p) for _, p, _ in scored})
     per_cap = math.ceil(max_panels / max(1, n_chapters)) + 1

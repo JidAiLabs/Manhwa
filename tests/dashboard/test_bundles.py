@@ -82,3 +82,33 @@ def test_branding_intro_plan_shape():
     assert item["cuts"][0]["file"] == "thumb.jpg"
     assert plan["scene_dims"]["thumb.jpg"]["w"] == 800
     assert plan["total_duration_sec"] == item["duration_sec"] > 7.0
+
+
+def test_create_debut_bundle_once_is_get_or_create(tmp_path):
+    from studio.catalog.db import connect
+    from studio.dashboard import bundles
+    con = connect(tmp_path / "s.db")
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (1,'a','u','s','S','t')")
+    for i in (1, 2, 3):
+        con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                    "status, updated_at) VALUES (?,1,?,'C','u','beated','t')",
+                    (i, i))
+    con.commit()
+    bid = bundles.create_debut_bundle_once(con, 1, [1, 2, 3], title="Debut")
+    assert bid is not None
+    assert bundles.bundle_chapters(con, bid) == [1, 2, 3]
+    # second call: a bundle already exists -> None, no new bundle
+    assert bundles.create_debut_bundle_once(con, 1, [1, 2, 3]) is None
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 1
+
+
+def test_create_debut_bundle_once_empty_ids_is_noop(tmp_path):
+    from studio.catalog.db import connect
+    from studio.dashboard import bundles
+    con = connect(tmp_path / "s.db")
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (1,'a','u','s','S','t')")
+    con.commit()
+    assert bundles.create_debut_bundle_once(con, 1, []) is None
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 0
