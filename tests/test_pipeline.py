@@ -861,3 +861,26 @@ class TestVoicedSanitizeFreshness:
             pipeline_mod._stage_voiced(ep, self._cfg(tmp_path))
 
 
+
+
+def test_understand_concurrency_throttles_tall_chapters():
+    """Tall multimodal panels OOM Metal at high concurrency — step down for them,
+    keep full speed for short chapters (nano fits at 4, ORV OOM'd)."""
+    from studio.pipeline import _understand_concurrency
+    assert _understand_concurrency(4, 2411) == 4      # nano-height: full speed
+    assert _understand_concurrency(4, 3500) == 2      # mid-tall: step to 2
+    assert _understand_concurrency(4, 4623) == 1      # ORV OOM range: sequential
+    assert _understand_concurrency(1, 9999) == 1      # already sequential: no-op
+    assert _understand_concurrency(4, 0) == 4         # unknown height: keep base
+
+
+def test_max_scene_height_reads_tallest(tmp_path):
+    from studio.pipeline import _max_scene_height
+    from PIL import Image
+    d = tmp_path / "scenes"
+    d.mkdir()
+    Image.new("RGB", (800, 1200)).save(d / "p1.jpg")
+    Image.new("RGB", (800, 4600)).save(d / "p2.jpg")
+    Image.new("RGB", (789, 900)).save(d / "p3.jpg")
+    assert _max_scene_height(d) == 4600
+    assert _max_scene_height(tmp_path / "nope") == 0   # missing dir -> 0

@@ -201,6 +201,40 @@ def _stage_visioned(ep_dir: Path, cfg: Config) -> None:
                "--ocr-backend", cfg.vision_backend])
 
 
+def _max_scene_height(scenes_dir: Path) -> int:
+    """Tallest scene image in px (header read only, no pixel load). 0 when the
+    dir is empty/unreadable — callers then keep full concurrency (status quo)."""
+    try:
+        from PIL import Image, ImageFile
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+    except Exception:
+        return 0
+    mx = 0
+    for f in sorted(Path(scenes_dir).glob("*.jpg")):
+        try:
+            with Image.open(f) as im:
+                mx = max(mx, int(im.size[1]))
+        except Exception:
+            continue
+    return mx
+
+
+def _understand_concurrency(base_conc: int, max_scene_h: int) -> int:
+    """Throttle per-panel understanding concurrency for TALL chapters. A tall
+    multimodal panel costs far more GPU memory, so running several at once OOMs
+    Metal (measured: nano ~2400px fits at conc=4; ORV ~4600px OOM'd hard). Short
+    chapters keep full speed; tall ones step down. ponytail: thresholds sit on
+    the nano-fits / ORV-OOMs boundary — widen the step-down if a taller chapter
+    still OOMs (or make it a fraction of measured VRAM if this recurs)."""
+    if base_conc <= 1:
+        return base_conc
+    if max_scene_h > 4000:
+        return 1
+    if max_scene_h > 3000:
+        return min(base_conc, 2)
+    return base_conc
+
+
 def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
     """Understanding-first grouping (replaces the old position/gutter merge):
       Pass 1 panel_understand — describe EVERY panel multimodally (full coverage
@@ -240,6 +274,9 @@ def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
             conc = max(1, min(int(os.environ.get("OLLAMA_NUM_PARALLEL", "1") or "1"), 6))
         except ValueError:
             conc = 1
+        if conc > 1:
+            # Tall panels OOM Metal at high concurrency — step down for them.
+            conc = _understand_concurrency(conc, _max_scene_height(p["scenes"]))
         if conc > 1:
             understand_args += ["--concurrency", str(conc)]
     _run_tool("panel_understand.py", understand_args)
