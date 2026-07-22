@@ -57,7 +57,7 @@ def test_videos_page_renders_plan_teaser_button(client):
     c, _, bid = client
     r = c.get("/videos")
     assert r.status_code == 200
-    assert "Plan teaser" in r.text
+    assert "plan teaser" in r.text.lower()
     assert f"/bundles/{bid}/teaser/plan" in r.text
 
 

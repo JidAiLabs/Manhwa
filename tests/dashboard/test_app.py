@@ -219,14 +219,41 @@ def test_series_thumbnail_served_and_shown_when_present(client, tmp_path, monkey
     assert 'src="/thumb/series/1?v=' in c.get("/series/1").text
 
 
-def test_bundle_create_and_videos_page(client):
+def test_bundle_create_from_a_range(client):
+    """The new-video form is range-based (from/to episode), not kind+title.
+    Creating a video bundles the unbundled chapters in the range, auto-enqueues
+    the title/description job, and — as the FIRST video for the series — the
+    intro teaser."""
     c, con = client
-    r = c.post("/bundles", data={"series_id": 1, "kind": "full",
-                                 "title": "Nano — Full"},
+    con.execute("UPDATE chapter SET ep_dir='/tmp/ep1' WHERE id=1")  # a candidate
+    con.commit()
+    r = c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
+               follow_redirects=False)
+    assert r.status_code == 303
+    from studio.dashboard import bundles
+    bid = con.execute("SELECT id FROM bundle").fetchone()[0]
+    assert bundles.bundle_chapters(con, bid) == [1]
+    types = {row[0] for row in con.execute("SELECT type FROM job")}
+    assert "publish_meta" in types            # auto title/description
+    assert "plan_teaser" in types             # debut video -> intro teaser
+    # the provisional "Episodes …" title shows until publish_meta runs
+    assert "Episodes" in c.get("/videos").text
+
+
+def test_bundle_create_excludes_already_bundled_chapters(client):
+    """A continuation batch must not re-offer produced chapters."""
+    c, con = client
+    con.execute("UPDATE chapter SET ep_dir='/tmp/ep1' WHERE id=1")
+    con.commit()
+    c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
+           follow_redirects=False)
+    from studio.dashboard import bundles
+    assert bundles.unbundled_chapters(con, 1) == []      # ch1 now produced
+    # a second create over the same range finds nothing and makes no bundle
+    r = c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
                follow_redirects=False)
     assert r.status_code == 303
     assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 1
-    assert "Nano — Full" in c.get("/videos").text
 
 
 def test_cancel_route(client):
@@ -933,3 +960,77 @@ def test_log_pane_follows_the_running_job(client, tmp_path):
 def test_log_active_is_calm_when_nothing_runs(client):
     c, _ = client
     assert "nothing running" in c.get("/partials/log/active").text
+
+
+def test_bundle_duration_partial_and_zero_based_range(client, tmp_path):
+    """The new-video duration estimate honours chapter 0 (a 0-based series must
+    be able to select episode 0) and reports the projected final runtime."""
+    c, con = client
+    ep0, ep1 = tmp_path / "e0", tmp_path / "e1"
+    for d, dur in ((ep0, 100.0), (ep1, 200.0)):
+        d.mkdir()
+        (d / "render.plan.clean.json").write_text(
+            '{"total_duration_sec": %f}' % dur)
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at) VALUES "
+                "(50,1,0,'Episode 0','u','rendered',?,'t')", (str(ep0),))
+    con.execute("UPDATE chapter SET status='rendered', ep_dir=? WHERE id=1",
+                (str(ep1),))
+    con.commit()
+    # episode 0 is a real, selectable bound
+    body = c.get("/partials/bundle-form?series_id=1").text
+    assert 'value="0"' in body
+    # from 0 to 1 = both chapters + teaser (first video) + outro
+    d = c.get("/partials/bundle-duration?series_id=1&num_from=0&num_to=1").text
+    assert ">2</b> chapters" in d and "intro teaser" in d
+    # from 1 to 1 = only the later chapter, no episode 0
+    d1 = c.get("/partials/bundle-duration?series_id=1&num_from=1&num_to=1").text
+    assert ">1</b> chapters" in d1
+
+
+def test_continuation_video_has_no_intro_teaser(client, tmp_path):
+    """Only the FIRST video for a series carries the intro teaser."""
+    c, con = client
+    for cid, num, d in ((1, 1, "a"), (60, 2, "b")):
+        ep = tmp_path / d
+        ep.mkdir()
+        con.execute("UPDATE chapter SET ep_dir=? WHERE id=?", (str(ep), cid)) \
+            if cid == 1 else con.execute(
+            "INSERT INTO chapter (id, series_id, number, label, url, status, "
+            "ep_dir, updated_at) VALUES (?,1,?,'C','u','rendered',?,'t')",
+            (cid, num, str(ep)))
+    con.commit()
+    c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
+           follow_redirects=False)                      # debut
+    con.execute("DELETE FROM job")                       # clear debut's jobs
+    con.commit()
+    c.post("/bundles", data={"series_id": 1, "num_from": 2, "num_to": 2},
+           follow_redirects=False)                      # continuation
+    types = {r[0] for r in con.execute("SELECT type FROM job")}
+    assert "publish_meta" in types                       # still auto-titled
+    assert "plan_teaser" not in types                    # but NO second intro
+
+
+def test_delete_bundle_frees_its_chapters_without_touching_them(client, tmp_path):
+    """A stale/mis-ranged video must be deletable — its episodes go back into
+    the pool (so they can be re-bundled), the chapter data is untouched, and
+    the bundle's own dist artifacts are removed. Before this the only delete
+    path was whole-series deletion, so a leftover 'pack' locked its chapters
+    out of the video creator forever."""
+    c, con = client
+    ep = tmp_path / "ch"
+    ep.mkdir()
+    con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
+    con.commit()
+    c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
+           follow_redirects=False)
+    from studio.dashboard import bundles
+    bid = con.execute("SELECT id FROM bundle").fetchone()[0]
+    assert bundles.unbundled_chapters(con, 1) == []       # chapter is locked in
+    c.post(f"/bundles/{bid}/delete", follow_redirects=False)
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM bundle_chapter WHERE bundle_id=?",
+                       (bid,)).fetchone()[0] == 0
+    # the chapter itself is untouched and available again
+    assert con.execute("SELECT id FROM chapter WHERE id=1").fetchone() is not None
+    assert [ch["id"] for ch in bundles.unbundled_chapters(con, 1)] == [1]

@@ -98,6 +98,44 @@ def create_debut_bundle_once(con: sqlite3.Connection, series_id: int,
         raise
 
 
+def unbundled_chapters(con: sqlite3.Connection,
+                       series_id: int) -> List[dict]:
+    """Chapters of *series_id* NOT already in ANY bundle, in reading order —
+    the candidates for a NEW video. Already-produced (bundled) chapters are
+    excluded so a continuation batch can never re-select them. Only chapters
+    with an ep_dir (downloaded) are offered."""
+    rows = con.execute(
+        "SELECT id, number, label, status, ep_dir FROM chapter c "
+        "WHERE series_id=? AND ep_dir IS NOT NULL AND NOT EXISTS "
+        "(SELECT 1 FROM bundle_chapter bc JOIN bundle b ON b.id=bc.bundle_id "
+        " WHERE b.series_id=? AND bc.chapter_id=c.id) "
+        "ORDER BY number", (series_id, series_id)).fetchall()
+    return [dict(zip(("id", "number", "label", "status", "ep_dir"), r))
+            for r in rows]
+
+
+def unbundled_ids_in_range(con: sqlite3.Connection, series_id: int, *,
+                           num_from: Optional[float] = None,
+                           num_to: Optional[float] = None) -> List[int]:
+    """Chapter ids the new-video range would actually bundle: unbundled AND
+    inside [num_from, num_to]. Sentinel-free bounds (None -> the series'
+    min/max) so a 0-based series' chapter 0 is a real, selectable bound."""
+    lo, hi = num_from, num_to
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    out = []
+    for ch in unbundled_chapters(con, series_id):
+        n = ch["number"]
+        if (lo is None or n >= lo) and (hi is None or n <= hi):
+            out.append(ch["id"])
+    return out
+
+
+def series_bundle_count(con: sqlite3.Connection, series_id: int) -> int:
+    return con.execute("SELECT COUNT(*) FROM bundle WHERE series_id=?",
+                       (series_id,)).fetchone()[0]
+
+
 def bundle_chapters(con: sqlite3.Connection, bundle_id: int) -> List[int]:
     return [r[0] for r in con.execute(
         "SELECT chapter_id FROM bundle_chapter WHERE bundle_id=? "

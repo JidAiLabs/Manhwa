@@ -118,6 +118,18 @@ def _status_idx(status: str) -> int:
         return -1
 
 
+def _chapter_plan_dur(ep_dir: Optional[str]) -> Optional[float]:
+    """A prepared chapter's final on-screen duration, from its render plan
+    (seconds), or None if it hasn't been prepared yet."""
+    if not ep_dir:
+        return None
+    p = Path(ep_dir) / "render.plan.clean.json"
+    try:
+        return float(json.loads(p.read_text()).get("total_duration_sec") or 0)
+    except Exception:
+        return None
+
+
 def _chapter_costs(ep_dir: Optional[str]) -> float:
     total = 0.0
     if not ep_dir:
@@ -733,15 +745,36 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                 except Exception:
                     return None
 
+            # prefer the AUTO-generated title (publish_meta) over the
+            # provisional "Episodes X–Y" set at creation
+            auto = ""
+            mp = REPO / "dist" / f"bundle_{b['id']}" / "publish_meta.json"
+            if mp.exists():
+                try:
+                    auto = str(json.loads(mp.read_text()).get("title") or "")
+                except Exception:
+                    auto = ""
+            chs = bundles.bundle_chapters(c, b["id"])
+            span = c.execute(
+                "SELECT MIN(number), MAX(number) FROM chapter WHERE id IN "
+                f"({','.join('?' for _ in chs)})", chs).fetchone() if chs \
+                else (None, None)
             b.update(ready=ready, total=total,
+                     title=auto or b["title"],
+                     span=(f"{span[0]:g}–{span[1]:g}"
+                           if span and span[0] is not None else ""),
                      runtime=eta.fmt_eta(bundles.projected_runtime_sec(
                          c, b["id"], plan_dur)),
                      approved=gates.concat_allowed(c, b["id"])[0],
                      teaser_card=_teaser_card(b["id"]))
             rows.append(b)
-        series = [dict(zip(("id", "title"), r)) for r in
-                  c.execute("SELECT id, title FROM series ORDER BY id")]
-        return page("videos.html", request, bundles=rows, series=series)
+        # first series' form is rendered inline; changing the dropdown swaps it
+        first_sid = c.execute("SELECT id FROM series ORDER BY id "
+                              "LIMIT 1").fetchone()
+        form = _bundle_form_ctx(c, first_sid[0]) if first_sid else {
+            "series_id": None, "options": [], "first": True, "series": []}
+        return page("videos.html", request, bundles=rows, form=form,
+                    error=request.query_params.get("error", ""))
 
     @app.get("/discovery", response_class=HTMLResponse)
     def discovery_page(request: Request, refresh: int = 0):
@@ -966,12 +999,107 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             back = f"/chapter/{chapter_id}" if chapter_id else "/videos"
         return RedirectResponse(back, status_code=303)
 
+    def _bundle_form_ctx(c: sqlite3.Connection, series_id: int) -> Dict[str, Any]:
+        """Options for the new-video form: the series' unbundled chapters (so a
+        continuation can't re-pick a produced one), each as a selectable
+        from/to bound. Chapter 0 is a real option on a 0-based series."""
+        chs = bundles.unbundled_chapters(c, series_id)
+        opts = [{"value": f"{ch['number']:g}",
+                 "text": (f"{ch['number']:g} · {ch['label']}"
+                          if ch["label"] else f"{ch['number']:g}"),
+                 "rendered": ch["status"] == "rendered"}
+                for ch in chs]
+        return {"series_id": series_id, "options": opts,
+                "first": bundles.series_bundle_count(c, series_id) == 0,
+                "series": [dict(zip(("id", "title"), r)) for r in c.execute(
+                    "SELECT id, title FROM series ORDER BY id")]}
+
+    def _range_duration(c: sqlite3.Connection, series_id: int,
+                        num_from: Optional[float], num_to: Optional[float],
+                        first: bool) -> Dict[str, Any]:
+        ids = bundles.unbundled_ids_in_range(c, series_id, num_from=num_from,
+                                             num_to=num_to)
+        total, known = 0.0, 0
+        for cid in ids:
+            r = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
+                          (cid,)).fetchone()
+            d = _chapter_plan_dur(r[0] if r else None)
+            if d:
+                total += d
+                known += 1
+        # nominal cold-open + outro so the number is honest before render
+        teaser = 30.0 if first else 0.0
+        outro = 5.0
+        return {"count": len(ids), "known": known,
+                "seconds": total + (teaser if ids else 0) + (outro if ids else 0),
+                "teaser": bool(first and ids)}
+
+    @app.get("/partials/bundle-form", response_class=HTMLResponse)
+    def bundle_form(request: Request, series_id: int):
+        return page("partials/bundle_form.html", request,
+                    **_bundle_form_ctx(con(), series_id))
+
+    @app.get("/partials/bundle-duration", response_class=HTMLResponse)
+    def bundle_duration(series_id: int, num_from: Optional[float] = None,
+                        num_to: Optional[float] = None):
+        c = con()
+        first = bundles.series_bundle_count(c, series_id) == 0
+        d = _range_duration(c, series_id, num_from, num_to, first)
+        if not d["count"]:
+            return HTMLResponse('<span class="kv">no unbundled chapters in '
+                                'that range</span>')
+        vid = eta.fmt_eta(d["seconds"])
+        pend = (f' · <b>{d["count"] - d["known"]}</b> not rendered yet'
+                if d["known"] < d["count"] else "")
+        teaser = " · includes intro teaser" if d["teaser"] else ""
+        return HTMLResponse(
+            f'<span class="kv"><b>{d["count"]}</b> chapters · '
+            f'~<b>{vid}</b> final video{teaser}{pend}</span>')
+
     @app.post("/bundles")
-    def post_bundle(series_id: int = Form(...), kind: str = Form(...),
-                    season_no: Optional[int] = Form(None),
-                    title: str = Form("")):
-        bundles.create_bundle(con(), series_id, kind, season_no=season_no,
-                              title=title)
+    def post_bundle(series_id: int = Form(...),
+                    num_from: Optional[float] = Form(None),
+                    num_to: Optional[float] = Form(None)):
+        c = con()
+        ids = bundles.unbundled_ids_in_range(c, series_id, num_from=num_from,
+                                             num_to=num_to)
+        if not ids:
+            return RedirectResponse(
+                "/videos?error=" + quote_plus(
+                    "no unbundled chapters in that range"), status_code=303)
+        first = bundles.series_bundle_count(c, series_id) == 0
+        nums = [r[0] for r in c.execute(
+            "SELECT number FROM chapter WHERE id IN "
+            f"({','.join('?' for _ in ids)}) ORDER BY number", ids)]
+        title = (f"Episodes {nums[0]:g}–{nums[-1]:g}" if nums else "Video")
+        bid = bundles.create_bundle(c, series_id, "manual", chapter_ids=ids,
+                                    title=title)
+        # auto title/description from the arc (gemma) — replaces the provisional
+        jobs.enqueue(c, "publish_meta", bundle_id=bid)
+        # the DEBUT video carries the channel's intro teaser (a proposal to
+        # review); continuation videos don't re-intro.
+        if first:
+            jobs.enqueue(c, "plan_teaser", bundle_id=bid)
+        return RedirectResponse("/videos", status_code=303)
+
+    @app.post("/bundles/{bid}/delete")
+    def post_bundle_delete(bid: int):
+        """Delete a video (bundle). Removes ONLY the bundle's own rows and its
+        dist/bundle_<id> artifacts (teaser, publish_meta) — the chapters it
+        referenced are untouched and go back into the pool, so a stale or
+        mis-ranged video can be removed and its episodes re-bundled. Closes the
+        gap where the only way to clear a bundle was to delete the whole series
+        (and a clean-slate reset left stale packs behind, locking their
+        chapters out of the video creator)."""
+        c = con()
+        d = REPO / "dist" / f"bundle_{bid}"
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+        c.execute("DELETE FROM bundle_chapter WHERE bundle_id=?", (bid,))
+        c.execute("DELETE FROM job WHERE bundle_id=?", (bid,))
+        c.execute("DELETE FROM approval WHERE bundle_id=?", (bid,))
+        c.execute("DELETE FROM bundle WHERE id=?", (bid,))
+        c.commit()
         return RedirectResponse("/videos", status_code=303)
 
     @app.post("/bundles/{bid}/teaser/plan")

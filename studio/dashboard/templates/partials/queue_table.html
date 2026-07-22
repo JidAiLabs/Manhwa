@@ -62,8 +62,8 @@
 <tr><td>{{ j.id }}</td><td>{{ j.type }}{% if j.payload.target %} → {{ j.payload.target }}{% endif %}</td>
 <td class="kv">{{ scope(j) }}</td>
 <td class="kv">{% if j.elapsed_sec %}{{ fmt_eta(j.elapsed_sec) }}{% endif %}</td>
-<td><form class="inline" method="post" action="/jobs/{{ j.id }}/up"><button class="ghost">↑</button></form>
-<form class="inline" method="post" action="/jobs/{{ j.id }}/cancel"><button class="red">cancel</button></form></td></tr>
+<td><form class="inline" method="post" action="/jobs/{{ j.id }}/up"><button class="ghost" title="move this job up the queue — run it sooner (raises its priority)">↑ sooner</button></form>
+<form class="inline" method="post" action="/jobs/{{ j.id }}/cancel" title="remove this job from the queue"><button class="red">cancel</button></form></td></tr>
 {% endfor %}
 {% if queued|length > 8 %}<tr><td colspan="5" class="kv">…and {{ queued|length - 8 }} more queued</td></tr>{% endif %}
 </table>
