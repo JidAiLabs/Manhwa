@@ -258,3 +258,30 @@ def test_enqueue_dedupe_adopts_lower_priority(tmp_path):
     assert c == a
     row = con.execute("SELECT priority FROM job WHERE id=?", (a,)).fetchone()
     assert row[0] == 1
+
+
+def test_all_gemma_jobs_share_the_gpu_lane(tmp_path):
+    """Every job that makes a local gemma call must be on the gpu lane, or two
+    gemma contexts collide on one GPU and Metal OOMs (the width-2 prepare
+    failure). Teaser + thumbnail + metadata all call gemma, so they belong
+    here — NOT on a separate lane that runs them concurrently with a prepare."""
+    for t in ("prepare", "qa_scan", "chain",
+              "plan_teaser", "series_thumbnail", "publish_meta"):
+        assert jobs.LANES[t] == "gpu", f"{t} must be on the gpu lane"
+    # qwen TTS stays on its OWN lane so a voiceover still overlaps a prepare
+    assert jobs.LANES["voiceover"] == "tts"
+    # ffmpeg/remotion + network jobs use no local model
+    assert jobs.LANES["render_segment"] == "cpu"
+    assert jobs.LANES["refresh"] == "api"
+
+
+def test_teaser_and_prepare_do_not_run_concurrently(tmp_path, monkeypatch):
+    """With the gpu lane at width 1 (the Mini), a prepare and a teaser can
+    never both hold a gemma slot at once — they queue, they don't collide."""
+    monkeypatch.setitem(jobs.LANE_WIDTH, "gpu", 1)   # the Mini's setting
+    con = _con(tmp_path)
+    p = jobs.enqueue(con, "prepare", chapter_id=1)
+    jobs.enqueue(con, "plan_teaser", bundle_id=1)
+    assert jobs.claim_next(con, lane="gpu")["id"] == p
+    assert jobs.claim_next(con, lane="gpu") is None, \
+        "teaser must wait for the prepare's gemma slot, not run beside it"

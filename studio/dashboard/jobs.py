@@ -19,23 +19,33 @@ _COLS = ("id, type, series_id, chapter_id, bundle_id, payload_json, state, "
 
 # assembly-line lanes: stages occupy different resources, so one job may run
 # PER LANE simultaneously (prepare ch N+1 on gpu while render ch N-1 on cpu)
+# The gpu lane is THE gemma-on-the-GPU resource. Its width (STUDIO_GPU_WIDTH,
+# 1 on the single-GPU Mini) is the "how many gemma workloads at once" bound, so
+# EVERY job that makes a local gemma call MUST live here — otherwise two gemma
+# contexts land on one GPU at the same time and Metal OOMs (proven: two
+# concurrent chapter prepares at width 2 killed the understanding pass). That
+# includes the teaser and the thumbnail/metadata jobs: their "short local-Gemma
+# calls" are still gemma on the same GPU, so a separate lane does NOT make them
+# safe — it makes them collide. qwen (TTS) is a DIFFERENT model on its OWN lane
+# so a voiceover still OVERLAPS a prepare (64GB fits gemma + qwen together) —
+# that overlap is the intended pipelining and is preserved.
 LANES = {
-    # gemma (ollama LLM) work
+    # --- gemma-on-GPU: serialized together (width = STUDIO_GPU_WIDTH) ---
     "prepare": "gpu", "qa_scan": "gpu", "chain": "gpu",
-    # qwen (TTS) is a DIFFERENT model — its own lane so a voiceover overlaps a
-    # prepare instead of waiting behind it (64GB fits gemma + qwen together)
+    # teaser (Stage-2 montage narration) + thumbnail/metadata (title/hook/
+    # synopsis) all make a local gemma call, so they belong on the gemma lane,
+    # NOT beside a chapter prepare. They are infrequent (once per debut / per
+    # series), so sharing the gpu queue costs a brief wait, never an OOM.
+    "plan_teaser": "gpu", "series_thumbnail": "gpu", "publish_meta": "gpu",
+    # --- qwen TTS: its own lane, OVERLAPS a gemma prepare ---
     "voiceover": "tts",
+    # --- CPU / ffmpeg / remotion: no local model ---
     "render_segment": "cpu", "branding_segments": "cpu", "concat": "cpu",
-    # arc teaser: a model select + a full render -> the render-like cpu lane
-    # (like concat/render_segment). MUST be listed or the job queues forever.
-    "plan_teaser": "cpu",
+    # --- network-bound, no local model ---
     "refresh": "api", "discovery_scan": "api", "add_series": "api",
-    # metadata + thumbnail: short local-Gemma / Nano-Banana calls — keep them
-    # off the gpu lane so they never block a chapter's prepare/voiceover.
     # EVERY claimable type MUST be listed here: lane loops only ever claim
     # types in their own lane (the serial lane=None path is unused by the
     # worker), so a handler in HANDLERS but absent from LANES queues forever.
-    "publish_meta": "api", "series_thumbnail": "api",
 }
 
 # parallel width per lane (64GB mini): two gpu jobs overlap one chapter's
