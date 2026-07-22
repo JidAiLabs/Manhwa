@@ -1092,13 +1092,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         (and a clean-slate reset left stale packs behind, locking their
         chapters out of the video creator)."""
         c = con()
-        d = REPO / "dist" / f"bundle_{bid}"
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-        c.execute("DELETE FROM bundle_chapter WHERE bundle_id=?", (bid,))
-        c.execute("DELETE FROM job WHERE bundle_id=?", (bid,))
-        c.execute("DELETE FROM approval WHERE bundle_id=?", (bid,))
-        c.execute("DELETE FROM bundle WHERE id=?", (bid,))
+        reset.delete_bundle(c, bid)      # shared with rewind's clear-on-reset
         c.commit()
         return RedirectResponse("/videos", status_code=303)
 

@@ -188,3 +188,63 @@ def test_rewind_survives_missing_ep_dir(tmp_path):
     s = reset.rewind_chapter(con, 310, "grouped")     # no crash
     assert s["status"] == "grouped"
     assert _stages(con) == []
+
+
+def test_rewind_clears_bundles_containing_the_chapter(tmp_path, monkeypatch):
+    """A rewound chapter invalidates any VIDEO built from it (its rendered
+    segment is gone), so those bundles are deleted — otherwise a stale video
+    lingers and locks the chapter out of the video creator. The video's OTHER
+    chapters are untouched."""
+    import studio.config as cfg
+    monkeypatch.setattr(cfg, "REPO_ROOT", tmp_path)
+    con, ep = _mk_chapter(tmp_path)
+    # a second chapter that shares the bundle
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at) VALUES "
+                "(311, 1, 2, 'Chapter 2', 'u', 'rendered', '/x', 'now')")
+    bid = con.execute("INSERT INTO bundle (series_id, kind) VALUES (1,'manual')"
+                      ).lastrowid
+    con.execute("INSERT INTO bundle_chapter (bundle_id, chapter_id, position) "
+                "VALUES (?,310,0),(?,311,1)", (bid, bid))
+    con.execute("INSERT INTO approval (gate, bundle_id) VALUES ('concat', ?)",
+                (bid,))
+    (tmp_path / "dist" / f"bundle_{bid}").mkdir(parents=True)
+    (tmp_path / "dist" / f"bundle_{bid}" / "teaser.mp4").write_text("x")
+    con.commit()
+
+    summary = reset.rewind_chapter(con, 310, "grouped")
+
+    assert summary["bundles_cleared"] == [bid]
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM bundle_chapter").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE bundle_id=?",
+                       (bid,)).fetchone()[0] == 0
+    assert not (tmp_path / "dist" / f"bundle_{bid}").exists()
+    # the OTHER chapter is untouched (still a real row)
+    assert con.execute("SELECT status FROM chapter WHERE id=311"
+                       ).fetchone()[0] == "rendered"
+
+
+def test_rewind_without_a_bundle_reports_none(tmp_path, monkeypatch):
+    import studio.config as cfg
+    monkeypatch.setattr(cfg, "REPO_ROOT", tmp_path)
+    con, ep = _mk_chapter(tmp_path)
+    summary = reset.rewind_chapter(con, 310, "scripted")
+    assert summary["bundles_cleared"] == []
+
+
+def test_delete_bundle_helper_is_shared_and_scoped(tmp_path, monkeypatch):
+    """The dashboard button and rewind both call reset.delete_bundle — it must
+    remove ONLY the bundle, never the chapters."""
+    import studio.config as cfg
+    monkeypatch.setattr(cfg, "REPO_ROOT", tmp_path)
+    con, ep = _mk_chapter(tmp_path)
+    bid = con.execute("INSERT INTO bundle (series_id, kind) VALUES (1,'manual')"
+                      ).lastrowid
+    con.execute("INSERT INTO bundle_chapter (bundle_id, chapter_id, position) "
+                "VALUES (?,310,0)", (bid,))
+    con.commit()
+    reset.delete_bundle(con, bid)
+    con.commit()
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 0
+    assert con.execute("SELECT id FROM chapter WHERE id=310").fetchone() == (310,)

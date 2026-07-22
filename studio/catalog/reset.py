@@ -87,6 +87,42 @@ def _rm(ep_dir: Path, rel: str, deleted: list) -> None:
         pass
 
 
+def delete_bundle(con: sqlite3.Connection, bundle_id: int) -> list:
+    """Delete one video (bundle): its rows (bundle, bundle_chapter, its jobs +
+    approvals) AND its dist/bundle_<id> artifacts (teaser, publish_meta). The
+    CHAPTERS it referenced are untouched — only the grouping is removed, so
+    their episodes return to the pool. Returns the file paths deleted.
+
+    Shared by the dashboard's delete-video button and rewind_chapter's
+    clear-on-reset, so the two can never drift.
+    """
+    from studio.config import REPO_ROOT
+    deleted: list = []
+    d = REPO_ROOT / "dist" / f"bundle_{bundle_id}"
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+        deleted.append(str(d))
+    con.execute("DELETE FROM bundle_chapter WHERE bundle_id=?", (bundle_id,))
+    con.execute("DELETE FROM job WHERE bundle_id=?", (bundle_id,))
+    con.execute("DELETE FROM approval WHERE bundle_id=?", (bundle_id,))
+    con.execute("DELETE FROM bundle WHERE id=?", (bundle_id,))
+    return deleted
+
+
+def _clear_bundles_for_chapter(con: sqlite3.Connection, chapter_id: int,
+                               deleted: list) -> list:
+    """Delete every video that contains *chapter_id*. A rewound chapter's
+    rendered segment is gone, so any video built from it can no longer
+    concat — the whole video is stale and must be rebuilt. The video's OTHER
+    chapters are untouched and go back into the pool."""
+    bids = [r[0] for r in con.execute(
+        "SELECT DISTINCT bundle_id FROM bundle_chapter WHERE chapter_id=?",
+        (chapter_id,)).fetchall()]
+    for bid in bids:
+        deleted.extend(delete_bundle(con, bid))
+    return bids
+
+
 def rewind_chapter(
     con: sqlite3.Connection,
     chapter_id: int,
@@ -147,9 +183,16 @@ def rewind_chapter(
             % ",".join("?" * len(gates)), (chapter_id, *gates))
         approvals = cur.rowcount
 
+    # A rewound chapter invalidates any VIDEO built from it (its rendered
+    # segment is gone), so those bundles are cleared — otherwise a stale video
+    # lingers on the Videos tab and locks the chapter out of the video creator
+    # (it counts as "already produced"). Owner directive 2026-07-22.
+    bundles_cleared = _clear_bundles_for_chapter(con, chapter_id, deleted)
+
     con.execute("UPDATE chapter SET status=?, error=NULL, "
                 "updated_at=datetime('now') WHERE id=?", (to, chapter_id))
     con.commit()
     return {"chapter_id": chapter_id, "status": to, "deleted": deleted,
             "backup": backup, "stage_run_cleared": stage_rows,
-            "approvals_cleared": approvals}
+            "approvals_cleared": approvals,
+            "bundles_cleared": bundles_cleared}

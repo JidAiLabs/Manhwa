@@ -390,10 +390,12 @@ def cmd_reset(args: argparse.Namespace) -> int:
     for ch in selected:
         summary = reset.rewind_chapter(con, ch.id, args.to,
                                        keep_base=args.keep_base)
+        nb = len(summary.get("bundles_cleared") or [])
         print(f"  ch{ch.number} (id {ch.id}) -> {summary['status']}: "
               f"deleted {len(summary['deleted'])} artifact(s), "
               f"stage_run -{summary['stage_run_cleared']}, "
               f"approvals -{summary['approvals_cleared']}"
+              + (f", {nb} video(s) cleared" if nb else "")
               + (f", beats backed up as {summary['backup']}"
                  if summary["backup"] else ""))
         if args.enqueue:
