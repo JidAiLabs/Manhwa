@@ -567,3 +567,42 @@ def test_call_model_downscales_images_for_local_model(tmp_path, monkeypatch):
         response_schema={"type": "object"}, max_output_tokens=10,
         temperature=0.0, backend="ollama")
     assert captured["h"] == 2560
+
+
+def test_images_height_cap_splits_budget_across_stacked_images():
+    import sys as _sys
+    _sys.path.insert(0, "tools")
+    import gemini_narrative_pass as gnp
+    assert gnp._images_height_cap(1) == 2560     # single image: full cap
+    assert gnp._images_height_cap(2) == 2048     # min(2560, 4096//2)
+    assert gnp._images_height_cap(3) == 1365     # min(2560, 4096//3) — the ORV group
+    assert gnp._images_height_cap(8) == 1024     # floored, never sub-readable
+
+
+def test_call_model_bounds_total_height_for_multi_image_group(tmp_path, monkeypatch):
+    """A beats call with 3 tall panels downscales each further so the stacked
+    vision memory stays bounded — the ORV beated_failed OOM (3x2560px)."""
+    import sys as _sys
+    _sys.path.insert(0, "tools")
+    import gemini_narrative_pass as gnp
+    import ollama_compat
+    from PIL import Image
+    paths = []
+    for i in range(3):
+        p = tmp_path / f"p{i}.jpg"
+        Image.new("RGB", (800, 4623)).save(p)
+        paths.append(str(p))
+    seen = {}
+
+    def fake_chat(**kw):
+        imgs = (kw["messages"][1] or {}).get("images") or []
+        seen["heights"] = [Image.open(x).size[1] for x in imgs]
+        return {"message": {"content": "{}"}, "prompt_eval_count": 1, "eval_count": 1}
+
+    monkeypatch.setattr(ollama_compat, "chat", fake_chat)
+    gnp._call_model(
+        client=None, model="gemma4:26b", system_instruction="s",
+        user_payload={}, image_paths=paths,
+        response_schema={"type": "object"}, max_output_tokens=10,
+        temperature=0.0, backend="ollama")
+    assert seen["heights"] == [1365, 1365, 1365]

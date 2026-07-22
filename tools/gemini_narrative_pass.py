@@ -662,12 +662,28 @@ def _bumped_num_ctx(err_str: str, cur_ctx: int, num_predict: int,
 # sent to gemma. nano's tallest (~2400px) works, so cap at 2560. Env-tunable.
 # (STUDIO_UNDERSTAND_MAX_H kept as the name — it's the same knob, now shared.)
 _MODEL_MAX_IMG_H = int(os.environ.get("STUDIO_UNDERSTAND_MAX_H", "2560"))
+# Several tall images in ONE call STACK in GPU memory — the beats pass sends up
+# to 3 panels/group (--max-images-per-group), and 3x2560px still OOM'd ORV. So
+# bound the TOTAL height across a call: 1 image keeps the full cap, N images
+# split this budget (floor 1024px each). ORV group of 3 tall panels → ~1365px.
+_MODEL_TOTAL_IMG_H = int(os.environ.get("STUDIO_MODEL_TOTAL_IMG_H", "4096"))
 
 
-def _model_safe_image(image_path: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """(path_to_send, temp_to_cleanup). Downscale an over-tall image to
-    _MODEL_MAX_IMG_H so the local vision encoder can't OOM; return the original
-    (temp=None) when it already fits or on any error (fail-soft)."""
+def _images_height_cap(n_images: int) -> int:
+    """Per-image height cap for a call sending *n_images*: full cap for one, a
+    split of the total budget (floor 1024) for several. Bounds stacked vision
+    memory so a group of tall panels can't OOM Metal even after per-image scale."""
+    if n_images <= 1:
+        return _MODEL_MAX_IMG_H
+    return min(_MODEL_MAX_IMG_H, max(1024, _MODEL_TOTAL_IMG_H // n_images))
+
+
+def _model_safe_image(image_path: Optional[str], max_h: Optional[int] = None
+                      ) -> Tuple[Optional[str], Optional[str]]:
+    """(path_to_send, temp_to_cleanup). Downscale an over-tall image to *max_h*
+    (default _MODEL_MAX_IMG_H) so the local vision encoder can't OOM; return the
+    original (temp=None) when it already fits or on any error (fail-soft)."""
+    cap = int(max_h or _MODEL_MAX_IMG_H)
     if not image_path or not os.path.exists(image_path):
         return image_path, None
     try:
@@ -675,10 +691,10 @@ def _model_safe_image(image_path: Optional[str]) -> Tuple[Optional[str], Optiona
         ImageFile.LOAD_TRUNCATED_IMAGES = True
         with Image.open(image_path) as im:
             w, h = im.size
-            if h <= _MODEL_MAX_IMG_H:
+            if h <= cap:
                 return image_path, None
-            nw = max(1, round(w * _MODEL_MAX_IMG_H / h))
-            small = im.convert("RGB").resize((nw, _MODEL_MAX_IMG_H), Image.LANCZOS)
+            nw = max(1, round(w * cap / h))
+            small = im.convert("RGB").resize((nw, cap), Image.LANCZOS)
         import tempfile
         fd, tmp = tempfile.mkstemp(suffix=".jpg", prefix="pu_safe_")
         os.close(fd)
@@ -711,9 +727,10 @@ def _call_model(
         images = [p for p in image_paths if p and os.path.exists(p)]
         _img_tmps: List[str] = []
         if images:
+            _cap = _images_height_cap(len(images))   # split the budget across a stacked group
             _safe: List[str] = []
             for _p in images:
-                _sp, _tmp = _model_safe_image(_p)
+                _sp, _tmp = _model_safe_image(_p, _cap)
                 if _sp:
                     _safe.append(_sp)
                 if _tmp:
