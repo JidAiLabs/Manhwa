@@ -17,7 +17,7 @@
          punchup, understanding) routes to the gemma-4 MLX shim
          (com.originpower.mlxshim). Rollback = remove this key +
          bootout/bootstrap; the Ollama daemon stays installed. -->
-    <key>OLLAMA_HOST</key><string>http://127.0.0.1:11500</string>
+    <key>OLLAMA_HOST</key><string>http://127.0.0.1:11434</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>__REPO__/logs/worker.log</string>
