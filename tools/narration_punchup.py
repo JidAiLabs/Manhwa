@@ -48,6 +48,7 @@ from manifest_io import (  # noqa: E402
 from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     cap_protagonist_name,
+    collapse_name_stutter,
     dedupe_consecutive_panel_lines,
     is_cold_opener,
     is_spoken_fragment,
@@ -838,15 +839,20 @@ def apply_post_punchup_backstop(
     # restores the legacy single-handle behaviour.
     _vary = os.environ.get("STUDIO_NARR_VARY_HANDLES", "1") != "0"
     n_name = cap_protagonist_name(out, cast_obj or {"cast": []}, vary=_vary)
+    # LAST cleaner: kill any degenerate proper-noun stutter the writer/persona
+    # rewrite left ("Jang Jang Jang" → "Jang"). Deterministic, cast-agnostic.
+    n_stutter = collapse_name_stutter(out)
     stats = out.setdefault("stats", {})
     stats["protagonist_name_capped"] = n_name
     stats["identity_reveals_neutralized"] = n_ident
     stats["consecutive_dups_merged"] = n_dups
     stats["actor_handles_rewritten"] = n_actor
+    stats["name_stutters_collapsed"] = n_stutter
     return {"protagonist_name_capped": n_name,
             "identity_reveals_neutralized": n_ident,
             "consecutive_dups_merged": n_dups,
-            "actor_handles_rewritten": n_actor}
+            "actor_handles_rewritten": n_actor,
+            "name_stutters_collapsed": n_stutter}
 
 
 def main() -> int:

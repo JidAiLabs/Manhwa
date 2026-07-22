@@ -959,6 +959,25 @@ def test_vary_never_touches_a_non_protagonist():
     assert "The assassin leader watches from the ridge." in _lines(B)
 
 
+def test_collapse_name_stutter():
+    """A degenerate repeated proper noun collapses; real grammar is untouched."""
+    import tools.recap_style as rs
+    B = {"beats": [_beat(1,
+        "Jang Jang Jang snaps his head up.",       # triple name -> collapse
+        "Prince Prince stares him down.",          # double name  -> collapse
+        "He had had enough of the noise.",         # legit 'had had' (lowercase)
+        "Jang jang echoes through the hall.",      # mixed case  -> NOT a name echo
+        "Prince Cheon drew his blade.")]}          # distinct words -> untouched
+    n = rs.collapse_name_stutter(B)
+    ln = _lines(B)
+    assert ln[0] == "Jang snaps his head up."
+    assert ln[1] == "Prince stares him down."
+    assert ln[2] == "He had had enough of the noise."   # NOT collapsed
+    assert ln[3] == "Jang jang echoes through the hall."  # NOT collapsed
+    assert ln[4] == "Prince Cheon drew his blade."       # NOT collapsed
+    assert n == 2
+
+
 def test_vary_never_doubles_a_determiner():
     """A 'the …' handle swapped in after 'the <participle>' must not double the
     article ('the wounded the protagonist') — the real nano ch1 p000050 line."""

@@ -1218,3 +1218,31 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
         if new != lines and all(x.strip() for x in new):
             write_segment_lines(b, new)
     return replaced
+
+
+# An LLM writer occasionally STUTTERS a proper noun — "Jang Jang Jang snaps his
+# head up" (real nano ch2 p020, present in the RAW pre-heal beats, so it's a
+# writer-sampling glitch, not a post-processing one). A name never legitimately
+# repeats consecutively, and the token is Capitalized (≥2 letters), so collapsing
+# a Capitalized token immediately repeated 1+ times to a single occurrence is
+# safe: it CANNOT touch "he had had enough" / "no no no" (lowercase → real
+# grammar, never starts with [A-Z]), and the case-sensitive backreference means
+# "Jang jang" / "The the" don't match either — only an exact-case name echo.
+_NAME_STUTTER_RE = re.compile(r"\b([A-Z][A-Za-z][A-Za-z'’\-]*)(?:\s+\1\b)+")
+
+
+def collapse_name_stutter(beats_obj) -> int:
+    """Collapse a degenerate repeated proper noun ('Jang Jang Jang' → 'Jang')
+    on every segment line. Deterministic, cast-agnostic (no name list — it keys
+    on the repetition itself). Returns the number of lines changed."""
+    changed = 0
+    for b in (beats_obj or {}).get("beats") or []:
+        segs = beat_segments(b)
+        if not segs:
+            continue
+        lines = [s.get("line") or "" for s in segs]
+        new = [_NAME_STUTTER_RE.sub(lambda m: m.group(1), ln) for ln in lines]
+        if new != lines and all(x.strip() for x in new):
+            write_segment_lines(b, new)
+            changed += sum(1 for a, c in zip(lines, new) if a != c)
+    return changed
