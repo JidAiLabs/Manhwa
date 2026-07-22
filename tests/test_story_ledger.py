@@ -982,15 +982,17 @@ def test_name_budget_keeps_the_introduction_and_caps_the_tail():
                    beat(2, "Prince Cheon draws his blade.",
                         "Throwing Prince Cheon back into the debris.",
                         "Prince Cheon's eyes widen in terror.")]}
-    assert rs.cap_protagonist_name(B, cast, keep=3) == 2
+    # vary=False = the legacy single-handle path (still supported), which is
+    # what proves the grammatical safety: a NOUN PHRASE drops into object and
+    # possessive position where a pronoun would need he/him/his and could ship
+    # "throwing he back".
+    assert rs.cap_protagonist_name(B, cast, keep=3, vary=False) == 2
     lines = [s["line"] for b in B["beats"] for s in b["segments"]]
     assert lines[:3] == ["Prince Cheon flees through the night.",
                          "The blow leaves Prince Cheon gasping.",
                          "Prince Cheon draws his blade."]      # introduction kept
-    # a HANDLE substitutes cleanly in object and possessive position, where a
-    # pronoun would need he/him/his and could ship "throwing he back"
-    assert lines[3] == "Throwing our guy back into the debris."
-    assert lines[4] == "our guy's eyes widen in terror."
+    assert lines[3] == "Throwing our guy back into the debris."   # mid-sentence
+    assert lines[4] == "Our guy's eyes widen in terror."          # sentence start
 
 
 def test_name_budget_is_a_noop_without_a_real_name():

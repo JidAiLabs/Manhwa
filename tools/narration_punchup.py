@@ -832,8 +832,12 @@ def apply_post_punchup_backstop(
                     b, figures_by_file, noun_map, prot, ledger=ledger,
                     spoken=spoken))
     # Deterministic name budget, LAST: the prompt rule moved naming from 20%
-    # of lines to 13% and stalled there; the cap lands it exactly.
-    n_name = cap_protagonist_name(out, cast_obj or {"cast": []})
+    # of lines to 13% and stalled there; the cap lands it exactly. It also
+    # VARIES the post-cap handle ('the prince'/'our guy'/'our boy') so the tail
+    # doesn't read as "our guy" every line — off-switch STUDIO_NARR_VARY_HANDLES=0
+    # restores the legacy single-handle behaviour.
+    _vary = os.environ.get("STUDIO_NARR_VARY_HANDLES", "1") != "0"
+    n_name = cap_protagonist_name(out, cast_obj or {"cast": []}, vary=_vary)
     stats = out.setdefault("stats", {})
     stats["protagonist_name_capped"] = n_name
     stats["identity_reveals_neutralized"] = n_ident

@@ -864,3 +864,96 @@ def test_mentions_mood_tag_leak_silent_on_story_and_bracket_forms():
     ]:
         assert not rs.mentions_mood_tag_leak(good), good
     assert not rs.mentions_mood_tag_leak(None)
+
+
+# --- protagonist handle VARIETY (reduce "our guy" repetition) ---------------
+
+def _prot_cast(name="Prince Cheon"):
+    return {"cast": [{"canonical_name": "our protagonist", "role": "protagonist",
+                      "is_protagonist": True, "aliases": [name]}]}
+
+
+def _beat(g, *lines):
+    return {"group_id": g, "segments": [
+        {"span": [f"p{g}_{i}.jpg"], "line": l} for i, l in enumerate(lines)]}
+
+
+def _lines(B):
+    return [s["line"] for b in B["beats"] for s in b["segments"]]
+
+
+def test_handle_pool_derives_a_title_epithet():
+    import tools.recap_style as rs
+    assert rs._protagonist_handles("the prince")[0] == "the prince"
+    assert rs._protagonist_handles("") == ["our guy", "our boy"]
+
+
+def test_title_epithet_only_when_unambiguous():
+    import tools.recap_style as rs
+    prot = {"is_protagonist": True, "aliases": ["Prince Cheon"]}
+    # sole prince -> epithet allowed
+    assert rs._title_epithet("Prince Cheon", [prot], prot) == "the prince"
+    # a SECOND prince in the cast -> ambiguous, no epithet
+    other = {"aliases": ["Prince Baek"]}
+    assert rs._title_epithet("Prince Cheon", [prot, other], prot) == ""
+    # untitled name -> no epithet
+    assert rs._title_epithet("Kim Dokja", [prot], prot) == ""
+
+
+def test_vary_reduces_our_guy_repetition():
+    """The point: a tail that was ALL 'our guy' becomes a mix — 'our guy' no
+    longer dominates."""
+    import tools.recap_style as rs
+    # name introduced 3x, then 6 more protagonist refs the writer wrote as
+    # 'our guy'
+    B = {"beats": [
+        _beat(1, "Prince Cheon appears.", "Prince Cheon fights.",
+              "Prince Cheon wins."),
+        _beat(2, "our guy runs.", "our guy jumps.", "our guy falls.",
+              "our guy stands.", "our guy roars.", "our guy leaves.")]}
+    rs.cap_protagonist_name(B, _prot_cast(), keep=3, vary=True)
+    tail = " ".join(_lines(B)[3:]).lower()
+    # every reference still points at the protagonist (noun phrase), but
+    # 'our guy' is now a minority, not all 6
+    assert tail.count("our guy") < 6
+    assert "the prince" in tail                       # the title epithet appears
+    # intro preserved
+    assert _lines(B)[:3] == ["Prince Cheon appears.", "Prince Cheon fights.",
+                             "Prince Cheon wins."]
+
+
+def test_vary_preserves_sentence_case_and_possessive():
+    import tools.recap_style as rs
+    B = {"beats": [_beat(1, "Prince Cheon starts.", "Prince Cheon acts.",
+                         "Prince Cheon ends.",
+                         "Our guy raises his fist.",         # sentence-start
+                         "It was our guy's blade.")]}       # possessive
+    rs.cap_protagonist_name(B, _prot_cast(), keep=3, vary=True)
+    ln = _lines(B)
+    # whatever handle each rotated to, capitalisation + possessive are intact
+    assert ln[3][0].isupper() and ln[3].endswith("his fist.")
+    assert "'s blade." in ln[4]
+    # no lowercase mid-sentence artifact like 'the prince' at a sentence start
+    assert not ln[3].startswith("the ") and not ln[3].startswith("our ")  # capitalised
+
+
+def test_vary_is_deterministic_on_the_same_input():
+    import tools.recap_style as rs, copy
+    base = {"beats": [_beat(1, "Prince Cheon a.", "Prince Cheon b.",
+                            "Prince Cheon c.", "our guy d.", "our guy e.",
+                            "our guy f.")]}
+    a, b = copy.deepcopy(base), copy.deepcopy(base)
+    rs.cap_protagonist_name(a, _prot_cast(), keep=3, vary=True)
+    rs.cap_protagonist_name(b, _prot_cast(), keep=3, vary=True)
+    assert _lines(a) == _lines(b)                     # reproducible
+
+
+def test_vary_never_touches_a_non_protagonist():
+    """The rotation only rewrites protagonist references — a name that isn't
+    the protagonist is left alone."""
+    import tools.recap_style as rs
+    B = {"beats": [_beat(1, "Prince Cheon strikes.", "Prince Cheon parries.",
+                         "Prince Cheon lunges.", "our guy retreats.",
+                         "The assassin leader watches from the ridge.")]}
+    rs.cap_protagonist_name(B, _prot_cast(), keep=3, vary=True)
+    assert "The assassin leader watches from the ridge." in _lines(B)

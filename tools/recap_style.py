@@ -1071,14 +1071,78 @@ def _proper_alias(member) -> str:
     return ""
 
 
-def cap_protagonist_name(beats_obj, cast, keep: int = 3,
-                         handle: str = "our guy") -> int:
-    """Keep the FIRST *keep* uses of the protagonist's real name in reading
-    order; replace the rest with *handle*. Returns the number replaced.
+# Titles that yield a clean 'the <title>' epithet from a proper name
+# ("Prince Cheon" -> "the prince") — a SAFE noun-phrase alternative to the
+# generic handle so the post-cap tail reads with VARIETY, not "our guy" every
+# line. A noun phrase drops into any grammatical position, which is the exact
+# property the original single-handle design relied on to avoid the "throwing
+# he back" pronoun-case bug — so varying among noun phrases keeps that safety.
+_TITLE_RE = re.compile(
+    r"\b(Prince|Princess|King|Queen|Emperor|Empress|Lord|Lady|Duke|Duchess|"
+    r"Elder|Master|General|Captain|Commander|Chief|Saint|Marquis|Count|Baron|"
+    r"Patriarch|Matriarch)\b", re.I)
 
-    Both failure modes are real: never naming him leaves the audience not
-    knowing who he is, and naming him every few lines reads as a label. This
-    guarantees the first uses survive (the introduction) and caps the tail."""
+# generic protagonist handles the WRITER may already have used — varied too so
+# they don't dominate (matches _FAMILIAR_HANDLE_RE + "our man")
+_PROT_HANDLE_ALT = (r"our guy|our boy|our hero|our man|our protagonist|my guy")
+
+
+def _title_epithet(name: str, members, prot) -> str:
+    """'the <title>' for a titled protagonist name (Prince Cheon -> the prince)
+    — but ONLY when NO OTHER cast member carries that title, or the epithet
+    would be ambiguous (two princes both become 'the prince'). '' otherwise."""
+    m = _TITLE_RE.search(name or "")
+    if not m:
+        return ""
+    t = m.group(1)
+    tpat = re.compile(r"\b" + re.escape(t) + r"\b", re.I)
+    for mm in members or []:
+        if mm is prot or not isinstance(mm, dict):
+            continue
+        names = [str(mm.get("canonical_name") or ""),
+                 str(mm.get("spoken_name") or "")] + \
+                [str(a) for a in (mm.get("aliases") or [])]
+        if any(tpat.search(x) for x in names):
+            return ""                      # another character shares the title
+    return "the " + t.lower()
+
+
+def _protagonist_handles(title_epithet: str) -> list:
+    """Ordered pool of SAFE noun-phrase handles: an optional unique title
+    epithet ('the prince') then the generic 'our guy'/'our boy' (always
+    present, so an untitled protagonist still gets variety). ALL are noun
+    phrases — no pronoun-case risk."""
+    pool = ([title_epithet] if title_epithet else []) + ["our guy", "our boy"]
+    out, seen = [], set()
+    for h in pool:
+        if h and h.lower() not in seen:
+            seen.add(h.lower())
+            out.append(h)
+    return out
+
+
+def _cap_for_position(line: str, start: int, repl: str) -> str:
+    """Capitalise repl iff the match at *start* begins a sentence — decided by
+    POSITION, not the token's own case (a proper name is always capitalised,
+    so its case says nothing about sentence position). 'Throwing <name> back'
+    -> lowercase handle; a line/sentence-initial reference -> capitalised."""
+    before = line[:start].rstrip()
+    at_start = (not before) or before[-1] in ".!?"
+    return repl[:1].upper() + repl[1:] if at_start else repl
+
+
+def cap_protagonist_name(beats_obj, cast, keep: int = 3,
+                         handle: str = "our guy", vary: bool = True) -> int:
+    """Ration the protagonist's proper NAME to its first *keep* uses (the
+    introduction), then give the tail VARIETY: each later protagonist
+    reference — an over-cap name OR a generic handle the writer already wrote
+    ('our guy', 'our boy', ...) — is rotated deterministically through
+    _protagonist_handles(name). Turns "our guy" repeated many times into a mix
+    of 'the prince' / 'our guy' / 'our boy'. Every option is a noun phrase, so
+    the grammatical-safety property of the original single-handle design is
+    preserved. vary=False restores the legacy always-*handle* behaviour.
+
+    Returns the number of references rewritten."""
     members = cast.get("cast") if isinstance(cast, dict) else cast
     prot = next((m for m in (members or []) if isinstance(m, dict)
                  and (m.get("is_protagonist")
@@ -1088,8 +1152,13 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
     name = _proper_alias(prot)
     if not name:
         return 0
-    pat = re.compile(r"\b" + re.escape(name) + r"(?P<poss>'s)?\b")
-    seen = 0
+    pool = (_protagonist_handles(_title_epithet(name, members, prot))
+            if vary else [handle])
+    combined = re.compile(
+        r"(?:(?P<name>\b" + re.escape(name) + r"\b)"
+        r"|(?P<handle>\b(?:" + _PROT_HANDLE_ALT + r")\b))(?P<poss>'s)?", re.I)
+    seen_name = 0
+    rot = 0
     replaced = 0
     for b in (beats_obj or {}).get("beats") or []:
         segs = beat_segments(b)
@@ -1102,15 +1171,24 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
                 continue
             out = []
             last = 0
-            for m in pat.finditer(line):
-                seen += 1
-                if seen <= keep:
-                    continue
+            changed = False
+            for m in combined.finditer(line):
+                core = m.group("name") or m.group("handle")
+                poss = m.group("poss") or ""
+                if m.group("name") is not None:
+                    seen_name += 1
+                    if seen_name <= keep:
+                        continue                  # keep the introduction as-is
+                repl = pool[rot % len(pool)]
+                rot += 1
+                if repl.lower() == core.lower():
+                    continue                      # already this handle — leave it
                 out.append(line[last:m.start()])
-                out.append(handle + (m.group("poss") or ""))
+                out.append(_cap_for_position(line, m.start(), repl) + poss)
                 last = m.end()
                 replaced += 1
-            if out:
+                changed = True
+            if changed:
                 out.append(line[last:])
                 new[i] = "".join(out)
         if new != lines and all(x.strip() for x in new):
