@@ -501,3 +501,42 @@ def test_tall_strip_merges_uncertain_any_window(monkeypatch, tmp_path):
 def test_prompt_version_is_pu_v7():
     assert pu.PROMPT_VERSION == "pu_v7"
     assert pu.TALL_WINDOWS_VERSION.startswith("pu_v7")
+
+
+def test_model_safe_image_downscales_tall_panels(tmp_path):
+    """A tall panel (ORV ~4623px, slips under the windowing gate) is downscaled
+    for the model call so gemma's vision encoder can't OOM; short panels and
+    missing paths pass through untouched."""
+    from PIL import Image
+    import os
+    tall = tmp_path / "tall.jpg"
+    Image.new("RGB", (800, 4623)).save(tall)
+    p, tmp = pu._model_safe_image(str(tall))
+    assert tmp and p == tmp
+    assert Image.open(p).size == (443, 2560)   # aspect kept, capped at 2560
+    os.remove(tmp)
+    short = tmp_path / "short.jpg"
+    Image.new("RGB", (800, 2400)).save(short)
+    assert pu._model_safe_image(str(short)) == (str(short), None)
+    assert pu._model_safe_image("/no/such.jpg") == ("/no/such.jpg", None)
+
+
+def test_understand_panels_wrapper_downscales_and_cleans_up(tmp_path):
+    """The call_fn wrapper downscales every image before the model sees it and
+    removes the temp afterward — covering all single-pass + re-ask call sites."""
+    from PIL import Image
+    import os
+    tall = tmp_path / "p1.jpg"
+    Image.new("RGB", (800, 4623)).save(tall)
+    seen = {}
+
+    def base(payload, img):
+        seen["h"] = Image.open(img).size[1]
+        seen["path"] = img
+        return {"description": "x", "subjects": [], "panel_kind": "story"}
+
+    pu.understand_panels(
+        [{"scene_file": "p1.jpg", "scene_path": str(tall), "ocr_clean": ""}],
+        base, impact_fn=lambda _p: [])
+    assert seen["h"] == 2560                       # model saw the downscaled image
+    assert not os.path.exists(seen["path"])        # temp cleaned up
