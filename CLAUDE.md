@@ -32,7 +32,7 @@ $V -m studio status [series_id]                                # chapter status 
 - **Catalog** (`studio/catalog/`, `studio.db`): per-chapter status state machine, resumable + idempotent:
   `discovered → downloaded → stitched → detected → scened → visioned → grouped → beated → scripted → voiced → planned`
 - **Sources** (`studio/sources/`): `SourceAdapter` registry; gallery-dl backend + 3 adapters (webtoon=gallery-dl happy path; asura/elftoon=native httpx+selectolax). Base URLs are config in `studio.toml` (sites churn — design is disposable).
-- **Detection** (`studio/detect/yolo_panels.py`): the trained YOLO at `/Users/anka/webtoon-ai/runs/detect/webtoon/yolo26_musgd_run/weights/best.pt` replaces Gemini panel detection (drop-in `manifest.panels.json`).
+- **Detection** (`studio/detect/yolo_panels.py`): the trained YOLO replaces Gemini panel detection (drop-in `manifest.panels.json`). Production weights are the **v3 8-class** model at `assets/models/webtoon_panels_v3.pt` (committed; set in `studio.toml [detect] yolo_weights`, swapped in by `0d04948` 2026-07-15). Legacy 6-class `assets/models/webtoon_panels.pt` is the rollback. (The old `/Users/anka/webtoon-ai/…/best.pt` training path is Air-only and no longer used.)
 - **Pipeline** (`studio/pipeline.py`): stage table mapping status→tool invocation; cred-gated stages fail-soft + resumable.
 
 ### Credentials (`keys/creds.env`, gitignored — CLI auto-loads, creds.env is authoritative)

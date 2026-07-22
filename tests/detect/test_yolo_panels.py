@@ -11,12 +11,23 @@ from pathlib import Path
 
 import pytest
 
-WEIGHTS = "/Users/anka/webtoon-ai/runs/detect/webtoon/yolo26_musgd_run/weights/best.pt"
+# Test the PRODUCTION detector (the v3 8-class weights studio.toml ships),
+# repo-relative so it resolves on any host; override with STUDIO_YOLO_WEIGHTS.
+# The old hardcode was an Air-only training path (…/webtoon-ai/…/best.pt) that
+# didn't exist on the Mini, so these two integration tests failed there.
+WEIGHTS = os.environ.get(
+    "STUDIO_YOLO_WEIGHTS",
+    str(Path(__file__).resolve().parents[2] / "assets" / "models"
+        / "webtoon_panels_v3.pt"),
+)
+requires_weights = pytest.mark.skipif(
+    not Path(WEIGHTS).exists(), reason=f"YOLO weights not present: {WEIGHTS}")
 FIXTURES = Path(__file__).parent / "fixtures"
 STITCH_MANIFEST = str(FIXTURES / "manifest.stitch.json")
 
 
 @pytest.mark.requires_ultralytics
+@requires_weights
 def test_detect_panels_output_schema():
     """detect_panels returns schema-compatible output and writes valid JSON."""
     from studio.detect.yolo_panels import detect_panels
@@ -67,6 +78,7 @@ def test_detect_panels_output_schema():
 
 
 @pytest.mark.requires_ultralytics
+@requires_weights
 def test_detect_panels_sorted_top_to_bottom():
     """Panels within each chunk are sorted by ymin ascending."""
     from studio.detect.yolo_panels import detect_panels
