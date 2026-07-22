@@ -540,3 +540,30 @@ def test_understand_panels_wrapper_downscales_and_cleans_up(tmp_path):
         base, impact_fn=lambda _p: [])
     assert seen["h"] == 2560                       # model saw the downscaled image
     assert not os.path.exists(seen["path"])        # temp cleaned up
+
+
+def test_call_model_downscales_images_for_local_model(tmp_path, monkeypatch):
+    """The SHARED model call (used by BOTH understanding and the beats pass)
+    downscales an over-tall image before the local model sees it — the ORV
+    beated_failed OOM was this path passing full-res group images to gemma."""
+    import sys as _sys
+    _sys.path.insert(0, "tools")
+    import gemini_narrative_pass as gnp
+    import ollama_compat
+    from PIL import Image
+    tall = tmp_path / "tall.jpg"
+    Image.new("RGB", (800, 4623)).save(tall)
+    captured = {}
+
+    def fake_chat(**kw):
+        imgs = (kw["messages"][1] or {}).get("images") or []
+        captured["h"] = Image.open(imgs[0]).size[1] if imgs else None
+        return {"message": {"content": "{}"}, "prompt_eval_count": 1, "eval_count": 1}
+
+    monkeypatch.setattr(ollama_compat, "chat", fake_chat)
+    gnp._call_model(
+        client=None, model="gemma4:26b", system_instruction="s",
+        user_payload={}, image_paths=[str(tall)],
+        response_schema={"type": "object"}, max_output_tokens=10,
+        temperature=0.0, backend="ollama")
+    assert captured["h"] == 2560

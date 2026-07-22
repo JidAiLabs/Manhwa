@@ -31,7 +31,7 @@ for _p in (_TD, os.path.dirname(_TD)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 from gemini_narrative_pass import (                                   # noqa: E402
-    load_json, _call_model_with_backoff)
+    load_json, _call_model_with_backoff, _model_safe_image)
 from manifest_io import write_manifest, input_sha                     # noqa: E402
 
 # Gemini-style schema (UPPERCASE enums) — _call_model converts it for Ollama.
@@ -199,37 +199,11 @@ _TALL_MIN_RATIO = 6.0
 _TALL_WIN_PX = 1600
 _TALL_WIN_OVERLAP = 200
 
-# Even a NON-extreme tall panel (ORV Ep1 ~4623x800, ratio 5.78 so it slips UNDER
-# the windowing gate above) OOMs gemma's Metal vision encoder at full res — a
-# single panel at conc=1. Send a downscaled copy for understanding ONLY (the
-# record + scene_sha keep the original scene). nano's tallest ~2400px panels
-# understand fine, so cap there. Env-tunable if a host has more/less headroom.
-_UNDERSTAND_MAX_H = int(os.environ.get("STUDIO_UNDERSTAND_MAX_H", "2560"))
-
-
-def _model_safe_image(image_path: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """(path_to_send, temp_to_cleanup). Downscale an over-tall image to
-    _UNDERSTAND_MAX_H px so the vision encoder can't OOM; return the original
-    (and None) when it already fits or on any error (fail-soft — understanding a
-    full-res image is better than crashing the chapter, and the caller retries)."""
-    if not image_path or not os.path.exists(image_path):
-        return image_path, None
-    try:
-        from PIL import Image, ImageFile
-        ImageFile.LOAD_TRUNCATED_IMAGES = True
-        with Image.open(image_path) as im:
-            w, h = im.size
-            if h <= _UNDERSTAND_MAX_H:
-                return image_path, None
-            nw = max(1, round(w * _UNDERSTAND_MAX_H / h))
-            small = im.convert("RGB").resize((nw, _UNDERSTAND_MAX_H), Image.LANCZOS)
-        import tempfile
-        fd, tmp = tempfile.mkstemp(suffix=".jpg", prefix="pu_safe_")
-        os.close(fd)
-        small.save(tmp, "JPEG", quality=90)
-        return tmp, tmp
-    except Exception:
-        return image_path, None
+# _model_safe_image (downscale an over-tall panel so the vision encoder can't
+# OOM) lives in gemini_narrative_pass — the SHARED model-call module — so it
+# covers BOTH the understanding call_fn wrapper below AND the beats pass. The
+# wrapper here is belt-and-suspenders (its own re-ask sites) + owns temp cleanup;
+# gemini_narrative_pass._call_model also downscales, so a temp it gets is a no-op.
 
 
 def _tall_dims(scene_path: Optional[str]) -> Optional[Tuple[int, int]]:

@@ -654,6 +654,40 @@ def _bumped_num_ctx(err_str: str, cur_ctx: int, num_predict: int,
     return fit if fit > int(cur_ctx) else None
 
 
+# A single over-tall panel (ORV Ep1 ~4623x800) OOMs gemma's Metal VISION encoder
+# at full res — hit in BOTH the understanding pass AND the beats pass, since both
+# attach panel images here. Downscale to _MODEL_MAX_IMG_H before the local model
+# sees them (understanding-only vs beats makes no difference — the encoder is the
+# same). Records/scene_sha keep the original scene; this touches only the bytes
+# sent to gemma. nano's tallest (~2400px) works, so cap at 2560. Env-tunable.
+# (STUDIO_UNDERSTAND_MAX_H kept as the name — it's the same knob, now shared.)
+_MODEL_MAX_IMG_H = int(os.environ.get("STUDIO_UNDERSTAND_MAX_H", "2560"))
+
+
+def _model_safe_image(image_path: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """(path_to_send, temp_to_cleanup). Downscale an over-tall image to
+    _MODEL_MAX_IMG_H so the local vision encoder can't OOM; return the original
+    (temp=None) when it already fits or on any error (fail-soft)."""
+    if not image_path or not os.path.exists(image_path):
+        return image_path, None
+    try:
+        from PIL import Image, ImageFile
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        with Image.open(image_path) as im:
+            w, h = im.size
+            if h <= _MODEL_MAX_IMG_H:
+                return image_path, None
+            nw = max(1, round(w * _MODEL_MAX_IMG_H / h))
+            small = im.convert("RGB").resize((nw, _MODEL_MAX_IMG_H), Image.LANCZOS)
+        import tempfile
+        fd, tmp = tempfile.mkstemp(suffix=".jpg", prefix="pu_safe_")
+        os.close(fd)
+        small.save(tmp, "JPEG", quality=90)
+        return tmp, tmp
+    except Exception:
+        return image_path, None
+
+
 def _call_model(
     *,
     client: Optional[genai.Client],
@@ -675,8 +709,16 @@ def _call_model(
             "content": "INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False),
         }
         images = [p for p in image_paths if p and os.path.exists(p)]
+        _img_tmps: List[str] = []
         if images:
-            msg["images"] = images
+            _safe: List[str] = []
+            for _p in images:
+                _sp, _tmp = _model_safe_image(_p)
+                if _sp:
+                    _safe.append(_sp)
+                if _tmp:
+                    _img_tmps.append(_tmp)
+            msg["images"] = _safe
         from ollama_compat import chat as _ollama_chat
         # 16k thrashed gemma's SWA cache (full prompt re-processing every call ->
         # ~32min wedge), so beats run at a small default (8k) that fits the typical
@@ -696,22 +738,29 @@ def _call_model(
                      "num_ctx": ctx0},
         )
         try:
-            resp = _ollama_chat(**_kw)
-        except Exception as e:
-            nb = _bumped_num_ctx(str(e), ctx0, max_output_tokens, ctx_max)
-            if nb is None:
-                raise
-            print(f"[beats] prompt exceeds num_ctx {ctx0}; retry at num_ctx={nb}",
-                  file=sys.stderr)
-            _kw["options"]["num_ctx"] = nb
-            resp = _ollama_chat(**_kw)
-        raw = (resp.get("message") or {}).get("content") or ""
-        usage = {"input": int(resp.get("prompt_eval_count") or 0),
-                 "output": int(resp.get("eval_count") or 0), "cached": 0}
-        try:
-            return json.loads(raw), raw, usage
-        except Exception:
-            return _extract_json_value(raw), raw, usage
+            try:
+                resp = _ollama_chat(**_kw)
+            except Exception as e:
+                nb = _bumped_num_ctx(str(e), ctx0, max_output_tokens, ctx_max)
+                if nb is None:
+                    raise
+                print(f"[beats] prompt exceeds num_ctx {ctx0}; retry at num_ctx={nb}",
+                      file=sys.stderr)
+                _kw["options"]["num_ctx"] = nb
+                resp = _ollama_chat(**_kw)
+            raw = (resp.get("message") or {}).get("content") or ""
+            usage = {"input": int(resp.get("prompt_eval_count") or 0),
+                     "output": int(resp.get("eval_count") or 0), "cached": 0}
+            try:
+                return json.loads(raw), raw, usage
+            except Exception:
+                return _extract_json_value(raw), raw, usage
+        finally:
+            for _t in _img_tmps:
+                try:
+                    os.remove(_t)
+                except OSError:
+                    pass
 
     parts: List[types.Part] = []
     parts.append(_part_text("INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False)))
