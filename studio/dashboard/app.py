@@ -1006,8 +1006,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         chs = bundles.unbundled_chapters(c, series_id)
         opts = [{"value": f"{ch['number']:g}",
                  "text": (f"{ch['number']:g} · {ch['label']}"
-                          if ch["label"] else f"{ch['number']:g}"),
-                 "rendered": ch["status"] == "rendered"}
+                          if ch["label"] else f"{ch['number']:g}")}
                 for ch in chs]
         return {"series_id": series_id, "options": opts,
                 "first": bundles.series_bundle_count(c, series_id) == 0,
@@ -1036,6 +1035,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.get("/partials/bundle-form", response_class=HTMLResponse)
     def bundle_form(request: Request, series_id: int):
+        # status='rendered' is kept current by the /videos page-load reconcile
+        # (rcon reconciles every series); this partial only re-renders the form
         return page("partials/bundle_form.html", request,
                     **_bundle_form_ctx(con(), series_id))
 

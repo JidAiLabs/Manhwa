@@ -6,18 +6,18 @@
         hx-get="/partials/bundle-duration" hx-trigger="load, change"
         hx-target="#bdur" hx-include="#newvideo"
         title="first episode of this video">
-{% for o in options %}<option value="{{ o.value }}"{% if loop.first %} selected{% endif %}>{{ o.text }}{% if not o.rendered %} ⧗{% endif %}</option>{% endfor %}
+{% for o in options %}<option value="{{ o.value }}"{% if loop.first %} selected{% endif %}>{{ o.text }}</option>{% endfor %}
 </select>
 <span class="kv">→</span>
 <select name="num_to" id="bt" style="max-width:15em"
         hx-get="/partials/bundle-duration" hx-trigger="change"
         hx-target="#bdur" hx-include="#newvideo"
         title="last episode of this video">
-{% for o in options %}<option value="{{ o.value }}"{% if loop.last %} selected{% endif %}>{{ o.text }}{% if not o.rendered %} ⧗{% endif %}</option>{% endfor %}
+{% for o in options %}<option value="{{ o.value }}"{% if loop.last %} selected{% endif %}>{{ o.text }}</option>{% endfor %}
 </select>
 <button class="green" title="concatenate these episodes into one video.{% if first %} As the FIRST video for this manhwa it also gets the channel intro teaser (you'll review it before it ships).{% endif %} The title + description are generated automatically.">create video</button>
 <span class="kv" id="bdur">…</span>
 {% else %}
-<span class="kv">no episodes ready to bundle — every downloaded chapter is already in a video, or none are prepared yet</span>
+<span class="kv">no rendered episodes to bundle yet — finish rendering some chapters first (or they're all already in a video)</span>
 {% endif %}
 </form>

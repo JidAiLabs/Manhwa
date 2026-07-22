@@ -100,13 +100,16 @@ def create_debut_bundle_once(con: sqlite3.Connection, series_id: int,
 
 def unbundled_chapters(con: sqlite3.Connection,
                        series_id: int) -> List[dict]:
-    """Chapters of *series_id* NOT already in ANY bundle, in reading order —
-    the candidates for a NEW video. Already-produced (bundled) chapters are
-    excluded so a continuation batch can never re-select them. Only chapters
-    with an ep_dir (downloaded) are offered."""
+    """Chapters of *series_id* that are RENDERED (a finished episode video) and
+    NOT already in ANY bundle, in reading order — the candidates for a NEW
+    video. A video is a concat of rendered segments, so a chapter that hasn't
+    been rendered yet is not a candidate; and already-produced (bundled)
+    chapters are excluded so a continuation batch can never re-select them.
+    status='rendered' is the reconciled truth (reconcile sets it iff the
+    segment .mp4 exists), so the caller should reconcile the series first."""
     rows = con.execute(
         "SELECT id, number, label, status, ep_dir FROM chapter c "
-        "WHERE series_id=? AND ep_dir IS NOT NULL AND NOT EXISTS "
+        "WHERE series_id=? AND status='rendered' AND NOT EXISTS "
         "(SELECT 1 FROM bundle_chapter bc JOIN bundle b ON b.id=bc.bundle_id "
         " WHERE b.series_id=? AND bc.chapter_id=c.id) "
         "ORDER BY number", (series_id, series_id)).fetchall()

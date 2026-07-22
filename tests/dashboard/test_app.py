@@ -225,7 +225,8 @@ def test_bundle_create_from_a_range(client):
     the title/description job, and — as the FIRST video for the series — the
     intro teaser."""
     c, con = client
-    con.execute("UPDATE chapter SET ep_dir='/tmp/ep1' WHERE id=1")  # a candidate
+    con.execute("UPDATE chapter SET ep_dir='/tmp/ep1', status='rendered' "
+                "WHERE id=1")  # a rendered candidate
     con.commit()
     r = c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
                follow_redirects=False)
@@ -243,7 +244,8 @@ def test_bundle_create_from_a_range(client):
 def test_bundle_create_excludes_already_bundled_chapters(client):
     """A continuation batch must not re-offer produced chapters."""
     c, con = client
-    con.execute("UPDATE chapter SET ep_dir='/tmp/ep1' WHERE id=1")
+    con.execute("UPDATE chapter SET ep_dir='/tmp/ep1', status='rendered' "
+                "WHERE id=1")
     con.commit()
     c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
            follow_redirects=False)
@@ -994,7 +996,8 @@ def test_continuation_video_has_no_intro_teaser(client, tmp_path):
     for cid, num, d in ((1, 1, "a"), (60, 2, "b")):
         ep = tmp_path / d
         ep.mkdir()
-        con.execute("UPDATE chapter SET ep_dir=? WHERE id=?", (str(ep), cid)) \
+        con.execute("UPDATE chapter SET ep_dir=?, status='rendered' WHERE "
+                    "id=?", (str(ep), cid)) \
             if cid == 1 else con.execute(
             "INSERT INTO chapter (id, series_id, number, label, url, status, "
             "ep_dir, updated_at) VALUES (?,1,?,'C','u','rendered',?,'t')",
@@ -1020,7 +1023,8 @@ def test_delete_bundle_frees_its_chapters_without_touching_them(client, tmp_path
     c, con = client
     ep = tmp_path / "ch"
     ep.mkdir()
-    con.execute("UPDATE chapter SET ep_dir=? WHERE id=1", (str(ep),))
+    con.execute("UPDATE chapter SET ep_dir=?, status='rendered' WHERE id=1",
+                (str(ep),))
     con.commit()
     c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
            follow_redirects=False)
@@ -1034,3 +1038,36 @@ def test_delete_bundle_frees_its_chapters_without_touching_them(client, tmp_path
     # the chapter itself is untouched and available again
     assert con.execute("SELECT id FROM chapter WHERE id=1").fetchone() is not None
     assert [ch["id"] for ch in bundles.unbundled_chapters(con, 1)] == [1]
+
+
+def test_video_creator_offers_only_rendered_episodes(client, tmp_path):
+    """A video is a concat of RENDERED segments, so a downloaded-but-not-
+    rendered chapter must NOT be offered — the dropdown showed 163 unrendered
+    chapters before this fix."""
+    c, con = client
+    # ch1: downloaded but only 'planned' (not rendered) -> NOT a candidate
+    con.execute("UPDATE chapter SET ep_dir='/tmp/ep1', status='planned' "
+                "WHERE id=1")
+    # ch70: actually rendered -> the only candidate
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at) VALUES "
+                "(70,1,2,'Chapter 2','u','rendered','/tmp/ep2','t')")
+    con.commit()
+    from studio.dashboard import bundles
+    nums = [ch["number"] for ch in bundles.unbundled_chapters(con, 1)]
+    assert nums == [2.0]                      # only the rendered one
+    body = c.get("/partials/bundle-form?series_id=1").text
+    import re
+    opts = re.findall(r'<option value="([^"]*)"', body)
+    assert opts and "1" not in opts and "2" in opts   # ch1 (planned) excluded
+
+
+def test_video_creator_empty_when_nothing_rendered(client):
+    """With no rendered episodes the dropdown is empty and says so — not a list
+    of unrendered chapters."""
+    c, con = client
+    con.execute("UPDATE chapter SET ep_dir='/tmp/x', status='planned' "
+                "WHERE id=1")
+    con.commit()
+    body = c.get("/partials/bundle-form?series_id=1").text
+    assert "no rendered episodes" in body
