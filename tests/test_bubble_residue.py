@@ -133,3 +133,26 @@ def test_prep_qa_emits_bubble_text_residue_warn(monkeypatch):
                             dims_entry=None, sys=False, segment_id="g0001",
                             vitem={"ocr_clean": ""}, kept_bubbles=False)
     assert "bubble_text_residue" not in [f["code"] for f in flags2]
+
+
+def test_bubble_detector_refuses_a_wrong_digest(tmp_path):
+    """A .pt unpickles on load = code execution, so a cached/downloaded model
+    whose bytes don't match the pinned digest must be rejected BEFORE YOLO
+    ever loads it."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "bubbles",
+        Path(__file__).resolve().parent.parent / "manhwa-cropper" /
+        "manhwa_cropper" / "detectors" / "bubbles.py")
+    # a stray/tampered .pt in the cache dir
+    (tmp_path / "comic-speech-bubble-detector.pt").write_bytes(b"not the model")
+    try:
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception:
+        import pytest
+        pytest.skip("ultralytics not importable in this env")
+    import pytest
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        mod.BubbleDetector(cache_dir=tmp_path)

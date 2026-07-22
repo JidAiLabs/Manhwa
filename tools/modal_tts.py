@@ -77,9 +77,12 @@ def synth_qwen(items: list, persona: str, ref_wav: bytes = b"", ref_text: str = 
 
     prompt = None
     if ref_wav:
-        ref_path = "/tmp/narrator_ref.wav"
-        with open(ref_path, "wb") as f:
-            f.write(ref_wav)
+        # a private temp file, not a fixed /tmp path (fixed shared paths invite
+        # symlink/clobber races between processes/users)
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as _f:
+            _f.write(ref_wav)
+            ref_path = _f.name
         prompt = model.create_voice_clone_prompt(
             ref_audio=ref_path,
             ref_text=(ref_text or None),

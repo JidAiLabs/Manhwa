@@ -1,9 +1,32 @@
+import hashlib
 from pathlib import Path
 import requests
 import numpy as np
 from ultralytics import YOLO
 
-HF_URL = "https://huggingface.co/ogkalu/comic-speech-bubble-detector-yolov8m/resolve/main/comic-speech-bubble-detector.pt"
+# Pin the source revision. The digest below is the real guard, but freezing the
+# revision keeps the download deterministic instead of tracking a moving `main`.
+HF_REVISION = "main"
+HF_URL = (f"https://huggingface.co/ogkalu/comic-speech-bubble-detector-yolov8m/"
+          f"resolve/{HF_REVISION}/comic-speech-bubble-detector.pt")
+
+# SHA-256 of the trusted model, verified byte-identical on both production hosts
+# (2026-07-22). A .pt file is a pickle: YOLO(...) UNPICKLES it, so loading an
+# unverified one is arbitrary code execution. The bytes are checked against this
+# digest BEFORE the model is ever loaded — a changed/compromised upstream OR a
+# tampered local cache is rejected, not run. To intentionally upgrade the model,
+# download it, confirm provenance, and update this constant in the same commit.
+_EXPECTED_SHA256 = (
+    "10bc9f702698148e079fb4462a6b910fcd69753e04838b54087ef91d5633097b")
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 class BubbleDetector:
     """
@@ -17,6 +40,14 @@ class BubbleDetector:
         self.weights_path = self.cache_dir / "comic-speech-bubble-detector.pt"
         if not self.weights_path.exists():
             self._download_weights()
+        # verify BEFORE loading — .pt is a pickle (code execution on load)
+        got = _sha256(self.weights_path)
+        if got != _EXPECTED_SHA256:
+            raise RuntimeError(
+                f"bubble model digest mismatch at {self.weights_path}: got "
+                f"{got}, expected {_EXPECTED_SHA256}. Refusing to load an "
+                f"unverified .pt (it unpickles = arbitrary code execution). "
+                f"Delete the file to force a fresh, verified download.")
         self.model = YOLO(str(self.weights_path))
 
     def _download_weights(self):
@@ -27,6 +58,13 @@ class BubbleDetector:
             for chunk in r.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     f.write(chunk)
+        got = _sha256(tmp)
+        if got != _EXPECTED_SHA256:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"downloaded bubble model digest mismatch: got {got}, expected "
+                f"{_EXPECTED_SHA256}. Upstream changed or the download was "
+                f"tampered — refusing to install it.")
         tmp.replace(self.weights_path)
 
     def detect(self, img_bgr: np.ndarray, imgsz: int = 1024, conf: float = 0.25, iou: float = 0.5):

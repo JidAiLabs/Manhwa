@@ -374,3 +374,17 @@ def test_stage_artifact_corruption_matrix(tmp_path, kind, counted):
     _write_marker(ep / "prep_qa.json", kind)
     reconcile.reconcile_chapter(con, _ch(con))
     assert ("qa_scan" in _stages(con)) is counted
+
+
+def test_skips_chapter_with_cancelling_job(tmp_path):
+    """'cancelling' is a LIVE state — the job's child is still running until the
+    worker reaps it — so reconcile must not mutate the chapter mid-cancel."""
+    con, ep = _mk_chapter(tmp_path, status="rendered")
+    (ep / "render" / "segment_both.mp4").unlink()          # drift present
+    con.execute("INSERT INTO job (type, state, chapter_id) "
+                "VALUES ('prepare','cancelling',310)")
+    con.commit()
+    out = reconcile.reconcile_chapter(con, _ch(con))
+    assert out["status_to"] is None                        # busy — skip
+    assert con.execute("SELECT status FROM chapter WHERE id=310"
+                       ).fetchone()[0] == "rendered"

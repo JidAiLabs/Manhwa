@@ -102,9 +102,13 @@ def _valid(ep: str, rel: str) -> bool:
 
 
 def _has_active_job(con: sqlite3.Connection, chapter_id: int) -> bool:
+    # 'cancelling' is LIVE — its child is still running until the worker reaps
+    # it — so reconcile must treat that chapter as busy and NOT mutate its
+    # status mid-cancel. ('pending' was never a real job state; dropped.)
     return con.execute(
         "SELECT 1 FROM job WHERE chapter_id=? AND state IN "
-        "('pending','queued','running') LIMIT 1", (chapter_id,)).fetchone() is not None
+        "('queued','running','cancelling') LIMIT 1",
+        (chapter_id,)).fetchone() is not None
 
 
 def derive_status(ep: str) -> Optional[str]:

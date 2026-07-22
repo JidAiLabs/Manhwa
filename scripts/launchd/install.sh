@@ -6,8 +6,12 @@ TOKEN="${1:?usage: install.sh <dashboard token>}"
 mkdir -p "$REPO/logs"
 for name in dashboard worker mlxshim; do
   plist=~/Library/LaunchAgents/com.originpower.$name.plist
-  sed "s|__REPO__|$REPO|g; s|__TOKEN__|$TOKEN|g" \
-    "$REPO/scripts/launchd/com.originpower.$name.plist" > "$plist"
+  # the plist embeds STUDIO_DASH_TOKEN — create it private (umask covers the
+  # `>` redirect) so it is never world/group-readable, even briefly
+  ( umask 077
+    sed "s|__REPO__|$REPO|g; s|__TOKEN__|$TOKEN|g" \
+      "$REPO/scripts/launchd/com.originpower.$name.plist" > "$plist" )
+  chmod 600 "$plist"
   launchctl unload "$plist" 2>/dev/null || true
   launchctl load "$plist"
 done

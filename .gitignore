@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 .eval_venv/
 studio.db
+studio.db-wal
+studio.db-shm
+studio.db.bak-*
 runs/
 out/
 logs/
