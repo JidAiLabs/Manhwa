@@ -1134,6 +1134,26 @@ def _cap_for_position(line: str, start: int, repl: str) -> str:
     return repl[:1].upper() + repl[1:] if at_start else repl
 
 
+# The match is already governed by a determiner (optionally + ONE participle
+# modifier) when the text right before it ends this way — replacing e.g.
+# 'our guy' after 'the wounded ' with a 'the …' handle would double the article
+# ('the wounded THE protagonist'). Kept deliberately tight (det + a single
+# -ed/-ing word, or a det directly before) so it can't misfire across a noun/
+# verb boundary ('stands over our guy' -> never stripped).
+_GOVERNING_DET_RE = re.compile(
+    r"(?:^|[\s(\"'])(?:the|a|an)\s+(?:\w+(?:ed|ing)\s+)?$", re.I)
+
+
+def _strip_redundant_determiner(before: str, repl: str) -> str:
+    """Drop repl's leading 'the/a/an ' when *before* already supplies a
+    determiner governing this slot — so a 'the …' handle after 'the <adj>'
+    reads 'the wounded protagonist', not 'the wounded the protagonist'."""
+    m = re.match(r"(?:the|a|an)\s+", repl, re.I)
+    if m and _GOVERNING_DET_RE.search(before):
+        return repl[m.end():]
+    return repl
+
+
 def cap_protagonist_name(beats_obj, cast, keep: int = 3,
                          handle: str = "our guy", vary: bool = True) -> int:
     """Ration the protagonist's proper NAME to its first *keep* uses (the
@@ -1186,6 +1206,7 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
                 rot += 1
                 if repl.lower() == core.lower():
                     continue                      # already this handle — leave it
+                repl = _strip_redundant_determiner(line[:m.start()], repl)
                 out.append(line[last:m.start()])
                 out.append(_cap_for_position(line, m.start(), repl) + poss)
                 last = m.end()

@@ -957,3 +957,23 @@ def test_vary_never_touches_a_non_protagonist():
                          "The assassin leader watches from the ridge.")]}
     rs.cap_protagonist_name(B, _prot_cast(), keep=3, vary=True)
     assert "The assassin leader watches from the ridge." in _lines(B)
+
+
+def test_vary_never_doubles_a_determiner():
+    """A 'the …' handle swapped in after 'the <participle>' must not double the
+    article ('the wounded the protagonist') — the real nano ch1 p000050 line."""
+    import tools.recap_style as rs
+    B = {"beats": [_beat(1, "Prince Cheon a.", "Prince Cheon b.", "Prince Cheon c.",
+                         "The assassin stands over the wounded our guy.",
+                         "A blade grazes an injured our guy.")]}
+    rs.cap_protagonist_name(B, _prot_cast(), keep=3, vary=True)
+    joined = " ".join(_lines(B)).lower()
+    assert "the wounded the " not in joined
+    assert "an injured the " not in joined
+    # the reference still resolves to a protagonist noun phrase, not deleted
+    assert "wounded" in joined and "injured" in joined
+    # a determiner that governs a DIFFERENT noun is NOT stripped
+    B2 = {"beats": [_beat(2, "Prince Cheon a.", "Prince Cheon b.", "Prince Cheon c.",
+                          "The assassin stalks our guy.")]}
+    rs.cap_protagonist_name(B2, _prot_cast(), keep=3, vary=True)
+    assert _lines(B2)[3].lower().startswith("the assassin stalks ")
