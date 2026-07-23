@@ -1,11 +1,14 @@
-"""impact_mismatch (eyes wave): the deterministic heal-then-block QA gate.
+"""impact_mismatch: the narration-vs-art heal-then-block QA gate.
 
-A narrated segment whose span contains a DETECTOR-stamped impact panel
-(impact_sfx.present in manifest.panels.understood.json) must carry at least
-one impact-class lexeme — a stab panel narrated as a peaceful stroll is the
-verified root cause this wave attacks. The lexicon is deliberately crude
-(word stems, case-insensitive): it catches "peaceful vibes over a stab",
-not poetry, and over-matching can only SUPPRESS a flag, never create one.
+A narrated segment whose span contains a panel the UNDERSTANDING marks as a
+strike in progress (strikes_or_weapons == 'in_use' in
+manifest.panels.understood.json) must carry at least one impact-class lexeme —
+a stab panel narrated as a peaceful stroll is the verified root cause this
+attacks. The trigger is gemma's OWN semantic read (it sees the art and reads
+the SFX), NOT the old CV impact-lettering detector, which fired on any big red
+glyph and could not tell a boom from a blow (retired from this gate
+2026-07-23). The lexicon is deliberately crude (word forms, case-insensitive):
+over-matching can only SUPPRESS a flag, never create one.
 """
 from __future__ import annotations
 
@@ -26,13 +29,15 @@ CALM_LINE = "He strolls through the quiet market, savoring the morning air."
 
 
 def _understood(*impact_files, extra=()):
+    # impact_files: the model marked a blow in progress (strikes_or_weapons=
+    # 'in_use'); extra: ordinary panels with no strike delivered.
     panels = [{"scene_file": f, "description": "x", "action": "y",
                "panel_kind": "story", "intensity": "tense",
-               "impact_sfx": {"present": True, "regions": 1}}
+               "strikes_or_weapons": "in_use"}
               for f in impact_files]
     panels += [{"scene_file": f, "description": "x", "action": "y",
                 "panel_kind": "story", "intensity": "calm",
-                "impact_sfx": {"present": False, "regions": 0}}
+                "strikes_or_weapons": "none"}
                for f in extra]
     return {"panels": panels}
 
@@ -90,7 +95,20 @@ def test_split_halves_trace_back_to_the_impact_parent():
     assert len(pq.impact_mismatch_flags(beats, _understood("p1.jpg"))) == 1
 
 
-def test_legacy_understood_without_impact_stamp_is_silent():
+def test_visible_weapon_not_in_use_does_not_fire():
+    # The precision gain: a weapon merely DRAWN ('visible') is not a blow being
+    # delivered, so a tense stand-off narrated without impact wording is fine.
+    # This is the class the CV detector could not distinguish (a throne-boom or
+    # a drawn-but-unused blade both showed big red SFX).
+    understood = {"panels": [{"scene_file": "p1.jpg", "description": "x",
+                              "action": "y", "panel_kind": "story",
+                              "intensity": "tense",
+                              "strikes_or_weapons": "visible"}]}
+    beats = {"beats": [_beat(1, [(["p1.jpg"], CALM_LINE)])]}
+    assert pq.impact_mismatch_flags(beats, understood) == []
+
+
+def test_legacy_understood_without_strike_field_is_silent():
     legacy = {"panels": [{"scene_file": "p1.jpg", "description": "x",
                           "action": "y", "panel_kind": "story"}]}
     beats = {"beats": [_beat(1, [(["p1.jpg"], CALM_LINE)])]}
@@ -99,14 +117,14 @@ def test_legacy_understood_without_impact_stamp_is_silent():
 
 @pytest.mark.parametrize("kind", ["system", "chrome", "caption"])
 def test_exempt_panel_kinds_never_fire_the_gate(kind):
-    # The detector is pure CV with no panel_kind concept — it will happily
-    # stamp a red UI banner / in-world system card / caption. Understanding
-    # frequently classifies exactly that correctly as non-story, so this QA
-    # gate must never block on it regardless of the (calm) narration line.
+    # Belt-and-suspenders: even if the model marks a strike ('in_use') on a
+    # system/chrome/caption panel (a stat card, a UI banner, an author
+    # caption), this QA gate must never block on it regardless of the (calm)
+    # narration line.
     understood = {"panels": [{"scene_file": "p1.jpg", "description": "x",
                               "action": "y", "panel_kind": kind,
                               "intensity": "tense",
-                              "impact_sfx": {"present": True, "regions": 1}}]}
+                              "strikes_or_weapons": "in_use"}]}
     beats = {"beats": [_beat(1, [(["p1.jpg"], CALM_LINE)])]}
     assert pq.impact_mismatch_flags(beats, understood) == []
 

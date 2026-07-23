@@ -1212,9 +1212,10 @@ def mood_tag_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
 # senses ("ran through the market" = ran on foot, not a blade) are NOT
 # included — "run/runs/ran through" was removed for exactly that reason.
 # Over-matching can only SUPPRESS a flag, never create one — the safe
-# direction for a blocking gate. The trigger side is the deterministic
-# impact-SFX detector's stamp (impact_sfx.present in
-# manifest.panels.understood.json), never a model claim.
+# direction for a blocking gate. The trigger side is the model's OWN
+# strikes_or_weapons=='in_use' read (it sees the art and reads the SFX in one
+# pass); the old CV impact-lettering stamp drove false positives on ambient
+# red glyphs (throne-boom == stab) and was retired from this gate 2026-07-23.
 #
 # The lexicon LIVES in span_align (the narration<->span affinity authority
 # also needs it, and prep_qa imports span_align — this direction avoids the
@@ -1222,34 +1223,40 @@ def mood_tag_leak_flags(beats_obj: Any) -> List[Dict[str, Any]]:
 # its prep_qa.has_impact_lexeme / pq._IMPACT_LEXEMES spelling.
 
 
-# Panel kinds exempt from the impact trigger set: understanding may correctly
-# classify a stamped red banner as UI chrome / an in-world system card / a
-# caption rather than a story panel — the detector has no panel_kind concept
-# (pure CV over pixels), so this is the QA-side second layer that keeps a
-# non-story red stamp from ever reaching the blocking gate.
+# Panel kinds exempt from the impact trigger set (belt-and-suspenders): the
+# model classifies panel_kind and strikes_or_weapons in the SAME pass, so it
+# rarely calls a system/chrome/caption panel an 'in_use' strike — but if it
+# ever does, a stat card / UI banner must never reach the blocking gate.
 _IMPACT_EXEMPT_KINDS = frozenset({"system", "chrome", "caption"})
 
 
 def impact_mismatch_flags(beats_obj: Any, understood_obj: Any
                           ) -> List[Dict[str, Any]]:
-    """Deterministic narration-vs-art gate (ERROR, heal-then-block): a
-    narrated segment whose span contains a DETECTOR-stamped impact panel
-    (impact_sfx.present, stamped by panel_understand from the impact-SFX
-    lettering detector) must carry at least one impact-class lexeme. A stab
-    panel narrated as a peaceful stroll is exactly the mismatch class the
-    grounding judge scores too softly (WARN) to gate on. Panels whose
-    understood panel_kind is system/chrome/caption are excluded from the
-    trigger set — the detector has no panel_kind filter of its own, so a
-    stamped red UI banner or in-world system card can never fire this gate.
-    Healable: the heal loop re-narrates the group, whose writer payload now
-    carries the [IMPACT SFX on panel] marker. Same _base_scene normalization
-    as span_cover_flags so render-split halves trace back to the understood
-    panel. Silent on legacy understanding (no impact_sfx stamps)."""
+    """Narration-vs-art gate (ERROR, heal-then-block): a narrated segment
+    whose span contains a panel the UNDERSTANDING marks as a strike in
+    progress (strikes_or_weapons == 'in_use') must carry at least one
+    impact-class lexeme. A stab panel narrated as a peaceful stroll is exactly
+    the mismatch class the grounding judge scores too softly (WARN) to gate on.
+
+    Trigger is gemma's OWN semantic read, not the CV impact-lettering detector
+    (2026-07-23): the detector fires on any big red painted glyph and cannot
+    tell a throne-boom (두둥) from a stab (푹), so it flooded every action
+    chapter with false positives — while the model, which sees the art AND
+    reads the SFX, already had the right answer in the same record (nano ch6:
+    all 5 detector-flagged panels were strikes_or_weapons='none'). 'visible'
+    (a weapon merely drawn, no blow) does NOT trigger; only a blow being
+    delivered does. Panels whose understood panel_kind is system/chrome/
+    caption stay exempt (belt-and-suspenders: the model rarely calls a stat
+    card a strike). Healable: the heal loop re-narrates the group. Same
+    _base_scene normalization as span_cover_flags so render-split halves trace
+    back to the understood panel. Silent on legacy understanding (no
+    strikes_or_weapons field)."""
     flags: List[Dict[str, Any]] = []
     impact_files = {
         _base_scene(os.path.basename(str(p.get("scene_file") or "")))
         for p in ((understood_obj or {}).get("panels") or [])
-        if isinstance(p, dict) and (p.get("impact_sfx") or {}).get("present")
+        if isinstance(p, dict)
+        and str(p.get("strikes_or_weapons") or "").strip().lower() == "in_use"
         and str(p.get("panel_kind") or "").strip().lower()
         not in _IMPACT_EXEMPT_KINDS}
     if not impact_files or not isinstance(beats_obj, dict):
@@ -1262,9 +1269,9 @@ def impact_mismatch_flags(beats_obj: Any, understood_obj: Any
             if hits and line and not has_impact_lexeme(line):
                 flags.append(_flag(
                     "impact_mismatch", ERROR,
-                    f"detector-verified impact SFX on {hits[0]} but the "
-                    f"narration has no impact wording: {line[:80]!r} — "
-                    "re-narrate the strike/stab/blow explicitly",
+                    f"the panel understanding shows a strike in progress on "
+                    f"{hits[0]} but the narration has no impact wording: "
+                    f"{line[:80]!r} — re-narrate the strike/stab/blow explicitly",
                     scene=str(hits[0]), segment_id=seg))
     return flags
 
