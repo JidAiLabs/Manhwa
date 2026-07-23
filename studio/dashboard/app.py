@@ -574,8 +574,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                for r in c.execute(
                    "SELECT id, number, label, status, season, ep_dir, url "
                    "FROM chapter WHERE series_id=? ORDER BY number", (sid,))]
+        activity = jobs.chapter_activity(c, sid)
         for ch_row in chs:
             ch_row["url"] = _http_url(ch_row["url"])
+            ch_row["job"] = activity.get(ch_row["id"])
         title, series_url, autopilot, style = (c.execute(
             "SELECT title, series_url, autopilot, narration_style "
             "FROM series WHERE id=?", (sid,)).fetchone() or ("?", "", 0, None))
@@ -603,6 +605,24 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     thumb_exists=thumb_exists, thumb_ready=thumb_ready,
                     thumb_v=int(thumb.stat().st_mtime) if thumb_exists else 0,
                     thumb_approved=gates.thumbnail_approved(c, sid))
+
+    @app.get("/partials/series-chapters/{sid}", response_class=HTMLResponse)
+    def series_chapters_partial(request: Request, sid: int):
+        # Plain con() (NOT rcon): this polls every few seconds, and reconcile is
+        # a WRITE — the page load already reconciled. Here we only refresh the
+        # live job overlay + stage, both read straight from the DB.
+        c = con()
+        chs = [dict(zip(("id", "number", "label", "status", "season",
+                         "ep_dir", "url"), r))
+               for r in c.execute(
+                   "SELECT id, number, label, status, season, ep_dir, url "
+                   "FROM chapter WHERE series_id=? ORDER BY number", (sid,))]
+        activity = jobs.chapter_activity(c, sid)
+        for ch_row in chs:
+            ch_row["url"] = _http_url(ch_row["url"])
+            ch_row["job"] = activity.get(ch_row["id"])
+        return page("partials/series_chapters.html", request, sid=sid,
+                    chapters=chs)
 
     @app.get("/thumb/series/{sid}")
     def series_thumb(sid: int):

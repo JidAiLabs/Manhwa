@@ -1,0 +1,21 @@
+<table><tr><th>ch</th><th>label</th><th>status</th><th>season</th><th></th></tr>
+{% for c in chapters %}
+<tr{% if c.job and c.job.state == 'failed' %} class="stale"{% endif %}>
+<td>{{ '%g'|format(c.number) }}</td>
+<td><a href="/chapter/{{ c.id }}" style="color:var(--acc)">{{ c.label }}</a>{% if c.url %} <a href="{{ c.url }}" target="_blank" rel="noopener" title="read this chapter on the source site" class="kv" style="text-decoration:none">↗</a>{% endif %}</td>
+<td>
+{%- if c.job and c.job.state in ('running', 'cancelling') -%}
+  <span class="b run pulse">▶ {{ c.job.label }}…</span> <span class="kv" title="pipeline stage reached">{{ c.status }}</span>
+{%- elif c.job and c.job.state == 'queued' -%}
+  <span class="b q">⏳ queued · {{ c.job.label }}</span> <span class="kv">{{ c.status }}</span>
+{%- elif c.job and c.job.state == 'failed' -%}
+  <span class="b err">⚠ {{ c.job.label }} failed</span> <span class="kv">at {{ c.status }}</span>
+{%- else -%}
+  <span class="b {{ 'ok' if c.status in ('planned', 'rendered') else ('new' if c.status == 'discovered' else 'q') }}">{{ c.status }}</span>
+{%- endif -%}
+</td>
+<td class="kv">{{ c.season or '—' }}</td>
+<td><form class="inline" method="post" action="/jobs">
+<input type="hidden" name="type" value="prepare"><input type="hidden" name="chapter_id" value="{{ c.id }}">
+<button class="ghost">prepare → QA</button></form></td></tr>
+{% endfor %}</table>

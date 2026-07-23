@@ -76,13 +76,8 @@
 <span class="kv">regenerating clears approval — the badge always matches the image shown</span>
 </div>
 
-<table><tr><th>ch</th><th>label</th><th>status</th><th>season</th><th></th></tr>
-{% for c in chapters %}
-<tr><td>{{ '%g'|format(c.number) }}</td><td><a href="/chapter/{{ c.id }}" style="color:var(--acc)">{{ c.label }}</a>{% if c.url %} <a href="{{ c.url }}" target="_blank" rel="noopener" title="read this chapter on the source site" class="kv" style="text-decoration:none">↗</a>{% endif %}</td>
-<td><span class="b {{ 'ok' if c.status in ('planned','rendered') else ('new' if c.status=='discovered' else 'q') }}">{{ c.status }}</span></td>
-<td class="kv">{{ c.season or '—' }}</td>
-<td><form class="inline" method="post" action="/jobs">
-<input type="hidden" name="type" value="prepare"><input type="hidden" name="chapter_id" value="{{ c.id }}">
-<button class="ghost">prepare → QA</button></form></td></tr>
-{% endfor %}</table>
+<p class="kv" style="margin:.4em 0">status is <b>live</b> — a running job shows <span class="b run pulse">▶ voicing…</span>, a stuck one shows <span class="b err">⚠ failed</span>; refreshes every few seconds.</p>
+<div id="chaptertable" hx-get="/partials/series-chapters/{{ sid }}" hx-trigger="every 4s" hx-swap="innerHTML" hx-sync="this:replace">
+{% include "partials/series_chapters.html" %}
+</div>
 {% endblock %}

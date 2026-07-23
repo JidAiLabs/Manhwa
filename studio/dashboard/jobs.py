@@ -537,3 +537,37 @@ def failed_chapters(con: sqlite3.Connection,
     q += "ORDER BY c.number"
     return [dict(zip(("chapter_id", "label", "number", "status", "error"), r))
             for r in con.execute(q, args).fetchall()]
+
+
+# Present-tense labels for the Series-table live overlay (job type -> what it's
+# doing). Unmapped types fall through to the raw type name.
+_JOB_LABEL = {
+    "prepare": "preparing", "voiceover": "voicing", "render_segment": "rendering",
+    "qa_scan": "QA scan", "plan_teaser": "teaser", "series_thumbnail": "thumbnail",
+    "publish_meta": "meta", "concat": "concat", "branding_segments": "branding",
+    "refresh": "refresh", "add_series": "add-series", "discovery_scan": "scan",
+    "chain": "chaining",
+}
+
+
+def job_label(job_type: str) -> str:
+    return _JOB_LABEL.get(job_type, job_type or "?")
+
+
+def chapter_activity(con: sqlite3.Connection,
+                     series_id: int) -> Dict[int, Dict[str, Any]]:
+    """{chapter_id: {type, state, label}} — the LATEST non-heartbeat job per
+    chapter in this series, whatever its state. The Series table overlays this
+    on the persisted STAGE so a RUNNING or FAILED job is visible IN THE ROW —
+    before, only the stage showed, so a voicing chapter read 'scripted' and a
+    dead one read its last-good stage (the two staleness bugs the owner hit).
+    Latest-job semantics mean an auto-retry (queued/running) supersedes the
+    failure it came from — identical to failed_chapters, so the two never
+    disagree. Bare type/state come from the MAX(id) row (SQLite guarantee)."""
+    q = ("SELECT c.id, j.type, j.state FROM chapter c "
+         "JOIN (SELECT chapter_id, type, state, MAX(id) AS last FROM job "
+         "  WHERE chapter_id IS NOT NULL AND type!='heartbeat' "
+         "  GROUP BY chapter_id) j ON j.chapter_id = c.id "
+         "WHERE c.series_id = ?")
+    return {cid: {"type": jt, "state": st, "label": job_label(jt)}
+            for cid, jt, st in con.execute(q, (series_id,))}

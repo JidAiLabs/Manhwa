@@ -60,6 +60,9 @@ html.loading::before{content:"";position:fixed;top:0;left:0;right:0;height:2px;
   box-shadow:0 0 0 1px var(--err) inset}
 tr.stale td{background:#2a0f0c33}
 tr.overdue td{background:#2a220c33}
+/* a RUNNING job's badge breathes so live activity is unmistakable in a long list */
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.5}}
+.b.run.pulse{animation:livepulse 1.3s ease-in-out infinite}
 
 /* the Air runs this in a split window — keep it usable narrow */
 @media (max-width:900px){
