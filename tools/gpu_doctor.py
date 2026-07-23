@@ -36,17 +36,23 @@ def _run(cmd) -> str:
         return ""
 
 
-def _launchd_pids() -> set:
-    """PIDs currently owned by an originpower.* launchd job (parents = MANAGED)."""
+def _parse_launchd_pids(text: str) -> set:
+    """Every PID launchd currently supervises, from `launchctl list` output —
+    ANY label, not just originpower.*. That MUST include homebrew's ollama
+    (`homebrew.mxcl.ollama`): the whole point is "is launchd supervising it",
+    and a bare PPID 1 does NOT prove otherwise (launchd IS pid 1). Missing this
+    is exactly how a live server gets mislabeled ORPHAN. Non-running rows show
+    "-" for the PID and are skipped."""
     pids = set()
-    for line in _run(["launchctl", "list"]).splitlines():
+    for line in text.splitlines():
         f = line.split("\t")
-        if len(f) >= 3 and "originpower" in f[2] and f[0].lstrip("-").isdigit():
-            try:
-                pids.add(int(f[0]))
-            except ValueError:
-                pass
+        if f and f[0].lstrip("-").isdigit():
+            pids.add(int(f[0]))
     return pids
+
+
+def _launchd_pids() -> set:
+    return _parse_launchd_pids(_run(["launchctl", "list"]))
 
 
 def _live_pgids(db: str) -> set:

@@ -24,3 +24,20 @@ def test_classify_verdicts():
     assert gd.classify({"pid": 9, "ppid": 1, "pgid": 9}, launchd, live) == "ORPHAN"
     # PPID 1 alone is NOT orphan evidence — launchd IS pid 1 (the exact trap)
     assert gd.classify({"pid": 100, "ppid": 1, "pgid": 100}, launchd, live) != "ORPHAN"
+
+
+def test_launchd_pids_includes_homebrew_ollama():
+    """The parse MUST pick up ANY launchd label — esp. homebrew's ollama — or a
+    live model server gets mislabeled ORPHAN (the bug this whole tool prevents).
+    Non-running rows ('-') are skipped."""
+    sample = "\n".join([
+        "PID\tStatus\tLabel",
+        "2711\t0\thomebrew.mxcl.ollama",
+        "26666\t0\tapplication.com.originpower.worker",
+        "-\t0\tcom.apple.some.idle.service",
+    ])
+    pids = gd._parse_launchd_pids(sample)
+    assert 2711 in pids and 26666 in pids       # ollama + our worker = MANAGED
+    assert all(isinstance(p, int) for p in pids)
+    # the "-" (not running) row contributes nothing
+    assert len(pids) == 2
