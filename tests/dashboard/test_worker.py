@@ -837,7 +837,10 @@ def test_heal_visual_drops_drops_cross_dup_later_copy(tmp_path, monkeypatch):
     ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
     stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
     assert stuck == set()
-    assert json.loads((ep / "manual_drops.json").read_text()) == ["p000044.jpg"]
+    # auto-drops now land in their OWN file (not the human manual_drops.json),
+    # keyed by the QA code so render_prep labels them honestly (not "operator").
+    assert json.loads((ep / "auto_drops.json").read_text()) == {"p000044.jpg": "cross_dup"}
+    assert not (ep / "manual_drops.json").exists()
 
 
 def test_heal_visual_drops_stays_green_when_drop_succeeds(tmp_path, monkeypatch):
@@ -854,7 +857,30 @@ def test_heal_visual_drops_stays_green_when_drop_succeeds(tmp_path, monkeypatch)
     ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
     stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
     assert stuck == set()                 # drop succeeded -> nothing to block
-    assert json.loads((ep / "manual_drops.json").read_text()) == ["b.jpg"]
+    assert json.loads((ep / "auto_drops.json").read_text()) == {"b.jpg": "blank_crop"}
+
+
+def test_heal_visual_drops_never_drops_a_narrated_sole_cut(tmp_path, monkeypatch):
+    """The nano ch6 root cause: a droppable visual flag on a panel that OWNS a
+    spoken line must NOT be auto-dropped — dropping it orphans the line into a
+    long_hold. It's left in place (its non-blocking flag stays); nothing dropped."""
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    # a plan where p000017 is the SOLE shown art of a narration-bearing segment
+    (ep / "render.plan.clean.json").write_text(json.dumps({"timeline": [
+        {"segment_id": "g0005_p13", "scene_files": ["p000017.jpg"],
+         "tts_text": "The heavy tread of boots echoes through the courtyard."}]}))
+    (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 10, "flags": [
+        {"code": "near_dup", "severity": "ERROR", "scene": "p000017.jpg"}]}))
+
+    def _boom(*a, **k):                    # re-prep must NOT be reached
+        raise AssertionError("should not re-prep — nothing droppable")
+    monkeypatch.setattr(worker, "_run_prep_and_qa", _boom)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
+    assert stuck == set()                  # the narrated panel is protected, not stuck
+    assert not (ep / "auto_drops.json").exists()   # nothing auto-dropped
 
 
 # ---- auto-intro: a fully-rendered bundle auto-plans teaser + intro-ch1 ------

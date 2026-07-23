@@ -929,13 +929,33 @@ _VISUAL_DROPPABLE = {"blank_crop", "dead_box_leak", "visible_text", "ghost_text"
                      "cross_dup"}
 
 
+def _narrated_sole_cuts(ep: Path) -> set:
+    """Panels that are the ONLY shown art of a narration-bearing segment —
+    dropping one orphans a voiced line into a held stand-in (long_hold), so the
+    auto-heal must never drop them (render_prep protects them anyway, which would
+    make the drop a self-blocking no-op). Read from the plan; {} on any error =
+    protect nothing (fail-open, same as before this guard existed)."""
+    try:
+        plan = json.loads((ep / "render.plan.clean.json").read_text())
+    except Exception:
+        return set()
+    out = set()
+    for seg in plan.get("timeline") or []:
+        sfs = seg.get("scene_files") or []
+        if str(seg.get("tts_text") or "").strip() and len(sfs) == 1:
+            out.add(Path(str(sfs[0])).name)
+    return out
+
+
 def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                        log: TextIO) -> set:
     """Last-resort heal for QA ERRORs re-narration can't touch: DROP the
-    offending panel (manual_drops.json, the same mechanism as the dashboard drop
-    button) + re-prep. Bounded to <=25% of cuts so a chapter is never gutted —
-    a slightly shorter recap beats a dead chapter. Runs only after narration
-    heal; spotless chapters never reach here.
+    offending panel (auto_drops.json — its OWN file, separate from the dashboard's
+    manual_drops.json so an automatic drop is never mislabeled a human click) +
+    re-prep. Bounded to <=25% of cuts so a chapter is never gutted — a slightly
+    shorter recap beats a dead chapter. Runs only after narration heal; spotless
+    chapters never reach here. NEVER drops a panel that owns a spoken line (that
+    orphaned nano ch6 p17/g0005_p13 into a 15.2s long_hold).
 
     Returns the set of _VISUAL_DROPPABLE codes whose offending panel is STILL
     shown after the heal — i.e. the drop set was over the cap, or the drop was a
@@ -943,7 +963,7 @@ def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
     remove). The caller MUST block on these: otherwise the chapter ships a
     blank/leaked/visible-text panel under a green QA. When the heal SUCCEEDS the
     panel is no longer shown, so the flag is gone and this returns an empty set."""
-    mdp = ep / "manual_drops.json"
+    adp = ep / "auto_drops.json"
 
     def _stuck_codes() -> set:
         try:
@@ -960,9 +980,19 @@ def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
         except Exception:
             return set()
         flags = report.get("flags") or []
-        drop = {Path(str(f.get("scene"))).name for f in flags
-                if f.get("severity") == "ERROR"
-                and f.get("code") in _VISUAL_DROPPABLE and f.get("scene")}
+        # A panel that OWNS a spoken line is never auto-dropped: dropping it
+        # orphans the line into a held stand-in (long_hold, nano ch6 p17), and
+        # render_prep protects it anyway so the drop would be a self-blocking
+        # no-op. Its visual flag stays — non-blocking — instead.
+        protected = _narrated_sole_cuts(ep)
+        drop_map: Dict[str, Any] = {}
+        for f in flags:
+            if (f.get("severity") == "ERROR"
+                    and f.get("code") in _VISUAL_DROPPABLE and f.get("scene")):
+                nm = Path(str(f.get("scene"))).name
+                if nm not in protected:
+                    drop_map[nm] = f.get("code")
+        drop = set(drop_map)
         if not drop:
             return set()                      # no drop-able visual error left
         n_cuts = int(report.get("n_cuts") or 0)
@@ -972,17 +1002,20 @@ def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
                       f"the {cap}/{n_cuts}-cut cap — BLOCKING for manual review\n")
             return _stuck_codes()             # over cap: panels remain -> block
         try:
-            existing = set(map(str, json.loads(mdp.read_text()))) if mdp.exists() \
-                else set()
+            existing = json.loads(adp.read_text()) if adp.exists() else {}
+            if not isinstance(existing, dict):
+                existing = {}
         except Exception:
-            existing = set()
-        if drop <= existing:                  # already in manual_drops but STILL
+            existing = {}
+        if drop <= set(existing):             # already in auto_drops but STILL
             # flagged -> the drop was a no-op (e.g. sole cut of a unique blank
             # render_prep can't remove). It would ship blank -> block.
             log.write(f"[visual-heal] {sorted(drop)} already dropped but STILL "
                       f"flagged (no-op drop, e.g. sole cut) — BLOCKING\n")
             return _stuck_codes()
-        mdp.write_text(json.dumps(sorted(existing | drop), indent=1))
+        merged = dict(existing)
+        merged.update(drop_map)
+        adp.write_text(json.dumps(dict(sorted(merged.items())), indent=1))
         log.write(f"[visual-heal] auto-dropping {len(drop)} QA-flagged panel(s) "
                   f"+ re-prepping: {sorted(drop)}\n")
         _run_prep_and_qa(con, ch, log, heal_aware=True, reuse_clean=True)

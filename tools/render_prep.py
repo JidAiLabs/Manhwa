@@ -3681,6 +3681,19 @@ def main() -> int:
     # (same intent as the substitute path's system_files exempt below). Operator
     # manual_drops below still WIN (the human overrides the writer).
     protect_narrated_from_junk(junk, narrated_files, also_protect=system_files)
+    # AUTO visual-heal drops (worker _heal_visual_drops) live in their OWN file
+    # so they read honestly (not "operator") and stay subject to the narration
+    # guard — an automatic step must never override a story beat the writer chose.
+    # {scene_file: qa_code}. Legacy builds wrote these into manual_drops.json; the
+    # guard re-run below now catches any narrated straggler left there.
+    adp = os.path.join(args.episode_dir, "auto_drops.json")
+    if os.path.exists(adp):
+        try:
+            with open(adp, "r", encoding="utf-8") as fh:
+                for f, code in (json.load(fh) or {}).items():
+                    junk.setdefault(str(f), f"auto visual-heal drop ({code})")
+        except Exception:
+            pass
     # operator drops: one click on the dashboard bans a panel for good
     mdp = os.path.join(args.episode_dir, "manual_drops.json")
     if os.path.exists(mdp):
@@ -3690,6 +3703,15 @@ def main() -> int:
                     junk[str(f)] = "operator drop (dashboard)"
         except Exception:
             pass
+    # NARRATION GUARD, re-run AFTER the drop files (2026-07-23, nano ch6 p17):
+    # protect_narrated_from_junk ran ONLY before them, so anything in manual_
+    # drops.json / auto_drops.json skipped the exact guard built to stop it — an
+    # auto-heal near-dup drop of a panel that owns a spoken line (p17 / g0005_p13)
+    # orphaned the line into a 15.2s held stand-in = a BLOCKING long_hold the heal
+    # then couldn't clear. A panel that owns a spoken line is protected from EVERY
+    # drop source now; to remove one, re-narrate the group (frees the ownership)
+    # rather than freeze a neighbour. Non-narrated drops (auto or human) still win.
+    protect_narrated_from_junk(junk, narrated_files, also_protect=system_files)
     def _cut_is_junk(f: str) -> bool:
         # drop a cut when its file is junk (single panel or operator-dropped
         # original), or when BOTH split halves are junk; a single junk half

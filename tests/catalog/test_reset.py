@@ -143,7 +143,7 @@ def test_derived_lists_match_legacy():
         "manifest.vision.json", "manifest.panels.understood.json",
         "manifest.groups.json", "manifest.story.json", "manifest.cast.json",
         "stitch_chunks", "scenes", "scenes_clean",
-        ".cut_judge_cache.json", "manual_drops.json"}
+        ".cut_judge_cache.json", "manual_drops.json", "auto_drops.json"}
     legacy = {
         "scripted":   legacy_voice,
         "grouped":    legacy_voice | legacy_narration,

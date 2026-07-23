@@ -53,7 +53,7 @@ _VOICE_EXTRAS = ("tts", "render")
 _NARRATION_EXTRAS = ("prep_qa.json", "prep_qa.html", "heal_corrections.json",
                      "manifest.beats.preheal.json")
 _VISUAL_EXTRAS = ("stitch_chunks", "scenes", "scenes_clean",
-                  ".cut_judge_cache.json", "manual_drops.json")
+                  ".cut_judge_cache.json", "manual_drops.json", "auto_drops.json")
 
 
 def artifacts_for(target: str) -> tuple:
