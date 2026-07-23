@@ -141,3 +141,22 @@ def test_expand_index_ranges_clamps_exclusive_end_fencepost():
     expanded, issue = sg.expand_index_ranges(
         [{"from_index": 0, "to_index": 9, "segment": "present"}], order)
     assert expanded == [] and "out of bounds" in issue
+
+
+def test_expand_index_ranges_drops_spurious_appended_beat():
+    # ORV Ep1 job 122 (ollama): the model appended a beat whose range STARTS
+    # past the last panel (fi >= n) — a phantom over non-existent panels. Drop
+    # it (don't fail the chapter); real beats expand, coverage folds the rest.
+    order = [f"p{i}.jpg" for i in range(52)]      # n=52, valid indices 0..51
+    beats = [
+        {"from_index": 0, "to_index": 50, "segment": "present", "arc_label": "a"},
+        {"from_index": 52, "to_index": 53, "segment": "present", "arc_label": "b"},
+    ]
+    expanded, issue = sg.expand_index_ranges(beats, order)
+    assert issue == ""                            # no hard fail
+    assert len(expanded) == 1                     # phantom dropped
+    assert expanded[0]["scene_files"] == order[0:51]
+    # a beat starting IN bounds but ending past is NOT a phantom -> stays loud
+    expanded, issue = sg.expand_index_ranges(
+        [{"from_index": 40, "to_index": 99, "segment": "present"}], order)
+    assert expanded == [] and "out of bounds" in issue

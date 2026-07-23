@@ -529,6 +529,17 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
             ti = n - 1
             if fi == n:
                 fi = n - 1
+        # Spurious APPENDED beat (2026-07-23, ORV Ep1 job 122 on ollama): a beat
+        # whose range STARTS at or past the last panel (fi >= n) references only
+        # panels that don't exist — the model tacked an extra beat past the end
+        # ([52,53] over 52 panels). It is NOT a fencepost slip (handled above)
+        # and NOT a genuine over-wide range (fi in-bounds, ti past — that still
+        # fails loudly below, by design). DROP it: repair_to_shots's coverage
+        # invariant folds any truly-skipped panel into the beat before it, so
+        # nothing is lost, and a deterministic backend that keeps re-appending
+        # the same phantom beat can never advance otherwise.
+        if isinstance(fi, int) and not isinstance(fi, bool) and fi >= n:
+            continue
         if not isinstance(fi, int) or isinstance(fi, bool):
             return [], f"beat {i} from_index ({fi!r}) is not an integer"
         if not isinstance(ti, int) or isinstance(ti, bool):
