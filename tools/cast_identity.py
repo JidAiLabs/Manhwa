@@ -485,6 +485,20 @@ def subject_actor_nouns(line: str, noun_map: Dict[str, Set[str]]
     ("an assassin's eye…"). Late mentions are usually objects/off-panel
     references ("their blades meant for the ancestor") — deliberately not
     flagged; this is the precision lever that keeps actor_mismatch a
-    measured heal-target, not an FP fountain."""
-    return [(t, members)
-            for (t, members, _plural) in subject_actor_nouns_ex(line, noun_map)]
+    measured heal-target, not an FP fountain.
+
+    Collapsed by RESOLVED MEMBER-SET: a multi-token name ("Cheon Yoo Jong"
+    → cheon/yoo/jong, all ONE cast member) is a single mention, not three —
+    otherwise the identity gates (actor_mismatch, dead_actor) fire once per
+    name word for the same person (nano ch6: 1 issue reported as 3). The
+    plural-aware _ex form stays per-token on purpose — actor_count reads the
+    plural bit of each individual word."""
+    out: List[Tuple[str, Set[str]]] = []
+    seen_members: Set[frozenset] = set()
+    for t, members, _plural in subject_actor_nouns_ex(line, noun_map):
+        key = frozenset(members)
+        if key in seen_members:
+            continue
+        seen_members.add(key)
+        out.append((t, members))
+    return out

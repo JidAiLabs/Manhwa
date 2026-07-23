@@ -313,6 +313,26 @@ def test_subject_actor_nouns_ex_plurality_bit():
         ("assassin", {"unnamed assassin"})]
 
 
+def test_multitoken_name_collapses_to_one_member_in_the_wrapper():
+    # A multi-token name — "Prince Cheon" here, "Cheon Yoo Jong" in nano ch6 —
+    # is ONE person whose every word maps to the same member. The wrapper
+    # collapses it to a single hit so the identity gates (actor_mismatch,
+    # dead_actor) flag the actor once, not once per name word (ch6 reported a
+    # single mismatch three times). _ex stays per-token for actor_count.
+    nm = {"prince": {"our protagonist"}, "cheon": {"our protagonist"},
+          "assassin": {"unnamed assassin"}}
+    assert ci.subject_actor_nouns("Prince Cheon draws his steel.", nm) == [
+        ("prince", {"our protagonist"})]
+    # _ex is intentionally NOT collapsed — both name words survive
+    assert [t for t, _m, _p in
+            ci.subject_actor_nouns_ex("Prince Cheon draws his steel.", nm)] == [
+        "prince", "cheon"]
+    # dedup is BY MEMBER, not blanket first-hit: a genuinely different second
+    # actor in subject position is still returned
+    assert ci.subject_actor_nouns("Prince Cheon fights the assassin.", nm) == [
+        ("prince", {"our protagonist"}), ("assassin", {"unnamed assassin"})]
+
+
 # ---- 2026-07-16 wave: deterministic identity gate (writer-side) --------------
 
 _NM = {"assassin": {"unnamed assassin"}, "prince": {"our protagonist"},
