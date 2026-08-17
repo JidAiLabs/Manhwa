@@ -10,7 +10,11 @@ backend = "yolo"
 # v3 8-class (2026-07-15, run v3_8class_960 best=epoch 58): panel/speech_bubble/radio/
 # speech_background/sfx_text/system_ui/caption_box/free_text. imgsz + class ids resolve
 # from the ckpt itself. Rollback = point back at webtoon_panels.pt (legacy 6-class).
-yolo_weights = "assets/models/webtoon_panels_v3.pt"
+# v4 art-only (2026-08-17, run v4_artonly_960, owner sign-off 2026-08-17): the panel box
+# hugs the ART; gutter dialogue is re-attached at detect time (snap attach_gap) so
+# materialized scenes keep art + dialogue for OCR, and panels_norm_art drives the
+# art_only shown frame. Rollback = webtoon_panels_v3.pt (needs `reset --to detected`).
+yolo_weights = "assets/models/webtoon_panels_v4.pt"
 
 [gallerydl]
 sleep = 2.0
@@ -66,7 +70,7 @@ max_same_image_hold_sec = 10.0
 #              art never cut (per-side keep fallback). NEEDS the v4 art-only weights
 #              (assets/models/webtoon_panels_v4.pt) + a re-detect (`reset --to detected`);
 #              on pre-v4 detections it silently behaves like keep. Owner 2026-07-23 goal.
-bubble_shown_mode = "keep"
+bubble_shown_mode = "art_only"
 
 [teaser]
 # bundle-level arc teaser: pick a high-stakes window from a bundle's chapters,
