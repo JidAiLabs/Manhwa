@@ -33,6 +33,19 @@ def available() -> bool:
 
 # --- OCR (text) -------------------------------------------------------------
 
+def sane_text_region(x0: float, y0: float, x1: float, y1: float, *,
+                     slack: float = 0.02, max_area: float = 0.20,
+                     max_h: float = 0.50) -> bool:
+    """True when a normalized text-line box could plausibly be text: inside
+    the image (± *slack*), under *max_area* of the panel and under *max_h* of
+    its height. Real lines — even a title card's — are small; a region that is
+    not is a glyph/art misread."""
+    if x0 < -slack or y0 < -slack or x1 > 1.0 + slack or y1 > 1.0 + slack:
+        return False
+    w, h = max(0.0, x1 - x0), max(0.0, y1 - y0)
+    return w * h <= max_area and h <= max_h
+
+
 def ocr_words(path: str, *, langs: Tuple[str, ...] = ("en-US", "ko-KR", "zh-Hans"),
               max_words: int = 500) -> Tuple[str, List[Dict[str, Any]]]:
     """Return (full_text, ocr_words). ocrmac yields LINE-level regions; each is
@@ -46,6 +59,12 @@ def ocr_words(path: str, *, langs: Tuple[str, ...] = ("en-US", "ko-KR", "zh-Hans
         x0, y0, x1, y1 = _flip(bx, by, bw, bh)
         toks = (text or "").split()
         if not toks:
+            continue
+        if not sane_text_region(x0, y0, x1, y1):
+            # a "line" that runs off the image or covers a fifth of the panel
+            # is a big SFX glyph / art edge misread as text (nano ch1 p000019:
+            # a 65%-wide off-image region read as the word "Alden" — which
+            # the cast builder then took for a character's name)
             continue
         lines.append(text)
         total = sum(len(t) for t in toks) or 1

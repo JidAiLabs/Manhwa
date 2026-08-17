@@ -21,6 +21,7 @@ Auth mirrors gemini_narrative_pass (Vertex AI via the gcp-vision SA key).
 
 import argparse
 import json
+import re
 import os
 import sys
 from typing import Any, Dict, List, Optional
@@ -65,6 +66,27 @@ def _sample_images(items: List[Dict[str, Any]], cap: int) -> List[str]:
     return [str(it["scene_path"]) for it in picked]
 
 
+def _page_words(items: List[Dict[str, Any]]) -> str:
+    """Text that is really ON the page for name validation: per-word OCR with
+    sane geometry (word boxes inside the image, not glyph-sized) when the
+    vision manifest carries ocr_words; else the cleaned line text."""
+    try:
+        from apple_vision import sane_text_region  # sibling tool
+    except Exception:  # pragma: no cover
+        sane_text_region = None
+    out: List[str] = []
+    for it in items:
+        words = (it.get("vision") or {}).get("ocr_words") or []
+        if words and sane_text_region is not None:
+            for wd in words:
+                bb = wd.get("bbox") or []
+                if len(bb) == 4 and sane_text_region(*[float(v) for v in bb]):
+                    out.append(str(wd.get("t") or ""))
+        else:
+            out.append(str(it.get("ocr_clean") or ""))
+    return "\n".join(out)
+
+
 def _all_ocr(items: List[Dict[str, Any]]) -> List[str]:
     out: List[str] = []
     for it in items:
@@ -72,6 +94,70 @@ def _all_ocr(items: List[Dict[str, Any]]) -> List[str]:
         if o:
             out.append(f"{it.get('scene_file')}: {o[:200]}")
     return out
+
+
+_DESCRIPTIVE_LEAD = ("the ", "our ", "a ", "an ", "one ", "their ", "his ", "her ",
+                     "that ", "this ", "some ", "two ", "three ")
+
+
+def _looks_like_proper_name(name: str) -> bool:
+    n = (name or "").strip()
+    if not n or n.lower().startswith(_DESCRIPTIVE_LEAD):
+        return False
+    toks = [t for t in re.split(r"[\s\-]+", n) if t]
+    return bool(toks) and all(t[:1].isupper() for t in toks)
+
+
+def _name_in_text(name: str, ocr_lower: str) -> bool:
+    """Every alphabetic token of *name* occurs in the chapter text (address
+    terms like 'Ancestor-nim' match on 'ancestor' + 'nim')."""
+    toks = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if len(t) >= 2]
+    return bool(toks) and all(re.search(r"\b" + re.escape(t) + r"\b", ocr_lower) for t in toks)
+
+
+def _handle_from_description(desc: str, role: str) -> str:
+    """'A masked figure wearing a dark brown hooded cloak…' -> 'the masked
+    figure'; falls back to 'the <role>'. Deterministic, no model."""
+    d = re.sub(r"\s+", " ", (desc or "").strip())
+    d = re.sub(r"^(a|an|the)\s+", "", d, flags=re.I)
+    d = re.split(r"[,.;:(]| wearing | with | who | in a | in an | holding | carrying ", d, maxsplit=1)[0]
+    words = [w for w in d.split(" ") if w][:3]
+    if 1 <= len(words) <= 3 and all(re.match(r"^[A-Za-z\-]+$", w) for w in words):
+        return "the " + " ".join(words).lower()
+    return "the " + (role.strip().lower() or "figure")
+
+
+def sanitize_cast_names(cast: Dict[str, Any], ocr_text: str):
+    """Names must come from the page. The prompt says so, but the model still
+    coins one now and then (nano ch1: the unnamed masked leader became "Alden"
+    and every line shipped it). A proper-name-looking canonical_name / alias
+    whose tokens never occur in the chapter OCR is replaced by the descriptive
+    spoken_name (else "the <id words>"); invented aliases are dropped. The
+    protagonist's 'our protagonist' handle and descriptive handles are left
+    alone. Returns (cast, [(id, invented, replacement), ...])."""
+    ocr_lower = (ocr_text or "").lower()
+    fixes = []
+    for m in (cast or {}).get("cast") or []:
+        name = str(m.get("canonical_name") or "")
+        if _looks_like_proper_name(name) and not _name_in_text(name, ocr_lower):
+            spoken = str(m.get("spoken_name") or "").strip()
+            bad_toks = {t for t in re.split(r"[^a-z0-9]+", name.lower()) if t}
+            id_words = re.sub(r"[_\-]+", " ", str(m.get("id") or "")).strip().lower()
+            if spoken and spoken.lower().startswith(_DESCRIPTIVE_LEAD):
+                repl = spoken
+            elif id_words and not (bad_toks & set(id_words.split())):
+                repl = "the " + id_words
+            else:
+                repl = _handle_from_description(str(m.get("visual_description") or ""),
+                                                str(m.get("role") or ""))
+            m["canonical_name"] = repl
+            if spoken and spoken.lower() == name.lower():
+                m["spoken_name"] = repl
+            fixes.append((str(m.get("id") or ""), name, repl))
+        if m.get("aliases"):
+            m["aliases"] = [a for a in m["aliases"]
+                            if not (_looks_like_proper_name(str(a)) and not _name_in_text(str(a), ocr_lower))]
+    return cast, fixes
 
 
 def recurring_figures(understood: Any, min_panels: int = 3) -> List[str]:
@@ -332,7 +418,21 @@ def main() -> int:
             format=_lower_types(CAST_SCHEMA), think=False,
             options={"temperature": 0.2, "num_ctx": 16384,
                      "num_predict": 2400})
-        cast = json.loads(resp["message"]["content"])
+        try:
+            cast = json.loads(resp["message"]["content"])
+        except json.JSONDecodeError as e:
+            # self-repair retry (nano ch1 job 144: an unterminated string cost a
+            # 12-min job restart) — one more roll with more room to finish
+            print(f"[warn] cast JSON unparseable ({e}); retrying once with a "
+                  "larger num_predict")
+            resp = client.chat(
+                model=args.model,
+                messages=[{"role": "user", "content": "\n".join(text_blobs),
+                           "images": [str(pth) for pth in images]}],
+                format=_lower_types(CAST_SCHEMA), think=False,
+                options={"temperature": 0.3, "num_ctx": 16384,
+                         "num_predict": 4000})
+            cast = json.loads(resp["message"]["content"])
     else:
         client = genai.Client(vertexai=True, project=project, location=args.location)
         resp = client.models.generate_content(
@@ -345,6 +445,10 @@ def main() -> int:
             ),
         )
         cast = json.loads(resp.text)
+    # names come from the page — replace invented proper names (nano ch1: "Alden")
+    cast, name_fixes = sanitize_cast_names(cast, _page_words(items))
+    for cid, bad, good in name_fixes:
+        print(f"[fix] cast {cid}: invented name {bad!r} (not in chapter OCR) -> {good!r}")
     inputs = [args.groups_manifest, args.vision_manifest]
     if args.understood and os.path.exists(args.understood):
         inputs.append(args.understood)
