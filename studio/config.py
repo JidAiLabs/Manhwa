@@ -86,6 +86,11 @@ class Config:
                                              # STUDIO_NARR_SEGMENTATION wins;
                                              # invalid values fall back to
                                              # "adaptive" with a warning.
+    art_only_straddle_push_frac: float = 0.0  # [render] art_only: push a bubble
+                                             # hanging <= this fraction of the
+                                             # panel into the art OUT of the
+                                             # frame (cuts that much art); 0 =
+                                             # never cut art (straddlers whole)
     bubble_shown_mode: str = "keep"          # [render] shown-frame policy for
                                              # story panels: keep | art_only |
                                              # husk (render_prep
@@ -216,6 +221,9 @@ def load(path: Path | None = None) -> Config:
             r.get("max_same_image_hold_sec", 10.0) or 10.0),
         bubble_shown_mode=str(os.environ.get("STUDIO_BUBBLE_SHOWN_MODE")
                               or r.get("bubble_shown_mode", "keep") or "keep"),
+        art_only_straddle_push_frac=float(
+            os.environ.get("STUDIO_ART_ONLY_PUSH_FRAC")
+            or r.get("art_only_straddle_push_frac", 0.0) or 0.0),
         narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
                                      bool(m.get("narration_sanitize", True))),
         teaser_enabled=_env_bool("STUDIO_TEASER_ENABLED",

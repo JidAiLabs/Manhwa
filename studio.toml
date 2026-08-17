@@ -71,6 +71,11 @@ max_same_image_hold_sec = 10.0
 #              (assets/models/webtoon_panels_v4.pt) + a re-detect (`reset --to detected`);
 #              on pre-v4 detections it silently behaves like keep. Owner 2026-07-23 goal.
 bubble_shown_mode = "art_only"
+# art_only straddler policy (owner decision, 2026-08-18): a bubble hanging over the
+# panel border by at most this fraction of the panel is pushed OUT of the frame — that
+# strip of art is lost. 0.0 = never cut art (straddling bubbles are kept whole).
+# Measured nano ch1: 68/84 bubbles straddle, median 12.6% deep; 0.10 removes ~30, 0.20 ~60.
+art_only_straddle_push_frac = 0.0
 
 [teaser]
 # bundle-level arc teaser: pick a high-stakes window from a bundle's chapters,

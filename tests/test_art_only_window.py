@@ -85,12 +85,13 @@ def test_art_only_straddling_bubble_pulls_edge_out_no_half_bubble():
     img = _img()                                        # flat top 350, art below
     # bubble hangs from the gutter INTO the art (350..420) -> "never cut art":
     # the edge moves up to the bubble's top instead of showing half a bubble
+    # (bubble boxes are padded ~2% so a cut lands past the tail: 200 -> 180)
     win = art_only_window(img, (0, 350, 800, 1000), bubbles=[(100, 200, 500, 420)])
-    assert win == (0, 200, 800, 1000)
+    assert win == (0, 180, 800, 1000)
     # a chained second bubble touching that new edge is pulled in as well
     win = art_only_window(img, (0, 350, 800, 1000),
                           bubbles=[(100, 200, 500, 420), (300, 60, 700, 210)])
-    assert win == (0, 60, 800, 1000)
+    assert win == (0, 40, 800, 1000)
 
 
 def test_art_only_also_trims_bubble_stack_on_the_panels_own_top_edge():
@@ -103,12 +104,25 @@ def test_art_only_also_trims_bubble_stack_on_the_panels_own_top_edge():
     assert win == (0, 500, 800, 1000)
 
 
-def test_art_only_shallow_straddler_over_flat_art_is_trimmed_not_kept():
-    img = _img(h=1000); img[350:420] = 240          # 70px flat strip at the art top
+def test_art_only_shallow_straddler_is_kept_whole_by_default_pushed_only_on_request():
+    img = _img(h=1000); img[350:460] = 240          # 110px flat strip at the art top
     art = (0, 350, 800, 1000)
-    # bubble hangs 60px into the art over that flat strip -> cut at its inner edge
+    # default policy: a straddling bubble is taken WHOLE (pushing in cuts art on
+    # dark panels — pixel stats cannot tell an eye strip from a sky strip)
     win = art_only_window(img, art, bubbles=[(100, 200, 500, 410)])
-    assert win == (0, 410, 800, 1000)
-    # deep straddler over busy art -> pulled in whole (never cut art)
-    win2 = art_only_window(img, art, bubbles=[(100, 200, 500, 700)])
-    assert win2 == (0, 200, 800, 1000)
+    assert win == (0, 180, 800, 1000)
+    # opt-in push (push_max_ink > 0): shallow + chrome-like strip -> cut past the bubble
+    win2 = art_only_window(img, art, bubbles=[(100, 200, 500, 410)], push_max_ink=0.05)
+    assert win2 == (0, 430, 800, 1000)
+    # deep straddler over busy art -> pulled in whole either way
+    win3 = art_only_window(img, art, bubbles=[(100, 200, 500, 700)], push_max_ink=0.05)
+    assert win3 == (0, 180, 800, 1000)
+
+
+def test_straddle_push_frac_is_the_owners_depth_policy_no_pixel_test():
+    img = _img(h=1000)                               # art 350..1000 (noise), flat above
+    art = (0, 350, 800, 1000)
+    bubble = [(100, 200, 500, 410)]                  # 60px = 9% into a 650px panel
+    assert art_only_window(img, art, bubbles=bubble) == (0, 180, 800, 1000)            # default: whole
+    assert art_only_window(img, art, bubbles=bubble, straddle_push_frac=0.10) == (0, 430, 800, 1000)  # pushed
+    assert art_only_window(img, art, bubbles=bubble, straddle_push_frac=0.05) == (0, 180, 800, 1000)  # too deep

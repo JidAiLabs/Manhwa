@@ -1009,6 +1009,14 @@ def bubble_coverage(
     return float(grid.mean())
 
 
+def _default_art_only_push_frac() -> float:
+    try:
+        from studio.config import load as _load
+        return float(getattr(_load(), "art_only_straddle_push_frac", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
 def _default_panel_weights() -> str:
     try:
         from studio.detect.yolo_panels import default_weights
@@ -1028,16 +1036,22 @@ def band_is_chrome(
     dominance: float = 0.55,
     flat_std: float = 18.0,
     edge_thr: float = 0.015,
+    max_ink: float = 0.0,
+    ink_dev: int = 25,
 ) -> bool:
     """True when the horizontal band gray[a:b] is dialogue chrome, safe to cut
-    off the shown frame: nothing protected intersects it AND it is bubble-
-    dominated (union cover >= *dominance*) OR its non-bubble remainder is flat
-    (std < *flat_std*) OR its bubble-masked edge density is below *edge_thr*.
-    Backdrop gradients (sky, blur) beat the flat test but carry no ART: the
-    edge test is on the min-art-score scale (balloon outlines masked out; a
-    face/action in the band fires edges and vetoes the cut). Measured on nano
-    p000023: balloon band 0.0115 vs the face region 0.0419 — 3.6x separation.
-    Vertical bands: pass gray.T with x/y-swapped boxes."""
+    off the shown frame: nothing protected intersects it, its non-bubble
+    remainder carries no INK (at most *max_ink* of those pixels deviate more
+    than *ink_dev* levels from the band's median — a small dark figure on a
+    dark night sky, nano ch1 p000014's standing assassin, is invisible to std
+    and Canny but not to this), AND it is bubble-dominated (union cover >=
+    *dominance*) OR its remainder is flat (std < *flat_std*) OR its bubble-
+    masked edge density is below *edge_thr*. Backdrop gradients (sky, blur)
+    beat the flat test but carry no ART: the edge test is on the min-art-score
+    scale (balloon outlines masked out; a face/action in the band fires edges
+    and vetoes the cut). Measured on nano p000023: balloon band 0.0115 vs the
+    face region 0.0419 — 3.6x separation. Vertical bands: pass gray.T with
+    x/y-swapped boxes."""
     if b <= a:
         return False
     w = gray.shape[1]
@@ -1049,10 +1063,20 @@ def band_is_chrome(
         iy0, iy1 = max(a, int(by1)) - a, min(b, int(by2)) - a
         if iy1 > iy0:
             band[iy0:iy1, max(0, int(bx1)):max(0, int(bx2))] = True
-    if float(band.mean()) >= dominance:
-        return True
     rest = gray[a:b][~band]
     if rest.size == 0:
+        return True
+    if max_ink > 0.0:
+        # optional "ink" veto (off by default — measured 2026-08-18 on nano ch1:
+        # a night sky with light rays scores MORE ink than an eye strip, so it
+        # cannot tell art from backdrop; kept as a knob for experiments):
+        # |v - median| > ink_dev outside the bubbles, opened 5x5 so border
+        # lines / bubble tails vanish; fraction of the band's non-bubble area
+        dev = (np.abs(gray[a:b].astype(np.int16) - int(np.median(rest))) > ink_dev) & ~band
+        dev = cv2.erode(dev.astype(np.uint8), np.ones((5, 5), np.uint8))
+        if float(dev.sum()) / float(max(1, rest.size)) > max_ink:
+            return False
+    if float(band.mean()) >= dominance:
         return True
     if float(rest.std()) < flat_std:
         return True
@@ -1102,6 +1126,8 @@ def art_only_window(
     min_keep_px: int = 320,
     min_cut_px: int = 12,
     max_trim_frac: float = 0.25,
+    push_max_ink: float = 0.0,
+    straddle_push_frac: float = 0.0,
 ) -> Tuple[int, int, int, int]:
     """(x0, y0, x1, y1) of the SHOWN window in art_only mode: the detector's
     art box, grown to keep every protected box (nameplate captions, system
@@ -1112,6 +1138,19 @@ def art_only_window(
     h, w = img.shape[0], img.shape[1]
     x0, y0, x1, y1 = (max(0, int(art[0])), max(0, int(art[1])),
                       min(w, int(art[2])), min(h, int(art[3])))
+    # detector bubble boxes hug the balloon body; the tail/spikes poke past
+    # them — cuts land *pad* beyond a bubble (never through its tail). The
+    # touching/straddling tests use the UNPADDED box (padding those turned
+    # every gutter bubble near the art edge into a "straddler").
+    pad = max(8, int(0.02 * max(h, w)))
+    bubbles = [(int(bx0), int(by0), int(bx1), int(by1)) for (bx0, by0, bx1, by1) in bubbles]
+    # bubbles drawn fully INSIDE the detector's art box are over-art: they stay
+    # by rule, and no push may slice one (a push past a shallow straddler must
+    # not turn its over-art neighbour into the next "straddler" — nano ch1
+    # p000014 lost a head that way at 15%)
+    over_art = [b for b in bubbles
+                if b[0] >= x0 and b[1] >= y0 and b[2] <= x1 and b[3] <= y1]
+    ox0, oy0, ox1, oy1 = x0, y0, x1, y1                 # the detector's art box
     for (px0, py0, px1, py1) in protected:
         x0, y0 = min(x0, max(0, int(px0))), min(y0, max(0, int(py0)))
         x1, y1 = max(x1, min(w, int(px1))), max(y1, min(h, int(py1)))
@@ -1123,12 +1162,27 @@ def art_only_window(
     #      over sky costs no art; (b) else move the edge OUT to take the whole
     #      bubble ("never cut art", the plan's over-art -> keep fallback).
     # Chained: a bubble touching the moved edge is handled too.
-    def _strip_ok(a, b, vertical):
+    def _strip_ok(a, b, vertical, depth=None):
+        # push-in ("clean art > complete art") is OFF by default: pixel stats
+        # cannot tell an eye strip from a sky strip (nano ch1 p000079 lost its
+        # eye that way); a straddling bubble is taken WHOLE instead.
+        # straddle_push_frac > 0 = the OWNER'S depth policy: a bubble hanging at
+        # most that fraction of the panel into the art is pushed out regardless
+        # of what the strip holds (measured nano ch1: 68 of 84 bubbles straddle,
+        # median 12.6% deep — 10% removes ~30, 20% ~60). push_max_ink > 0 adds
+        # the (unreliable) pixel test on top.
+        d = (b - a) if depth is None else depth      # bubble intrusion, pad excluded
+        depth_frac = d / float(max(1, (x1 - x0) if vertical else (y1 - y0)))
+        if straddle_push_frac > 0.0 and depth_frac <= straddle_push_frac + 1e-9:
+            return True
+        if push_max_ink <= 0.0:
+            return False
         if vertical:
             gT = np.ascontiguousarray(gray.T)
             return band_is_chrome(gT, a, b, [(by, bx, by2, bx2) for (bx, by, bx2, by2) in bubbles],
-                                  [(py, px, py2, px2) for (px, py, px2, py2) in protected])
-        return band_is_chrome(gray, a, b, bubbles, protected)
+                                  [(py, px, py2, px2) for (px, py, px2, py2) in protected],
+                                  max_ink=push_max_ink)
+        return band_is_chrome(gray, a, b, bubbles, protected, max_ink=push_max_ink)
     # Monotonic: a side that was pulled OUT is locked (never pushed back in),
     # pushes only move inward, so the fixpoint exists; cap as a belt.
     locked = set()
@@ -1141,36 +1195,50 @@ def art_only_window(
             if bx1 <= x0 or bx0 >= x1 or by1 <= y0 or by0 >= y1:
                 continue                                # not touching the window
             inside = bx0 >= x0 and by0 >= y0 and bx1 <= x1 and by1 <= y1
-            if inside:
+            if inside or (bx0, by0, bx1, by1) in over_art:
                 continue                                # over the art: stays
-            # (a) shallow + chrome strip -> push in (one side, the shallowest)
+            # (a) shallow + chrome strip -> push in (one side, the shallowest);
+            #     the cut lands *pad* past the bubble body (tail-safe)
             cand = []
             if "top" not in locked and by0 < y0 < by1 and by1 - y0 <= max_trim_frac * (y1 - y0):
-                cand.append((by1 - y0, "top", by1))
+                cand.append((by1 - y0, "top", min(h, by1 + pad)))
             if "bot" not in locked and by0 < y1 < by1 and y1 - by0 <= max_trim_frac * (y1 - y0):
-                cand.append((y1 - by0, "bot", by0))
+                cand.append((y1 - by0, "bot", max(0, by0 - pad)))
             if "left" not in locked and bx0 < x0 < bx1 and bx1 - x0 <= max_trim_frac * (x1 - x0):
-                cand.append((bx1 - x0, "left", bx1))
+                cand.append((bx1 - x0, "left", min(w, bx1 + pad)))
             if "right" not in locked and bx0 < x1 < bx1 and x1 - bx0 <= max_trim_frac * (x1 - x0):
-                cand.append((x1 - bx0, "right", bx0))
+                cand.append((x1 - bx0, "right", max(0, bx0 - pad)))
+            def _slices_over_art(side, edge):
+                for (ox0, oy0, ox1, oy1) in over_art:
+                    if side == "top" and oy0 < edge and ox1 > x0 and ox0 < x1:
+                        return True
+                    if side == "bot" and oy1 > edge and ox1 > x0 and ox0 < x1:
+                        return True
+                    if side == "left" and ox0 < edge and oy1 > y0 and oy0 < y1:
+                        return True
+                    if side == "right" and ox1 > edge and oy1 > y0 and oy0 < y1:
+                        return True
+                return False
             pushed = False
             for _d, side, edge in sorted(cand):
-                if side == "top" and _strip_ok(y0, edge, False):
+                if _slices_over_art(side, edge):
+                    continue
+                if side == "top" and _strip_ok(y0, edge, False, _d):
                     y0 = edge; pushed = True
-                elif side == "bot" and _strip_ok(edge, y1, False):
+                elif side == "bot" and _strip_ok(edge, y1, False, _d):
                     y1 = edge; pushed = True
-                elif side == "left" and _strip_ok(x0, edge, True):
+                elif side == "left" and _strip_ok(x0, edge, True, _d):
                     x0 = edge; pushed = True
-                elif side == "right" and _strip_ok(edge, x1, True):
+                elif side == "right" and _strip_ok(edge, x1, True, _d):
                     x1 = edge; pushed = True
                 if pushed:
                     changed = True
                     break
             if pushed:
                 continue
-            # (b) pull out (locks the sides it moves)
-            nx0, ny0, nx1, ny1 = (min(x0, max(0, bx0)), min(y0, max(0, by0)),
-                                  max(x1, min(w, bx1)), max(y1, min(h, by1)))
+            # (b) pull out, *pad* past the bubble (locks the sides it moves)
+            nx0, ny0, nx1, ny1 = (min(x0, max(0, bx0 - pad)), min(y0, max(0, by0 - pad)),
+                                  max(x1, min(w, bx1 + pad)), max(y1, min(h, by1 + pad)))
             if (nx0, ny0, nx1, ny1) != (x0, y0, x1, y1):
                 if nx0 < x0: locked.add("left")
                 if ny0 < y0: locked.add("top")
@@ -1178,6 +1246,15 @@ def art_only_window(
                 if ny1 > y1: locked.add("bot")
                 x0, y0, x1, y1 = nx0, ny0, nx1, ny1
                 changed = True
+    # a bubble that ends just outside an edge leaves its tail inside; nudge the
+    # edge past it when that thin strip is chrome
+    for (bx0, by0, bx1, by1) in bubbles:
+        if bx1 <= x0 or bx0 >= x1:
+            continue
+        if 0 <= y0 - by1 < pad and by1 + pad < y1 and band_is_chrome(gray, y0, by1 + pad, bubbles, protected):
+            y0 = by1 + pad
+        if 0 <= by0 - y1 < pad and by0 - pad > y0 and band_is_chrome(gray, by0 - pad, y1, bubbles, protected):
+            y1 = by0 - pad
     # box jitter: a sliver under min_cut_px is not a cut
     if y0 < min_cut_px:
         y0 = 0
@@ -1187,26 +1264,35 @@ def art_only_window(
         x0 = 0
     if w - x1 < min_cut_px:
         x1 = w
-    if y0 > 0 and not band_is_chrome(gray, 0, y0, bubbles, protected):
+    # verify only the band OUTSIDE the detector's art box (a pushed strip
+    # inside it is the owner's deliberate trade, not the verifier's call)
+    if y0 > 0 and not band_is_chrome(gray, 0, min(y0, oy0), bubbles, protected):
         y0 = 0
-    if y1 < h and not band_is_chrome(gray, y1, h, bubbles, protected):
+    if y1 < h and not band_is_chrome(gray, max(y1, oy1), h, bubbles, protected):
         y1 = h
     if x0 > 0 or x1 < w:
         gT = np.ascontiguousarray(gray.T)
         bT = [(by1, bx1, by2, bx2) for (bx1, by1, bx2, by2) in bubbles]
         pT = [(py1, px1, py2, px2) for (px1, py1, px2, py2) in protected]
-        if x0 > 0 and not band_is_chrome(gT, 0, x0, bT, pT):
+        if x0 > 0 and not band_is_chrome(gT, 0, min(x0, ox0), bT, pT):
             x0 = 0
-        if x1 < w and not band_is_chrome(gT, x1, w, bT, pT):
+        if x1 < w and not band_is_chrome(gT, max(x1, ox1), w, bT, pT):
             x1 = w
     # keep-mode's owner rule (2026-07-16) still applies INSIDE the art box: a
-    # balloon stack parked on the panel's own top/bottom edge is chrome.
+    # balloon stack parked on the panel's own top/bottom edge is chrome — but
+    # NOT on a side that was pulled out to take a straddler whole (that side is
+    # decided; re-trimming it re-creates the very cut the pull-out avoided —
+    # nano ch1 p000014's head, p000079's eye).
     if y1 - y0 >= min_keep_px and x1 - x0 >= min_keep_px:
         sub = img[y0:y1, x0:x1]
         sb = [(bx - x0, by - y0, bx2 - x0, by2 - y0) for (bx, by, bx2, by2) in bubbles
               if min(bx2, x1) - max(bx, x0) > 0 and min(by2, y1) - max(by, y0) > 0]
         sp = [(px - x0, py - y0, px2 - x0, py2 - y0) for (px, py, px2, py2) in protected]
         ry0, ry1 = edge_recrop_window(sub, sb, protected=sp, min_keep_px=min_keep_px)
+        if "top" in locked:
+            ry0 = 0
+        if "bot" in locked:
+            ry1 = y1 - y0
         y0, y1 = y0 + ry0, y0 + ry1
     if (y1 - y0) < min_keep_px or (x1 - x0) < min_keep_px:
         return 0, 0, w, h
@@ -3093,6 +3179,13 @@ def main() -> int:
                          "captions + system windows stay, art is never cut "
                          "(falls back to keep per side); 'husk' is the "
                          "legacy erase-text-keep-bubble behavior")
+    ap.add_argument("--art-only-push-frac", type=float,
+                    default=_default_art_only_push_frac(),
+                    help="art_only: a bubble straddling the art border by at most "
+                         "this fraction of the panel is pushed OUT of the frame "
+                         "(cuts that much art); 0 = never cut art, straddlers "
+                         "are kept whole (default from studio.toml [render] "
+                         "art_only_straddle_push_frac)")
     ap.add_argument("--panels-manifest", default="",
                     help="manifest.panels(.expanded).json — its panels_norm_art "
                          "(raw art-only detector boxes) frame the art_only shown "
@@ -3445,7 +3538,8 @@ def main() -> int:
                 win = None
                 if args.bubble_shown_mode == "art_only" and fname in art_local:
                     win = art_only_window(img, art_local[fname], els["bubbles"],
-                                          protected=els["system"] + els["captions"])
+                                          protected=els["system"] + els["captions"],
+                                          straddle_push_frac=float(args.art_only_push_frac or 0.0))
                 if win is None:
                     ry0, ry1 = edge_recrop_window(img, els["bubbles"],
                                                   protected=els["system"])
