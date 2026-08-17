@@ -69,13 +69,15 @@ def test_detect_panels_output_schema():
 
             # art-only display crop (2026-08-17): the RAW detector box (pre-snap,
             # pre-gutter-expansion) is persisted next to the snapped one — same
-            # count, each raw box contained in the snapped box at the same index.
+            # count, and every raw box lies inside SOME snapped box (snap only
+            # grows; promoted floating cards are their own art box).
             assert "panels_norm_art" in chunk, f"missing 'panels_norm_art' in chunk: {chunk}"
             assert len(chunk["panels_norm_art"]) == len(chunk["panels_norm"])
-            for raw, snapped in zip(chunk["panels_norm_art"], chunk["panels_norm"]):
+            for raw in chunk["panels_norm_art"]:
                 assert len(raw) == 4
-                assert raw[0] >= snapped[0] - 1e-6 and raw[1] >= snapped[1] - 1e-6
-                assert raw[2] <= snapped[2] + 1e-6 and raw[3] <= snapped[3] + 1e-6
+                assert any(raw[0] >= sn[0] - 1e-6 and raw[1] >= sn[1] - 1e-6
+                           and raw[2] <= sn[2] + 1e-6 and raw[3] <= sn[3] + 1e-6
+                           for sn in chunk["panels_norm"]), raw
 
         # At least one chunk processed
         assert len(result["chunks"]) == 1, f"expected 1 chunk, got {len(result['chunks'])}"

@@ -163,3 +163,29 @@ def test_attach_skips_when_the_only_candidate_would_bisect():
     side2 = [0.42, 0.30, 0.90, 1.00]         # x-overlaps top: growth would intersect it
     out2 = snap_panels_to_elements([top, side2], [bubble], attach_gap=0.05)
     assert out2[0] == top                    # would bisect/overlap -> left alone entirely
+
+
+# ---- (d) floating cards become panels (2026-08-18) ----------------------------
+# v4 (correctly) does not box text cards as panels, so a chapter's ending
+# "SKY CORPORATION." / "7TH GENERATION NANO MACHINE" system cards only survived
+# as one 3395px recovered strip mixed with the logo/credits, which the visual
+# judge called garbage — orphaning the narrated ending into a 15s hold. The
+# tiled element pass DOES localize them (radio/caption/system boxes floating in
+# the gap): promote element boxes that overlap NO panel to panels of their own.
+from studio.detect.yolo_panels import promote_floating_cards
+
+
+def test_floating_cards_become_panels_and_overlapping_pieces_merge():
+    panels = [[0.10, 0.0, 0.40, 1.0]]
+    els = {"radio": [[0.60, 0.20, 0.65, 0.60], [0.70, 0.15, 0.75, 0.50]],
+           "caption_box": [[0.74, 0.35, 0.79, 0.70]],       # overlaps the 2nd radio -> merge
+           "speech_bubble": [[0.30, 0.10, 0.35, 0.30]],      # inside the panel -> not promoted
+           "sfx": [[0.85, 0.1, 0.9, 0.5]]}                    # sfx never
+    out = promote_floating_cards(panels, els)
+    assert out == [[0.10, 0.0, 0.40, 1.0], [0.60, 0.20, 0.65, 0.60], [0.70, 0.15, 0.79, 0.70]]
+
+
+def test_floating_card_touching_a_panel_is_left_alone():
+    panels = [[0.10, 0.0, 0.40, 1.0]]
+    els = {"caption_box": [[0.38, 0.2, 0.45, 0.6]]}          # partly over the panel -> not a card
+    assert promote_floating_cards(panels, els) == panels
