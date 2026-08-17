@@ -2467,3 +2467,31 @@ def test_cap_kept_twin_pair_is_stamped_and_dup_shown_honors_it():
     assert pq.dup_shown_flags(
         cuts, raw, boxes, ocr,
         cap_kept_pairs=out["twin_cap_kept"]) == []
+
+
+def test_dedup_invariant_cap_projects_the_whole_run_not_just_the_folded_cut():
+    # nano ch1 job 147: p000094 (g0020_p02, 9.5s) is a hash-twin of p000099
+    # (g0021_p03, 11.0s). Folding p000094 -> p000099 passed the old cap check
+    # (9.5s <= 10s counts only the folded cut) but the survivor's OWN cut follows
+    # in the same run -> p000099 stands in for 20.5s -> long_hold. The cap must
+    # see the whole projected run; when it breaches, keep own art.
+    imgs = {"a.jpg": _hramp(base=0), "b.jpg": _hramp(base=15)}
+    plan = {"timeline": [
+        {"segment_id": "g0020_p02", "tts_text": "An eye peers through.",
+         "cuts": [{"file": "a.jpg", "start": 0.0, "dur": 9.5}]},
+        {"segment_id": "g0021_p03", "tts_text": "The confusion deepens.",
+         "cuts": [{"file": "b.jpg", "start": 0.0, "dur": 11.0}]},
+    ], "scene_dims": {}}
+    out, folds = rp.enforce_shown_twin_invariant(
+        {"timeline": [dict(i, cuts=[dict(c) for c in i["cuts"]])
+                      for i in plan["timeline"]], "scene_dims": {}},
+        lambda f: imgs.get(f), max_hold_sec=10.0)
+    shown = [c["file"] for it in out["timeline"] for c in it["cuts"]]
+    assert shown == ["a.jpg", "b.jpg"]           # fold refused: 20.5s run > cap
+    assert len(folds) == 1                       # twin still DETECTED (contract)
+    kept = out.get("twin_cap_kept", [])
+    assert any(sorted(pair) == ["a.jpg", "b.jpg"] for pair in kept)
+    # under a generous cap the same pair DOES fold (both cuts on the survivor)
+    out2, folds2 = rp.enforce_shown_twin_invariant(plan, lambda f: imgs.get(f), max_hold_sec=30.0)
+    assert len(folds2) == 1
+    assert len({c["file"] for it in out2["timeline"] for c in it["cuts"]}) == 1

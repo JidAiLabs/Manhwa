@@ -2855,38 +2855,50 @@ def enforce_shown_twin_invariant(
         # in past max_hold_sec" — when they conflict (a folded run of echo
         # panels re-seats ONE survivor for 11.3s), the CAP wins: an on-screen
         # twin pair far apart is styleable (ken echo differentiation), a
-        # blocking stand-in is not. Walk in shown order tracking each
-        # continuous same-file run; skip a fold that would breach the cap.
-        run_file: Optional[str] = None
-        run_sec = 0.0
+        # blocking stand-in is not.
+        # 2026-08-18 (nano ch1 job 147): project the WHOLE run, not just the
+        # cuts up to the fold — the survivor's OWN cut(s) after a folded cut
+        # extend the same stand-in (9.5s fold + 11s own = 20.5s long_hold).
+        # Resolve tentative targets, walk maximal same-target runs, and undo
+        # every fold inside a run whose total breaches the cap.
+        def _dur(c):
+            try:
+                return float(c.get("dur") or c.get("duration_sec") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        tentative: List[Tuple[str, str, bool]] = []   # (own, target, foldable)
         for _seg, c in entries:
             f = str(c.get("file") or "")
             foldable = (f in alias and not c.get("file2")
                         and not c.get("layout"))
-            target = _resolve(f) if foldable else f
-            try:
-                d = float(c.get("dur") or c.get("duration_sec") or 0.0)
-            except (TypeError, ValueError):
-                d = 0.0
-            projected = (run_sec if run_file == target else 0.0) + d
-            if (foldable and target != f and max_hold_sec > 0
-                    and projected > max_hold_sec):
-                # includes the SINGLE-cut case: an 11.3s cut folded onto a
-                # twin is an over-cap stand-in all by itself (job 57 — the
-                # run-extension-only check let it through)
-                print(f"[twin-fold] cap: kept own art {f} — folding to "
-                      f"{target} would stand it in {projected:.1f}s > "
-                      f"{max_hold_sec:.1f}s")
-                # stamp the DOCUMENTED exception so prep_qa's dup_shown
-                # tripwire (same authority) knows this pair is legal
-                plan.setdefault("twin_cap_kept", []).append([f, target])
-                target = f
+            tentative.append((f, _resolve(f) if foldable else f, foldable))
+        if max_hold_sec > 0:
+            i = 0
+            while i < len(tentative):
+                j = i
+                total = 0.0
+                while j < len(tentative) and tentative[j][1] == tentative[i][1]:
+                    total += _dur(entries[j][1])
+                    j += 1
+                if total > max_hold_sec and any(
+                        t[2] and t[1] != t[0] for t in tentative[i:j]):
+                    for k in range(i, j):
+                        f, target, foldable = tentative[k]
+                        if foldable and target != f:
+                            print(f"[twin-fold] cap: kept own art {f} — folding to "
+                                  f"{target} would stand it in {total:.1f}s > "
+                                  f"{max_hold_sec:.1f}s")
+                            # stamp the DOCUMENTED exception so prep_qa's
+                            # dup_shown tripwire (same authority) knows this
+                            # pair is legal
+                            plan.setdefault("twin_cap_kept", []).append([f, target])
+                            tentative[k] = (f, f, False)
+                i = j
+        for (_seg, c), (f, target, _fb) in zip(entries, tentative):
             if target != f:
                 c["file"] = target
-            if run_file == target:
-                run_sec += d
-            else:
-                run_file, run_sec = target, d
+        # (folds keeps every twin DETECTED — cap-kept pairs are stamped in
+        # plan["twin_cap_kept"], the same authority prep_qa's dup_shown reads)
     return plan, folds
 
 
