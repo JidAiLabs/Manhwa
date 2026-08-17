@@ -329,3 +329,23 @@ speaker+speech together, as with v3) while the raw art box drives the display cr
    Alternative = allow trimming ≤ N% into art to remove the remnant. Not built (YAGNI).
 4. Small tech debt noted: keep/art_only `_cleaned` recrops don't offset `word_boxes`
    passed to `_write_part` (focal dead-regions slightly off) — pre-existing in keep.
+
+## Visual review (8 vision reviewers over the 159 overlays) + ORV finding — 2026-08-17 late
+- **Nano Machine (30 chunks): v4 missed 0 real panels**, spurious 22→12 (v3 fragments
+  full-width panels into half-boxes, boxes title/credit cards and bubble-only strips;
+  v4's few spurious = duplicate pairs → NMS/dedupe), art-only adherence yes/mostly on
+  all; 9 mild art clips (axis-aligned boxes on parallelogram panels, one remnant).
+- **ORV (17 chunks): v4 has NO box for 25 real panels** v3 found (black-background
+  creature, clock/UI panels, tilted crash panel, the ~3900px full-bleed crowd splash
+  gets 0 boxes at ANY conf/tiling). Knobs don't help: conf .15 → 84, .10 → 87, tiled
+  6000px → 63 (v3 = 116, ~22 spurious). Real chain on Ep2: v4 raw 79 vs 116; scenes
+  111 (36 recovered) vs 113 (7); coverage .77 vs .68; **OCR words orphaned 116 vs 84**.
+  Cause: the art-only trio is bordered/white-gutter manhwa; dark, full-bleed, UI-screen
+  pages are under-represented → training-domain gap, not a threshold.
+- Scenes (112): 5 v4-worse bubble cases (large gutter/white bubbles v3 caught at .8–.9,
+  v4 nothing: p000024/053/092/101/103); otherwise parity or v4 better; no system card
+  or nameplate missed.
+- **Owner decision 4 (added):** ship v4 globally now / per-series weights (v4 Asura-style,
+  v3 Webtoon-style) / hold the swap for a v4.1 fine-tune on ~150–300 art-only-annotated
+  dark+full-bleed+UI pages (annotate raw pages, never pipeline output).
+- Sign-off report (artifact): https://claude.ai/code/artifact/68944a54-1f9e-4d8c-b435-d346fc36abaa
