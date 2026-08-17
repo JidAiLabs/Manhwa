@@ -91,3 +91,24 @@ def test_art_only_straddling_bubble_pulls_edge_out_no_half_bubble():
     win = art_only_window(img, (0, 350, 800, 1000),
                           bubbles=[(100, 200, 500, 420), (300, 60, 700, 210)])
     assert win == (0, 60, 800, 1000)
+
+
+def test_art_only_also_trims_bubble_stack_on_the_panels_own_top_edge():
+    # keep-mode's owner rule (2026-07-16) still applies INSIDE the art box: a
+    # balloon stack parked on the panel's top edge over flat sky is chrome.
+    img = _img(h=1000)                              # flat 0..350, art 350..1000
+    img[350:520] = 240                              # panel's own flat top band (sky)
+    art = (0, 350, 800, 1000)
+    win = art_only_window(img, art, bubbles=[(60, 360, 700, 500)])
+    assert win == (0, 500, 800, 1000)
+
+
+def test_art_only_shallow_straddler_over_flat_art_is_trimmed_not_kept():
+    img = _img(h=1000); img[350:420] = 240          # 70px flat strip at the art top
+    art = (0, 350, 800, 1000)
+    # bubble hangs 60px into the art over that flat strip -> cut at its inner edge
+    win = art_only_window(img, art, bubbles=[(100, 200, 500, 410)])
+    assert win == (0, 410, 800, 1000)
+    # deep straddler over busy art -> pulled in whole (never cut art)
+    win2 = art_only_window(img, art, bubbles=[(100, 200, 500, 700)])
+    assert win2 == (0, 200, 800, 1000)

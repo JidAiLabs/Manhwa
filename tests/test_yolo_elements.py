@@ -137,3 +137,29 @@ def test_attach_goes_to_nearer_panel_and_never_crosses_neighbor():
     assert out[0] == top                     # top untouched
     assert out[1] == [0.44, 0.0, 0.90, 1.0]  # bot grew up to the bubble, still below top
     assert out[1][0] >= out[0][2]
+
+
+def test_attach_prefers_the_panel_the_bubble_overlaps_and_never_bisects():
+    # nano ch1 chunk_0001 (px/10000): hand panel upper-left, eye panel lower-right
+    # (x-overlapping), "!!!" bubble in the gutter overlapping the EYE panel's
+    # top-left corner (26% inside). It belongs to the eye panel — attaching it to
+    # the hand panel above (gap rule) and clamping at the eye panel's top would
+    # bisect it and drag the expander into the eye panel (duplicate scene bug).
+    hand = [0.5465, 0.000, 0.5838, 0.630]
+    eye = [0.6118, 0.302, 0.6518, 0.800]
+    bubble = [0.6025, 0.116, 0.6277, 0.429]
+    out = snap_panels_to_elements([hand, eye], [bubble], attach_gap=0.03)
+    assert out[0] == hand                                    # untouched
+    assert out[1] == [0.6025, 0.116, 0.6518, 0.800]          # eye grew to the whole bubble
+
+
+def test_attach_skips_when_the_only_candidate_would_bisect():
+    # bubble hangs below TOP over its x-span but a side panel intersects the growth
+    top = [0.10, 0.0, 0.40, 0.60]
+    side = [0.42, 0.65, 0.90, 1.00]          # lower-right, clear of top's x-span
+    bubble = [0.41, 0.05, 0.47, 0.25]        # 0.01 below top
+    out = snap_panels_to_elements([top, side], [bubble], attach_gap=0.05)
+    assert out[0] == [0.10, 0.0, 0.47, 0.60] # grown box misses side -> whole bubble taken
+    side2 = [0.42, 0.30, 0.90, 1.00]         # x-overlaps top: growth would intersect it
+    out2 = snap_panels_to_elements([top, side2], [bubble], attach_gap=0.05)
+    assert out2[0] == top                    # would bisect/overlap -> left alone entirely

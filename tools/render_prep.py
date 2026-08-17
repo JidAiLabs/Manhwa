@@ -1101,6 +1101,7 @@ def art_only_window(
     *,
     min_keep_px: int = 320,
     min_cut_px: int = 12,
+    max_trim_frac: float = 0.25,
 ) -> Tuple[int, int, int, int]:
     """(x0, y0, x1, y1) of the SHOWN window in art_only mode: the detector's
     art box, grown to keep every protected box (nameplate captions, system
@@ -1114,20 +1115,67 @@ def art_only_window(
     for (px0, py0, px1, py1) in protected:
         x0, y0 = min(x0, max(0, int(px0))), min(y0, max(0, int(py0)))
         x1, y1 = max(x1, min(w, int(px1))), max(y1, min(h, int(py1)))
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     # A bubble STRADDLING a window edge (hanging from the gutter into the
-    # art) would ship as a half-bubble; "never cut art" means the edge moves
-    # OUT to take the whole bubble (the plan's over-art -> keep fallback),
-    # chained: a bubble touching the moved edge is taken too.
-    changed = True
-    while changed:
+    # art) would ship as a half-bubble. Two ways out, tried in order:
+    #  (a) push the edge IN past the bubble when the art strip it covers is
+    #      chrome-like (bubble-masked flat / low-edge) and shallow — a balloon
+    #      over sky costs no art; (b) else move the edge OUT to take the whole
+    #      bubble ("never cut art", the plan's over-art -> keep fallback).
+    # Chained: a bubble touching the moved edge is handled too.
+    def _strip_ok(a, b, vertical):
+        if vertical:
+            gT = np.ascontiguousarray(gray.T)
+            return band_is_chrome(gT, a, b, [(by, bx, by2, bx2) for (bx, by, bx2, by2) in bubbles],
+                                  [(py, px, py2, px2) for (px, py, px2, py2) in protected])
+        return band_is_chrome(gray, a, b, bubbles, protected)
+    # Monotonic: a side that was pulled OUT is locked (never pushed back in),
+    # pushes only move inward, so the fixpoint exists; cap as a belt.
+    locked = set()
+    changed, rounds = True, 0
+    while changed and rounds < 12:
         changed = False
+        rounds += 1
         for (bx0, by0, bx1, by1) in bubbles:
             bx0, by0, bx1, by1 = int(bx0), int(by0), int(bx1), int(by1)
             if bx1 <= x0 or bx0 >= x1 or by1 <= y0 or by0 >= y1:
                 continue                                # not touching the window
+            inside = bx0 >= x0 and by0 >= y0 and bx1 <= x1 and by1 <= y1
+            if inside:
+                continue                                # over the art: stays
+            # (a) shallow + chrome strip -> push in (one side, the shallowest)
+            cand = []
+            if "top" not in locked and by0 < y0 < by1 and by1 - y0 <= max_trim_frac * (y1 - y0):
+                cand.append((by1 - y0, "top", by1))
+            if "bot" not in locked and by0 < y1 < by1 and y1 - by0 <= max_trim_frac * (y1 - y0):
+                cand.append((y1 - by0, "bot", by0))
+            if "left" not in locked and bx0 < x0 < bx1 and bx1 - x0 <= max_trim_frac * (x1 - x0):
+                cand.append((bx1 - x0, "left", bx1))
+            if "right" not in locked and bx0 < x1 < bx1 and x1 - bx0 <= max_trim_frac * (x1 - x0):
+                cand.append((x1 - bx0, "right", bx0))
+            pushed = False
+            for _d, side, edge in sorted(cand):
+                if side == "top" and _strip_ok(y0, edge, False):
+                    y0 = edge; pushed = True
+                elif side == "bot" and _strip_ok(edge, y1, False):
+                    y1 = edge; pushed = True
+                elif side == "left" and _strip_ok(x0, edge, True):
+                    x0 = edge; pushed = True
+                elif side == "right" and _strip_ok(edge, x1, True):
+                    x1 = edge; pushed = True
+                if pushed:
+                    changed = True
+                    break
+            if pushed:
+                continue
+            # (b) pull out (locks the sides it moves)
             nx0, ny0, nx1, ny1 = (min(x0, max(0, bx0)), min(y0, max(0, by0)),
                                   max(x1, min(w, bx1)), max(y1, min(h, by1)))
             if (nx0, ny0, nx1, ny1) != (x0, y0, x1, y1):
+                if nx0 < x0: locked.add("left")
+                if ny0 < y0: locked.add("top")
+                if nx1 > x1: locked.add("right")
+                if ny1 > y1: locked.add("bot")
                 x0, y0, x1, y1 = nx0, ny0, nx1, ny1
                 changed = True
     # box jitter: a sliver under min_cut_px is not a cut
@@ -1139,7 +1187,6 @@ def art_only_window(
         x0 = 0
     if w - x1 < min_cut_px:
         x1 = w
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     if y0 > 0 and not band_is_chrome(gray, 0, y0, bubbles, protected):
         y0 = 0
     if y1 < h and not band_is_chrome(gray, y1, h, bubbles, protected):
@@ -1152,6 +1199,15 @@ def art_only_window(
             x0 = 0
         if x1 < w and not band_is_chrome(gT, x1, w, bT, pT):
             x1 = w
+    # keep-mode's owner rule (2026-07-16) still applies INSIDE the art box: a
+    # balloon stack parked on the panel's own top/bottom edge is chrome.
+    if y1 - y0 >= min_keep_px and x1 - x0 >= min_keep_px:
+        sub = img[y0:y1, x0:x1]
+        sb = [(bx - x0, by - y0, bx2 - x0, by2 - y0) for (bx, by, bx2, by2) in bubbles
+              if min(bx2, x1) - max(bx, x0) > 0 and min(by2, y1) - max(by, y0) > 0]
+        sp = [(px - x0, py - y0, px2 - x0, py2 - y0) for (px, py, px2, py2) in protected]
+        ry0, ry1 = edge_recrop_window(sub, sb, protected=sp, min_keep_px=min_keep_px)
+        y0, y1 = y0 + ry0, y0 + ry1
     if (y1 - y0) < min_keep_px or (x1 - x0) < min_keep_px:
         return 0, 0, w, h
     return int(x0), int(y0), int(x1), int(y1)

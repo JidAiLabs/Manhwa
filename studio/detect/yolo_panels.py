@@ -69,13 +69,16 @@ def snap_panels_to_elements(
     Boxes are normalized [ymin, xmin, ymax, xmax].
 
     *attach_gap* (normalized, default off): art-only panel boxes (v4 weights)
-    leave gutter dialogue OUTSIDE the box. An element that sits over a panel's
-    x-span (>= half its width) and is vertically within *attach_gap* of that
-    panel's top/bottom edge — hanging off it or floating just beside it — is
-    attached to the NEAREST such panel (tie -> the one above), so the
-    materialized scene keeps art + its dialogue for OCR/understanding while
-    the raw art box (panels_norm_art) stays available for the shown frame.
-    Corner touches and side floaters are not attached.
+    leave gutter dialogue OUTSIDE the box. An element partly OVER a panel
+    (>= _ATTACH_MIN_OVER of its area, below the slice rule) is attached to
+    that panel; otherwise one that sits over a panel's x-span (>= half its
+    width) and is vertically within *attach_gap* of its top/bottom edge is
+    attached to the NEAREST such panel (tie -> the one above). Attachment
+    takes the WHOLE element and is skipped when the grown box would intersect
+    another panel (never bisect, never overlap crops). The materialized scene
+    thus keeps art + its dialogue for OCR/understanding while the raw art box
+    (panels_norm_art) stays available for the shown frame. Corner touches and
+    side floaters are not attached.
     """
     panels = [[float(v) for v in p] for p in panels_norm]
     # Snapshot the ORIGINAL boxes — clamp targets must stay fixed as panels grow,
@@ -93,20 +96,37 @@ def snap_panels_to_elements(
             frac = (iy * ix) / barea
             if frac > best_frac:
                 best_frac, best_i = frac, i
-        grow = best_i >= 0 and min_inside_frac <= best_frac < 1.0 - 1e-9
-        if not grow and attach_gap > 0.0 and best_frac < 1.0 - 1e-9:
-            near_i, near_gap = -1, attach_gap + 1e-9
-            for i, (py0, px0, py1, px1) in enumerate(orig):
-                ix = max(0.0, min(px1, bx1) - max(px0, bx0))
-                if ix < 0.5 * (bx1 - bx0):
-                    continue                        # not over this panel's x-span
-                gap = max(py0 - by1, by0 - py1)     # <0 = overlaps vertically
-                if gap < near_gap:
-                    near_gap, near_i = gap, i       # strict < keeps the UPPER on ties
-            grow = near_i >= 0
-            best_i = near_i if grow else best_i
-        attached = grow and not (min_inside_frac <= best_frac < 1.0 - 1e-9)
-        if grow:
+        sliced = best_i >= 0 and min_inside_frac <= best_frac < 1.0 - 1e-9
+        attached = False
+        if not sliced and attach_gap > 0.0 and best_frac < 1.0 - 1e-9:
+            # attach: (1) a bubble PARTLY over a panel (>= _ATTACH_MIN_OVER of
+            # its area — a corner touch is not "over") belongs to that panel;
+            # (2) otherwise the nearest panel by vertical gap over its x-span.
+            near_i = best_i if best_frac >= _ATTACH_MIN_OVER else -1
+            if near_i < 0:
+                near_gap = attach_gap + 1e-9
+                for i, (py0, px0, py1, px1) in enumerate(orig):
+                    ix = max(0.0, min(px1, bx1) - max(px0, bx0))
+                    if ix < 0.5 * (bx1 - bx0):
+                        continue                    # not over this panel's x-span
+                    gap = max(py0 - by1, by0 - py1)  # <0 = overlaps vertically
+                    if gap < near_gap:
+                        near_gap, near_i = gap, i   # strict < keeps the UPPER on ties
+            if near_i >= 0:
+                # never bisect: the grown box must not intersect any OTHER
+                # panel's original box, else leave the element alone (gap
+                # recovery downstream still gets a shot at it)
+                p = panels[near_i]
+                gy0, gx0 = min(p[0], by0), min(p[1], bx0)
+                gy1, gx1 = max(p[2], by1), max(p[3], bx1)
+                clash = any(
+                    j != near_i and min(gy1, qy1) > max(gy0, qy0) + 1e-9
+                    and min(gx1, qx1) > max(gx0, qx0) + 1e-9
+                    for j, (qy0, qx0, qy1, qx1) in enumerate(orig))
+                if not clash:
+                    panels[near_i] = [gy0, gx0, gy1, gx1]
+                    attached = True
+        if sliced:
             p = panels[best_i]
             ny0, nx0 = min(p[0], by0), min(p[1], bx0)
             ny1, nx1 = max(p[2], by1), max(p[3], bx1)
@@ -114,21 +134,18 @@ def snap_panels_to_elements(
             # neighbour so a snap can never cross into a neighbour's band (which
             # used to produce overlapping crops). Midpoint splits the gutter
             # evenly; for touching panels it degenerates to the shared edge.
-            # An ATTACHED element (whole bubble beside this panel) clamps at the
-            # neighbour's own edge instead — the midpoint would bisect it.
             oy0, ox0, oy1, ox1 = orig[best_i]
-            half = 1.0 if attached else 0.5
             for j, (qy0, qx0, qy1, qx1) in enumerate(orig):
                 if j == best_i:
                     continue
                 if qy1 <= oy0:               # neighbour above
-                    ny0 = max(ny0, qy1 + (oy0 - qy1) * (1.0 - half))
+                    ny0 = max(ny0, (qy1 + oy0) / 2.0)
                 if qy0 >= oy1:               # neighbour below
-                    ny1 = min(ny1, oy1 + (qy0 - oy1) * half)
+                    ny1 = min(ny1, (qy0 + oy1) / 2.0)
                 if qx1 <= ox0:               # neighbour left
-                    nx0 = max(nx0, qx1 + (ox0 - qx1) * (1.0 - half))
+                    nx0 = max(nx0, (qx1 + ox0) / 2.0)
                 if qx0 >= ox1:               # neighbour right
-                    nx1 = min(nx1, ox1 + (qx0 - ox1) * half)
+                    nx1 = min(nx1, (qx0 + ox1) / 2.0)
             panels[best_i] = [ny0, nx0, ny1, nx1]
     panels.sort(key=lambda p: p[0])
     return [[round(v, 6) for v in p] for p in panels]
@@ -164,6 +181,9 @@ _SNAP_CLASSES = ("speech_bubble", "system_box", "radio", "speech_background",
 # gutter dialogue farther than this from a panel edge stays a floating element
 # (panels_to_scenes' gap recovery still gets a shot at it)
 _ATTACH_GAP_PX = 300
+# an element with at least this share of its area OVER a panel is that panel's
+# (a corner touch ~1% is not); below the 0.55 slice rule it is ATTACHED whole
+_ATTACH_MIN_OVER = 0.10
 
 
 def resolve_classes(names: Dict[int, str]) -> Tuple[int, Dict[int, str]]:
