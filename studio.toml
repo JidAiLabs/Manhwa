@@ -59,6 +59,14 @@ speed = 1.05   # delivery tempo (ffmpeg atempo, pitch-preserved) — 1.05 = 5% s
 # canonicalized eye) BLOCKS the chapter. A genuine own-panel hold is
 # content-driven pacing and stays legal at any length.
 max_same_image_hold_sec = 10.0
+# Shown-frame policy for story panels (render_prep --bubble-shown-mode):
+#   keep     — bubbles ship as drawn; bubble-dominated EDGE bands trimmed (owner 2026-07-16)
+#   art_only — frame = the detector's ART box: gutter/edge dialogue framed out on all
+#              sides (narration carries it), nameplate captions + system windows stay,
+#              art never cut (per-side keep fallback). NEEDS the v4 art-only weights
+#              (assets/models/webtoon_panels_v4.pt) + a re-detect (`reset --to detected`);
+#              on pre-v4 detections it silently behaves like keep. Owner 2026-07-23 goal.
+bubble_shown_mode = "keep"
 
 [teaser]
 # bundle-level arc teaser: pick a high-stakes window from a bundle's chapters,

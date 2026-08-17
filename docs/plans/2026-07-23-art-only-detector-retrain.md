@@ -177,3 +177,155 @@ A mapping table from each dataset's class list → the canonical 8-class schema 
 - gemma SFX validation (separate track, already shipped as `22c0275`): gemma reads
   Korean SFX + judges `strikes_or_weapons` — the impact_mismatch gate now uses it.
 - Box-overlay audit images: `scratchpad/ds/*.jpg`.
+
+---
+
+# 2026-07-29 — Phases 1–2 EXECUTED (Air-local session; Mini off)
+
+Tooling + evidence live next to the data: `dataset_v2/build/d8_audit_overlays.py`
+(overlays in `dataset_v2/audit_v4/`), `build/d8_assemble_v4.py` (merge + gates),
+`build/d8_compare_v3v4.py` (Phase-3 side-by-side). All run in `.eval_venv`.
+
+## Audit verdicts (eyeball on GT overlays + geometry probes)
+
+| dataset | verdict | evidence |
+|---|---|---|
+| `manhwa.v1-dataset` (196 img / 1152 boxes, native-res strips) | **KEEP** | art-only: frame-tight boxes; overflowing bubbles cut at frame; floating gutter narration unboxed |
+| `Manhwa-Base.v1i` (580 / 1336, 640-stretch) | **KEEP** | art-only: bubbles below/between panels excluded; giant shout-bubble outside box (base_07) |
+| `Webtoon-Manhwa Panels.v1i` (95 / 1015, 640-stretch) | **KEEP** — plan's "probably exclude" guess was wrong | colored webtoon pages, art-tight, gutter bubbles excluded; 7 shape classes → panel; 35 Outbound+Rectangle twin boxes deduped (IoU≥0.7, tighter wins) |
+| `roboflow_panels` | ignore | byte-identical dupe of Webtoon-Manhwa Panels |
+| `Detect.v4` (2932 / 15479) | **EXCLUDE** | export is grayscale (CRT phosphor) + 640-stretch + adaptive-equalize + 3× flip/90°-rotation augment, B&W-manga domain — poison regardless of box convention |
+| `manhwa.v1i` (75 / **9 boxes**), `Manhwa Panel Detector.v2i` (254 / **11**) | **EXCLUDE** | near-empty labels; as v3's `mnh_`/`mpd_` they injected ~300 panel-ful images labeled panel-free |
+| `salvage long/panels` (3464) | **EXCLUDE** | the 30:1 bubble-inclusive dilution culprit |
+| `salvage cdi` (3) | EXCLUDE | unknown convention, irrelevant size |
+
+## CORRECTION to this plan's premise — sysbox "owner gold panels" was wrong
+
+`salvage/sysbox` **class-0 is not panels**: median 41 px tall, aspect 4.47, 87%
+under 10% image height → **text lines** (title/stat rows inside system cards;
+see `audit_v4/ssys_02/ssys_04`). The "bubbles 100% outside the panel box" probe
+passed *trivially* against text-line-sized boxes. So v3 ingested **1161
+text-line boxes as panel GT** — a second panel-class poison beside the 30:1
+dilution. v4 drops ssys cls-0 and keeps sysbox's real gold: speech_bubble 1017,
+system_ui 679, sfx 252 (cls-5 stays quarantined; sysbox has zero captions).
+
+## dataset_v4 (built + gated; `dataset_v4/report.json`)
+
+- **3564 train / 673 valid**; panel **2940/528 — 100% art-only trio**
+  (base 1336 + v1ds 1152 + wmp 980), hard-asserted by source prefix;
+  speech_bubble 3882/747, sfx 1400/275, system_ui 805/76, caption 379/60,
+  free_text 264/56, speech_bg 212/40, radio 109/12.
+- Plan §1.4's containment metric is **vacuous on the clean merge** — no kept
+  source labels panel AND bubble on the same image (v3's sources were the same).
+  Replaced by: source-purity assert, panel-geometry gate (median 181 px tall,
+  aspect 1.15 — catches text-line poison), orphan check. Known-inherited noise:
+  element-source images carry no panel labels and vice versa (cross-suppression
+  v3 already trained through fine).
+
+## Phase 2 — training LAUNCHED on the Air (data-local; Mini off → host decision resolved)
+
+v3's exact recipe: `yolo26n.pt` init, MuSGD, batch 4, imgsz 960, patience 20,
+seed 0, device mps. Run: `runs/detect/webtoon/v4_artonly_960` (+ `.pid`,
+`.trainlog` siblings). ~891 batches/epoch; v3 ran ~19.5 min/epoch on 7.6k imgs,
+v4 has 3.6k. Check: `tail runs/detect/webtoon/v4_artonly_960/results.csv`.
+
+## Phase 3 — ready to run once weights exist
+
+`build/d8_compare_v3v4.py --b runs/detect/webtoon/v4_artonly_960/weights/best.pt <imgs>`
+at prod settings (conf .25, ckpt imgsz). Validation imagery ON the Air:
+`dataset_v2/corpus/nano-machine/Chapter_1/{scenes,stitch_chunks}` (owner-approved
+chapter; 114 scenes) + ch3/ch5 chunks + `omniscient-reader/Episode_2`. Scenes
+judge the art-only convention; chunks judge recall. Owner sign-off gates the
+weights swap (Phase 4 display crop needs the Mini for chapter E2E).
+
+---
+
+# 2026-08-17 — Phase 3 VALIDATED + Phase 4 BUILT (Air; Mini back online, idle)
+
+## Training result (run `v4_artonly_960`, 100/100 epochs, finished 2026-08-05)
+`best.pt` → committed as `assets/models/webtoon_panels_v4.pt` (v3 stays the rollback).
+Own valid: panel P .867 R .928 AP50 .944 AP .852; overall mAP50 .861 / .767.
+
+## Head-to-head — beware the contaminated split
+`dataset_v4/valid` ∩ `dataset_v3/train` = 57 images (md5), incl. **30 of the 50
+system_ui images** → v3's numbers on the naive split are memorized. Fair split =
+`dataset_v4/valid_clean` (616 imgs v3 never trained on; `data_valid_clean.yaml`):
+
+| class (valid_clean) | AP50 v3 → v4 | AP50-95 v3 → v4 | R v3 → v4 |
+|---|---|---|---|
+| panel | .301 → **.947** | .118 → .854 | .286 → .927 |
+| speech_bubble | .941 → .989 | .858 → .905 | .944 → .975 |
+| sfx_text | .776 → .841 | .596 → .645 | .665 → .810 |
+| system_ui (31 inst) | .757 → .733 | .708 → .687 | .692 → .710 |
+| caption_box | .931 → .950 | .928 → .931 | .917 → .933 |
+| free_text | .859 → .901 | .754 → .806 | .750 → .893 |
+| speech_background | .658 → .683 | .546 → .566 | .678 → .654 |
+| **all** | **.777 → .880** | .688 → .799 | |
+
+v4 ≥ v3 on every class; system_ui is a wash on 31 instances. JSONs in
+`dataset_v2/audit_v4/compare_final/`.
+
+## Corpus overlays (final weights; `compare_final/{ch1_scenes,chunks}/` + `summary.json`)
+- **Scene crops: the `panel` class barely fires for EITHER model** (v3 17/112,
+  v4 12/112 at conf .25) — a page-trained detector does not see an isolated crop as
+  a panel. ⇒ the art_only shown frame must come from the DETECT-stage raw box, not
+  a second pass on the crop. Elements (bubble/sfx/system/caption) fire fine on crops
+  (v4 ≥ v3: bubbles 100 vs 95, system 7 vs 3, captions 3 vs 1).
+- Chunks: panels A=438 B=377 over 47 chunks (v3's surplus = text-line poison boxes,
+  under visual review).
+
+## Seam dry-run — the risk was real, and is fixed upstream (`scratchpad/seam/run_seam.py`)
+Real chain (`detect_panels → expand_boxes_to_gutters → panels_to_scenes`) on corpus
+nano ch1, OCR words (748) mapped to chunk coords, "orphaned" = in NO produced scene:
+
+| | v3 | v4 before fix | v4 after fix |
+|---|---|---|---|
+| raw → expanded → scenes | 111→107→106 (3 recovered) | 110→110→124 (**23** recovered) | 110→109→114 (10 recovered) |
+| OCR words orphaned | 37 | **44** ("KILL HIM!", "...WHY? ME?", "KEUK...") | **33** |
+
+Mechanism: art-only boxes leave gutter dialogue outside; `expand_boxes_to_gutters`
+can't see a white bubble on a white gutter by row stats; the recovered gap span is
+then dropped by `--skip-blank`. Root: **`elements_norm` was EMPTY on real chunks for
+BOTH models** (a 10k-px strip at imgsz 960 resolves no bubbles) → `snap` never had
+anything to snap on a real chapter.
+
+**Fix (this session, `studio/detect/yolo_panels.py`):** `_tile_elements` (2400-px
+windows → real chunk-space bubbles/captions/system/sfx in `elements_norm`) +
+`snap_panels_to_elements(attach_gap=300px/img_h)` attaches hanging / near-floating
+gutter dialogue over a panel's x-span to the NEAREST panel (edge-clamp so the
+bubble is never bisected; corner touches / side floaters ignored) + `panels_norm_art`
+(raw pre-snap art boxes) persisted per chunk (passes through the expander untouched).
+**v3's output is byte-identical before/after** — inert on production weights until
+the swap. Materialization thus stays "art + its dialogue" (OCR/understanding see
+speaker+speech together, as with v3) while the raw art box drives the display crop.
+
+## Phase 4 — `render_prep --bubble-shown-mode art_only` (built, tests green: 2091)
+- `art_box_local(scene, art_boxes_chunk_px)`: raw art box → written-scene pixels
+  (`box_px_xyxy` origin, `trim.left_px/top_px`), union across boxes.
+- `art_only_window(img, art, bubbles, protected)`: art box grown to keep protected
+  `system` + `caption` boxes (on-crop detector, `_element_boxes` now collects
+  captions); a bubble STRADDLING a window edge pulls the edge out to take the whole
+  bubble (chained) — no half-bubbles, never cut art (the plan's over-art → keep
+  fallback); every discarded band verified by `band_is_chrome` (refactored out of
+  `edge_recrop_window`, same test) — a band with uncovered art edges is refused on
+  that side; slivers < 12px ignored; < 320px keep → full frame. Left/right too.
+- No art box (recovered gap scenes, pre-v4 detections) → keep-mode edge trim.
+- `prep_qa` gates bubble-interior checks for art_only like keep. Plan stamp unchanged.
+- Config: `studio.toml [render] bubble_shown_mode = "keep"` (default) → `Config.
+  bubble_shown_mode` → worker passes `--bubble-shown-mode` (worker.py touched →
+  daemon restart on deploy). `STUDIO_BUBBLE_SHOWN_MODE` env override.
+- **One weights authority:** `yolo_panels.default_weights()` = `[detect].yolo_weights`;
+  `render_prep --panel-weights` and `panel_understand._DEFAULT_PANEL_WEIGHTS` now
+  default to it (fail-soft to the v3 file). The swap = ONE config line.
+- Offline demo on the v4 seam scenes (`scratchpad/seam/demo_art_only.py`): 114 scenes,
+  art box for 101 (13 = recovered gap-scenes → keep), shown frame changes for 46
+  (keep-mode: 23). p000028 "KILL HIM!" framed out; p000054 straddlers kept whole.
+
+## Owner decisions still open (before Phase 5)
+1. **Sign off v4 → swap** `[detect] yolo_weights = "assets/models/webtoon_panels_v4.pt"`
+   on the Mini (+ `reset --to detected` for tried chapters — art boxes need a re-detect).
+2. **Flip `[render] bubble_shown_mode = "art_only"`** globally or per trial.
+3. **Straddling bubbles**: current rule keeps them WHOLE (= keep look on that side).
+   Alternative = allow trimming ≤ N% into art to remove the remnant. Not built (YAGNI).
+4. Small tech debt noted: keep/art_only `_cleaned` recrops don't offset `word_boxes`
+   passed to `_write_part` (focal dead-regions slightly off) — pre-existing in keep.

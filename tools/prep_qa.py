@@ -2809,7 +2809,9 @@ def main() -> int:
 
     # missing stamp = plan written before the stamp existed; every such plan in
     # the fleet was produced under keep-default render_prep, so default keep.
-    kept_bubbles = plan.get("bubble_shown_mode", "keep") == "keep"
+    # art_only frames dialogue OUT of the shown window (or falls back to keep)
+    # — surviving bubbles still ship AS DRAWN, same gating as keep.
+    kept_bubbles = plan.get("bubble_shown_mode", "keep") in ("keep", "art_only")
 
     cuts = iter_shown_cuts(plan)
     seg_by_file: Dict[str, str] = {}

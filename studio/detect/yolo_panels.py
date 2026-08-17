@@ -56,6 +56,7 @@ def snap_panels_to_elements(
     element_boxes_norm: Sequence[Sequence[float]],
     *,
     min_inside_frac: float = 0.55,
+    attach_gap: float = 0.0,
 ) -> List[List[float]]:
     """Grow panel boxes to swallow speech bubbles/system boxes they slice.
 
@@ -66,6 +67,15 @@ def snap_panels_to_elements(
     Elements fully inside (nothing to fix) or mostly outside every panel
     (floating in the gutter) are left alone. Output stays sorted by ymin.
     Boxes are normalized [ymin, xmin, ymax, xmax].
+
+    *attach_gap* (normalized, default off): art-only panel boxes (v4 weights)
+    leave gutter dialogue OUTSIDE the box. An element that sits over a panel's
+    x-span (>= half its width) and is vertically within *attach_gap* of that
+    panel's top/bottom edge — hanging off it or floating just beside it — is
+    attached to the NEAREST such panel (tie -> the one above), so the
+    materialized scene keeps art + its dialogue for OCR/understanding while
+    the raw art box (panels_norm_art) stays available for the shown frame.
+    Corner touches and side floaters are not attached.
     """
     panels = [[float(v) for v in p] for p in panels_norm]
     # Snapshot the ORIGINAL boxes — clamp targets must stay fixed as panels grow,
@@ -83,7 +93,20 @@ def snap_panels_to_elements(
             frac = (iy * ix) / barea
             if frac > best_frac:
                 best_frac, best_i = frac, i
-        if best_i >= 0 and min_inside_frac <= best_frac < 1.0 - 1e-9:
+        grow = best_i >= 0 and min_inside_frac <= best_frac < 1.0 - 1e-9
+        if not grow and attach_gap > 0.0 and best_frac < 1.0 - 1e-9:
+            near_i, near_gap = -1, attach_gap + 1e-9
+            for i, (py0, px0, py1, px1) in enumerate(orig):
+                ix = max(0.0, min(px1, bx1) - max(px0, bx0))
+                if ix < 0.5 * (bx1 - bx0):
+                    continue                        # not over this panel's x-span
+                gap = max(py0 - by1, by0 - py1)     # <0 = overlaps vertically
+                if gap < near_gap:
+                    near_gap, near_i = gap, i       # strict < keeps the UPPER on ties
+            grow = near_i >= 0
+            best_i = near_i if grow else best_i
+        attached = grow and not (min_inside_frac <= best_frac < 1.0 - 1e-9)
+        if grow:
             p = panels[best_i]
             ny0, nx0 = min(p[0], by0), min(p[1], bx0)
             ny1, nx1 = max(p[2], by1), max(p[3], bx1)
@@ -91,18 +114,21 @@ def snap_panels_to_elements(
             # neighbour so a snap can never cross into a neighbour's band (which
             # used to produce overlapping crops). Midpoint splits the gutter
             # evenly; for touching panels it degenerates to the shared edge.
+            # An ATTACHED element (whole bubble beside this panel) clamps at the
+            # neighbour's own edge instead — the midpoint would bisect it.
             oy0, ox0, oy1, ox1 = orig[best_i]
+            half = 1.0 if attached else 0.5
             for j, (qy0, qx0, qy1, qx1) in enumerate(orig):
                 if j == best_i:
                     continue
                 if qy1 <= oy0:               # neighbour above
-                    ny0 = max(ny0, (qy1 + oy0) / 2.0)
+                    ny0 = max(ny0, qy1 + (oy0 - qy1) * (1.0 - half))
                 if qy0 >= oy1:               # neighbour below
-                    ny1 = min(ny1, (qy0 + oy1) / 2.0)
+                    ny1 = min(ny1, oy1 + (qy0 - oy1) * half)
                 if qx1 <= ox0:               # neighbour left
-                    nx0 = max(nx0, (qx1 + ox0) / 2.0)
+                    nx0 = max(nx0, qx1 + (ox0 - qx1) * (1.0 - half))
                 if qx0 >= ox1:               # neighbour right
-                    nx1 = min(nx1, (qx0 + ox1) / 2.0)
+                    nx1 = min(nx1, ox1 + (qx0 - ox1) * half)
             panels[best_i] = [ny0, nx0, ny1, nx1]
     panels.sort(key=lambda p: p[0])
     return [[round(v, 6) for v in p] for p in panels]
@@ -133,7 +159,11 @@ _NAME_TRANSLATE = {
 }
 # Element keys whose sliced boxes should pull the panel boundary outward
 # (voice containers + system windows must never be bisected by a crop).
-_SNAP_CLASSES = ("speech_bubble", "system_box", "radio", "speech_background")
+_SNAP_CLASSES = ("speech_bubble", "system_box", "radio", "speech_background",
+                 "caption_box")
+# gutter dialogue farther than this from a panel edge stays a floating element
+# (panels_to_scenes' gap recovery still gets a shot at it)
+_ATTACH_GAP_PX = 300
 
 
 def resolve_classes(names: Dict[int, str]) -> Tuple[int, Dict[int, str]]:
@@ -142,6 +172,22 @@ def resolve_classes(names: Dict[int, str]) -> Tuple[int, Dict[int, str]]:
     elements = {i: _NAME_TRANSLATE[n] for i, n in names.items()
                 if n in _NAME_TRANSLATE}
     return panel_id, elements
+
+
+def default_weights() -> str:
+    """The ONE detector weights path: studio.toml [detect].yolo_weights (the
+    same file the detect stage runs) — so a swap is a single config line for
+    detect, render_prep's on-crop element pass and panel_understand's system-
+    card override alike. Fail-soft to the committed v3 file when the config
+    can't load (unit tests / stripped checkouts)."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    fallback = os.path.join(repo, "assets", "models", "webtoon_panels_v3.pt")
+    try:
+        from studio.config import load as _load
+        p = str(_load().yolo_weights)
+        return p if p and os.path.exists(p) else fallback
+    except Exception:
+        return fallback
 
 
 def system_class_ids(names) -> set:
@@ -234,6 +280,36 @@ def _retile_panels(model, img_path, img_w, img_h, conf, device, imgsz,
             break
         y += win - overlap
     return _dedup_iou(found)
+
+
+def _tile_elements(model, img_path, img_w, img_h, conf, device, imgsz,
+                   element_class_ids, *, win: int = 2400, overlap: int = 300):
+    """Element boxes (bubbles/captions/system/sfx) in CHUNK coords from vertical
+    windows YOLO resolves at element scale. The full-chunk pass downscales a
+    ~10k-px strip until every bubble vanishes (elements_norm was empty on real
+    chapters), so snap had nothing to snap. Returns {elements_norm key: [xyxy]}."""
+    import numpy as _np
+    from PIL import Image as _Image
+    _Image.MAX_IMAGE_PIXELS = None
+    im = _Image.open(img_path).convert("RGB")
+    found: Dict[str, List[Tuple[float, float, float, float]]] = {
+        name: [] for name in element_class_ids.values()}
+    y = 0
+    while True:
+        y1 = min(img_h, y + win)
+        arr = _np.asarray(im.crop((0, y, img_w, y1)))
+        res = model.predict(source=arr, conf=conf, device=device, imgsz=imgsz,
+                            verbose=False)[0]
+        b = res.boxes
+        if b is not None and len(b) > 0:
+            for (x1, ty1, x2, ty2), c in zip(b.xyxy.cpu().numpy(), b.cls.cpu().numpy()):
+                name = element_class_ids.get(int(c))
+                if name is not None:
+                    found[name].append((float(x1), float(ty1) + y, float(x2), float(ty2) + y))
+        if y1 >= img_h:
+            break
+        y += win - overlap
+    return {k: _dedup_iou(v) for k, v in found.items() if v}
 
 
 def detect_panels(
@@ -341,6 +417,15 @@ def detect_panels(
                 px_boxes = retiled
 
         panels_norm = boxes_to_panels_norm(px_boxes, w=img_w, h=img_h)
+        # RAW detector boxes, pre-snap / pre-gutter-expansion. With the v4
+        # art-only weights this IS the art region; render_prep's art_only shown
+        # frame crops to it (materialization stays full-panel for OCR).
+        panels_norm_art = [list(b) for b in panels_norm]
+        # elements at ELEMENT scale (windowed) — the full-chunk pass never
+        # resolves a bubble on a 10k-px strip; union both, dedup per class.
+        for name, bx in _tile_elements(model, img_path, img_w, img_h, conf, device,
+                                       imgsz, element_class_ids).items():
+            el_px[name] = _dedup_iou(el_px.get(name, []) + list(bx))
         elements_norm = {
             name: boxes_to_panels_norm(bx, w=img_w, h=img_h)
             for name, bx in el_px.items()
@@ -349,13 +434,18 @@ def detect_panels(
         if snap:
             snap_boxes = [b for name in _SNAP_CLASSES for b in elements_norm.get(name, [])]
             if snap_boxes:
-                panels_norm = snap_panels_to_elements(panels_norm, snap_boxes)
+                # attach gutter dialogue within ~300px of a panel edge
+                panels_norm = snap_panels_to_elements(
+                    panels_norm, snap_boxes, attach_gap=_ATTACH_GAP_PX / float(img_h))
 
         out_chunks.append(
             {
                 "chunk_file": basename,
                 "panels_norm": panels_norm,
-                # additive: chunk-space boxes of the model's non-panel classes
+                # additive: raw art boxes (same order as panels_norm; snap only
+                # grows a box, never reorders/merges) + chunk-space boxes of
+                # the model's non-panel classes
+                "panels_norm_art": panels_norm_art,
                 "elements_norm": elements_norm,
             }
         )

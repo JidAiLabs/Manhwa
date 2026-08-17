@@ -1009,6 +1009,154 @@ def bubble_coverage(
     return float(grid.mean())
 
 
+def _default_panel_weights() -> str:
+    try:
+        from studio.detect.yolo_panels import default_weights
+        return default_weights()
+    except Exception:
+        return os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "assets", "models", "webtoon_panels_v3.pt")
+
+
+def band_is_chrome(
+    gray: np.ndarray,
+    a: int,
+    b: int,
+    bubbles: Sequence[Tuple[int, int, int, int]],
+    protected: Sequence[Tuple[int, int, int, int]] = (),
+    *,
+    dominance: float = 0.55,
+    flat_std: float = 18.0,
+    edge_thr: float = 0.015,
+) -> bool:
+    """True when the horizontal band gray[a:b] is dialogue chrome, safe to cut
+    off the shown frame: nothing protected intersects it AND it is bubble-
+    dominated (union cover >= *dominance*) OR its non-bubble remainder is flat
+    (std < *flat_std*) OR its bubble-masked edge density is below *edge_thr*.
+    Backdrop gradients (sky, blur) beat the flat test but carry no ART: the
+    edge test is on the min-art-score scale (balloon outlines masked out; a
+    face/action in the band fires edges and vetoes the cut). Measured on nano
+    p000023: balloon band 0.0115 vs the face region 0.0419 — 3.6x separation.
+    Vertical bands: pass gray.T with x/y-swapped boxes."""
+    if b <= a:
+        return False
+    w = gray.shape[1]
+    for (px1, py1, px2, py2) in protected:
+        if py2 > a and py1 < b:
+            return False
+    band = np.zeros((b - a, w), bool)
+    for (bx1, by1, bx2, by2) in bubbles:
+        iy0, iy1 = max(a, int(by1)) - a, min(b, int(by2)) - a
+        if iy1 > iy0:
+            band[iy0:iy1, max(0, int(bx1)):max(0, int(bx2))] = True
+    if float(band.mean()) >= dominance:
+        return True
+    rest = gray[a:b][~band]
+    if rest.size == 0:
+        return True
+    if float(rest.std()) < flat_std:
+        return True
+    edges = cv2.Canny(gray[a:b], 50, 150)
+    edges[band] = 0
+    return float(edges.mean()) / 255.0 < edge_thr
+
+
+def art_box_local(
+    scene: Dict[str, Any],
+    art_boxes_chunk_px: Sequence[Tuple[float, float, float, float]],
+) -> Optional[Tuple[int, int, int, int]]:
+    """The art-only detector box(es) of a scene, in the WRITTEN scene's pixel
+    coords: chunk-space xyxy art boxes intersected with the scene's crop rect
+    (box_px_xyxy), shifted by the crop origin and panels_to_scenes' content
+    trim (trim.left_px/top_px), clipped to the scene, unioned. None when no
+    art box overlaps the scene (fall back to keep-mode)."""
+    box = scene.get("box_px_xyxy") or None
+    if not box:
+        return None
+    sx0, sy0, sx1, sy1 = (float(v) for v in box)
+    tr = scene.get("trim") or {}
+    ox = float(tr.get("left_px") or 0.0) if tr.get("trimmed") else 0.0
+    oy = float(tr.get("top_px") or 0.0) if tr.get("trimmed") else 0.0
+    W = int(scene.get("w") or (sx1 - sx0)); H = int(scene.get("h") or (sy1 - sy0))
+    acc = None
+    for (ax0, ay0, ax1, ay1) in art_boxes_chunk_px:
+        ix0, iy0 = max(ax0, sx0), max(ay0, sy0)
+        ix1, iy1 = min(ax1, sx1), min(ay1, sy1)
+        if ix1 - ix0 < 3 or iy1 - iy0 < 3:
+            continue
+        lx0 = max(0, int(round(ix0 - sx0 - ox))); ly0 = max(0, int(round(iy0 - sy0 - oy)))
+        lx1 = min(W, int(round(ix1 - sx0 - ox))); ly1 = min(H, int(round(iy1 - sy0 - oy)))
+        if lx1 - lx0 < 3 or ly1 - ly0 < 3:
+            continue
+        acc = (lx0, ly0, lx1, ly1) if acc is None else (
+            min(acc[0], lx0), min(acc[1], ly0), max(acc[2], lx1), max(acc[3], ly1))
+    return acc
+
+
+def art_only_window(
+    img: np.ndarray,
+    art: Tuple[int, int, int, int],
+    bubbles: Sequence[Tuple[int, int, int, int]],
+    protected: Sequence[Tuple[int, int, int, int]] = (),
+    *,
+    min_keep_px: int = 320,
+    min_cut_px: int = 12,
+) -> Tuple[int, int, int, int]:
+    """(x0, y0, x1, y1) of the SHOWN window in art_only mode: the detector's
+    art box, grown to keep every protected box (nameplate captions, system
+    windows) in frame. Each of the four bands the crop would discard is only
+    discarded when band_is_chrome says it carries no uncovered art — the
+    "never cut art" guard against a mis-boxed panel; a refused side stays at
+    the image edge. Below *min_keep_px* on either axis -> full image."""
+    h, w = img.shape[0], img.shape[1]
+    x0, y0, x1, y1 = (max(0, int(art[0])), max(0, int(art[1])),
+                      min(w, int(art[2])), min(h, int(art[3])))
+    for (px0, py0, px1, py1) in protected:
+        x0, y0 = min(x0, max(0, int(px0))), min(y0, max(0, int(py0)))
+        x1, y1 = max(x1, min(w, int(px1))), max(y1, min(h, int(py1)))
+    # A bubble STRADDLING a window edge (hanging from the gutter into the
+    # art) would ship as a half-bubble; "never cut art" means the edge moves
+    # OUT to take the whole bubble (the plan's over-art -> keep fallback),
+    # chained: a bubble touching the moved edge is taken too.
+    changed = True
+    while changed:
+        changed = False
+        for (bx0, by0, bx1, by1) in bubbles:
+            bx0, by0, bx1, by1 = int(bx0), int(by0), int(bx1), int(by1)
+            if bx1 <= x0 or bx0 >= x1 or by1 <= y0 or by0 >= y1:
+                continue                                # not touching the window
+            nx0, ny0, nx1, ny1 = (min(x0, max(0, bx0)), min(y0, max(0, by0)),
+                                  max(x1, min(w, bx1)), max(y1, min(h, by1)))
+            if (nx0, ny0, nx1, ny1) != (x0, y0, x1, y1):
+                x0, y0, x1, y1 = nx0, ny0, nx1, ny1
+                changed = True
+    # box jitter: a sliver under min_cut_px is not a cut
+    if y0 < min_cut_px:
+        y0 = 0
+    if h - y1 < min_cut_px:
+        y1 = h
+    if x0 < min_cut_px:
+        x0 = 0
+    if w - x1 < min_cut_px:
+        x1 = w
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    if y0 > 0 and not band_is_chrome(gray, 0, y0, bubbles, protected):
+        y0 = 0
+    if y1 < h and not band_is_chrome(gray, y1, h, bubbles, protected):
+        y1 = h
+    if x0 > 0 or x1 < w:
+        gT = np.ascontiguousarray(gray.T)
+        bT = [(by1, bx1, by2, bx2) for (bx1, by1, bx2, by2) in bubbles]
+        pT = [(py1, px1, py2, px2) for (px1, py1, px2, py2) in protected]
+        if x0 > 0 and not band_is_chrome(gT, 0, x0, bT, pT):
+            x0 = 0
+        if x1 < w and not band_is_chrome(gT, x1, w, bT, pT):
+            x1 = w
+    if (y1 - y0) < min_keep_px or (x1 - x0) < min_keep_px:
+        return 0, 0, w, h
+    return int(x0), int(y0), int(x1), int(y1)
+
+
 def edge_recrop_window(
     img: np.ndarray,
     bubbles: Sequence[Tuple[int, int, int, int]],
@@ -1040,32 +1188,8 @@ def edge_recrop_window(
             if img.ndim == 3 else img)
 
     def _band_ok(a: int, b: int) -> bool:
-        if b <= a:
-            return False
-        for (px1, py1, px2, py2) in protected:
-            if py2 > a and py1 < b:
-                return False
-        band = np.zeros((b - a, w), bool)
-        for (bx1, by1, bx2, by2) in bubbles:
-            iy0, iy1 = max(a, int(by1)) - a, min(b, int(by2)) - a
-            if iy1 > iy0:
-                band[iy0:iy1, max(0, int(bx1)):max(0, int(bx2))] = True
-        cover = float(band.mean())
-        if cover >= dominance:
-            return True
-        rest = gray[a:b][~band]
-        if rest.size == 0:
-            return True
-        if float(rest.std()) < flat_std:
-            return True
-        # backdrop gradients (sky, blur) beat the flat test but carry no ART:
-        # bubble-masked edge density of the band, on the min-art-score scale
-        # (balloon outlines are masked out; a face/action in the band fires
-        # edges and vetoes the cut). Measured on nano p000023: balloon band
-        # 0.0115 vs the face region 0.0419 — 3.6x separation at 0.015.
-        edges = cv2.Canny(gray[a:b], 50, 150)
-        edges[band] = 0
-        return float(edges.mean()) / 255.0 < 0.015
+        return band_is_chrome(gray, a, b, bubbles, protected,
+                              dominance=dominance, flat_std=flat_std)
 
     # Chained cuts: a balloon STACK reaches the edge through its first member
     # (p000023: balloon 2 starts mid-balloon-1, not at the edge) — grow the
@@ -2888,14 +3012,23 @@ def main() -> int:
     # harmless by construction (no white/black interior -> untouched).
     ap.add_argument("--bubble-conf", type=float, default=0.20)
     ap.add_argument("--no-bubbles", action="store_true", help="skip bubble inpainting")
-    ap.add_argument("--bubble-shown-mode", choices=["keep", "husk"],
+    ap.add_argument("--bubble-shown-mode", choices=["keep", "husk", "art_only"],
                     default="keep",
                     help="story panels on screen: 'keep' (default; owner "
                          "2026-07-16) trims bubble-dominated EDGE bands off "
                          "the shown frame (tag-driven re-crop via the trained "
                          "detector) and leaves remaining bubbles AS DRAWN — "
-                         "no text erasure, no white husks; 'husk' is the "
+                         "no text erasure, no white husks; 'art_only' (owner "
+                         "2026-07-23, needs the v4 art-only detector) shows "
+                         "the detector's ART box — gutter/edge dialogue is "
+                         "framed out (narration carries it), nameplate "
+                         "captions + system windows stay, art is never cut "
+                         "(falls back to keep per side); 'husk' is the "
                          "legacy erase-text-keep-bubble behavior")
+    ap.add_argument("--panels-manifest", default="",
+                    help="manifest.panels(.expanded).json — its panels_norm_art "
+                         "(raw art-only detector boxes) frame the art_only shown "
+                         "window (default: <episode>/manifest.panels.expanded.json)")
     ap.add_argument("--reuse-clean", action="store_true",
                     help="heal-cycle fast path: reuse the cached per-cut visual "
                          "judge verdicts (panels are unchanged between heal "
@@ -2921,10 +3054,9 @@ def main() -> int:
                          "sub-cuts (V1); half of it gates the husk re-crop "
                          "(V3)")
     ap.add_argument("--panel-weights",
-                    default=os.path.join(os.path.dirname(os.path.dirname(
-                        os.path.abspath(__file__))), "assets", "models",
-                        "webtoon_panels_v3.pt"),
-                    help="trained webtoon YOLO — its system class (by name: "
+                    default=_default_panel_weights(),
+                    help="trained webtoon YOLO (default: studio.toml [detect] "
+                         "yolo_weights) — its system class (by name: "
                          "system_box/system_ui) protects system-message panels "
                          "from the bubble gate/blanking; v3 doesn't fire on "
                          "plain text cards like the legacy model did")
@@ -3056,6 +3188,7 @@ def main() -> int:
     panel_model = None
     sys_ids: set = set()
     bubble_ids: set = set()
+    caption_ids: set = set()
     if os.path.exists(args.panel_weights):
         from ultralytics import YOLO
         from studio.detect.yolo_panels import system_class_ids
@@ -3066,16 +3199,45 @@ def main() -> int:
         # legacy: speech_bubble. Feed the shown-frame edge re-crop.
         bubble_ids = {i for i, n in dict(names).items()
                       if n in ("speech_bubble", "radio", "speech_background")}
+        # nameplate/narrative captions (v3+: caption_box) — art_only keeps them
+        caption_ids = {i for i, n in dict(names).items() if "caption" in str(n)}
     else:
         print(f"[warn] panel weights missing ({args.panel_weights}) — "
               "system-message protection DISABLED")
     el_cache: Dict[str, Dict[str, List[Tuple[int, int, int, int]]]] = {}
 
+    # art_only: the detect stage's RAW art boxes (panels_norm_art, chunk-norm
+    # [ymin,xmin,ymax,xmax]) mapped into each scene's written pixel space.
+    # Missing manifest/field (pre-2026-08-17 detections) -> {} -> keep-mode.
+    art_local: Dict[str, Tuple[int, int, int, int]] = {}
+    if args.bubble_shown_mode == "art_only":
+        pm_path = args.panels_manifest or os.path.join(
+            args.episode_dir, "manifest.panels.expanded.json")
+        if not os.path.exists(pm_path):
+            pm_path = os.path.join(args.episode_dir, "manifest.panels.json")
+        art_by_chunk: Dict[str, List[Tuple[float, float, float, float]]] = {}
+        if os.path.exists(pm_path):
+            with open(pm_path, "r", encoding="utf-8") as f:
+                for ch in json.load(f).get("chunks") or []:
+                    art_by_chunk[str(ch.get("chunk_file"))] = [
+                        tuple(b) for b in (ch.get("panels_norm_art") or [])]
+        for sc in scenes_m.get("scenes") or []:
+            cw, chh = float(sc.get("chunk_w") or 0), float(sc.get("chunk_h") or 0)
+            raw = art_by_chunk.get(str(sc.get("chunk_file")), [])
+            if not raw or not cw or not chh:
+                continue
+            px = [(b[1] * cw, b[0] * chh, b[3] * cw, b[2] * chh) for b in raw]
+            loc = art_box_local(sc, px)
+            if loc is not None:
+                art_local[str(sc.get("out_file"))] = loc
+        print(f"[ok] art_only: art boxes for {len(art_local)} scene(s) "
+              f"from {os.path.basename(pm_path) if art_by_chunk else 'NO panels manifest (keep fallback)'}")
+
     def _element_boxes(fname: str) -> Dict[str, List[Tuple[int, int, int, int]]]:
         """One trained-model pass per shown file: system + bubble boxes."""
         if fname not in el_cache:
             out: Dict[str, List[Tuple[int, int, int, int]]] = {
-                "system": [], "bubbles": []}
+                "system": [], "bubbles": [], "captions": []}
             img = _img(fname)
             if panel_model is not None and img is not None:
                 r = panel_model.predict(img, conf=0.30, device=args.device, verbose=False)[0]
@@ -3087,6 +3249,8 @@ def main() -> int:
                             out["system"].append(box)
                         elif int(c) in bubble_ids:
                             out["bubbles"].append(box)
+                        elif int(c) in caption_ids:
+                            out["captions"].append(box)
             el_cache[fname] = out
         return el_cache[fname]
 
@@ -3197,17 +3361,29 @@ def main() -> int:
                 out = (clean_scene_image(img.copy(), sboxes, text_boxes=inwords)
                        if (sboxes and inwords) else img.copy())
                 cleaned_cache[fname] = (out, [])
-            elif args.bubble_shown_mode == "keep":
+            elif args.bubble_shown_mode in ("keep", "art_only"):
                 # TAG-DRIVEN SHOWN FRAME (owner 2026-07-16): trim bubble-
                 # dominated edge bands via the trained detector's bubble boxes
                 # (the balloon stack over p000023's face vanishes; the face
                 # fills the frame); every surviving bubble ships AS DRAWN —
                 # its dialogue already rides the narration. No text erasure,
                 # no white husks, no residue nets on the story path.
+                # art_only (owner 2026-07-23): the v4 detector's ART box is the
+                # frame — gutter/edge dialogue is framed out on all four sides,
+                # nameplates/system windows stay, each cut band is verified to
+                # carry no uncovered art; no art box -> keep-mode edge trim.
                 els = _element_boxes(fname)
-                ry0, ry1 = edge_recrop_window(img, els["bubbles"],
-                                              protected=els["system"])
-                out = img[ry0:ry1].copy() if (ry0, ry1) != (0, img.shape[0]) \
+                h_, w_ = img.shape[0], img.shape[1]
+                win = None
+                if args.bubble_shown_mode == "art_only" and fname in art_local:
+                    win = art_only_window(img, art_local[fname], els["bubbles"],
+                                          protected=els["system"] + els["captions"])
+                if win is None:
+                    ry0, ry1 = edge_recrop_window(img, els["bubbles"],
+                                                  protected=els["system"])
+                    win = (0, ry0, w_, ry1)
+                wx0, wy0, wx1, wy1 = win
+                out = img[wy0:wy1, wx0:wx1].copy() if win != (0, 0, w_, h_) \
                     else img.copy()
                 cleaned_cache[fname] = (out, [])
             else:

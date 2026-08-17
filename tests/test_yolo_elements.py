@@ -96,3 +96,44 @@ def test_chunk_box_outside_returns_none():
     scene = (100, 200, 500, 800)
     assert cpi.chunk_box_to_scene_local((600, 300, 700, 400), scene) is None
     assert cpi.chunk_box_to_scene_local((498, 300, 502, 400), scene) is None  # <3px
+
+
+# ---- (c) attach gutter dialogue to its panel (art-only detector, 2026-08-17) --
+# v4 boxes hug the art, so a bubble hanging off a panel edge (or floating in
+# the gutter right next to it) is no longer inside the box. attach_gap (norm.)
+# pulls such VERTICALLY-ADJACENT elements in when they sit over the panel's
+# x-span; corner touches / far floaters stay out. Default 0.0 = legacy behavior.
+
+def test_attach_pulls_in_bubble_hanging_off_the_top_edge():
+    panel = [0.30, 0.0, 0.60, 1.0]
+    bubble = [0.24, 0.10, 0.31, 0.50]        # ~14% inside (below the 0.55 slice rule)
+    assert snap_panels_to_elements([panel], [bubble]) == [panel]          # legacy: untouched
+    out = snap_panels_to_elements([panel], [bubble], attach_gap=0.03)
+    assert out == [[0.24, 0.0, 0.60, 1.0]]
+
+
+def test_attach_pulls_in_floating_gutter_bubble_within_gap():
+    panel = [0.30, 0.0, 0.60, 1.0]
+    floating = [0.26, 0.20, 0.29, 0.60]      # 0.01 above the panel, no overlap
+    out = snap_panels_to_elements([panel], [floating], attach_gap=0.03)
+    assert out == [[0.26, 0.0, 0.60, 1.0]]
+    far = [0.10, 0.20, 0.20, 0.60]           # 0.10 above — beyond the gap
+    assert snap_panels_to_elements([panel], [far], attach_gap=0.03) == [panel]
+
+
+def test_attach_ignores_corner_touch_and_side_floaters():
+    panel = [0.1, 0.1, 0.5, 0.5]
+    corner = [0.45, 0.45, 0.9, 0.9]          # legacy 'mostly_outside' case
+    beside = [0.2, 0.52, 0.3, 0.9]           # to the RIGHT of the panel, not above/below
+    out = snap_panels_to_elements([panel], [corner, beside], attach_gap=0.05)
+    assert out == [panel]
+
+
+def test_attach_goes_to_nearer_panel_and_never_crosses_neighbor():
+    top = [0.10, 0.0, 0.40, 1.0]
+    bot = [0.50, 0.0, 0.90, 1.0]
+    bubble = [0.44, 0.2, 0.49, 0.6]          # in the gutter, 0.01 from bot, 0.04 from top
+    out = snap_panels_to_elements([top, bot], [bubble], attach_gap=0.05)
+    assert out[0] == top                     # top untouched
+    assert out[1] == [0.44, 0.0, 0.90, 1.0]  # bot grew up to the bubble, still below top
+    assert out[1][0] >= out[0][2]

@@ -993,8 +993,17 @@ _SYS_BOX_MIN_COVER = 0.20
 # TEXT CARDS (measured on ORV Ep0 "BACK THEN," — promoted a caption to
 # system and put a white card on screen); v3's system_ui is trained on real
 # UI windows only (0.00 on the same card) and calls text cards free_text.
-_DEFAULT_PANEL_WEIGHTS = os.path.join(
-    os.path.dirname(_TD), "assets", "models", "webtoon_panels_v3.pt")
+def _default_panel_weights() -> str:
+    """studio.toml [detect].yolo_weights (the detect stage's file) — fail-soft
+    to the committed v3 file."""
+    try:
+        from studio.detect.yolo_panels import default_weights
+        return default_weights()
+    except Exception:
+        return os.path.join(os.path.dirname(_TD), "assets", "models", "webtoon_panels_v3.pt")
+
+
+_DEFAULT_PANEL_WEIGHTS = _default_panel_weights()
 
 
 def _describes_speech_bubble(description: Any) -> bool:

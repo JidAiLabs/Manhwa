@@ -86,6 +86,11 @@ class Config:
                                              # STUDIO_NARR_SEGMENTATION wins;
                                              # invalid values fall back to
                                              # "adaptive" with a warning.
+    bubble_shown_mode: str = "keep"          # [render] shown-frame policy for
+                                             # story panels: keep | art_only |
+                                             # husk (render_prep
+                                             # --bubble-shown-mode); art_only
+                                             # needs the v4 art-only detector
     max_same_image_hold_sec: float = 10.0   # [render] long_hold QA cap: one
                                              # file shown continuously past
                                              # this while STANDING IN for
@@ -209,6 +214,8 @@ def load(path: Path | None = None) -> Config:
             or n.get("segmentation", "adaptive")),
         max_same_image_hold_sec=float(
             r.get("max_same_image_hold_sec", 10.0) or 10.0),
+        bubble_shown_mode=str(os.environ.get("STUDIO_BUBBLE_SHOWN_MODE")
+                              or r.get("bubble_shown_mode", "keep") or "keep"),
         narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
                                      bool(m.get("narration_sanitize", True))),
         teaser_enabled=_env_bool("STUDIO_TEASER_ENABLED",

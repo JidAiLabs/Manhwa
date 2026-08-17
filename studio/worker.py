@@ -559,7 +559,9 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
                      "--branding", branding,
                      # ken-variety split (V1) + husk re-crop gate (V3) key on
                      # the same cap prep_qa's long_hold enforces
-                     "--max-hold-sec", str(cfg.max_same_image_hold_sec)]
+                     "--max-hold-sec", str(cfg.max_same_image_hold_sec),
+                     # keep | art_only | husk ([render].bubble_shown_mode)
+                     "--bubble-shown-mode", cfg.bubble_shown_mode]
         if reuse_clean:
             # heal cycle: panels are unchanged, only narration moved — reuse the
             # cached per-cut visual-judge verdicts instead of re-paying the Gemma
