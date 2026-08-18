@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
-from recap_style import beat_lines_usable  # noqa: E402
+from recap_style import beat_lines_usable, beat_overshoot  # noqa: E402
 
 VERDICT_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
@@ -108,6 +108,21 @@ def gate_beats(old_beats: List[Dict[str, Any]],
             # Anything the writer produced beats a line that cannot ship.
             decisions.append({
                 "group_id": gid, "verdict": "old_unshippable", "kept": "new",
+                "old": _norm(ob.get("narration"))[:120],
+                "new": _norm(nb.get("narration"))[:120],
+            })
+            accepted.append(nb)
+            continue
+        old_over, new_over = beat_overshoot(ob), beat_overshoot(nb)
+        if old_over and new_over < old_over:
+            # The heal was fired to SHORTEN an over-cap line and it did. The
+            # judge scores grounding + writing, not length, so it happily
+            # calls a 47-word rewrite "equivalent" to the 61-word original and
+            # reverts — which is why line_overlong never cleared on nano ch1
+            # g0023 across three runs. Measurable progress outranks taste.
+            decisions.append({
+                "group_id": gid, "verdict": f"shorter({old_over}->{new_over}w over)",
+                "kept": "new",
                 "old": _norm(ob.get("narration"))[:120],
                 "new": _norm(nb.get("narration"))[:120],
             })

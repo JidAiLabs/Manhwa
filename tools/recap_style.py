@@ -423,6 +423,102 @@ def usable_narration_line(text: str) -> bool:
     return not is_shot_description(ln)
 
 
+# Pinned copies of gemini_narrative_pass.WPM / _SEG_MAX_SEC_PER_PANEL — the
+# same convention (and sync test) as prep_qa._BUDGET_WPM and
+# narration_punchup._SPAN_WPM. Kept here so every stage that has to compare two
+# versions of a beat can, without importing the writer.
+_OVERSHOOT_WPM = 135.0
+_OVERSHOOT_MAX_SEC_PER_PANEL = 15.0
+
+
+def segments_overshoot(segs: Sequence[Mapping[str, Any]]) -> int:
+    """Words the segments run OVER the per-panel voice cap (0 when all fit).
+
+    The one number that says whether one version of a beat is LESS overlong
+    than another. A heal that cannot make that comparison cannot converge: it
+    either ships a fully valid rewrite or restores the incumbent, so a rewrite
+    that is merely BETTER (47 words where the original ran 61) is thrown away
+    and the worst version survives."""
+    over = 0
+    for seg in (segs or []):
+        if not isinstance(seg, Mapping):
+            continue
+        n = max(1, len(seg.get("span") or []))
+        cap = int(n * _OVERSHOOT_MAX_SEC_PER_PANEL * _OVERSHOOT_WPM / 60.0)
+        over += max(0, len(str(seg.get("line") or "").split()) - cap)
+    return over
+
+
+_SENTENCE_RE = re.compile(r"[^.!?\u2026]+(?:[.!?\u2026]+[\"')\]]*|$)")
+
+
+def _sentences(line: str) -> List[str]:
+    """Split a line into whole sentences, terminators kept. Dropping a WHOLE
+    sentence is the only trim that leaves the remainder speakable — the
+    writer's own mid-sentence guard rejects anything else."""
+    return [m.group(0).strip()
+            for m in _SENTENCE_RE.finditer(str(line or "")) if m.group(0).strip()]
+
+
+def _page_grounding(sentence: str, page_words: set) -> int:
+    """How many of a sentence's words are PRINTED on the panel. The rank that
+    decides what a trim sacrifices: a sentence voicing the panel's caption is
+    covered by its own QA gate (caption_unvoiced), so it goes last."""
+    return sum(1 for w in _WORD_RE.findall(str(sentence or "").lower())
+               if w in page_words)
+
+
+def tighten_overlong_segments(segs: Sequence[Mapping[str, Any]],
+                              page_text_by_file: Mapping[str, str] | None = None,
+                              ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Deterministically bring every over-cap segment back under the per-panel
+    voice cap by dropping WHOLE sentences, least page-grounded first.
+
+    The last resort for the one QA class the model cannot be re-asked into
+    fixing. Without it the heal's only options are "ship the long line" or
+    "ship grounded pads", so a verbose beat never converges and a human has to
+    decide (nano ch1 g0023, ORV Ep0/Ep1 — 6 cases over 3 chapters, 39-73 words
+    against a 33-word cap). Always keeps at least one sentence, keeps the
+    survivors in their original order, and prefers to sacrifice prose the page
+    does not print. Returns (segments, notes)."""
+    page_text_by_file = page_text_by_file or {}
+    out: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    for seg in (segs or []):
+        if not isinstance(seg, Mapping):
+            continue
+        span = list(seg.get("span") or [])
+        line = str(seg.get("line") or "")
+        cap = int(max(1, len(span)) * _OVERSHOOT_MAX_SEC_PER_PANEL
+                  * _OVERSHOOT_WPM / 60.0)
+        sents = _sentences(line)
+        if len(line.split()) <= cap or len(sents) < 2:
+            out.append(dict(seg))
+            continue
+        page = set()
+        for f in span:
+            page |= {w for w in _WORD_RE.findall(
+                str(page_text_by_file.get(f) or "").lower())}
+        keep = list(range(len(sents)))
+        total = lambda idxs: sum(len(sents[i].split()) for i in idxs)
+        while total(keep) > cap and len(keep) > 1:
+            # least grounded first; ties drop the LATER sentence so the beat
+            # keeps its opening
+            keep.remove(min(keep, key=lambda i: (_page_grounding(sents[i], page), -i)))
+        new_line = " ".join(sents[i] for i in sorted(keep))
+        if new_line != line:
+            notes.append(f"{span[0] if span else '?'}: {len(line.split())}w "
+                         f"-> {len(new_line.split())}w "
+                         f"(dropped {len(sents) - len(keep)} sentence(s))")
+        out.append(dict(seg, line=new_line))
+    return out, notes
+
+
+def beat_overshoot(beat: Mapping[str, Any]) -> int:
+    """segments_overshoot for a whole beat, whichever shape it carries."""
+    return segments_overshoot(beat_segments(beat))
+
+
 def beat_lines_usable(beat: Mapping[str, Any]) -> bool:
     """True when every line of a beat is shippable (see usable_narration_line).
     Reads segments when present, else the joined narration."""

@@ -105,3 +105,45 @@ def test_gate_still_reverts_when_the_old_line_is_shippable():
     accepted, decisions = ab.gate_beats(old, new, judge=lambda o, n: "A_better")
     assert accepted[0]["narration"] == "He kneels beside the body."
     assert decisions[0]["kept"] == "old"
+
+
+def _seg(words, span=("p1.jpg",)):
+    line = " ".join(["word"] * words)
+    return {"span": list(span), "line": line}
+
+
+def test_gate_keeps_a_shorter_rewrite_of_an_over_cap_line():
+    # nano ch1 g0023: the heal was fired to SHORTEN a 61-word line, came back
+    # with 47, and the judge reverted it as "equivalent" — so line_overlong
+    # never cleared. Measurable progress outranks taste.
+    old = [{"group_id": 23, "narration": "x", "segments": [_seg(61)]}]
+    new = [{"group_id": 23, "narration": "y", "segments": [_seg(47)]}]
+    judged = []
+
+    def judge(o, n):
+        judged.append(n["group_id"])
+        return "equivalent"
+
+    accepted, decisions = ab.gate_beats(old, new, judge=judge)
+    assert judged == []
+    assert accepted[0]["segments"][0]["line"].split().__len__() == 47
+    assert decisions[0]["kept"] == "new"
+    assert "shorter" in decisions[0]["verdict"]
+
+
+def test_gate_does_not_take_a_longer_rewrite_of_an_over_cap_line():
+    # the floor is one-directional: a heal must not smuggle in a LONGER line
+    old = [{"group_id": 23, "narration": "x", "segments": [_seg(47)]}]
+    new = [{"group_id": 23, "narration": "y", "segments": [_seg(61)]}]
+    accepted, decisions = ab.gate_beats(old, new, judge=lambda o, n: "equivalent")
+    assert len(accepted[0]["segments"][0]["line"].split()) == 47   # reverted
+    assert decisions[0]["kept"] == "old"
+
+
+def test_gate_leaves_within_cap_rewrites_to_the_judge():
+    # both fit the cap -> nothing measurable to compare, taste decides
+    old = [{"group_id": 23, "narration": "x", "segments": [_seg(20)]}]
+    new = [{"group_id": 23, "narration": "y", "segments": [_seg(12)]}]
+    accepted, decisions = ab.gate_beats(old, new, judge=lambda o, n: "A_better")
+    assert len(accepted[0]["segments"][0]["line"].split()) == 20   # reverted
+    assert decisions[0]["verdict"] == "A_better"

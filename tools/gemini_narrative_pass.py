@@ -42,6 +42,9 @@ from recap_style import (  # noqa: E402
     MOOD_PREFIX_RE,
     RECAP_STYLE_RULES,
     beat_lines_usable,
+    beat_overshoot,
+    segments_overshoot,
+    tighten_overlong_segments,
     dedupe_consecutive_panel_lines,
     ends_terminal,
     is_shot_description,
@@ -1736,10 +1739,22 @@ def enforce_pinned_spans(beat, prev_beat, gid):
     return prev_beat
 
 
+_TOO_FAT_RE = re.compile(r"^segment \d+: too fat\b")
+
+
+def only_too_fat(errors: List[str]) -> bool:
+    """True when EVERY validation error is the length cap — no cover, span,
+    ordering or content error. That is the one class where the segments are
+    structurally sound and every line is real prose: safe to ship as-is, unlike
+    a beat whose spans skip a panel."""
+    errs = [str(e) for e in (errors or [])]
+    return bool(errs) and all(_TOO_FAT_RE.match(e) for e in errs)
+
+
 def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                            reask_fn=None, allow_flow_nudge=True,
                            derive_fn=None, allow_span_align=True,
-                           echo_of=None):
+                           echo_of=None, page_text_by_file=None):
     """Adaptive mode: normalize + validate the model's segments; on failure do
     ONE repair re-ask (reask_fn(errors) -> repaired beat or None); still failing
     -> fall back to align_panel_narration singleton spans (never block the
@@ -1789,8 +1804,24 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
             raw2 = _derive(repaired)
             if raw2:
                 segs2 = _norm(raw2)
-                if not _check(segs2):
+                err2 = _check(segs2)
+                if not err2:
                     segs, errors = segs2, []
+                elif (only_too_fat(err2)
+                      and segments_overshoot(segs2) < segments_overshoot(segs)):
+                    # Still long, but SHORTER — and structurally sound (only
+                    # the cap failed). The alternative is pads, which lose the
+                    # plot, and the incumbent is longer still, so falling back
+                    # ships the WORST of the three (nano ch1 g0023: 47w repair
+                    # discarded, 61w original restored, three runs running).
+                    # Shipping the shortest real prose is what converges.
+                    print(f"[segments] g{gid:04d}: repair still over cap but "
+                          f"shorter ({segments_overshoot(segs2)}w over vs "
+                          f"{segments_overshoot(segs)}w) — adopted")
+                    # keep the errors: the deterministic trim below still has
+                    # to bring it under the cap
+                    segs, errors = segs2, err2
+                    beat["_segments_overlong"] = True
     elif (not errors and allow_flow_nudge and reask_fn is not None
           and len(surviving) >= _FLOW_NUDGE_MIN_PANELS
           and all(len(s["span"]) == 1 for s in segs)):
@@ -1803,6 +1834,17 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                 print(f"[segments] flow-nudge beat g{gid:04d} adopted "
                       f"({len(segs3)} segments)")
                 segs = segs3
+    if errors and only_too_fat(errors):
+        # LAST RESORT for the one class the model cannot be re-asked into
+        # fixing: trim whole sentences, least page-grounded first. Without it
+        # the only remaining moves are "ship the long line" or "ship pads", so
+        # a verbose beat never converges and a human has to arbitrate.
+        tightened, notes = tighten_overlong_segments(segs, page_text_by_file)
+        if not _check(tightened):
+            for note in notes:
+                print(f"[segments] g{gid:04d}: tightened {note}")
+            segs, errors = tightened, []
+            beat.pop("_segments_overlong", None)
     if errors:
         print(f"[segments] fallback beat g{gid:04d} -> singleton spans "
               f"({errors[0]})")
@@ -2516,8 +2558,20 @@ def main() -> int:
                     b.get("sentences"), surviving, kinds, u_by_file)
                 return segs if segs is not None else beat_segments(b)
 
+            # what the PAGE prints for each panel — the rank a last-resort
+            # trim sacrifices by (OCR first; the understanding's own reading
+            # of the panel backs it up when OCR is thin)
+            page_text = {
+                f: " ".join(str(x) for x in (
+                    (vision_by_file.get(f) or {}).get("ocr_clean") or "",
+                    (u_by_file.get(f) or {}).get("dialogue") or "",
+                    (u_by_file.get(f) or {}).get("description") or "",
+                    (u_by_file.get(f) or {}).get("action") or ""))
+                for f in surviving}
+
             finalize_adaptive_beat(
                 beat, surviving, kinds, u_by_file, gid,
+                page_text_by_file=page_text,
                 reask_fn=None if beat.get("error") else _reask,
                 # the span-size nudge is direct-segments machinery: prose
                 # authors flow in the passage itself, and a pinned nudge
@@ -2548,9 +2602,11 @@ def main() -> int:
                     print(f"[segments] span-pin g{gid:04d}: previous lines are "
                           "unshippable — kept the grounded pads")
             else:
+                beat.pop("_segments_overlong", None)
                 beat = enforce_pinned_spans(beat, pin_prev, gid)
         else:
             fell_back = beat.pop("_segments_fallback", False)
+            still_long = beat.pop("_segments_overlong", False)
             prev0 = existing_by_id.get(gid) if gid in corrections else None
             if fell_back and prev0 is not None:
                 # UNPINNED corrections (unvoiced episode): a re-split rewrite
@@ -2563,6 +2619,15 @@ def main() -> int:
                 else:
                     print(f"[segments] corrections g{gid:04d}: previous lines "
                           "are unshippable — kept the grounded pads")
+            elif (still_long and prev0 is not None and beat_lines_usable(prev0)
+                  and beat_overshoot(prev0)
+                  <= beat_overshoot(beat)):
+                # the adopted repair is only worth taking while it is the
+                # SHORTER of the two — a heal fired for some other flag must
+                # not smuggle in a longer line than the one it replaced
+                print(f"[segments] corrections g{gid:04d}: repair is not "
+                      "shorter than the previous line — kept previous")
+                beat = prev0
 
         # The per-panel backfill above gives even a parse-failed beat valid lines;
         # demote the silencing `error` flag so those lines actually reach render.

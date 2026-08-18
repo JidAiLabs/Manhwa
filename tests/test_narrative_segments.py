@@ -1340,3 +1340,90 @@ def test_solo_system_card_is_exempt_from_the_too_thin_word_budget():
              {"span": ["p2.jpg"], "line": _words(120)},
              {"span": ["p3.jpg"], "line": _words(12)}]
     assert any("too fat" in e for e in gnp.validate_segments(segs2, FILES, kinds))
+
+
+def _fat_line(n_sentences, words_each):
+    """A multi-sentence over-cap line — the real shape (nano ch1 g0023 ran 3
+    sentences / 61 words over one panel)."""
+    return " ".join(_words(words_each) for _ in range(n_sentences))
+
+
+def _fat_beat(n_sentences=3, words_each=20):
+    return {"group_id": 23, "scene_files": FILES,
+            "segments": [{"span": ["p1.jpg"],
+                          "line": _fat_line(n_sentences, words_each)},
+                         {"span": ["p2.jpg"], "line": _words(8)},
+                         {"span": ["p3.jpg"], "line": _words(8)}]}
+
+
+def test_an_over_cap_line_is_trimmed_to_fit_not_bounced_to_pads():
+    # THE contract: the length class terminates inside the repair. Before this,
+    # a verbose beat's only outcomes were "ship the long line" or "ship pads",
+    # so nano ch1 g0023 needed a human to arbitrate across three runs.
+    beat = _fat_beat()                                   # 60w over a 33w cap
+    gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 23,
+                               reask_fn=lambda errs: None)
+    assert "_segments_fallback" not in beat              # pads NOT taken
+    assert gnp.validate_segments(beat["segments"], FILES, KINDS) == []
+    assert len(beat["segments"][0]["line"].split()) <= 33
+
+
+def test_the_trim_keeps_what_the_page_prints():
+    beat = {"group_id": 23, "scene_files": FILES,
+            "segments": [{"span": ["p1.jpg"],
+                          "line": ("The ancestor coughs blood onto the snow. "
+                                   + _words(24) + " " + _words(24))},
+                         {"span": ["p2.jpg"], "line": _words(8)},
+                         {"span": ["p3.jpg"], "line": _words(8)}]}
+    gnp.finalize_adaptive_beat(
+        beat, FILES, KINDS, U_BY_FILE, 23, reask_fn=lambda errs: None,
+        page_text_by_file={"p1.jpg": "ANCESTOR COUGHS BLOOD SNOW"})
+    assert beat["segments"][0]["line"].startswith("The ancestor coughs blood")
+    assert gnp.validate_segments(beat["segments"], FILES, KINDS) == []
+
+
+def test_a_shorter_repair_is_adopted_before_the_trim_runs():
+    # the model's rewrite is better prose than a truncation, so a repair that
+    # is closer to the cap wins the material even though the trim finishes it
+    beat = _fat_beat(3, 20)                              # 60w
+    gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 23,
+                               reask_fn=lambda errs: _fat_beat(2, 20))  # 40w
+    assert "_segments_fallback" not in beat
+    assert gnp.validate_segments(beat["segments"], FILES, KINDS) == []
+    # the 2-sentence repair, trimmed to one sentence -> 20 words, not 20+20
+    assert len(beat["segments"][0]["line"].split()) == 20
+
+
+def test_only_the_length_class_is_trimmed():
+    # a repair can be SHORTER and still unshippable — the trim is gated on the
+    # length cap being the ONLY thing that failed. (A skipped panel is not in
+    # this family: auto_repair_segments pads it and the beat validates.)
+    leaky = {"group_id": 23, "scene_files": FILES,
+             "segments": [{"span": ["p1.jpg"],
+                           "line": "The sequence begins with p000110.jpg."},
+                          {"span": ["p2.jpg"], "line": _words(8)},
+                          {"span": ["p3.jpg"], "line": _words(8)}]}
+    beat = dict(leaky)
+    gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 23,
+                               reask_fn=lambda errs: leaky)
+    assert beat.pop("_segments_fallback", False) is True
+    assert "p000110" not in beat["segments"][0]["line"]
+
+
+def test_an_unsplittable_over_cap_line_still_falls_back():
+    # one 60-word sentence has no whole sentence to drop — the trim declines
+    # rather than shipping a truncated clause, and the pad fallback takes over
+    beat = _fat_beat(1, 60)
+    gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 23,
+                               reask_fn=lambda errs: None)
+    assert beat.pop("_segments_fallback", False) is True
+
+
+def test_overshoot_constants_stay_pinned_to_the_writer():
+    import tools.recap_style as rs
+    assert rs._OVERSHOOT_WPM == gnp.WPM
+    assert rs._OVERSHOOT_MAX_SEC_PER_PANEL == gnp._SEG_MAX_SEC_PER_PANEL
+    # 61 words over one panel is 28 past the 33-word cap; two panels absorb it
+    assert rs.segments_overshoot([{"span": ["p1.jpg"], "line": _words(61)}]) == 28
+    assert rs.segments_overshoot(
+        [{"span": ["p1.jpg", "p2.jpg"], "line": _words(61)}]) == 0
