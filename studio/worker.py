@@ -931,21 +931,30 @@ _VISUAL_DROPPABLE = {"blank_crop", "dead_box_leak", "visible_text", "ghost_text"
                      "cross_dup"}
 
 
-def _narrated_sole_cuts(ep: Path) -> set:
-    """Panels that are the ONLY shown art of a narration-bearing segment —
-    dropping one orphans a voiced line into a held stand-in (long_hold), so the
-    auto-heal must never drop them (render_prep protects them anyway, which would
-    make the drop a self-blocking no-op). Read from the plan; {} on any error =
-    protect nothing (fail-open, same as before this guard existed)."""
+def _narrated_panels(ep: Path) -> set:
+    """EVERY panel shown by a narration-bearing segment — the same set
+    render_prep.narrated_files_from_plan protects from the junk/dedup drops.
+
+    The auto-heal must never queue a drop render_prep will refuse: this used to
+    protect only SOLE cuts (len(scene_files) == 1), so a droppable flag on the
+    2nd panel of a 2-panel narrated span was written to auto_drops.json,
+    refused by render_prep's protect_narrated_from_junk, still flagged on the
+    next pass, and hit the 'already dropped but STILL flagged' branch —
+    BLOCKING the chapter forever on a drop that can never take effect. One
+    authority, both sides. Read from the plan; {} on any error = protect
+    nothing (fail-open, as before)."""
     try:
         plan = json.loads((ep / "render.plan.clean.json").read_text())
     except Exception:
         return set()
     out = set()
     for seg in plan.get("timeline") or []:
-        sfs = seg.get("scene_files") or []
-        if str(seg.get("tts_text") or "").strip() and len(sfs) == 1:
-            out.add(Path(str(sfs[0])).name)
+        if seg.get("branding"):
+            continue
+        if not str(seg.get("tts_text") or "").strip():
+            continue
+        for sf in seg.get("scene_files") or []:
+            out.add(Path(str(sf)).name)
     return out
 
 
@@ -986,7 +995,7 @@ def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
         # orphans the line into a held stand-in (long_hold, nano ch6 p17), and
         # render_prep protects it anyway so the drop would be a self-blocking
         # no-op. Its visual flag stays — non-blocking — instead.
-        protected = _narrated_sole_cuts(ep)
+        protected = _narrated_panels(ep)
         drop_map: Dict[str, Any] = {}
         for f in flags:
             if (f.get("severity") == "ERROR"

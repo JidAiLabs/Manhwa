@@ -2216,3 +2216,28 @@ def test_autostart_intro_leaves_a_failed_proposed_teaser_alone(tmp_path,
         "SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND bundle_id=? "
         "AND state='queued'", (bid,)).fetchone()[0]
     assert autos == 0, "autopilot re-planned a failed proposal as auto_intro"
+
+
+def test_heal_visual_drops_never_drops_a_narrated_MULTI_panel_span(tmp_path, monkeypatch):
+    """The wedge (audited 2026-08-18): the worker protected only SOLE cuts,
+    while render_prep.protect_narrated_from_junk protects EVERY panel of a
+    narrated span. So a droppable flag on the 2nd panel of a 2-panel narrated
+    span was written to auto_drops.json, render_prep refused the drop, the flag
+    survived, and the next pass hit 'already dropped but STILL flagged —
+    BLOCKING' — a chapter wedged forever on a drop that can never take effect."""
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "render.plan.clean.json").write_text(json.dumps({"timeline": [
+        {"segment_id": "g0007_p02", "scene_files": ["p000030.jpg", "p000031.jpg"],
+         "tts_text": "He lunges, and the blade comes down."}]}))
+    (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 10, "flags": [
+        {"code": "cross_dup", "severity": "ERROR", "scene": "p000031.jpg"}]}))
+
+    def _boom(*a, **k):
+        raise AssertionError("should not re-prep — the panel is narrated")
+    monkeypatch.setattr(worker, "_run_prep_and_qa", _boom)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
+    assert stuck == set()                          # not blocking
+    assert not (ep / "auto_drops.json").exists()   # and no futile drop written
