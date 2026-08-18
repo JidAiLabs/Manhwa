@@ -2520,14 +2520,15 @@ def test_reframe_capped_twins_pushes_in_on_the_repeated_frame():
 
     def _write(f, box):
         written[f] = box
-        return f.replace(".jpg", "__push.jpg")
+        return f                                   # in place: identity unchanged
 
     out, logs = rp.reframe_capped_twins(
         _twin_plan(), lambda f: imgs.get(f), lambda f: (),
         focal_for_file=lambda f: (0.5, 0.4, "art"), write_variant=_write)
     shown = [c["file"] for it in out["timeline"] for c in it["cuts"]]
-    assert shown == ["a.jpg", "b.jpg", "c__push.jpg"]      # LATER cut re-framed
+    assert shown == ["a.jpg", "b.jpg", "c.jpg"]            # SAME names: panel identity intact
     assert len(logs) == 1 and logs[0][1] == "c.jpg"
+    assert out["scene_dims"]["c.jpg"]["w"] < 800           # dims follow the crop
     x0, y0, x1, y1 = written["c.jpg"]                       # a real crop, inside bounds
     assert 0 <= x0 < x1 <= imgs["c.jpg"].shape[1] and 0 <= y0 < y1 <= imgs["c.jpg"].shape[0]
     assert (x1 - x0) < imgs["c.jpg"].shape[1]               # tighter than the original
@@ -2565,5 +2566,19 @@ def test_reframe_skips_system_cards_and_tiny_frames():
     small = {"b.jpg": _hramp(w=200, h=200, base=0), "c.jpg": _hramp(w=200, h=200, base=1)}
     out2, logs2 = rp.reframe_capped_twins(p, lambda f: small.get(f), lambda f: (),
                                           focal_for_file=lambda f: (0.5, 0.5, "art"),
-                                          write_variant=lambda f, b: f + "X")
+                                          write_variant=lambda f, b: f)
     assert logs2 == []                                       # too small to crop further
+
+
+def test_reframe_skips_a_file_shown_more_than_once():
+    # in-place re-framing would retro-change the file's OTHER appearance
+    imgs = {"b.jpg": _hramp(800, 600, base=0), "c.jpg": _hramp(800, 600, base=1)}
+    plan = {"timeline": [
+        {"segment_id": "g1", "cuts": [{"file": "b.jpg", "dur": 4.0}]},
+        {"segment_id": "g2", "cuts": [{"file": "c.jpg", "dur": 4.0}]},   # twin of b...
+        {"segment_id": "g3", "cuts": [{"file": "c.jpg", "dur": 4.0}]}],  # ...but shown twice
+        "scene_dims": {}}
+    out, logs = rp.reframe_capped_twins(plan, lambda f: imgs.get(f), lambda f: (),
+                                        focal_for_file=lambda f: (0.5, 0.5, "art"),
+                                        write_variant=lambda f, b: f)
+    assert logs == []

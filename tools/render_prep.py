@@ -2578,11 +2578,17 @@ def reframe_capped_twins(
     The twin fold would merge them, but the hold cap refuses when the merged
     run exceeds max_hold_sec, and ken_differentiate_echo_pairs skips RAW twins
     by design — so the pair falls through both. Here the LATER cut is
-    RE-FRAMED: `write_variant(file, (x0, y0, x1, y1))` writes a push-in crop
-    around that file's focal point and returns the new shown filename, which
-    the cut is repointed to. Never drops a panel, never merges narration, and
-    never touches a same-file pair (a deliberate ken-variety split) or a
-    system card. Returns (plan, [(segment_id, file, new_file, ham)])."""
+    RE-FRAMED IN PLACE: `write_variant(file, (x0, y0, x1, y1))` rewrites that
+    file's shown rendition (scenes_clean) as a push-in crop around its focal
+    point and returns the shown filename to use. The PANEL IDENTITY NEVER
+    CHANGES — a new filename would break every consumer that keys on it (span
+    cover, cross_dup, long_hold stand-in, panel_substituted, the visual-heal
+    drop path: measured, job 156, four blocking errors), so the writer is
+    expected to return the SAME name. Only re-frames a file shown exactly once
+    (re-framing in place would otherwise retro-change its other appearances).
+    Never drops a panel, never merges narration, never touches a same-file
+    pair (a deliberate ken-variety split) or a system card.
+    Returns (plan, [(segment_id, file, shown_file, ham)])."""
     skip = skip_files or set()
     dims = (plan or {}).get("scene_dims") or {}
     ent: List[Tuple[str, Dict[str, Any]]] = []
@@ -2600,6 +2606,12 @@ def reframe_capped_twins(
             hashes[f] = None if img is None else _dhash8_bgr(img, get_clean_boxes(f))
         return hashes[f]
 
+    shown_count: Dict[str, int] = {}
+    for _seg, c in ent:
+        f = str(c.get("file") or "")
+        if f:
+            shown_count[f] = shown_count.get(f, 0) + 1
+
     logs: List[Tuple[str, str, str, int]] = []
     for i in range(1, len(ent)):
         seg_prev, c_prev = ent[i - 1]
@@ -2612,6 +2624,9 @@ def reframe_capped_twins(
             continue                       # system cards keep their own frame
         if c.get("file2") or c.get("layout") or c_prev.get("file2"):
             continue                       # split layouts: geometry not ours
+        if shown_count.get(f, 0) != 1:
+            continue                       # shown elsewhere too: in-place crop
+            #                                would retro-change that appearance
         ha, hb = _h(f_prev), _h(f)
         if ha is None or hb is None:
             continue
@@ -2632,14 +2647,17 @@ def reframe_capped_twins(
         x0 = int(min(max(0.0, fx * w - cw / 2.0), w - cw))
         y0 = int(min(max(0.0, fy * h - ch / 2.0), h - ch))
         box = (x0, y0, x0 + cw, y0 + ch)
-        new_f = write_variant(f, box)
-        if not new_f or new_f == f:
-            continue
-        c["file"] = new_f
-        d = dict(dims.get(f) or {})
+        shown_f = write_variant(f, box)
+        if not shown_f:
+            continue                       # writer refused: leave the frame
+        if shown_f != f:
+            c["file"] = shown_f            # (writers SHOULD keep the name)
+        d = dict(dims.get(shown_f) or dims.get(f) or {})
         d.update({"w": cw, "h": ch})
-        dims[new_f] = d
-        logs.append((seg, f, new_f, ham))
+        dims[shown_f] = d
+        hashes.pop(f, None)                # the frame changed on disk
+        hashes.pop(shown_f, None)
+        logs.append((seg, f, shown_f, ham))
     if dims:
         plan["scene_dims"] = dims
     return plan, logs
@@ -4295,28 +4313,33 @@ def main() -> int:
         if img is None:
             return ""
         x0, y0, x1, y1 = box
-        stem, ext = os.path.splitext(f)
-        new_f = f"{stem}__push{ext}"
-        ok = cv2.imwrite(os.path.join(clean_dir, new_f), img[y0:y1, x0:x1],
+        crop = img[y0:y1, x0:x1].copy()
+        # IN PLACE: scenes_clean/<f> IS the shown rendition of panel f, so a
+        # tighter framing is still panel f — no new artifact, no consumer to
+        # teach (job 156 proved the alternative).
+        ok = cv2.imwrite(os.path.join(clean_dir, f), crop,
                          [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         if not ok:
             return ""
-        _shown_cache[new_f] = img[y0:y1, x0:x1].copy()
+        _shown_cache[f] = crop
+        scene_dims.setdefault(f, {}).update({"w": crop.shape[1], "h": crop.shape[0]})
         # shown-space geometry follows the crop (focal/hash consumers)
-        shown_bubble_boxes[new_f] = [
+        shown_bubble_boxes[f] = [
             (bx1 - x0, by1 - y0, bx2 - x0, by2 - y0)
             for (bx1, by1, bx2, by2) in shown_bubble_boxes.get(f, ())
             if min(bx2, x1) - max(bx1, x0) > 0 and min(by2, y1) - max(by1, y0) > 0]
-        return new_f
+        return f
 
     out_plan, push_logs = reframe_capped_twins(
         out_plan, _shown_clean_file,
         lambda f: shown_bubble_boxes.get(f, ()),
         focal_for_file=_focal, write_variant=_write_pushin,
         skip_files=system_files)
-    for seg, f, new_f, ham in push_logs:
+    for seg, f, shown_f, ham in push_logs:
         print(f"[ok] {seg}: consecutive twin frame {f} (ham={ham}) "
-              f"-> re-framed push-in {new_f}")
+              f"-> re-framed IN PLACE as a push-in "
+              f"({scene_dims.get(shown_f, {}).get('w')}x"
+              f"{scene_dims.get(shown_f, {}).get('h')})")
 
     which = "none" if args.no_branding else args.branding
     if which != "none":
