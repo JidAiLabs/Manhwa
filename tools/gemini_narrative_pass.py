@@ -1648,7 +1648,11 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
                           "panel is drawn")
         n_words = len(line.split())
         sec = n_words / words_per_sec
-        if sec < n * _SEG_MIN_SEC_PER_PANEL:
+        if sec < n * _SEG_MIN_SEC_PER_PANEL and not solo_card:
+            # a solo system card's line IS the card's printed text ("Sky
+            # corporation.") — the per-panel voice floor would reject it and
+            # bounce the beat into fallback pads; the planner paces short card
+            # clips on their own. The upper cap still applies.
             errors.append(
                 f"segment {i}: too thin — {n_words} words (~{sec:.1f}s) cannot "
                 f"hold {n} panel(s) on screen (needs >= "

@@ -1320,3 +1320,23 @@ def test_fallback_alignment_scrubs_mood_leak_and_camera_prose():
     out3 = gnp.align_panel_narration(
         ["p1.jpg"], [{"scene_file": "p1.jpg", "line": "The hooded figure in the foreground lifts a blade."}], u)
     assert "foreground" not in out3[0]["line"].lower()
+
+
+def test_solo_system_card_is_exempt_from_the_too_thin_word_budget():
+    # a card's line IS its printed text — "Sky corporation." (2 words) is the
+    # correct narration, but the >=2s-per-panel budget would reject it and
+    # bounce the beat into fallback pads (auto_repair sets the card line BEFORE
+    # validation runs).
+    kinds = dict(KINDS, **{"p2.jpg": "system"})
+    segs = [{"span": ["p1.jpg"], "line": _words(12)},
+            {"span": ["p2.jpg"], "line": "Sky corporation."},
+            {"span": ["p3.jpg"], "line": _words(12)}]
+    assert gnp.validate_segments(segs, FILES, kinds) == []
+    # a STORY panel with a 2-word line is still too thin
+    segs[1] = {"span": ["p2.jpg"], "line": "Sky corporation."}
+    assert any("too thin" in e for e in gnp.validate_segments(segs, FILES, KINDS))
+    # and a card line is still capped at the top end (no 60-word "card")
+    segs2 = [{"span": ["p1.jpg"], "line": _words(12)},
+             {"span": ["p2.jpg"], "line": _words(120)},
+             {"span": ["p3.jpg"], "line": _words(12)}]
+    assert any("too fat" in e for e in gnp.validate_segments(segs2, FILES, kinds))
