@@ -327,9 +327,13 @@ def test_multitoken_name_collapses_to_one_member_in_the_wrapper():
     assert [t for t, _m, _p in
             ci.subject_actor_nouns_ex("Prince Cheon draws his steel.", nm)] == [
         "prince", "cheon"]
-    # dedup is BY MEMBER, not blanket first-hit: a genuinely different second
-    # actor in subject position is still returned
+    # 2026-08-18: an actor named in OBJECT position is NOT the line's actor
+    # (this assertion used to expect the object hit — it encoded the defect
+    # that flagged "The news hits the students" as the students acting).
     assert ci.subject_actor_nouns("Prince Cheon fights the assassin.", nm) == [
+        ("prince", {"our protagonist"})]
+    # two coordinated SUBJECTS are both actors
+    assert ci.subject_actor_nouns("The prince and the assassin trade blows.", nm) == [
         ("prince", {"our protagonist"}), ("assassin", {"unnamed assassin"})]
 
 
@@ -556,3 +560,64 @@ def test_tinted_panel_withholds_color_evidence():
     assert _resolve1("a young man in a blue hooded sweatshirt") == "the mysterious master"
     # names still hit under a tint
     assert _resolve1("a glowing figure, Prince Cheon, with blue skin") == "our protagonist"
+
+
+
+# ---- 2026-08-18: grammatical role decides the actor, not word position ------
+# Audited false positives (nano ch1 g0018, ch6 g0002/g0003/g0013): a cast noun
+# inside a partitive of-PP, a copular predicate, or a direct object landed in
+# the first five words and was asserted to be the panel's actor.
+
+_NM2 = {"assassin": {"an assassin member"}, "student": {"the students"},
+        "bastard": {"Seob Meng"}, "prince": {"our protagonist"},
+        "cheon": {"our protagonist"}}
+
+
+def test_partitive_of_phrase_is_not_the_actor():
+    # "One of the assassins ..." asserts ONE actor; the of-PP is not the subject
+    assert ci.subject_actor_nouns_ex(
+        "One of the assassins watches the chaos unfold, screaming out.", _NM2) == []
+    assert ci.subject_actor_nouns_ex(
+        "A pair of the assassins step back.", _NM2) == []
+
+
+def test_predicate_nominal_after_copula_is_not_the_actor():
+    assert ci.subject_actor_nouns_ex(
+        "They were the bastards that tried to kill me whenever they had the chance.",
+        _NM2) == []
+
+
+def test_direct_object_inside_the_first_five_words_is_not_the_actor():
+    # the two lines make the SAME claim; today only the shorter one flagged
+    assert ci.subject_actor_nouns_ex("The news hits the students like a blow.", _NM2) == []
+    assert ci.subject_actor_nouns_ex("The bad news hits the students like a blow.", _NM2) == []
+
+
+def test_true_subject_actors_still_flag():
+    hits = ci.subject_actor_nouns_ex("The assassins lunge forward together.", _NM2)
+    assert [(t, p) for t, _m, p in hits] == [("assassin", True)]
+    hits2 = ci.subject_actor_nouns_ex("Prince Cheon draws his blade.", _NM2)
+    assert [t for t, _m, _p in hits2] == ["prince", "cheon"]
+    # possessive subject inside the window still counts
+    assert [t for t, _m, _p in ci.subject_actor_nouns_ex(
+        "The assassin's eye narrows.", _NM2)] == ["assassin"]
+
+
+def test_fronted_adjunct_and_subordinate_clause_subjects_survive():
+    for line in ("Even now, the assassins press the attack.",
+                 "Suddenly the assassins scatter.",
+                 "As the assassins close in, he steadies himself."):
+        assert [t for t, _m, _p in ci.subject_actor_nouns_ex(line, _NM2)] == ["assassin"], line
+
+
+def test_group_member_names_and_collective_subject_counting():
+    cast = {"cast": [{"canonical_name": "the students", "role": "group",
+                      "visual_description": "a crowd of headbanded students"},
+                     {"canonical_name": "our protagonist", "role": "protagonist",
+                      "visual_description": "a young man with dark hair"}]}
+    assert ci.group_member_names(cast) == {"the students"}
+    # a crowd written as ONE subject string denotes many, not one
+    assert ci.subject_person_count("a group of people with dark hair") > 1
+    assert ci.subject_person_count("several students in headbands") > 1
+    assert ci.subject_person_count("a young man with messy dark hair") == 1
+    assert ci.subject_person_count("a bright moon over the mountains") == 0

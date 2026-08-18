@@ -1399,10 +1399,12 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     skipped (no ground truth), ties resolve to unknown upstream. Healable:
     the regenerated group's payload carries the figures lines the original
     roll lacked. Silent without cast or understanding."""
-    from cast_identity import (actor_noun_map, resolve_figures_by_file,
-                               shares_faction, subject_actor_nouns)
+    from cast_identity import (actor_noun_map, group_member_names,
+                               resolve_figures_by_file, shares_faction,
+                               subject_actor_nouns, subject_person_count)
     flags: List[Dict[str, Any]] = []
     noun_map = actor_noun_map(cast_obj)
+    group_names = group_member_names(cast_obj)
     figures = resolve_figures_by_file(understood_obj, cast_obj)
     if not noun_map or not figures or not isinstance(beats_obj, dict):
         return flags
@@ -1431,6 +1433,16 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                     or "").strip() for fn in s["span"])
             for noun, members in subject_actor_nouns(line, noun_map):
                 if members & span_names:
+                    continue
+                # A GROUP handle over a panel drawn as a CROWD has no
+                # per-individual ground truth to contradict: an appearance
+                # oracle built for individuals never resolves a collective
+                # subject string onto the group member (ch6 g0003/g0013).
+                if members and group_names and members <= group_names and any(
+                        subject_person_count(str(sub)) > 1
+                        for fn in s["span"]
+                        for sub in ((u_by_sf.get(_base_scene(fn)) or {})
+                                    .get("subjects") or [])):
                     continue
                 # SAME FACTION: the oracle resolves an ambiguous look-alike to
                 # the least specific member, so 'leader' over a generic hooded
@@ -1563,10 +1575,11 @@ def actor_count_flags(beats_obj: Any, understood_obj: Any,
     each is a person-ish subject); panels the analyst marked `uncertain`
     (pu_v4) contribute no ground truth and are skipped. Shares its pattern
     authority with the writer's identity gate (cast_identity)."""
-    from cast_identity import (_looks_person, actor_noun_map,
-                               subject_actor_nouns_ex)
+    from cast_identity import (actor_noun_map, group_member_names,
+                               subject_actor_nouns_ex, subject_person_count)
     flags: List[Dict[str, Any]] = []
     noun_map = actor_noun_map(cast_obj)
+    group_names = group_member_names(cast_obj)
     if not noun_map or not isinstance(beats_obj, dict):
         return flags
     # capacity = person-ish SUBJECT count (resolve_figures dedupes same-cast
@@ -1579,8 +1592,11 @@ def actor_count_flags(beats_obj: Any, understood_obj: Any,
             continue
         if p.get("uncertain"):
             unc_by_base.add(base)
+        # a drawn CROWD is written as ONE subject string ("a group of people
+        # with dark hair") — counting strings reported "every panel shows ONE
+        # figure" over twenty drawn students (ch6 g0003)
         cap_by_base[base] = sum(
-            1 for s in (p.get("subjects") or []) if _looks_person(str(s)))
+            subject_person_count(str(s)) for s in (p.get("subjects") or []))
     if not cap_by_base:
         return flags
     for b in beats_obj.get("beats") or []:
@@ -1601,6 +1617,8 @@ def actor_count_flags(beats_obj: Any, understood_obj: Any,
                                                                  noun_map):
                 if not plural:
                     continue
+                if _members and group_names and _members <= group_names:
+                    continue      # a group handle is plural BY IDENTITY
                 flags.append(_flag(
                     "actor_count_mismatch", ERROR,
                     f"line pluralizes '{noun}' but every panel in the span "

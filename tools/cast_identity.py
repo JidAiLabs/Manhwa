@@ -542,6 +542,98 @@ _QUOTED_SPAN_RE = re.compile(
 )
 
 
+
+# --- grammatical role of an actor-noun (2026-08-18) --------------------------
+# The gates used to decide "who this line says is acting" from raw token
+# POSITION (first five words), so a cast noun inside a partitive of-PP ("One of
+# the assassins"), a copular predicate ("They were the bastards"), a direct
+# object ("The news hits the students") or a fronted PP was asserted to be the
+# panel's actor. All four were audited false positives on real chapters.
+# These sets are closed-class ENGLISH function words — no story vocabulary.
+_NP_START = frozenset("""a an the this that these those my your his her its our
+    their some any several many few both each every another no all most either
+    neither such one two three four five six seven eight nine ten he she it
+    they we i you him them us me there""".split())
+_COORD = frozenset("and or nor but plus".split())
+_PREP = frozenset("""of in on at from with without about among amongst between
+    against by into onto over under toward towards through across near behind
+    beside beyond like than for to upon within during around off out up down
+    along past despite amid amidst beneath above below inside outside""".split())
+_SUBORD = frozenset("""as when while if because since although though unless
+    until whenever whereas after before once wherever whether""".split())
+_RELAT = frozenset("that which who whom whose".split())
+_PRE_SUBJ_ADV = frozenset("""even only just still already then now soon again
+    always never often once yet perhaps maybe meanwhile instead however indeed
+    also too almost nearly barely hardly quite rather very so thus therefore
+    here there back suddenly""".split())
+# collective / plural-person markers: one subject STRING can denote many people
+_COLLECTIVE = frozenset("""group crowd pair trio duo band throng mob gang team
+    squad row line cluster bunch handful couple dozen dozens hundreds audience
+    class army horde swarm party assembly gathering ranks masses lineup
+    formation""".split())
+_IRREG_PLURAL_PERSON = frozenset("people men women children folk folks youths".split())
+_QUANT_MANY = frozenset("""several many multiple numerous various few both all
+    some others two three four five six seven eight nine ten""".split())
+
+
+def _is_pre_subject_adverb(tok: str) -> bool:
+    return tok in _PRE_SUBJ_ADV or (len(tok) > 3 and tok.endswith("ly"))
+
+
+def _subject_zone_flags(sent: str):
+    """[(match, in_subject_zone)] for each word of *sent*. The zone is the
+    clause's subject region: it opens at the clause start, closes at the first
+    preposition / relativizer / second NP, and reopens after a clause break
+    (comma, semicolon, dash) or a subordinator."""
+    out = []
+    open_, seen_np, prev_tok, prev_end = True, False, "", 0
+    for m in _WORD_RE.finditer(sent):
+        gap = sent[prev_end:m.start()]
+        tok = m.group(0).lower()
+        if any(ch in gap for ch in ",;:—–") or (prev_end and "--" in gap):
+            open_, seen_np = True, False
+        if tok in _SUBORD:
+            open_, seen_np, prev_tok, prev_end = True, False, tok, m.end()
+            continue
+        if tok in _RELAT or tok in _PREP:
+            open_ = False
+            prev_tok, prev_end = tok, m.end()
+            continue
+        if tok in _NP_START:
+            if seen_np and prev_tok not in _COORD and "," not in gap:
+                open_ = False          # a SECOND noun phrase: object/predicate
+            seen_np = True
+        out.append((m, open_))
+        if (open_ and tok not in _NP_START and tok not in _COORD
+                and not _is_pre_subject_adverb(tok)):
+            seen_np = True             # a bare subject head closes the slot
+        prev_tok, prev_end = tok, m.end()
+    return out
+
+
+def group_member_names(cast: Any) -> Set[str]:
+    """Canonical names of cast members that ARE a group ('the students', role
+    'group'). Their handle is plural BY IDENTITY, so a line naming them can
+    never be a count violation."""
+    return {p["name"] for p in cast_profiles(cast) if p.get("is_group")}
+
+
+def subject_person_count(text: str) -> int:
+    """0 = not a person, 1 = one person, 2 = MORE THAN ONE (a sentinel, not a
+    headcount). A panel analyst writes a drawn crowd as ONE subject string ("a
+    group of people with dark hair"), which the old capacity count read as one
+    figure and then reported as "every panel shows ONE figure"."""
+    if not _looks_person(text):
+        return 0
+    toks = [t.lower() for t in _WORD_RE.findall(str(text or ""))]
+    for t in toks:
+        if t in _COLLECTIVE or t in _IRREG_PLURAL_PERSON or t in _QUANT_MANY:
+            return 2
+        if t not in _PERSONISH and _singular(t) != t and _singular(t) in _PERSONISH:
+            return 2                   # a regular plural person noun
+    return 1
+
+
 def subject_actor_nouns_ex(line: str, noun_map: Dict[str, Set[str]]
                            ) -> List[Tuple[str, Set[str], bool]]:
     """Like subject_actor_nouns but each hit carries a PLURAL bit — whether
@@ -552,12 +644,14 @@ def subject_actor_nouns_ex(line: str, noun_map: Dict[str, Set[str]]
     seen: Set[str] = set()
     clean_line = _QUOTED_SPAN_RE.sub(" ", str(line or ""))
     for sent in _SENT_SPLIT_RE.split(clean_line):
-        raw = _WORD_RE.findall(sent)
-        for i, w in enumerate(raw[:7]):
+        for i, (m, in_zone) in enumerate(_subject_zone_flags(sent)[:7]):
+            w = m.group(0)
             lw = w.lower()
             possessive = lw.endswith("'s") or lw.endswith("s'")
             if i >= 5 and not possessive:
                 continue
+            if not in_zone:
+                continue               # object / predicate / PP-embedded
             t = _norm(w)
             if t in noun_map and t not in seen:
                 base = lw.rstrip("'")
