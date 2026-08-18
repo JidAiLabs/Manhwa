@@ -1482,24 +1482,39 @@ _SPEECH_ACT_RE = re.compile(
     re.IGNORECASE)
 
 
-def _actor_noun_on_page(noun: str, span, vitems_by_base) -> bool:
-    """True when the line's actor-noun is PRINTED on one of the span's panels
-    — a chat handle, a nameplate, a signature, a caption byline.
+def _covered_panels(span, ordered_bases: List[str]) -> List[str]:
+    """The panels a segment actually VOICES: its shown span plus everything
+    between its first and last panel. A caption panel is dropped from the shown
+    frames but its words fold into the neighbouring segment, so the text a line
+    is speaking routinely lives on a panel the span does not list (ORV Ep1
+    g0021 spans p000087+p000089 and voices p000088's chat text). Any evidence
+    window built from the span alone is blind to exactly that text."""
+    bases = [_base_scene(os.path.basename(str(f))) for f in (span or []) if f]
+    idx = [ordered_bases.index(b) for b in bases if b in ordered_bases]
+    if len(idx) < 2:
+        return bases
+    return ordered_bases[min(idx):max(idx) + 1]
 
-    The actor gate catches a narrator who names someone the panel does not
-    draw. A name the panel SPELLS OUT is a third case: not invented, not
-    misattributed, just not a drawn body (ORV Ep1 p000087 — the protagonist
+
+def _actor_noun_on_page(noun: str, span, vitems_by_base,
+                        ordered_bases: List[str]) -> bool:
+    """True when the line's actor-noun is PRINTED on a panel the segment
+    voices — a chat handle, a nameplate, a signature, a caption byline.
+
+    The actor gate catches a narrator who names someone the panels do not
+    draw. A name the page SPELLS OUT is a third case: not invented, not
+    misattributed, just not a drawn body (ORV Ep1 g0021 — the protagonist
     reads his phone and the narration names the commenter 'TLS123' off the
-    screen; healing it would force the WRONG actor onto the line). Matches a
-    whole word or a word whose remainder is non-alphabetic ('tls' in
-    'tls123') so a stylized handle still resolves, while 'ana' never matches
-    'analysis'."""
+    folded chat panel; healing it would force the WRONG actor onto a correct
+    line). Matches a whole word or a word whose remainder is non-alphabetic
+    ('tls' in 'tls123') so a stylized handle still resolves, while 'ana' never
+    matches 'analysis'."""
     n = _norm_narr(str(noun or "")).strip()
     if len(n) < 3:
         return False
     pat = re.compile(r"\b" + re.escape(n) + r"(?![a-z])")
-    for fn in span:
-        item = vitems_by_base.get(_base_scene(os.path.basename(str(fn)))) or {}
+    for fn in _covered_panels(span, ordered_bases):
+        item = vitems_by_base.get(fn) or {}
         if pat.search(_norm_narr(str(item.get("ocr_clean") or ""))):
             return True
     return False
@@ -1540,6 +1555,8 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                    for f, v in figures.items()}
     v_by_base = {_base_scene(os.path.basename(str(k))): v
                  for k, v in (vitems or {}).items()}
+    # chapter panel order — the fold window below is a RANGE over it
+    ordered_bases = sorted(v_by_base)
     u_by_sf = {_base_scene(os.path.basename(str(p.get("scene_file") or ""))): p
                for p in ((understood_obj or {}).get("panels") or [])
                if isinstance(p, dict) and p.get("scene_file")}
@@ -1582,7 +1599,8 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                     continue
                 if span_has_dialogue and _SPEECH_ACT_RE.search(line):
                     continue
-                if _actor_noun_on_page(noun, s["span"], v_by_base):
+                if _actor_noun_on_page(noun, s["span"], v_by_base,
+                                       ordered_bases):
                     continue
                 flags.append(_flag(
                     "actor_mismatch", ERROR,

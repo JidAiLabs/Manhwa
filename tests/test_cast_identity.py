@@ -644,3 +644,22 @@ def test_actor_mismatch_silent_when_the_name_is_printed_on_the_panel():
     # and with no OCR at all the gate is exactly as armed as before
     assert [f["code"] for f in pq.actor_mismatch_flags(
         beats, _UNDERSTOOD, CAST, {})] == ["actor_mismatch"]
+
+
+def test_actor_mismatch_evidence_window_covers_the_folded_panels():
+    # ORV Ep1 g0021 spans p000087+p000089 and voices the chat handle printed on
+    # p000088 — a caption panel dropped from the shown frames whose words
+    # folded into this segment. An evidence window built from the span alone is
+    # blind to exactly the text the line is speaking.
+    beats = _beats(("The assassin draws his steel.",
+                    ["p000010.jpg", "p000012.jpg"]))
+    assert pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST, {
+        "p000010.jpg": {"ocr_clean": ""},
+        "p000011.jpg": {"ocr_clean": "ASSASSIN99: THANK YOU"},   # folded
+        "p000012.jpg": {"ocr_clean": ""}}) == []
+    # ...but a panel OUTSIDE the covered range is not this segment's evidence
+    assert [f["code"] for f in pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST, {
+        "p000010.jpg": {"ocr_clean": ""},
+        "p000011.jpg": {"ocr_clean": ""},
+        "p000012.jpg": {"ocr_clean": ""},
+        "p000014.jpg": {"ocr_clean": "ASSASSIN99: THANK YOU"}})] == ["actor_mismatch"]
