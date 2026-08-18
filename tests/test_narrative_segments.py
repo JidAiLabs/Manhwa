@@ -1447,3 +1447,16 @@ def test_a_restored_previous_beat_is_still_trimmed_to_fit(tmp_path, monkeypatch)
     # and the derived narration join was rebuilt, not left stale
     assert beat["narration"] == " ".join(
         s["line"] for s in gnp.beat_segments(beat)).strip()
+
+
+def test_editing_a_line_drops_its_stale_punch_shadow():
+    # ORV Ep0 g0001: the trim rewrote `line`, `line_plain` still held the
+    # 59-word pre-punch text, and the next punchup restored it.
+    import tools.beats_segments as bs
+    beat = {"group_id": 1, "segments": [
+        {"span": ["p1.jpg"], "line": "short line.", "line_plain": "the old long line."},
+        {"span": ["p2.jpg"], "line": "kept.", "line_plain": "kept."}]}
+    bs.write_segment_lines(beat, ["shorter.", "kept."])
+    assert "line_plain" not in beat["segments"][0]     # changed -> shadow dropped
+    assert beat["segments"][1]["line_plain"] == "kept."  # unchanged -> untouched
+    assert beat["narration"] == "shorter. kept."

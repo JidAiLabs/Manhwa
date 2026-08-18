@@ -28,6 +28,7 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from recap_style import beat_lines_usable, beat_overshoot  # noqa: E402
+from beats_segments import beat_segments  # noqa: E402
 
 VERDICT_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
@@ -85,6 +86,7 @@ def changed_groups(old_beats: List[Dict[str, Any]],
 def gate_beats(old_beats: List[Dict[str, Any]],
                new_beats: List[Dict[str, Any]],
                judge: Callable[[Dict[str, Any], Dict[str, Any]], str],
+               caption_gap: Optional[Callable[[Dict[str, Any]], int]] = None,
                ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Return (accepted_beats, decisions). For every group the heal rewrote, ask
     `judge(old_beat, new_beat) -> verdict`; keep the new beat only when
@@ -128,6 +130,22 @@ def gate_beats(old_beats: List[Dict[str, Any]],
             })
             accepted.append(nb)
             continue
+        if caption_gap is not None:
+            old_gap, new_gap = caption_gap(ob), caption_gap(nb)
+            if old_gap and new_gap < old_gap:
+                # the heal was fired to VOICE a skipped on-panel caption and it
+                # covered more of it. Same rule as the length floor: the judge
+                # scores prose, so it reverted the fix ("g 22 A_better") and
+                # caption_unvoiced re-fired forever (ORV Ep1 g0022).
+                decisions.append({
+                    "group_id": gid,
+                    "verdict": f"covers_caption({old_gap}->{new_gap} unvoiced)",
+                    "kept": "new",
+                    "old": _norm(ob.get("narration"))[:120],
+                    "new": _norm(nb.get("narration"))[:120],
+                })
+                accepted.append(nb)
+                continue
         verdict = judge(ob, nb)
         keep_new = accept_new(verdict)
         decisions.append({
@@ -162,6 +180,44 @@ def _make_judge(call_fn, scenes_dir: str):
         except Exception:
             return "equivalent"   # fail-safe: keep the old line
     return judge
+
+
+def make_caption_gap(vision_manifest: str):
+    """Build `caption_gap(beat) -> unvoiced caption words`, or None when the
+    page text isn't available.
+
+    Deliberately reuses prep_qa's OWN caption helpers rather than
+    re-implementing them: the number this floor compares has to be the number
+    the gate fires on, or a "fix" could satisfy one and not the other. The
+    understanding manifest is found next to the vision one (it always is) so no
+    caller has to learn a new flag."""
+    if not vision_manifest or not os.path.exists(vision_manifest):
+        return None
+    try:
+        from prep_qa import caption_terms, _caption_word_covered, _norm_narr
+    except Exception:
+        return None
+    ocr_by_file: Dict[str, str] = {}
+    for it in (json.load(open(vision_manifest)).get("items") or []):
+        ocr_by_file[str(it.get("scene_file") or "")] = str(it.get("ocr_clean") or "")
+    und_by_file: Dict[str, Any] = {}
+    up = os.path.join(os.path.dirname(vision_manifest),
+                      "manifest.panels.understood.json")
+    if os.path.exists(up):
+        for pan in (json.load(open(up)).get("panels") or []):
+            und_by_file[str(pan.get("scene_file") or "")] = pan
+
+    def caption_gap(beat: Dict[str, Any]) -> int:
+        gap = 0
+        for seg in beat_segments(beat):
+            spoken = set(_norm_narr(str(seg.get("line") or "")).split())
+            for fn in (seg.get("span") or []):
+                for w in caption_terms(ocr_by_file.get(fn, ""), und_by_file.get(fn)):
+                    if not _caption_word_covered(w, spoken):
+                        gap += 1
+        return gap
+
+    return caption_gap
 
 
 def main() -> int:
@@ -201,7 +257,9 @@ def main() -> int:
         return parsed
 
     judge = _make_judge(call_fn, args.scenes_dir)
-    accepted, decisions = gate_beats(old_beats, new_beats, judge)
+    accepted, decisions = gate_beats(
+        old_beats, new_beats, judge,
+        caption_gap=make_caption_gap(args.vision_manifest))
     out_doc = dict(new_doc)
     out_doc["beats"] = accepted
     with open(args.out, "w", encoding="utf-8") as f:

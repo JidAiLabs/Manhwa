@@ -115,6 +115,15 @@ def write_segment_lines(beat: Dict[str, Any], lines: List[str]) -> Dict[str, Any
             "segment(s) — a mutator may edit lines, never re-split")
 
     for entry, line in zip(targets, lines):
+        if entry.get("line") != line:
+            # `line_plain` is a shadow copy of the line as it stood BEFORE a
+            # punch, and narration_punchup re-punches from it and restores it
+            # when a candidate is rejected. Leaving a stale shadow behind means
+            # the next punch silently reverts this edit (ORV Ep0 g0001: a
+            # 59-word line trimmed to 32 came back at 59). Whoever rewrites the
+            # line owns the new grounded original. (punchup sets its own
+            # line_plain AFTER calling this, so its idempotence is unaffected.)
+            entry.pop("line_plain", None)
         entry["line"] = line
     beat["narration"] = " ".join(lines).strip() or beat.get("narration", "")
     return beat

@@ -147,3 +147,42 @@ def test_gate_leaves_within_cap_rewrites_to_the_judge():
     accepted, decisions = ab.gate_beats(old, new, judge=lambda o, n: "A_better")
     assert len(accepted[0]["segments"][0]["line"].split()) == 20   # reverted
     assert decisions[0]["verdict"] == "A_better"
+
+
+def test_gate_keeps_a_rewrite_that_voices_more_of_the_caption():
+    # ORV Ep1 g0022: the heal was fired to voice a skipped on-panel caption,
+    # did it, and the judge reverted it ("g 22 A_better") — so caption_unvoiced
+    # re-fired on every run. Deterministic coverage outranks taste.
+    old = [{"group_id": 22, "narration": "He looks at his phone."}]
+    new = [{"group_id": 22, "narration": "He has no idea what is about to happen."}]
+    gaps = {"He looks at his phone.": 6, "He has no idea what is about to happen.": 1}
+    judged = []
+
+    def judge(o, n):
+        judged.append(n["group_id"])
+        return "A_better"
+
+    accepted, decisions = ab.gate_beats(
+        old, new, judge=judge, caption_gap=lambda b: gaps[b["narration"]])
+    assert judged == []
+    assert accepted[0]["narration"].startswith("He has no idea")
+    assert "covers_caption" in decisions[0]["verdict"]
+
+
+def test_gate_does_not_take_a_rewrite_that_voices_LESS_of_the_caption():
+    old = [{"group_id": 22, "narration": "He has no idea what is about to happen."}]
+    new = [{"group_id": 22, "narration": "He looks at his phone."}]
+    gaps = {"He looks at his phone.": 6, "He has no idea what is about to happen.": 1}
+    accepted, decisions = ab.gate_beats(
+        old, new, judge=lambda o, n: "equivalent",
+        caption_gap=lambda b: gaps[b["narration"]])
+    assert accepted[0]["narration"].startswith("He has no idea")   # reverted
+    assert decisions[0]["kept"] == "old"
+
+
+def test_caption_floor_is_silent_when_the_old_line_already_covers_it():
+    old = [{"group_id": 22, "narration": "a"}]
+    new = [{"group_id": 22, "narration": "b"}]
+    accepted, decisions = ab.gate_beats(
+        old, new, judge=lambda o, n: "A_better", caption_gap=lambda b: 0)
+    assert decisions[0]["verdict"] == "A_better"                   # judge ruled
