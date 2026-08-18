@@ -69,3 +69,39 @@ def test_gate_is_a_noop_when_nothing_changed():
                                         judge=lambda o, n: "B_better")
     assert decisions == []
     assert [b["narration"] for b in accepted] == ["x", "y"]
+
+
+def test_gate_never_restores_an_unshippable_old_line():
+    # nano ch1 g0026: the incumbent NAMED an image file, the judge kept
+    # returning A_better, and the heal could never land. Validity outranks
+    # taste — the judge is not even asked.
+    old = [{"group_id": 26,
+            "narration": "The sequence begins with p000110.jpg.",
+            "segments": [{"span": ["p000110.jpg"],
+                          "line": "The sequence begins with p000110.jpg."}]}]
+    new = [{"group_id": 26,
+            "narration": "He kneels beside a body that is not moving.",
+            "segments": [{"span": ["p000110.jpg"],
+                          "line": "He kneels beside a body that is not moving."}]}]
+    judged = []
+
+    def judge(o, n):
+        judged.append(n["group_id"])
+        return "A_better"
+
+    accepted, decisions = ab.gate_beats(old, new, judge=judge)
+    assert judged == []                                   # never judged
+    assert accepted[0]["narration"].startswith("He kneels")
+    assert decisions[0]["kept"] == "new"
+    assert decisions[0]["verdict"] == "old_unshippable"
+
+
+def test_gate_still_reverts_when_the_old_line_is_shippable():
+    # the safety rule itself is untouched: a real incumbent still wins ties
+    old = [{"group_id": 3, "narration": "He kneels beside the body.",
+            "segments": [{"span": ["p1.jpg"], "line": "He kneels beside the body."}]}]
+    new = [{"group_id": 3, "narration": "Someone is on the ground.",
+            "segments": [{"span": ["p1.jpg"], "line": "Someone is on the ground."}]}]
+    accepted, decisions = ab.gate_beats(old, new, judge=lambda o, n: "A_better")
+    assert accepted[0]["narration"] == "He kneels beside the body."
+    assert decisions[0]["kept"] == "old"

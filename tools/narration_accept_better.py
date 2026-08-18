@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
+from recap_style import beat_lines_usable  # noqa: E402
 
 VERDICT_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
@@ -96,6 +97,20 @@ def gate_beats(old_beats: List[Dict[str, Any]],
         gid = nb.get("group_id")
         ob = old_by.get(gid)
         if ob is None or _norm(nb.get("narration")) == _norm(ob.get("narration")):
+            accepted.append(nb)
+            continue
+        if not beat_lines_usable(ob):
+            # "strictly better" is a TASTE rule and must never overrule
+            # VALIDITY: the judge scores grounding + writing, so it happily
+            # returns A_better for an incumbent that names an image file or
+            # echoes a mood tag — categorically unshippable text the heal was
+            # invoked to remove (nano ch1 g0026, reverted three runs running).
+            # Anything the writer produced beats a line that cannot ship.
+            decisions.append({
+                "group_id": gid, "verdict": "old_unshippable", "kept": "new",
+                "old": _norm(ob.get("narration"))[:120],
+                "new": _norm(nb.get("narration"))[:120],
+            })
             accepted.append(nb)
             continue
         verdict = judge(ob, nb)

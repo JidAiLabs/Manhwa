@@ -39,7 +39,9 @@ from manifest_io import write_manifest  # noqa: E402
 from narration_safe_rules import SAFE_NARRATION_RULES  # noqa: E402
 from niche_modules import register_block  # noqa: E402
 from recap_style import (  # noqa: E402
+    MOOD_PREFIX_RE,
     RECAP_STYLE_RULES,
+    beat_lines_usable,
     dedupe_consecutive_panel_lines,
     ends_terminal,
     is_shot_description,
@@ -49,6 +51,7 @@ from recap_style import (  # noqa: E402
     mentions_mood_tag_leak,
     neutralize_identity_reveal_leaks,
     repair_spoken_fragments,
+    usable_narration_line,
 )
 from beats_segments import (  # noqa: E402
     beat_segments,
@@ -74,7 +77,6 @@ WPM = 135           # word-budget arithmetic; matches script_expander's default
 # a parked monologue.
 _SEG_MIN_SEC_PER_PANEL = 1.0
 _SEG_MAX_SEC_PER_PANEL = 15.0
-_MOOD_PREFIX_RE = re.compile(r"^\s*\[[^\]]+\]")
 
 # --- meta-garbage narration guard --------------------------------------------
 # Ch20 g0014: a panel's OCR was a long run of underscores (a garbage SFX scan).
@@ -1434,21 +1436,6 @@ def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
     return segs
 
 
-def usable_narration_line(line: str) -> bool:
-    """False for a line the segment validators reject on CONTENT: an image
-    file name, a leaked bracket/bare mood tag, an impact-marker echo, or
-    camera/shot prose. Shared by validate_segments' rejects and the fallback
-    aligner so a rejected line can never re-enter through the back door."""
-    ln = str(line or "").strip()
-    if not ln:
-        return False
-    if mentions_image_file(ln) or mentions_impact_marker(ln):
-        return False
-    if _MOOD_PREFIX_RE.match(ln) or mentions_mood_tag_leak(ln):
-        return False
-    return not is_shot_description(ln)
-
-
 def align_panel_narration(scene_files, model_panels, understand_by_file=None):
     """Return exactly one {scene_file, line} per surviving scene_file, in order.
 
@@ -1610,7 +1597,7 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
         if not line:
             errors.append(f"segment {i}: empty line")
             continue
-        if _MOOD_PREFIX_RE.match(line):
+        if MOOD_PREFIX_RE.match(line):
             errors.append(f"segment {i}: line must not start with a bracket "
                           "mood tag")
         if mentions_mood_tag_leak(line):
@@ -2546,11 +2533,20 @@ def main() -> int:
         # if it kept the pinned spans AND is a real rewrite; a validation
         # fallback (pad-heavy singletons) can accidentally MATCH an
         # all-singleton pin, so it must explicitly keep the previous beat.
+        # ...UNLESS the previous lines are themselves unshippable. "Pads are
+        # worse than real lines" holds only while the incumbent IS a real line:
+        # nano ch1 g0026 ("The sequence begins with p000110.jpg.") survived
+        # three heals because every regen that fell back restored the
+        # bookkeeping. A grounded pad beats a file name every time.
         if pin_prev is not None:
             if beat.pop("_segments_fallback", False):
-                print(f"[segments] span-pin g{gid:04d}: regen fell back to "
-                      "pads — kept previous lines")
-                beat = pin_prev
+                if beat_lines_usable(pin_prev):
+                    print(f"[segments] span-pin g{gid:04d}: regen fell back to "
+                          "pads — kept previous lines")
+                    beat = pin_prev
+                else:
+                    print(f"[segments] span-pin g{gid:04d}: previous lines are "
+                          "unshippable — kept the grounded pads")
             else:
                 beat = enforce_pinned_spans(beat, pin_prev, gid)
         else:
@@ -2560,9 +2556,13 @@ def main() -> int:
                 # UNPINNED corrections (unvoiced episode): a re-split rewrite
                 # is welcome, but pads must never replace real lines — the
                 # same poisoning family the pin guards against.
-                print(f"[segments] corrections g{gid:04d}: regen fell back "
-                      "to pads — kept previous lines")
-                beat = prev0
+                if beat_lines_usable(prev0):
+                    print(f"[segments] corrections g{gid:04d}: regen fell back "
+                          "to pads — kept previous lines")
+                    beat = prev0
+                else:
+                    print(f"[segments] corrections g{gid:04d}: previous lines "
+                          "are unshippable — kept the grounded pads")
 
         # The per-panel backfill above gives even a parse-failed beat valid lines;
         # demote the silencing `error` flag so those lines actually reach render.

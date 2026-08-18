@@ -996,3 +996,24 @@ def test_vary_never_doubles_a_determiner():
                           "The assassin stalks our guy.")]}
     rs.cap_protagonist_name(B2, _prot_cast(), keep=3, vary=True)
     assert _lines(B2)[3].lower().startswith("the assassin stalks ")
+
+
+def test_usable_narration_line_rejects_pipeline_bookkeeping():
+    assert rs.usable_narration_line("He kneels beside a body that is not moving.")
+    assert not rs.usable_narration_line("")
+    assert not rs.usable_narration_line("The sequence begins with p000110.jpg.")
+    assert not rs.usable_narration_line("It continues through frame p000111.")
+    assert not rs.usable_narration_line("[tense] He draws the blade.")
+    assert not rs.usable_narration_line("A close-up shot shows the single eye.")
+
+
+def test_beat_lines_usable_reads_segments_then_narration():
+    good = {"segments": [{"span": ["a.jpg"], "line": "He draws the blade."},
+                         {"span": ["b.jpg"], "line": "The guard steps back."}]}
+    bad = {"segments": [{"span": ["a.jpg"], "line": "He draws the blade."},
+                        {"span": ["b.jpg"], "line": "It concludes with p000112.jpg."}]}
+    assert rs.beat_lines_usable(good)
+    assert not rs.beat_lines_usable(bad)          # ONE bad line poisons the beat
+    # no segments -> fall back to the joined narration
+    assert rs.beat_lines_usable({"narration": "He draws the blade."})
+    assert not rs.beat_lines_usable({"narration": "The scene contains p000110.jpg."})

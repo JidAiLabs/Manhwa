@@ -400,6 +400,39 @@ def mentions_mood_tag_leak(text: str) -> bool:
     return bool(MOOD_LEAK_STRIP_RE.match(str(text or "")))
 
 
+MOOD_PREFIX_RE = re.compile(r"^\s*\[[^\]]+\]")
+
+
+def usable_narration_line(text: str) -> bool:
+    """False for a line the segment validators reject on CONTENT: an image
+    file name, a leaked bracket/bare mood tag, an impact-marker echo, or
+    camera/shot prose. Lives here (not in the writer) because every guard that
+    can RESTORE a previous line — the span pin and corrections fallbacks in
+    gemini_narrative_pass, the strictly-better judge in
+    narration_accept_better — has to be able to ask "was the thing I'm about
+    to restore even shippable?". Nano ch1 g0026 shipped "The sequence begins
+    with p000110.jpg." three re-runs straight: the heal rewrote it correctly
+    every time and a revert guard put the bookkeeping back."""
+    ln = str(text or "").strip()
+    if not ln:
+        return False
+    if mentions_image_file(ln) or mentions_impact_marker(ln):
+        return False
+    if MOOD_PREFIX_RE.match(ln) or mentions_mood_tag_leak(ln):
+        return False
+    return not is_shot_description(ln)
+
+
+def beat_lines_usable(beat: Mapping[str, Any]) -> bool:
+    """True when every line of a beat is shippable (see usable_narration_line).
+    Reads segments when present, else the joined narration."""
+    segs = (beat or {}).get("segments") or []
+    lines = [s.get("line") for s in segs if isinstance(s, dict)]
+    if not lines:
+        lines = [(beat or {}).get("narration")]
+    return all(usable_narration_line(ln) for ln in lines)
+
+
 def _words(text: str) -> List[str]:
     return _WORD_RE.findall(_TAG_RE.sub("", str(text or "")))
 
