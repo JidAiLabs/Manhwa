@@ -1288,3 +1288,35 @@ def test_validate_rejects_a_line_cut_mid_sentence():
     assert not any("ends mid-sentence" in e for e in gnp.validate_segments(segs, FILES, KINDS))
     segs[0]["line"] = "He gasps, 'Exactly what is that light?!'"
     assert not any("ends mid-sentence" in e for e in gnp.validate_segments(segs, FILES, KINDS))
+
+
+def test_fallback_alignment_scrubs_rejected_lines_instead_of_shipping_them():
+    # nano ch1 g0026 shipped "The sequence begins with p000110.jpg." — validate_segments
+    # rejects filename/mood-leak/shot-description lines, but when the re-ask also
+    # failed the fallback reused the model's SAME rejected lines verbatim.
+    u = {"p1.jpg": {"description": "He steps into the clearing"},
+         "p2.jpg": {"description": "She raises her blade"},
+         "p3.jpg": {"description": "The crowd scatters"}}
+    model = [{"scene_file": "p1.jpg", "line": "The sequence begins with p000110.jpg."},
+             {"scene_file": "p2.jpg", "line": "It continues through p2.jpg and concludes with p3.jpg."},
+             {"scene_file": "p3.jpg", "line": "He turns to face the threat."}]
+    out = gnp.align_panel_narration(["p1.jpg", "p2.jpg", "p3.jpg"], model, u)
+    assert [o["scene_file"] for o in out] == ["p1.jpg", "p2.jpg", "p3.jpg"]
+    assert "p000110" not in out[0]["line"] and ".jpg" not in out[0]["line"]
+    assert ".jpg" not in out[1]["line"]
+    assert out[2]["line"] == "He turns to face the threat."      # good line kept
+    for o in out:
+        assert o["line"].strip()                                  # never empty
+
+
+def test_fallback_alignment_scrubs_mood_leak_and_camera_prose():
+    u = {"p1.jpg": {"description": "He steps into the clearing"}}
+    out = gnp.align_panel_narration(
+        ["p1.jpg"], [{"scene_file": "p1.jpg", "line": "[dramatic] He charges in."}], u)
+    assert not out[0]["line"].startswith("[")
+    out2 = gnp.align_panel_narration(
+        ["p1.jpg"], [{"scene_file": "p1.jpg", "line": "A close-up shot shows a man."}], u)
+    assert "close-up" not in out2[0]["line"].lower()      # camera prose scrubbed
+    out3 = gnp.align_panel_narration(
+        ["p1.jpg"], [{"scene_file": "p1.jpg", "line": "The hooded figure in the foreground lifts a blade."}], u)
+    assert "foreground" not in out3[0]["line"].lower()

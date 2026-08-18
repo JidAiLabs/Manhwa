@@ -2558,6 +2558,93 @@ def split_long_hold_cuts(
     return plan, logs
 
 
+def reframe_capped_twins(
+    plan: Dict[str, Any],
+    get_clean_img,
+    get_clean_boxes,
+    *,
+    focal_for_file,
+    write_variant,
+    skip_files: Optional[set] = None,
+    ham_max: int = 8,
+    keep_frac: float = 0.72,
+    min_px: int = 320,
+) -> Tuple[Dict[str, Any], List[Tuple[str, str, str, str]]]:
+    """FINAL backstop: two CONSECUTIVE shown cuts on DIFFERENT files whose
+    shown frames are bubble-masked dhash twins ship as the identical picture
+    twice (nano ch1 g0022_p05 -> g0023_p06: the artist copy-pasted the eye
+    panel and every panel between it folded away as caption/near-dup).
+
+    The twin fold would merge them, but the hold cap refuses when the merged
+    run exceeds max_hold_sec, and ken_differentiate_echo_pairs skips RAW twins
+    by design — so the pair falls through both. Here the LATER cut is
+    RE-FRAMED: `write_variant(file, (x0, y0, x1, y1))` writes a push-in crop
+    around that file's focal point and returns the new shown filename, which
+    the cut is repointed to. Never drops a panel, never merges narration, and
+    never touches a same-file pair (a deliberate ken-variety split) or a
+    system card. Returns (plan, [(segment_id, file, new_file, ham)])."""
+    skip = skip_files or set()
+    dims = (plan or {}).get("scene_dims") or {}
+    ent: List[Tuple[str, Dict[str, Any]]] = []
+    for item in (plan or {}).get("timeline") or []:
+        if item.get("branding"):
+            continue
+        for c in item.get("cuts") or []:
+            ent.append((str(item.get("segment_id") or ""), c))
+
+    hashes: Dict[str, Optional[int]] = {}
+
+    def _h(f: str) -> Optional[int]:
+        if f not in hashes:
+            img = get_clean_img(f)
+            hashes[f] = None if img is None else _dhash8_bgr(img, get_clean_boxes(f))
+        return hashes[f]
+
+    logs: List[Tuple[str, str, str, int]] = []
+    for i in range(1, len(ent)):
+        seg_prev, c_prev = ent[i - 1]
+        seg, c = ent[i]
+        f_prev = str(c_prev.get("file") or "")
+        f = str(c.get("file") or "")
+        if not f or not f_prev or f == f_prev:
+            continue                       # same file = deliberate ken split
+        if f in skip or f_prev in skip:
+            continue                       # system cards keep their own frame
+        if c.get("file2") or c.get("layout") or c_prev.get("file2"):
+            continue                       # split layouts: geometry not ours
+        ha, hb = _h(f_prev), _h(f)
+        if ha is None or hb is None:
+            continue
+        ham = (ha ^ hb).bit_count()
+        if ham > ham_max:
+            continue                       # visibly different frames: fine
+        img = get_clean_img(f)
+        h, w = img.shape[0], img.shape[1]
+        # per-AXIS clamp: push in by keep_frac but never below min_px on an
+        # axis that started above it; an axis already under min_px is left
+        # whole (webtoon panels are wide and short — a blanket both-axes guard
+        # skipped the exact 782x395 eye this backstop exists for)
+        cw = w if w <= min_px else max(min_px, int(w * keep_frac))
+        ch = h if h <= min_px else max(min_px, int(h * keep_frac))
+        if cw >= w and ch >= h:
+            continue                       # nothing to crop: frame too small
+        fx, fy, _src = focal_for_file(f)
+        x0 = int(min(max(0.0, fx * w - cw / 2.0), w - cw))
+        y0 = int(min(max(0.0, fy * h - ch / 2.0), h - ch))
+        box = (x0, y0, x0 + cw, y0 + ch)
+        new_f = write_variant(f, box)
+        if not new_f or new_f == f:
+            continue
+        c["file"] = new_f
+        d = dict(dims.get(f) or {})
+        d.update({"w": cw, "h": ch})
+        dims[new_f] = d
+        logs.append((seg, f, new_f, ham))
+    if dims:
+        plan["scene_dims"] = dims
+    return plan, logs
+
+
 def ken_differentiate_echo_pairs(
     plan: Dict[str, Any],
     get_img,
@@ -4198,6 +4285,38 @@ def main() -> int:
     for seg_i, fi, seg_j, fj, sham, rham in echo_logs:
         print(f"[ok] {seg_j}: perceptual echo {fj} ~ {fi} ({seg_i}) "
               f"crop_ham={sham} raw_ham={rham} -> ken differentiation")
+
+    # V4 backstop: a pair the fold could not merge (hold cap) and the echo
+    # differentiator skips (RAW twins) would ship the SAME picture twice in a
+    # row — re-frame the later cut as a push-in so the repeat reads as a new
+    # shot on both the video and the review gallery.
+    def _write_pushin(f: str, box: Tuple[int, int, int, int]) -> str:
+        img = _shown_clean_file(f)
+        if img is None:
+            return ""
+        x0, y0, x1, y1 = box
+        stem, ext = os.path.splitext(f)
+        new_f = f"{stem}__push{ext}"
+        ok = cv2.imwrite(os.path.join(clean_dir, new_f), img[y0:y1, x0:x1],
+                         [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        if not ok:
+            return ""
+        _shown_cache[new_f] = img[y0:y1, x0:x1].copy()
+        # shown-space geometry follows the crop (focal/hash consumers)
+        shown_bubble_boxes[new_f] = [
+            (bx1 - x0, by1 - y0, bx2 - x0, by2 - y0)
+            for (bx1, by1, bx2, by2) in shown_bubble_boxes.get(f, ())
+            if min(bx2, x1) - max(bx1, x0) > 0 and min(by2, y1) - max(by1, y0) > 0]
+        return new_f
+
+    out_plan, push_logs = reframe_capped_twins(
+        out_plan, _shown_clean_file,
+        lambda f: shown_bubble_boxes.get(f, ()),
+        focal_for_file=_focal, write_variant=_write_pushin,
+        skip_files=system_files)
+    for seg, f, new_f, ham in push_logs:
+        print(f"[ok] {seg}: consecutive twin frame {f} (ham={ham}) "
+              f"-> re-framed push-in {new_f}")
 
     which = "none" if args.no_branding else args.branding
     if which != "none":

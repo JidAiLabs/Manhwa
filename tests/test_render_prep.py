@@ -2495,3 +2495,75 @@ def test_dedup_invariant_cap_projects_the_whole_run_not_just_the_folded_cut():
     out2, folds2 = rp.enforce_shown_twin_invariant(plan, lambda f: imgs.get(f), max_hold_sec=30.0)
     assert len(folds2) == 1
     assert len({c["file"] for it in out2["timeline"] for c in it["cuts"]}) == 1
+
+
+# ---- consecutive identical frames are never shipped (2026-08-18) ------------
+# nano ch1 g0022_p05 ended on the eye and g0023_p06 showed the SAME drawing
+# again (the artist copy-pasted the panel; everything between folded away).
+# The twin fold wanted to merge them but the hold cap refused (29.6s), and
+# ken_differentiate_echo_pairs skips raw twins by design -> the viewer saw the
+# identical frame twice. Final backstop: re-frame the LATER cut as a push-in.
+
+def _twin_plan():
+    return {"timeline": [
+        {"segment_id": "g22", "cuts": [{"file": "a.jpg", "dur": 7.5},
+                                       {"file": "b.jpg", "dur": 7.5}]},
+        {"segment_id": "g23", "cuts": [{"file": "c.jpg", "dur": 22.2}]},
+    ], "scene_dims": {"b.jpg": {"w": 800, "h": 400}, "c.jpg": {"w": 782, "h": 439}},
+        "twin_cap_kept": [["b.jpg", "c.jpg"]]}
+
+
+def test_reframe_capped_twins_pushes_in_on_the_repeated_frame():
+    imgs = {"a.jpg": _vramp(800, 600), "b.jpg": _hramp(800, 600, base=0),
+            "c.jpg": _hramp(800, 600, base=1)}                       # b ~ c twins
+    written = {}
+
+    def _write(f, box):
+        written[f] = box
+        return f.replace(".jpg", "__push.jpg")
+
+    out, logs = rp.reframe_capped_twins(
+        _twin_plan(), lambda f: imgs.get(f), lambda f: (),
+        focal_for_file=lambda f: (0.5, 0.4, "art"), write_variant=_write)
+    shown = [c["file"] for it in out["timeline"] for c in it["cuts"]]
+    assert shown == ["a.jpg", "b.jpg", "c__push.jpg"]      # LATER cut re-framed
+    assert len(logs) == 1 and logs[0][1] == "c.jpg"
+    x0, y0, x1, y1 = written["c.jpg"]                       # a real crop, inside bounds
+    assert 0 <= x0 < x1 <= imgs["c.jpg"].shape[1] and 0 <= y0 < y1 <= imgs["c.jpg"].shape[0]
+    assert (x1 - x0) < imgs["c.jpg"].shape[1]               # tighter than the original
+
+
+def test_reframe_leaves_distinct_neighbours_and_same_file_ken_splits_alone():
+    imgs = {"a.jpg": _vramp(800, 600), "b.jpg": _hramp(800, 600, base=0),
+            "c.jpg": _hramp(800, 600, base=1)}
+    # distinct neighbours -> untouched
+    plan = {"timeline": [{"segment_id": "g1", "cuts": [{"file": "a.jpg", "dur": 5.0},
+                                                       {"file": "b.jpg", "dur": 5.0}]}],
+            "scene_dims": {}}
+    out, logs = rp.reframe_capped_twins(plan, lambda f: imgs.get(f), lambda f: (),
+                                        focal_for_file=lambda f: (0.5, 0.5, "art"),
+                                        write_variant=lambda f, b: "NEVER.jpg")
+    assert logs == [] and [c["file"] for c in out["timeline"][0]["cuts"]] == ["a.jpg", "b.jpg"]
+    # same file twice = a deliberate ken-variety split -> untouched
+    plan2 = {"timeline": [{"segment_id": "g2", "cuts": [{"file": "b.jpg", "dur": 5.0},
+                                                        {"file": "b.jpg", "dur": 5.0}]}],
+             "scene_dims": {}}
+    out2, logs2 = rp.reframe_capped_twins(plan2, lambda f: imgs.get(f), lambda f: (),
+                                          focal_for_file=lambda f: (0.5, 0.5, "art"),
+                                          write_variant=lambda f, b: "NEVER.jpg")
+    assert logs2 == [] and [c["file"] for c in out2["timeline"][0]["cuts"]] == ["b.jpg", "b.jpg"]
+
+
+def test_reframe_skips_system_cards_and_tiny_frames():
+    imgs = {"b.jpg": _hramp(800, 600, base=0), "c.jpg": _hramp(800, 600, base=1)}
+    p = _twin_plan(); p["timeline"][0]["cuts"] = [{"file": "b.jpg", "dur": 5.0}]
+    out, logs = rp.reframe_capped_twins(p, lambda f: imgs.get(f), lambda f: (),
+                                        focal_for_file=lambda f: (0.5, 0.5, "art"),
+                                        write_variant=lambda f, b: f + "X",
+                                        skip_files={"c.jpg"})
+    assert logs == []                                        # system card exempt
+    small = {"b.jpg": _hramp(w=200, h=200, base=0), "c.jpg": _hramp(w=200, h=200, base=1)}
+    out2, logs2 = rp.reframe_capped_twins(p, lambda f: small.get(f), lambda f: (),
+                                          focal_for_file=lambda f: (0.5, 0.5, "art"),
+                                          write_variant=lambda f, b: f + "X")
+    assert logs2 == []                                       # too small to crop further

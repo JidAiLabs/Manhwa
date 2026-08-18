@@ -1434,6 +1434,21 @@ def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
     return segs
 
 
+def usable_narration_line(line: str) -> bool:
+    """False for a line the segment validators reject on CONTENT: an image
+    file name, a leaked bracket/bare mood tag, an impact-marker echo, or
+    camera/shot prose. Shared by validate_segments' rejects and the fallback
+    aligner so a rejected line can never re-enter through the back door."""
+    ln = str(line or "").strip()
+    if not ln:
+        return False
+    if mentions_image_file(ln) or mentions_impact_marker(ln):
+        return False
+    if _MOOD_PREFIX_RE.match(ln) or mentions_mood_tag_leak(ln):
+        return False
+    return not is_shot_description(ln)
+
+
 def align_panel_narration(scene_files, model_panels, understand_by_file=None):
     """Return exactly one {scene_file, line} per surviving scene_file, in order.
 
@@ -1452,7 +1467,11 @@ def align_panel_narration(scene_files, model_panels, understand_by_file=None):
         if not isinstance(item, dict):
             continue
         line = str(item.get("line") or item.get("narration") or "").strip()
-        if not line:
+        if not line or not usable_narration_line(line):
+            # the fallback runs BECAUSE validation failed — reusing a line the
+            # content checks reject ships exactly what they exist to stop
+            # (nano ch1 g0026 voiced "The sequence begins with p000110.jpg.").
+            # Drop it; the panel takes a grounded pad below.
             continue
         sf = str(item.get("scene_file") or "").strip()
         if sf in file_set and sf not in keyed:
