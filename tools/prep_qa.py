@@ -1482,8 +1482,33 @@ _SPEECH_ACT_RE = re.compile(
     re.IGNORECASE)
 
 
+def _actor_noun_on_page(noun: str, span, vitems_by_base) -> bool:
+    """True when the line's actor-noun is PRINTED on one of the span's panels
+    — a chat handle, a nameplate, a signature, a caption byline.
+
+    The actor gate catches a narrator who names someone the panel does not
+    draw. A name the panel SPELLS OUT is a third case: not invented, not
+    misattributed, just not a drawn body (ORV Ep1 p000087 — the protagonist
+    reads his phone and the narration names the commenter 'TLS123' off the
+    screen; healing it would force the WRONG actor onto the line). Matches a
+    whole word or a word whose remainder is non-alphabetic ('tls' in
+    'tls123') so a stylized handle still resolves, while 'ana' never matches
+    'analysis'."""
+    n = _norm_narr(str(noun or "")).strip()
+    if len(n) < 3:
+        return False
+    pat = re.compile(r"\b" + re.escape(n) + r"(?![a-z])")
+    for fn in span:
+        item = vitems_by_base.get(_base_scene(os.path.basename(str(fn)))) or {}
+        if pat.search(_norm_narr(str(item.get("ocr_clean") or ""))):
+            return True
+    return False
+
+
 def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
-                         cast_obj: Any) -> List[Dict[str, Any]]:
+                         cast_obj: Any,
+                         vitems: Optional[Dict[str, Any]] = None,
+                         ) -> List[Dict[str, Any]]:
     """CAST-GROUNDED actor gate (ERROR, heal-target, deliberately NOT in the
     worker blocking set — the first production run measures its precision):
     the round-2 vision review's dominant class (~6 findings) was identity
@@ -1513,6 +1538,8 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
         return flags
     fig_by_base = {_base_scene(os.path.basename(f)): v
                    for f, v in figures.items()}
+    v_by_base = {_base_scene(os.path.basename(str(k))): v
+                 for k, v in (vitems or {}).items()}
     u_by_sf = {_base_scene(os.path.basename(str(p.get("scene_file") or ""))): p
                for p in ((understood_obj or {}).get("panels") or [])
                if isinstance(p, dict) and p.get("scene_file")}
@@ -1554,6 +1581,8 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                 if shares_faction(members, span_names, cast_obj):
                     continue
                 if span_has_dialogue and _SPEECH_ACT_RE.search(line):
+                    continue
+                if _actor_noun_on_page(noun, s["span"], v_by_base):
                     continue
                 flags.append(_flag(
                     "actor_mismatch", ERROR,
@@ -2876,7 +2905,8 @@ def main() -> int:
     flags.extend(impact_mismatch_flags(beats_obj, understood_obj))
     flags.extend(line_overlong_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
-    flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj))
+    flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj,
+                                      vitems))
     flags.extend(actor_count_flags(beats_obj, understood_obj, cast_obj))
     flags.extend(ledger_contradiction_flags(
         beats_obj, _load_manifest("manifest.ledger.json"), cast_obj))

@@ -621,3 +621,26 @@ def test_group_member_names_and_collective_subject_counting():
     assert ci.subject_person_count("several students in headbands") > 1
     assert ci.subject_person_count("a young man with messy dark hair") == 1
     assert ci.subject_person_count("a bright moon over the mountains") == 0
+
+
+def test_actor_mismatch_silent_when_the_name_is_printed_on_the_panel():
+    # ORV Ep1 p000087: the protagonist reads his phone and the narration names
+    # the commenter ('TLS123') off the screen. The panel draws one body, so the
+    # gate fired — but healing it would force the WRONG actor onto the line. A
+    # name the panel SPELLS OUT is grounded, not misattributed.
+    beats = _beats(("The assassin draws his steel.", ["p000010.jpg"]))
+    assert pq.actor_mismatch_flags(
+        beats, _UNDERSTOOD, CAST,
+        {"p000010.jpg": {"ocr_clean": "WANTED: THE ASSASSIN OF THE SOUTH"}}) == []
+    # a stylized handle still resolves — the remainder is non-alphabetic
+    assert pq.actor_mismatch_flags(
+        beats, _UNDERSTOOD, CAST,
+        {"p000010.jpg": {"ocr_clean": "assassin99: thanks for the chapter"}}) == []
+    # control: a longer word that merely STARTS with the noun is not the name
+    assert [f["code"] for f in pq.actor_mismatch_flags(
+        beats, _UNDERSTOOD, CAST,
+        {"p000010.jpg": {"ocr_clean": "the assassination attempt failed"}})] \
+        == ["actor_mismatch"]
+    # and with no OCR at all the gate is exactly as armed as before
+    assert [f["code"] for f in pq.actor_mismatch_flags(
+        beats, _UNDERSTOOD, CAST, {})] == ["actor_mismatch"]
