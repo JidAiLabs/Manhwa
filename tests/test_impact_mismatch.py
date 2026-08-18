@@ -166,3 +166,38 @@ def test_lexeme_matching_requires_trailing_boundary_too(line):
 ])
 def test_lexeme_matching_still_catches_genuine_impact_lines(line):
     assert pq.has_impact_lexeme(line), line
+
+
+# ---- 2026-08-18 audit: impact is scoped to the RUN, not the segment --------
+# A contiguous strike sequence narrated by ONE line across sibling segments was
+# flagged once per unvoiced segment (ORV Ep0 g0005): the blow IS voiced, just
+# not on every panel of the run.
+
+def _und(*pairs):
+    return {"panels": [{"scene_file": f, "strikes_or_weapons": s,
+                        "panel_kind": "story"} for f, s in pairs]}
+
+
+def test_impact_mismatch_silent_when_a_sibling_segment_voices_the_run():
+    beats = {"beats": [{"group_id": 1, "scene_files": ["a.jpg", "b.jpg"],
+                        "segments": [{"span": ["a.jpg"], "line": "He drives the blade home."},
+                                     {"span": ["b.jpg"], "line": "The night goes quiet."}]}]}
+    assert pq.impact_mismatch_flags(beats, _und(("a.jpg", "in_use"), ("b.jpg", "in_use"))) == []
+
+
+def test_impact_mismatch_fires_once_on_an_unvoiced_run():
+    beats = {"beats": [{"group_id": 1, "scene_files": ["a.jpg", "b.jpg"],
+                        "segments": [{"span": ["a.jpg"], "line": "He stares ahead."},
+                                     {"span": ["b.jpg"], "line": "The night goes quiet."}]}]}
+    out = pq.impact_mismatch_flags(beats, _und(("a.jpg", "in_use"), ("b.jpg", "in_use")))
+    assert len(out) == 1 and out[0]["scene"] == "a.jpg"
+
+
+def test_impact_mismatch_treats_non_adjacent_strikes_as_separate_runs():
+    beats = {"beats": [{"group_id": 1, "scene_files": ["a.jpg", "b.jpg", "c.jpg"],
+                        "segments": [{"span": ["a.jpg"], "line": "He drives the blade home."},
+                                     {"span": ["b.jpg"], "line": "Dust settles."},
+                                     {"span": ["c.jpg"], "line": "He turns away."}]}]}
+    out = pq.impact_mismatch_flags(beats, _und(("a.jpg", "in_use"), ("b.jpg", "none"),
+                                               ("c.jpg", "in_use")))
+    assert len(out) == 1 and out[0]["scene"] == "c.jpg"

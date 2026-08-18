@@ -841,15 +841,95 @@ def audio_flags(plan: Dict[str, Any],
     return flags
 
 
+# the vision layer's own device/app chrome patterns, reused PER TOKEN
+def _ui_noise_res():
+    try:
+        from vision_extract import VisionConfig
+        pats = list(VisionConfig().ui_noise_patterns)
+    except Exception:                                            # pragma: no cover
+        pats = [r"\bLTE\b", r"\b5G\b", r"\bPM\b", r"\bAM\b",
+                r"\b\d{1,3}%\b", r"\b\d{1,2}:\d{2}\b", r"\b\d+/\d+\b"]
+    # generic scan/UI fragments a per-line strip cannot see: a token with a
+    # digit glued to punctuation, or an all-caps stub of <=2 letters
+    pats += [r"^\W*\d+\W+$", r"^\d+[)\]}]$", r"^[^a-z0-9]+$"]
+    return tuple(re.compile(p, re.IGNORECASE) for p in pats)
+
+
+_UI_NOISE_RES = _ui_noise_res()
+
+# generic English function words short enough to survive the <=3-char filter
+_SHORT_FUNCTION_WORDS = {
+    "a", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
+    "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+    "i", "am", "are", "was", "who", "why", "how", "you", "him", "her", "his",
+    "our", "not", "now", "all", "any", "but", "for", "the", "and", "out",
+}
 _UI_TOKENS = {"read", "ep", "episode", "episodes", "comments", "comment",
               "views", "view", "likes", "like", "subscribe", "next", "prev",
               "previous", "tap", "menu", "notice", "unread"}
+
+
+def _stem(w: str) -> str:
+    """Cheap suffix strip so a caption's word matches the narration's inflected
+    form (fade/fades, swipe/swipes/swiping). Generic English morphology."""
+    for suf in ("ing", "ed", "es", "s"):
+        if len(w) > len(suf) + 3 and w.endswith(suf):
+            return w[: -len(suf)]
+    return w
+
+
+def _caption_word_covered(word: str, narration_words: set) -> bool:
+    """True when the narration carries *word*: literally, by inflection, or as
+    an OCR mis-scan of a word it does use ('APOCALYPSH' for 'apocalypse').
+    Webtoon captions are painted text — OCR routinely drops or mangles a
+    character, and a literal-membership test then reports a voiced caption as
+    dropped (ORV Ep1 g0001: 47% literal coverage on a caption the narration
+    quotes almost verbatim)."""
+    if word in narration_words:
+        return True
+    st = _stem(word)
+    if any(st == _stem(n) for n in narration_words):
+        return True
+    if len(word) >= 6:
+        import difflib
+        return any(difflib.SequenceMatcher(None, word, n).ratio() >= 0.85
+                   for n in narration_words if abs(len(n) - len(word)) <= 3)
+    return False
+
+
+def caption_terms(ocr_clean: str,
+                  understood_panel: Optional[Dict[str, Any]] = None) -> set:
+    """The VOICEABLE words of a panel's OCR — the denominator of the caption
+    coverage test. The raw OCR also carries painted SFX glyphs, device/app
+    chrome and mis-scan fragments, i.e. exactly the text every writer stage is
+    told NOT to voice; demanding literal coverage of those manufactured
+    caption_unvoiced ERRORs (ORV Ep0 p000003: 12 of 18 'missing' tokens were
+    noise). Filters, all generic: digits, the UI-token list, the model's OWN
+    sfx_text transcription for THAT panel (so no glyph list is hardcoded), and
+    <=3-character tokens that are not English function words."""
+    words = [w for w in _norm_narr(ocr_clean or "").split()
+             if not w.isdigit() and w not in _UI_TOKENS]
+    sfx = set(_norm_narr(str((understood_panel or {}).get("sfx_text") or "")).split())
+    keep = set()
+    for w in words:
+        if w in sfx:
+            continue
+        if len(w) <= 3 and w not in _SHORT_FUNCTION_WORDS:
+            continue
+        # device/app chrome: vision_extract strips these per LINE, so a token
+        # sitting inside a mixed line ('SWIPE', '40)', '90%') survives into the
+        # caption denominator — apply the same patterns per TOKEN
+        if any(rx.search(w) for rx in _UI_NOISE_RES):
+            continue
+        keep.add(w)
+    return keep
 
 
 def caption_unvoiced_flags(beats_obj: Dict[str, Any],
                            vitems: Dict[str, Dict[str, Any]],
                            *, min_words: int = 4,
                            min_coverage: float = 0.5,
+                           understood_by_file: Optional[Dict[str, Any]] = None,
                            arbitrate: Optional[Callable[[str, str], bool]]
                            = None) -> List[Dict[str, Any]]:
     """User contract: showing caption boxes is optional, VOICING them is
@@ -873,11 +953,11 @@ def caption_unvoiced_flags(beats_obj: Dict[str, Any],
                 pass
             # app-UI screens are text_only too — their button/counter noise
             # ("READ EPISODE", "VIEWS: 1") is not monologue; don't demand it
-            cwords = {w for w in _norm_narr(txt).split()
-                      if not w.isdigit() and w not in _UI_TOKENS}
+            cwords = caption_terms(txt, (understood_by_file or {}).get(str(sf)))
             if len(cwords) < min_words:
                 continue
-            cov = len(cwords & nwords) / max(1, len(cwords))
+            cov = sum(1 for w in cwords if _caption_word_covered(w, nwords)) \
+                / max(1, len(cwords))
             if cov < min_coverage:
                 narr = str(b.get("narration") or "")
                 if arbitrate is not None and arbitrate(txt, narr):
@@ -1265,16 +1345,38 @@ def impact_mismatch_flags(beats_obj: Any, understood_obj: Any
         return flags
     for b in beats_obj.get("beats") or []:
         seg = f"g{int(b.get('group_id') or 0):04d}"
-        for s in beat_segments(b):
-            line = s["line"]
-            hits = [f for f in s["span"] if _base_scene(f) in impact_files]
-            if hits and line and not has_impact_lexeme(line):
-                flags.append(_flag(
-                    "impact_mismatch", ERROR,
-                    f"the panel understanding shows a strike in progress on "
-                    f"{hits[0]} but the narration has no impact wording: "
-                    f"{line[:80]!r} — re-narrate the strike/stab/blow explicitly",
-                    scene=str(hits[0]), segment_id=seg))
+        segs = beat_segments(b)
+        # A strike is ONE event even when the artist draws it across several
+        # consecutive panels: scope the check to the maximal RUN of adjacent
+        # strike panels, and let ANY segment covering that run voice it (a
+        # sibling line carrying the blow is not a miss). A run of one behaves
+        # exactly as before; non-adjacent strikes stay separate events.
+        files = [str(f) for f in (b.get("scene_files") or [])]
+        runs: List[List[str]] = []
+        for f in files:
+            if _base_scene(f) in impact_files:
+                if runs and files.index(f) == files.index(runs[-1][-1]) + 1:
+                    runs[-1].append(f)
+                else:
+                    runs.append([f])
+        for run in runs:
+            run_set = {_base_scene(f) for f in run}
+            covering = [s for s in segs
+                        if run_set & {_base_scene(f) for f in s["span"]}]
+            if not covering:
+                continue
+            if any(has_impact_lexeme(s["line"]) for s in covering if s["line"]):
+                continue                      # the blow IS voiced on this run
+            first = next((s for s in covering if s["line"]), None)
+            if first is None:
+                continue
+            flags.append(_flag(
+                "impact_mismatch", ERROR,
+                f"the panel understanding shows a strike in progress on "
+                f"{run[0]} but the narration has no impact wording: "
+                f"{first['line'][:80]!r} — re-narrate the strike/stab/blow "
+                "explicitly",
+                scene=str(run[0]), segment_id=seg))
     return flags
 
 
@@ -2804,6 +2906,10 @@ def main() -> int:
 
     flags.extend(caption_unvoiced_flags(
         beats_obj, vitems,
+        understood_by_file={
+            os.path.basename(str(p.get("scene_file") or "")): p
+            for p in ((understood_obj or {}).get("panels") or [])
+            if isinstance(p, dict)},
         arbitrate=_judge_caption_carried if args.semantic else None))
     if args.semantic or args.semantic_heal:
         # PER-BEAT montage grounding judge: ALL of a beat's panels go to Gemma in

@@ -2150,3 +2150,28 @@ def test_line_overlong_clean_on_normal_lines():
     beats = {"beats": [{"group_id": 1, "segments": [
         {"span": ["a.jpg"], "line": "He draws the blade and lunges."}]}]}
     assert pq.line_overlong_flags(beats) == []
+
+
+# ---- 2026-08-18: caption coverage tolerates morphology + OCR mis-scans ------
+# ORV Ep1 g0001: the caption IS voiced ("three ways to survive the apocalypse",
+# "swipes through the pages", "the text fades") but literal token matching
+# missed apocalypsh/apocalypse, swipe/swipes, fade/fades and pure mis-scans.
+
+def test_caption_coverage_counts_morphology_and_ocr_misscans():
+    beats = {"beats": [{"group_id": 1, "scene_files": ["c.jpg"],
+                        "narration": "There are three ways to survive the apocalypse, "
+                                     "and as he swipes the page the text fades away."}]}
+    vitems = {"c.jpg": {"text_only": True,
+                        "ocr_clean": "THERE ARE THREE WAYS TO SURVIVE THE APOCALYPSH "
+                                     "SWIPE THE PAGE THE TEXT FADE"}}
+    assert pq.caption_unvoiced_flags(beats, vitems) == []
+
+
+def test_caption_unvoiced_still_fires_on_a_genuinely_dropped_caption():
+    beats = {"beats": [{"group_id": 1, "scene_files": ["c.jpg"],
+                        "narration": "He stares at the ruined skyline in silence."}]}
+    vitems = {"c.jpg": {"text_only": True,
+                        "ocr_clean": "MY MOTHER SOLD THE HOUSE AND MOVED TO BUSAN "
+                                     "WITHOUT TELLING ANYONE THAT WINTER"}}
+    out = pq.caption_unvoiced_flags(beats, vitems)
+    assert len(out) == 1 and out[0]["code"] == "caption_unvoiced"
