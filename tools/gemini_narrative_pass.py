@@ -1751,6 +1751,19 @@ def only_too_fat(errors: List[str]) -> bool:
     return bool(errs) and all(_TOO_FAT_RE.match(e) for e in errs)
 
 
+def page_text_for(files, vision_by_file, u_by_file) -> Dict[str, str]:
+    """What the PAGE prints for each panel — OCR first, backed by the model's
+    own reading when OCR is thin. The rank a last-resort trim sacrifices by."""
+    out: Dict[str, str] = {}
+    for f in files or []:
+        v = vision_by_file.get(f) or {}
+        u = u_by_file.get(f) or {}
+        out[f] = " ".join(str(x) for x in (
+            v.get("ocr_clean") or "", u.get("dialogue") or "",
+            u.get("description") or "", u.get("action") or ""))
+    return out
+
+
 def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                            reask_fn=None, allow_flow_nudge=True,
                            derive_fn=None, allow_span_align=True,
@@ -2558,20 +2571,10 @@ def main() -> int:
                     b.get("sentences"), surviving, kinds, u_by_file)
                 return segs if segs is not None else beat_segments(b)
 
-            # what the PAGE prints for each panel — the rank a last-resort
-            # trim sacrifices by (OCR first; the understanding's own reading
-            # of the panel backs it up when OCR is thin)
-            page_text = {
-                f: " ".join(str(x) for x in (
-                    (vision_by_file.get(f) or {}).get("ocr_clean") or "",
-                    (u_by_file.get(f) or {}).get("dialogue") or "",
-                    (u_by_file.get(f) or {}).get("description") or "",
-                    (u_by_file.get(f) or {}).get("action") or ""))
-                for f in surviving}
-
             finalize_adaptive_beat(
                 beat, surviving, kinds, u_by_file, gid,
-                page_text_by_file=page_text,
+                page_text_by_file=page_text_for(
+                    surviving, vision_by_file, u_by_file),
                 reask_fn=None if beat.get("error") else _reask,
                 # the span-size nudge is direct-segments machinery: prose
                 # authors flow in the passage itself, and a pinned nudge
@@ -2628,6 +2631,19 @@ def main() -> int:
                 print(f"[segments] corrections g{gid:04d}: repair is not "
                       "shorter than the previous line — kept previous")
                 beat = prev0
+
+        # FINAL length backstop: whatever version won above — a regen, grounded
+        # pads, or a RESTORED previous beat — still has to fit the cap. The trim
+        # inside finalize only ever saw the regen, so a restore reintroduces an
+        # over-cap line behind its back (ORV Ep0 g0001: the regen fell back to
+        # pads, the guard restored the 59-word original, and it shipped).
+        _files = [f for sg in beat_segments(beat) for f in (sg.get("span") or [])]
+        _tight, _notes = tighten_overlong_segments(
+            beat_segments(beat), page_text_for(_files, vision_by_file, u_by_file))
+        if _notes:
+            for _note in _notes:
+                print(f"[segments] g{gid:04d}: tightened (backstop) {_note}")
+            write_segment_lines(beat, [sg["line"] for sg in _tight])
 
         # The per-panel backfill above gives even a parse-failed beat valid lines;
         # demote the silencing `error` flag so those lines actually reach render.

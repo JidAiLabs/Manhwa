@@ -1427,3 +1427,23 @@ def test_overshoot_constants_stay_pinned_to_the_writer():
     assert rs.segments_overshoot([{"span": ["p1.jpg"], "line": _words(61)}]) == 28
     assert rs.segments_overshoot(
         [{"span": ["p1.jpg", "p2.jpg"], "line": _words(61)}]) == 0
+
+
+def test_a_restored_previous_beat_is_still_trimmed_to_fit(tmp_path, monkeypatch):
+    # ORV Ep0 g0001: the regen fell back to pads, the corrections guard restored
+    # the previous lines, and the 59-word original shipped — the trim inside
+    # finalize only ever saw the regen. The backstop runs on whatever WON.
+    over_cap = " ".join(_words(24) for _ in range(3))     # 72w over 2 panels
+    prev = {"group_id": 7, "scene_files": list(FILES),
+            "beat_title": "Opening", "what_happens": "He crosses the hall.",
+            "segments": [{"span": ["p1.jpg", "p2.jpg"], "line": over_cap},
+                         {"span": ["p3.jpg"], "line": _words(8)}],
+            "narration": over_cap + " " + _words(8),
+            "scene_selection": []}
+    junk = {"group_id": 7, "scene_files": list(FILES), "segments": []}
+    out, _ = _run_corrections(tmp_path, monkeypatch, [junk], prev, voiced=False)
+    beat = out["beats"][0]
+    assert gnp.segments_overshoot(gnp.beat_segments(beat)) == 0
+    # and the derived narration join was rebuilt, not left stale
+    assert beat["narration"] == " ".join(
+        s["line"] for s in gnp.beat_segments(beat)).strip()
