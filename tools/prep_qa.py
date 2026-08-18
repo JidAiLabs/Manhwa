@@ -71,7 +71,9 @@ from span_align import (  # single authority: lexicon + line<->span affinity
     _IMPACT_LEXEME_RE,        # noqa: F401
     SPAN_ALIGN_MARGIN,
     has_impact_lexeme,
+    offset_shift_candidate,
     window_affinities,
+    window_score_pairs,
 )
 
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
@@ -1346,22 +1348,21 @@ def narration_offset_flags(beats_obj: Any, understood_obj: Any
         for i, s in enumerate(segs):
             if not s["line"]:
                 continue
-            own, minus, plus = window_affinities(segs, i, files, kinds,
-                                                 u_local)
-            cands = [(v, d) for v, d in ((minus, "-1"), (plus, "+1"))
-                     if v is not None]
-            if not cands:
+            direction = offset_shift_candidate(segs, i, files, kinds, u_local)
+            if direction is None:
                 continue
-            best, direction = max(cands)
-            if best > 0 and best - own >= SPAN_ALIGN_MARGIN:
-                flags.append(_flag(
-                    "narration_offset", ERROR,
-                    f"line fits the {direction}-shifted panel window better "
-                    f"than its own span (affinity {own:.2f} vs {best:.2f}): "
-                    f"{s['line'][:80]!r} — one-panel lead/lag; re-narrate "
-                    "this group so each line lands on the panels it "
-                    "describes", scene=str((s["span"] or [""])[0]),
-                    segment_id=seg_tag))
+            own_p, minus_p, plus_p = window_score_pairs(segs, i, files, kinds,
+                                                        u_local)
+            best_p = plus_p if direction == "+1" else minus_p
+            flags.append(_flag(
+                "narration_offset", ERROR,
+                f"line fits the {direction}-shifted panel window better "
+                f"than its own span (affinity {own_p[1]:.2f} vs "
+                f"{best_p[1]:.2f}, line-overlap {own_p[0]:.2f} vs "
+                f"{best_p[0]:.2f}): {s['line'][:80]!r} — one-panel lead/lag; "
+                "re-narrate this group so each line lands on the panels it "
+                "describes", scene=str((s["span"] or [""])[0]),
+                segment_id=seg_tag))
     return flags
 
 

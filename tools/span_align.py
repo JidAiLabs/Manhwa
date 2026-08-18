@@ -151,37 +151,46 @@ def _panel_blob(rec: Dict[str, Any]) -> str:
 
 
 def panel_has_impact(rec: Dict[str, Any]) -> bool:
-    """Impact signal on ONE panel: the detector stamp (impact_sfx.present) or
-    impact wording in the understanding's action/SFX fields."""
-    rec = rec or {}
-    if (rec.get("impact_sfx") or {}).get("present"):
-        return True
-    blob = " ".join(str(rec.get(k) or "")
-                    for k in ("action", "sfx_text", "strikes_or_weapons"))
+    """True when the panel's OWN understanding reads as a strike/impact. Reads
+    the SAME text the overlap half reads (_panel_blob) plus the model's
+    explicit strikes_or_weapons field, so 'blood on his neck' in a description
+    counts exactly like 'wounded' in a line. The retired CV impact_sfx stamp
+    is deliberately NOT consulted (22c0275: it fired on any big red glyph)."""
+    blob = _panel_blob(rec) + " " + str((rec or {}).get("strikes_or_weapons") or "")
     return has_impact_lexeme(blob)
 
-
-def affinity(line: str, window: Sequence[str],
-             u_by_file: Dict[str, Dict[str, Any]]) -> float:
-    """How well `line` fits the panels in `window` (understanding records via
-    `u_by_file`). overlap in [0,1] (fraction of the line's significant stems
-    found in the window's understanding) + a signed impact-correspondence
-    term. Deterministic; empty inputs score 0."""
+def window_scores(line: str, window: Sequence[str],
+                  u_by_file: Dict[str, Dict[str, Any]]) -> Tuple[float, float]:
+    """(overlap, total) of `line` against `window`. overlap in [0,1] is the
+    fraction of the line's significant stems found in the window's
+    understanding — the LEXICAL evidence. total adds the signed
+    impact-correspondence term. They are returned separately because the
+    impact term is a 0.75 swing (bonus 0.5 / penalty 0.25) — larger than the
+    decision margin — so on its own it could declare a line misplaced with
+    zero lexical evidence (audited: 3 false narration_offset ERRORs)."""
     line_toks = _tokens(line)
     if not line_toks or not window:
-        return 0.0
+        return 0.0, 0.0
     recs = [(u_by_file or {}).get(f) or {} for f in window]
     win_toks: set = set()
     for rec in recs:
         win_toks |= _tokens(_panel_blob(rec))
-    score = len(line_toks & win_toks) / len(line_toks)
+    overlap = len(line_toks & win_toks) / len(line_toks)
+    total = overlap
     line_imp = has_impact_lexeme(line)
     win_imp = any(panel_has_impact(rec) for rec in recs)
     if line_imp and win_imp:
-        score += _IMPACT_BONUS
+        total += _IMPACT_BONUS
     elif line_imp != win_imp:
-        score -= _IMPACT_PENALTY
-    return score
+        total -= _IMPACT_PENALTY
+    return overlap, total
+
+
+def affinity(line: str, window: Sequence[str],
+             u_by_file: Dict[str, Dict[str, Any]]) -> float:
+    """Total fit score (see window_scores) — value-identical to the pre-2026-
+    08-18 implementation; every existing caller and test keeps its numbers."""
+    return window_scores(line, window, u_by_file)[1]
 
 
 def _window(files: List[str], start: int, n: int, sys_set: set
@@ -216,10 +225,24 @@ def window_affinities(segments: Sequence[Dict[str, Any]], i: int,
     use, so they can never disagree. ``files`` is the beat's ordered panel
     list (the concatenation of its spans). A system-solo segment scores
     (own, None, None) — cards never move."""
+    own, minus, plus = window_score_pairs(segments, i, files, kinds, u_by_file)
+    return (own[1],
+            None if minus is None else minus[1],
+            None if plus is None else plus[1])
+
+
+def window_score_pairs(segments: Sequence[Dict[str, Any]], i: int,
+                       files: List[str], kinds: Dict[str, Any],
+                       u_by_file: Dict[str, Dict[str, Any]]
+                       ) -> Tuple[Tuple[float, float],
+                                  Optional[Tuple[float, float]],
+                                  Optional[Tuple[float, float]]]:
+    """window_affinities with the lexical half kept: each entry is
+    (overlap, total). A system-solo segment yields (own, None, None)."""
     sys_set = _system_files(files, kinds)
     span = [str(f) for f in (segments[i].get("span") or [])]
     line = str(segments[i].get("line") or "")
-    own = affinity(line, span, u_by_file)
+    own = window_scores(line, span, u_by_file)
     if (not span or any(f in sys_set for f in span)
             or span[0] not in files):
         return own, None, None
@@ -228,8 +251,65 @@ def window_affinities(segments: Sequence[Dict[str, Any]], i: int,
     minus = _window(files, start - 1, n, sys_set)
     plus = _window(files, start + 1, n, sys_set)
     return (own,
-            affinity(line, minus, u_by_file) if minus is not None else None,
-            affinity(line, plus, u_by_file) if plus is not None else None)
+            window_scores(line, minus, u_by_file) if minus is not None else None,
+            window_scores(line, plus, u_by_file) if plus is not None else None)
+
+
+SPAN_ALIGN_MIN_OVERLAP_GAIN = 0.10   # the winner must cover measurably MORE
+#                                      of the line's own words — the impact
+#                                      boolean may corroborate, never decide
+
+
+def offset_shift_candidate(segments: Sequence[Dict[str, Any]], i: int,
+                           files: List[str], kinds: Dict[str, Any],
+                           u_by_file: Dict[str, Dict[str, Any]], *,
+                           margin: float = SPAN_ALIGN_MARGIN,
+                           span_cap: int = 4,
+                           min_overlap_gain: float = SPAN_ALIGN_MIN_OVERLAP_GAIN,
+                           require_package: bool = True) -> Optional[str]:
+    """'-1' / '+1' / None — THE single authority on "this line belongs one
+    panel over", shared by the splitter post-pass and prep_qa's
+    narration_offset so the two can never disagree. A shift needs ALL of:
+      * a same-size candidate window that crosses no system card;
+      * a DECIDABLE direction (two windows scoring equal -> None; the old
+        max() over (value, label) broke ties by comparing '-1' > '+1');
+      * total gain >= *margin* (unchanged);
+      * LEXICAL gain >= *min_overlap_gain* — the winner must actually cover
+        more of the line's words, so the impact boolean alone can never
+        produce a verdict;
+      * *require_package*: the shift is actually applicable (packages, keeps
+        the span invariants, improves segment i by >= margin and no other
+        affected segment gets worse) — QA must not report what the splitter
+        cannot perform."""
+    own, minus, plus = window_score_pairs(segments, i, files, kinds, u_by_file)
+    cands = [(v, d) for v, d in ((minus, "-1"), (plus, "+1")) if v is not None]
+    if not cands:
+        return None
+    best_total = max(v[1] for v, _d in cands)
+    tied = [d for v, d in cands if abs(v[1] - best_total) <= 1e-9]
+    if len(tied) != 1:
+        return None                          # direction not decidable
+    direction = tied[0]
+    best = dict(cands)[direction] if False else next(
+        v for v, d in cands if d == direction)
+    if not (best[1] > 0 and best[1] - own[1] >= margin):
+        return None
+    if best[0] - own[0] < min_overlap_gain:
+        return None                          # impact-only verdict: refuse
+    if not require_package:
+        return direction
+    spans = [[str(f) for f in (s.get("span") or [])] for s in segments]
+    new_spans = _package(spans, i, 1 if direction == "+1" else -1,
+                         span_cap, kinds)
+    if new_spans is None or not _invariants_ok(new_spans, files, kinds, span_cap):
+        return None
+    for k in [k for k in range(len(segments)) if new_spans[k] != spans[k]]:
+        line_k = str(segments[k].get("line") or "")
+        before = affinity(line_k, spans[k], u_by_file)
+        after = affinity(line_k, new_spans[k], u_by_file)
+        if (after < before + margin) if k == i else (after < before):
+            return None
+    return direction
 
 
 # ---------------------------------------------------------------------------
@@ -341,16 +421,12 @@ def span_align_pass(segments: List[Dict[str, Any]], files: Sequence[str],
             i += 1
             continue
         own, minus, plus = window_affinities(segs, i, files, kinds, u_by_file)
-        best_dir = 0
-        if plus is not None and plus >= own + margin and plus > (
-                minus if minus is not None else float("-inf")):
-            best_dir = 1
-        elif minus is not None and minus >= own + margin and minus > (
-                plus if plus is not None else float("-inf")):
-            best_dir = -1
-        if not best_dir:
+        direction = offset_shift_candidate(segs, i, files, kinds, u_by_file,
+                                           margin=margin, span_cap=span_cap)
+        if direction is None:
             i += 1
             continue
+        best_dir = 1 if direction == "+1" else -1
         old_spans = [s["span"] for s in segs]
         new_spans = _package(old_spans, i, best_dir, span_cap, kinds)
         if new_spans is None or not _invariants_ok(new_spans, files, kinds,

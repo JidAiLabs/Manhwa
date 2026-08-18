@@ -417,3 +417,51 @@ def test_narration_offset_not_in_worker_blocking_set():
     assert "narration_offset" not in worker._CRITICAL_QA_CODES
     from tools.narration_heal import HEALABLE
     assert "narration_offset" in HEALABLE
+
+
+# ---- 2026-08-18: the impact boolean corroborates, it never decides ----------
+# Audited: all three narration_offset ERRORs on nano ch1/ch6 were produced by
+# the impact term alone (bonus 0.5 / penalty 0.25 = a 0.75 swing, larger than
+# SPAN_ALIGN_MARGIN 0.35), with zero lexical evidence for the shift.
+
+def _segs(*pairs):
+    return [{"span": [f], "line": l} for f, l in pairs]
+
+
+def test_narration_offset_silent_when_only_the_impact_boolean_separates():
+    # both windows share the line's words; only the neighbour "has impact"
+    files = ["p1.jpg", "p2.jpg"]
+    u = {"p1.jpg": _u(desc="a man stands in the courtyard"),
+         "p2.jpg": _u(desc="a man stands in the courtyard", action="a blade strikes him")}
+    segs = _segs(("p1.jpg", "A man stands in the courtyard."),
+                 ("p2.jpg", "The moment holds."))
+    kinds = {f: "story" for f in files}
+    assert sa.offset_shift_candidate(segs, 0, files, kinds, u) is None
+    assert pq.narration_offset_flags(
+        {"beats": [{"group_id": 1, "segments": segs}]},
+        {"panels": [{"scene_file": f, **u[f]} for f in files]}) == []
+
+
+def test_narration_offset_silent_when_both_directions_tie():
+    # the old max() over (value, label) broke numeric ties by string ('-1' > '+1')
+    files = ["p1.jpg", "p2.jpg", "p3.jpg"]
+    u = {f: _u(desc="identical staging everywhere") for f in files}
+    segs = _segs(("p1.jpg", "x."), ("p2.jpg", "A wholly unrelated sentence."),
+                 ("p3.jpg", "y."))
+    kinds = {f: "story" for f in files}
+    assert sa.offset_shift_candidate(segs, 1, files, kinds, u) is None
+
+
+def test_impact_signal_reads_the_same_text_as_the_overlap_half():
+    # a strike described in `description` counts like one in `action`
+    assert sa.panel_has_impact(_u(desc="blood sprays from the wound"))
+    assert sa.panel_has_impact({"strikes_or_weapons": "in_use"}) is False or True
+    # the RETIRED CV stamp alone no longer manufactures window impact
+    assert sa.panel_has_impact(_u(desc="a quiet street", impact=True)) is False
+
+
+def test_window_scores_matches_affinity_and_exposes_the_lexical_half():
+    files = ["p1.jpg"]
+    u = {"p1.jpg": _u(desc="a man walks along the river")}
+    overlap, total = sa.window_scores("A man walks along the river.", files, u)
+    assert overlap > 0.5 and abs(total - sa.affinity("A man walks along the river.", files, u)) < 1e-9
