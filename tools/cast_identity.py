@@ -126,18 +126,63 @@ def _informative(toks: Sequence[str]) -> List[str]:
     return [t for t in toks if t and t not in _STOPWORDS]
 
 
+# color CLASSES for evidence matching (2026-08-18, nano ch1 job 149): the cast
+# builder wrote "light-colored tunic" for the prince while every panel subject
+# says "white robe" — light/white/pale are one class, dark/black another, so a
+# vocabulary coin-flip can no longer hand the prince to the blue-haired master.
+_COLOR_CLASS = {"white": "light", "pale": "light", "light": "light",
+                "black": "dark", "dark": "dark"}
+
+
+def _color_class(c: str) -> str:
+    return _COLOR_CLASS.get(c, c)
+
+
+_SHADE = frozenset({"light", "dark", "pale"})
+
+
+def _drop_shade_modifiers(toks: Sequence[str]) -> List[str]:
+    """'light blue jacket' / 'dark red cloak': light/dark/pale directly
+    before another color are SHADE modifiers, not the garment's color — drop
+    them so 'light blue' cannot pair with a 'white' (light-class) tunic."""
+    out: List[str] = []
+    for i, t in enumerate(toks):
+        if t in _SHADE and i + 1 < len(toks) and toks[i + 1] in _COLORS and toks[i + 1] not in _SHADE:
+            continue
+        out.append(t)
+    return out
+
+
+_HAIR = frozenset({"hair", "haired"})
+
+
 def _color_garment_pairs(toks: Sequence[str], window: int = 6
                          ) -> Set[Tuple[str, str]]:
-    """(color, 'garment') associations: a color token within *window*
+    """(color-class, 'garment') associations: a color token within *window*
     informative tokens BEFORE a garment token ("dark brown hooded cloaks" →
     dark→garment, brown→garment)."""
     pairs: Set[Tuple[str, str]] = set()
+    toks = _drop_shade_modifiers(list(toks))
     for i, t in enumerate(toks):
         if t in _GARMENT:
             for c in toks[max(0, i - window):i]:
                 if c in _COLORS:
-                    pairs.add((c, "garment"))
+                    pairs.add((_color_class(c), "garment"))
     return pairs
+
+
+def _hair_colors(toks: Sequence[str], window: int = 4) -> Set[str]:
+    """Color classes said of HAIR ("messy, long dark purple hair" → {dark,
+    purple}; "blue-haired" → {blue}). Hair color is stable identity evidence
+    (clothes change, hair mostly doesn't) — matched at +3, clashed at -3."""
+    out: Set[str] = set()
+    # hair keeps shade words: subjects say "dark hair" for "dark purple hair"
+    for i, t in enumerate(toks):
+        if t in _HAIR:
+            for c in toks[max(0, i - window):i]:
+                if c in _COLORS:
+                    out.add(_color_class(c))
+    return out
 
 
 def _members(cast: Any) -> List[Dict[str, Any]]:
@@ -193,8 +238,8 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
         if not name:
             continue
         toks = _informative(_tokens(m.get("visual_description") or ""))
-        specific = _specific(toks)
-        appearance = set(specific)
+        specific = _specific(_drop_shade_modifiers(toks))
+        appearance = {_color_class(t) for t in specific}
         appearance.update("garment" for t in specific if t in _GARMENT)
         role = str(m.get("role") or "").strip().lower()
         raw_name = [t.lower() for t in _WORD_RE.findall(name)]
@@ -203,6 +248,7 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
             "name_tokens": _name_tokens(m),
             "appearance": appearance,
             "pairs": _color_garment_pairs(toks),
+            "hair": _hair_colors(toks),
             "role": role,
             # the FACTION member of a same-faction tie: role says so, or the
             # canonical name itself is plural ('the assassins') — cast_builder
@@ -219,8 +265,8 @@ def _subject_tokens(text: str) -> Set[str]:
     marker) — the SAME generic exclusion as cast_profiles' appearance set,
     so a subject built entirely of generic words ('a young man') can never
     share evidence with a profile."""
-    specific = _specific(_informative(_tokens(text)))
-    out = set(specific)
+    specific = _specific(_drop_shade_modifiers(_informative(_tokens(text))))
+    out = {_color_class(t) for t in specific}
     out.update("garment" for t in specific if t in _GARMENT)
     return out
 
@@ -249,6 +295,18 @@ def _score(profile: Dict[str, Any], text: str) -> Tuple[float, List[str]]:
     if profile["pairs"] and subj_pairs and not pair_hits:
         score -= 3.0
         ev.append("color-clash")
+    # HAIR color: stable identity evidence — one shared hair color +3, hair
+    # colors on both sides sharing none -3 (a purple-haired subject is not
+    # the light-blue-haired master, whatever robe he wears)
+    subj_hair = _hair_colors(stream)
+    prof_hair = profile.get("hair") or set()
+    if prof_hair and subj_hair:
+        if prof_hair & subj_hair:
+            score += 3.0
+            ev.append("hair:" + "+".join(sorted(prof_hair & subj_hair)))
+        else:
+            score -= 3.0
+            ev.append("hair-clash")
     shared = sorted((profile["appearance"] & toks) - set(name_hits))
     score += float(len(shared))
     ev += shared

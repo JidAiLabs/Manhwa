@@ -75,7 +75,7 @@ bubble_shown_mode = "art_only"
 # panel border by at most this fraction of the panel is pushed OUT of the frame — that
 # strip of art is lost. 0.0 = never cut art (straddling bubbles are kept whole).
 # Measured nano ch1: 68/84 bubbles straddle, median 12.6% deep; 0.10 removes ~30, 0.20 ~60.
-art_only_straddle_push_frac = 0.0
+art_only_straddle_push_frac = 0.10
 
 [teaser]
 # bundle-level arc teaser: pick a high-stakes window from a bundle's chapters,

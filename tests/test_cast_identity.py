@@ -496,3 +496,51 @@ def test_echo_belt_ignores_non_adjacent_pairs():
     errs = g.validate_segments(segs, surviving, {},
                                echo_of={"b.jpg": "a.jpg"})
     assert any("echo pair split" in e for e in errs)
+
+
+# ---- nano ch1 job 149 (2026-08-18): the PRINCE resolved to the master ---------
+# cast_builder wrote "light-colored tunic" for the prince while every subject
+# says "white robe"; hair color was a mere +1 token. 22 panels resolved to the
+# late-appearing blue-haired master and the identity gate rewrote the prince's
+# lines to "the mysterious master" (8 wrong-actor lines, one stutter).
+_CH1_CAST = {"cast": [
+    {"canonical_name": "our protagonist", "aliases": ["Prince Cheon", "the kid"],
+     "is_protagonist": True,
+     "visual_description": "A young man with messy, dark purple hair and intense eyes. "
+                           "He wears a light-colored, long-sleeved tunic and trousers with "
+                           "a purple sash. He is often seen wounded, covered in blood or dirt."},
+    {"canonical_name": "the mysterious master", "aliases": [],
+     "visual_description": "A character appearing suddenly with glowing light blue hair and "
+                           "skin. He wears a blue and white hooded sweatshirt/tunic."},
+    {"canonical_name": "an assassin member", "aliases": [],
+     "visual_description": "A masked figure in a dark red hooded cloak and grey clothing."},
+]}
+
+
+def _resolve1(subject):
+    figs = ci.resolve_figures({"subjects": [subject]}, ci.cast_profiles(_CH1_CAST))
+    return figs[0]["name"] if figs else None
+
+
+def test_ch1_prince_in_white_robe_with_purple_hair_is_the_protagonist():
+    assert _resolve1("a young man with messy, long dark purple hair wearing a tattered "
+                     "white robe with a blue collar and dark stains") == "our protagonist"
+    assert _resolve1("a young man with dark, messy hair wearing a white and blue garment "
+                     "with dark stains") == "our protagonist"          # white ~ light-colored
+    assert _resolve1("a man with long, messy dark hair and a white robe with purple trim") == "our protagonist"
+
+
+def test_ch1_master_still_resolves_and_bare_white_robe_stays_unknown():
+    assert _resolve1("a young person with glowing light blue hair and skin") == "the mysterious master"
+    assert _resolve1("a young man in a blue hooded sweatshirt") == "the mysterious master"
+    assert _resolve1("a young man in a white robe") == "unknown"        # ambiguous: no rewrite
+    assert _resolve1("a masked figure in a dark red hooded cloak and grey clothing") == "an assassin member"
+
+
+def test_hair_color_is_first_class_evidence_and_shades_modify_colors():
+    # hair: 'dark hair' meets 'dark purple hair' (+3); 'light blue' is a shade
+    # of blue for garments (no light/white class match), but hair keeps shade
+    # words so "dark hair" still matches "dark purple hair"
+    assert ci._hair_colors(ci._informative(ci._tokens("messy, long dark purple hair"))) == {"dark", "purple"}
+    assert ci._color_garment_pairs(ci._informative(ci._tokens("a light blue hooded jacket"))) == {("blue", "garment")}
+    assert ci._color_garment_pairs(ci._informative(ci._tokens("a white martial arts tunic"))) == {("light", "garment")}

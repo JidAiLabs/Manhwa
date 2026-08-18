@@ -1092,6 +1092,61 @@ def apply_system_card_overrides(
     return n
 
 
+# --- detect-stage card class -> panel_kind (deterministic) ------------------
+# A floating card the detect stage promoted to a panel (studio.detect.
+# yolo_panels.floating_cards) carries its element classes in the panels
+# manifest (`cards_norm`). A jagged `radio` / `system_box` card is an in-world
+# SYSTEM message (nano ch1: "SKY CORPORATION." / "7TH GENERATION NANO MACHINE,
+# STARTING ACTIVATION." — gemma called them chrome/caption and the ending went
+# unnarrated); a plain caption_box card keeps folding as 'caption'.
+_SYSTEM_CARD_CLASSES = ("radio", "system_box")
+
+
+def _iou_xyxy(a, b) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+def apply_card_class_overrides(
+        panels: List[Dict[str, Any]],
+        scenes: List[Dict[str, Any]],
+        cards_by_chunk: Dict[str, List[Dict[str, Any]]],
+        *, log: Callable[[str], None] = print, min_iou: float = 0.5) -> int:
+    """panel_kind='system' for a chrome/caption/empty panel whose scene IS a
+    promoted radio/system card (scene box IoU >= *min_iou* with the card box in
+    chunk px). Story panels are never touched. Returns the count stamped."""
+    by_file = {str(s.get("out_file")): s for s in scenes}
+    n = 0
+    for p in panels:
+        kind = str(p.get("panel_kind") or "").strip().lower()
+        if kind not in ("chrome", "caption", "empty"):
+            continue
+        sc = by_file.get(str(p.get("scene_file")))
+        if not sc:
+            continue
+        cw, ch = float(sc.get("chunk_w") or 0), float(sc.get("chunk_h") or 0)
+        box = sc.get("box_px_xyxy") or None
+        if not box or not cw or not ch:
+            continue
+        for card in cards_by_chunk.get(str(sc.get("chunk_file")), []) or []:
+            if not (set(card.get("classes") or []) & set(_SYSTEM_CARD_CLASSES)):
+                continue
+            b = card.get("box") or []
+            if len(b) != 4:
+                continue
+            cbox = (b[1] * cw, b[0] * ch, b[3] * cw, b[2] * ch)
+            if _iou_xyxy(cbox, tuple(float(v) for v in box)) >= min_iou:
+                p["panel_kind"] = "system"
+                n += 1
+                log(f"[card-class] {p.get('scene_file')}: {kind}->system "
+                    f"(detect-stage {'/'.join(card.get('classes') or [])} card)")
+                break
+    return n
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vision-manifest", required=True)
@@ -1173,6 +1228,25 @@ def main() -> int:
         log=lambda m: print(m, flush=True))
     if sysn:
         print(f"[ok] system-card override: {sysn} caption/empty->system")
+    # Detect-stage card class (promoted radio/system cards) — the tiled element
+    # pass saw the jagged notice at chunk scale; on the tight crop nothing does.
+    try:
+        _ep = os.path.dirname(os.path.abspath(args.vision_manifest))
+        _pm = os.path.join(_ep, "manifest.panels.expanded.json")
+        if not os.path.exists(_pm):
+            _pm = os.path.join(_ep, "manifest.panels.json")
+        _sm = os.path.join(_ep, "manifest.scenes.json")
+        if os.path.exists(_pm) and os.path.exists(_sm):
+            _cards = {str(c.get("chunk_file")): (c.get("cards_norm") or [])
+                      for c in (load_json(_pm).get("chunks") or [])}
+            if any(_cards.values()):
+                cardn = apply_card_class_overrides(
+                    panels, load_json(_sm).get("scenes") or [], _cards,
+                    log=lambda m: print(m, flush=True))
+                if cardn:
+                    print(f"[ok] card-class override: {cardn} -> system")
+    except Exception as _e:                                          # fail-soft
+        print(f"[card-class] skipped ({_e})", flush=True)
     # Centralize the chrome/story verdict: stamp panel_kind back onto the vision
     # manifest so the SINGLE chrome chokepoint (scene_chrome.is_chrome_scene —
     # used by story_group, render_prep AND prep_qa) defers to the understanding

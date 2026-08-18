@@ -189,3 +189,12 @@ def test_floating_card_touching_a_panel_is_left_alone():
     panels = [[0.10, 0.0, 0.40, 1.0]]
     els = {"caption_box": [[0.38, 0.2, 0.45, 0.6]]}          # partly over the panel -> not a card
     assert promote_floating_cards(panels, els) == panels
+
+
+def test_floating_cards_report_their_classes():
+    from studio.detect.yolo_panels import floating_cards
+    panels = [[0.10, 0.0, 0.40, 1.0]]
+    els = {"radio": [[0.60, 0.20, 0.65, 0.60]], "caption_box": [[0.62, 0.30, 0.66, 0.70]],
+           "speech_bubble": [[0.30, 0.10, 0.35, 0.30]]}
+    cards = floating_cards(panels, els)
+    assert cards == [{"box": [0.60, 0.20, 0.66, 0.70], "classes": ["caption_box", "radio"]}]

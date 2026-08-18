@@ -606,3 +606,41 @@ def test_call_model_bounds_total_height_for_multi_image_group(tmp_path, monkeypa
         response_schema={"type": "object"}, max_output_tokens=10,
         temperature=0.0, backend="ollama")
     assert seen["heights"] == [1365, 1365, 1365]
+
+
+# ---- detect-stage card class -> panel_kind (2026-08-18, nano ch1 ending) -----
+# The closing "SKY CORPORATION." / "7TH GENERATION NANO MACHINE" cards became
+# their own scenes (promoted floating cards) but gemma called them chrome /
+# caption, so no beat narrated them and the video ended on an eye strip. The
+# detect stage saw them as jagged `radio` notice boxes — that class is stamped
+# through as panel_kind=system; caption-class cards keep folding.
+
+def test_card_class_override_stamps_radio_and_system_cards_system():
+    scenes = [
+        {"out_file": "p000117.jpg", "chunk_file": "chunk_0012.jpg", "chunk_w": 800, "chunk_h": 10000,
+         "box_px_xyxy": [202, 7195, 605, 7518]},
+        {"out_file": "p000118.jpg", "chunk_file": "chunk_0012.jpg", "chunk_w": 800, "chunk_h": 10000,
+         "box_px_xyxy": [161, 7902, 674, 8445]},
+        {"out_file": "p000050.jpg", "chunk_file": "chunk_0012.jpg", "chunk_w": 800, "chunk_h": 10000,
+         "box_px_xyxy": [0, 1000, 800, 1400]},
+    ]
+    cards_by_chunk = {"chunk_0012.jpg": [
+        {"box": [0.7221, 0.2575, 0.7490, 0.7513], "classes": ["caption_box", "radio"]},   # SKY CORP
+        {"box": [0.7929, 0.2063, 0.8418, 0.8375], "classes": ["radio", "caption_box"]},   # 7TH GEN
+        {"box": [0.1010, 0.0100, 0.1390, 0.9900], "classes": ["caption_box"]},            # narrative caption
+    ]}
+    panels = [{"scene_file": "p000117.jpg", "panel_kind": "chrome", "dialogue": "SKY CORPORATION."},
+              {"scene_file": "p000118.jpg", "panel_kind": "caption", "dialogue": "7TH GENERATION..."},
+              {"scene_file": "p000050.jpg", "panel_kind": "caption", "dialogue": "BACK THEN, I HAD NO IDEA."}]
+    n = pu.apply_card_class_overrides(panels, scenes, cards_by_chunk, log=lambda m: None)
+    assert n == 2
+    assert [p["panel_kind"] for p in panels] == ["system", "system", "caption"]
+
+
+def test_card_class_override_never_touches_story_panels():
+    scenes = [{"out_file": "p000001.jpg", "chunk_file": "c.jpg", "chunk_w": 800, "chunk_h": 1000,
+               "box_px_xyxy": [0, 100, 800, 500]}]
+    cards = {"c.jpg": [{"box": [0.10, 0.0, 0.50, 1.0], "classes": ["radio"]}]}
+    panels = [{"scene_file": "p000001.jpg", "panel_kind": "story", "dialogue": "..."}]
+    assert pu.apply_card_class_overrides(panels, scenes, cards, log=lambda m: None) == 0
+    assert panels[0]["panel_kind"] == "story"

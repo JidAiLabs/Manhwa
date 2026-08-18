@@ -159,52 +159,64 @@ _CARD_CLASSES = ("system_box", "caption_box", "radio", "speech_bubble",
                  "speech_background")
 
 
-def promote_floating_cards(
+def floating_cards(
     panels_norm: Sequence[Sequence[float]],
     elements_norm: Dict[str, Sequence[Sequence[float]]],
-) -> List[List[float]]:
-    """panels + every _CARD_CLASSES element box that intersects no panel (after
-    snap), overlapping floaters unioned into one card. v4's art-only panel
-    class does not box text cards (v3 did — that was the text-line poison), so
-    without this a chapter's closing system cards only survive as one recovered
-    strip mixed with the logo/credits, which the visual judge rightly drops —
-    orphaning the narrated ending. Boxes normalized [ymin, xmin, ymax, xmax];
-    output sorted by ymin."""
+) -> List[Dict[str, Any]]:
+    """[{box:[ymin,xmin,ymax,xmax], classes:[...]}] — every _CARD_CLASSES
+    element that intersects no panel, overlapping floaters unioned (classes
+    merged, sorted). The classes are what panel_understand needs later: a
+    radio/system card is an on-screen system message, a caption card folds."""
     panels = [[float(v) for v in p] for p in panels_norm]
 
     def _hit(a, b):
         return (min(a[2], b[2]) > max(a[0], b[0]) + 1e-9
                 and min(a[3], b[3]) > max(a[1], b[1]) + 1e-9)
 
-    floating = [[float(v) for v in b] for cls in _CARD_CLASSES
+    floating = [([float(v) for v in b], cls) for cls in _CARD_CLASSES
                 for b in (elements_norm.get(cls) or [])
                 if not any(_hit(b, p) for p in panels)]
-    cards: List[List[float]] = []
-    for b in sorted(floating, key=lambda z: (z[0], z[1])):
-        merged = False
+    cards: List[Dict[str, Any]] = []
+    for b, cls in sorted(floating, key=lambda z: (z[0][0], z[0][1])):
         for c in cards:
-            if _hit(b, c):
-                c[0], c[1] = min(c[0], b[0]), min(c[1], b[1])
-                c[2], c[3] = max(c[2], b[2]), max(c[3], b[3])
-                merged = True
+            if _hit(b, c["box"]):
+                bb = c["box"]
+                c["box"] = [min(bb[0], b[0]), min(bb[1], b[1]), max(bb[2], b[2]), max(bb[3], b[3])]
+                c["classes"] = sorted(set(c["classes"]) | {cls})
                 break
-        if not merged:
-            cards.append(list(b))
-    # a merge can create new overlaps between cards — settle
+        else:
+            cards.append({"box": list(b), "classes": [cls]})
     changed = True
     while changed:
         changed = False
         for i in range(len(cards)):
             for j in range(i + 1, len(cards)):
-                if _hit(cards[i], cards[j]):
-                    a, b = cards[i], cards[j]
-                    cards[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+                if _hit(cards[i]["box"], cards[j]["box"]):
+                    a, b = cards[i]["box"], cards[j]["box"]
+                    cards[i] = {"box": [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])],
+                                "classes": sorted(set(cards[i]["classes"]) | set(cards[j]["classes"]))}
                     del cards[j]
                     changed = True
                     break
             if changed:
                 break
-    out = panels + [[round(v, 6) for v in c] for c in cards]
+    for c in cards:
+        c["box"] = [round(v, 6) for v in c["box"]]
+    return cards
+
+
+def promote_floating_cards(
+    panels_norm: Sequence[Sequence[float]],
+    elements_norm: Dict[str, Sequence[Sequence[float]]],
+) -> List[List[float]]:
+    """panels + every floating card box (see floating_cards). v4's art-only
+    panel class does not box text cards (v3 did — that was the text-line
+    poison), so without this a chapter's closing system cards only survive as
+    one recovered strip mixed with the logo/credits, which the visual judge
+    rightly drops — orphaning the narrated ending. Boxes normalized
+    [ymin, xmin, ymax, xmax]; output sorted by ymin."""
+    out = [[float(v) for v in p] for p in panels_norm]
+    out += [list(c["box"]) for c in floating_cards(panels_norm, elements_norm)]
     out.sort(key=lambda p: p[0])
     return out
 
@@ -518,12 +530,15 @@ def detect_panels(
             # floating cards (system / caption / radio / lone bubble in a gap
             # that no panel touches) are story panels of their own
             prev = {tuple(b) for b in panels_norm}
+            cards_norm = floating_cards(panels_norm, elements_norm)
             panels_norm = promote_floating_cards(panels_norm, elements_norm)
             cards = [list(b) for b in panels_norm if tuple(b) not in prev]
             if cards:
                 # the card IS its own art box (consumers intersect the two
                 # lists geometrically, never by index)
                 panels_norm_art = sorted(panels_norm_art + cards, key=lambda b: b[0])
+        else:
+            cards_norm = []
 
         out_chunks.append(
             {
@@ -533,6 +548,9 @@ def detect_panels(
                 # grows a box, never reorders/merges) + chunk-space boxes of
                 # the model's non-panel classes
                 "panels_norm_art": panels_norm_art,
+                # promoted floating cards with their element classes —
+                # panel_understand stamps radio/system cards panel_kind=system
+                "cards_norm": cards_norm,
                 "elements_norm": elements_norm,
             }
         )
