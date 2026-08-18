@@ -1017,3 +1017,23 @@ def test_beat_lines_usable_reads_segments_then_narration():
     # no segments -> fall back to the joined narration
     assert rs.beat_lines_usable({"narration": "He draws the blade."})
     assert not rs.beat_lines_usable({"narration": "The scene contains p000110.jpg."})
+
+
+def test_tighten_prefers_a_grounded_sentence_that_actually_fits():
+    # ORV Ep1 g0012: dropping by grounding rank alone kept a 42-word sentence
+    # (still over the 33-word cap) and discarded a 31-word sibling that fit.
+    long_grounded = " ".join(["ancestor"] * 42) + "."
+    short_ok = " ".join(["snow"] * 31) + "."
+    segs = [{"span": ["p1.jpg"], "line": long_grounded + " " + short_ok}]
+    out, notes = rs.tighten_overlong_segments(segs, {"p1.jpg": "ancestor snow"})
+    assert rs.segments_overshoot(out) == 0
+    assert out[0]["line"] == short_ok
+    assert notes
+
+
+def test_tighten_declines_when_no_single_sentence_fits():
+    # nothing to do without truncating mid-clause — the caller falls back
+    segs = [{"span": ["p1.jpg"], "line": " ".join(["word"] * 60) + "."}]
+    out, notes = rs.tighten_overlong_segments(segs, {})
+    assert out[0]["line"] == segs[0]["line"]
+    assert notes == []

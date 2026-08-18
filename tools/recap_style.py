@@ -505,6 +505,14 @@ def tighten_overlong_segments(segs: Sequence[Mapping[str, Any]],
             # least grounded first; ties drop the LATER sentence so the beat
             # keeps its opening
             keep.remove(min(keep, key=lambda i: (_page_grounding(sents[i], page), -i)))
+        if total(keep) > cap:
+            # the survivor is a single over-cap sentence, but a SHORTER sibling
+            # may fit on its own — dropping by rank alone can strand the one
+            # sentence that never could (ORV Ep1 g0012: kept 42w, discarded a
+            # 31w sibling that fit). Prefer the best-grounded sentence that fits.
+            fits = [i for i in range(len(sents)) if len(sents[i].split()) <= cap]
+            if fits:
+                keep = [max(fits, key=lambda i: (_page_grounding(sents[i], page), -i))]
         new_line = " ".join(sents[i] for i in sorted(keep))
         if new_line != line:
             notes.append(f"{span[0] if span else '?'}: {len(line.split())}w "
