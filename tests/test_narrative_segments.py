@@ -19,8 +19,9 @@ import tools.gemini_narrative_pass as gnp
 
 
 def _words(n: int) -> str:
-    """A line of exactly n words."""
-    return " ".join(["word"] * n)
+    """A line of exactly n words (ends on a period: lines must END, see
+    validate_segments' mid-sentence guard)."""
+    return " ".join(["word"] * n) + "."
 
 
 # ---------------------------------------------------------------------------
@@ -1247,3 +1248,43 @@ def test_grounded_pad_never_copies_display_meta_description():
     line = gnp._grounded_pad_line("p1.jpg", u)
     assert "displayed" not in line and "caption" not in line
     assert line == "a glowing system card"
+
+
+# ---- system cards SPEAK their text (2026-08-18, nano ch1 ending) -----------
+# The prompt bans "a white panel appears with the text…" but gemma parroted the
+# understanding's card description into the solo system spans; the fix is
+# deterministic: a system-card line that describes the card (or shares no
+# content with it) becomes the card's own words.
+
+def test_auto_repair_voices_system_card_text_instead_of_describing_it():
+    kinds = dict(KINDS, **{"p2.jpg": "system"})
+    u = dict(U_BY_FILE)
+    u["p2.jpg"] = dict(U_BY_FILE.get("p2.jpg") or {}, dialogue="7TH GENERATION NANO MACHINE, STARTING ACTIVATION.")
+    segs = [{"span": ["p1.jpg"], "line": _words(12)},
+            {"span": ["p2.jpg"], "line": "A plain white panel contains two blue text boxes announcing an activation process."},
+            {"span": ["p3.jpg"], "line": _words(12)}]
+    out = gnp.auto_repair_segments(segs, FILES, kinds, u)
+    assert out[1]["line"] == "7th generation nano machine, starting activation."
+    # a line that already voices the card is left alone
+    segs[1]["line"] = "The 7th generation nano machine announces its activation."
+    out2 = gnp.auto_repair_segments(segs, FILES, kinds, u)
+    assert out2[1]["line"] == "The 7th generation nano machine announces its activation."
+    # extracted system card (from a multi-panel span) is voiced too, not padded
+    segs3 = [{"span": ["p1.jpg", "p2.jpg", "p3.jpg"], "line": _words(18)}]
+    out3 = gnp.auto_repair_segments(segs3, FILES, kinds, u)
+    assert out3[1]["line"] == "7th generation nano machine, starting activation."
+
+
+def test_validate_rejects_a_line_cut_mid_sentence():
+    # nano ch1 g0019: "…terrified that he might be seeing the true power of a" —
+    # the model's output stopped mid-clause; a line must END (., !, ?, …, or a
+    # closing quote after one). Cliffhanger "…but..." style still passes.
+    segs = [{"span": ["p1.jpg"], "line": "He stares, terrified that he might be seeing the true power of a"},
+            {"span": ["p2.jpg"], "line": _words(10)},
+            {"span": ["p3.jpg"], "line": _words(10)}]
+    errs = gnp.validate_segments(segs, FILES, KINDS)
+    assert any("ends mid-sentence" in e for e in errs)
+    segs[0]["line"] = "He stares, terrified of what he sees but..."
+    assert not any("ends mid-sentence" in e for e in gnp.validate_segments(segs, FILES, KINDS))
+    segs[0]["line"] = "He gasps, 'Exactly what is that light?!'"
+    assert not any("ends mid-sentence" in e for e in gnp.validate_segments(segs, FILES, KINDS))

@@ -271,10 +271,35 @@ def _subject_tokens(text: str) -> Set[str]:
     return out
 
 
+# COLORED LIGHTING: a flashback / glow / silhouette / monochrome panel tints
+# EVERYTHING one color ("a young person with glowing light blue hair and skin"
+# was the purple-haired prince under a blue tint — nano ch1 p000019 — and it
+# resolved to the blue-haired master, whose lines then swallowed the assassin
+# leader's). Skin is never blue: when a subject says a color of SKIN, or
+# glow/tint/silhouette/monochrome, its colors describe the light, not the
+# person — color evidence (hair + garment pairs) is withheld; names still hit.
+_TINT_RE = re.compile(
+    r"\b(?:glow|glowing|glows|tint|tinted|silhouette|silhouetted|monochrome"
+    r"|monochromatic|backlit|shadowed|greyscale|grayscale|sepia)\b"
+    r"|\b(?:blue|red|green|purple|yellow|golden|orange|pink|light|dark|pale"
+    r"|white|gray|grey|black|crimson|silver)(?:-|\s+)(?:\w+\s+)?skin\b",
+    re.IGNORECASE)
+
+
+_LIGHTING_TOKENS = frozenset({"glow", "glowing", "glows", "skin", "tint", "tinted",
+                              "silhouette", "silhouetted", "monochrome", "backlit",
+                              "shadowed", "surrounded", "energy", "aura", "light"})
+
+
+def _color_evidence_valid(text: str) -> bool:
+    return not _TINT_RE.search(str(text or ""))
+
+
 def _score(profile: Dict[str, Any], text: str) -> Tuple[float, List[str]]:
     """(score, evidence tokens) of *text* against one profile. Name-token
     hits dominate (10 each); a color→garment pair match adds 2 on top; each
-    shared appearance token = 1 (counted once, name hits excluded)."""
+    shared appearance token = 1 (counted once, name hits excluded). Under
+    colored lighting (see _TINT_RE) color evidence is withheld."""
     toks = _subject_tokens(text)
     stream = _informative(_tokens(text))
     ev: List[str] = []
@@ -283,6 +308,15 @@ def _score(profile: Dict[str, Any], text: str) -> Tuple[float, List[str]]:
     for nt in name_hits:
         score += 10.0
         ev.append(nt)
+    if not _color_evidence_valid(text):
+        # tinted panel: only names + non-color, non-lighting appearance
+        # tokens count (glow/skin/the bare garment marker describe the light
+        # or nothing identity-bearing)
+        shared = sorted((profile["appearance"] & toks) - set(name_hits)
+                        - _COLORS - {"light", "dark", "garment"} - _LIGHTING_TOKENS)
+        score += float(len(shared))
+        ev += shared + ["tinted"]
+        return score, ev
     subj_pairs = _color_garment_pairs(stream)
     pair_hits = profile["pairs"] & subj_pairs
     for c, _g in sorted(pair_hits):

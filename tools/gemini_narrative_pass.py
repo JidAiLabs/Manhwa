@@ -1153,6 +1153,44 @@ def _grounded_pad_line(f, understand_by_file):
             or "The moment holds.")
 
 
+# A system card's line must SAY the card, never describe it (the prompt bans
+# it; gemma still parrots the understanding's "A plain white panel featuring the
+# blue text 'SKY CORPORATION.'" into the solo span). Deterministic guard.
+_CARD_DESC_RE = re.compile(
+    r"\b(?:panel|card|screen|box|frame|window|display)\b[^.]{0,80}\b(?:text|reads?|"
+    r"featur\w*|displays?|contains?|shows?|announc\w*|appears?|centered)\b"
+    r"|\b(?:text|words?|letters?)\s+(?:appears?|is displayed|reads?|flash\w*)\b"
+    r"|\bcentered in the frame\b|\bplain (?:white |black )?(?:panel|card|screen)\b",
+    re.IGNORECASE)
+
+
+def _speak_card(text: str) -> str:
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not t:
+        return t
+    t = t[:1].upper() + t[1:].lower()
+    return t if t.endswith((".", "!", "?")) else t + "."
+
+
+def _card_words(text: str):
+    return {w for w in re.findall(r"[a-z0-9]+", str(text or "").lower()) if len(w) > 2}
+
+
+def system_card_line(f, understand_by_file, line):
+    """The line to voice on solo system panel *f*: the model's line when it
+    voices the card (shares content, doesn't describe it), else the card's own
+    text (understanding dialogue / OCR), sentence-cased. No card text -> the
+    line as given."""
+    u = (understand_by_file or {}).get(f) or {}
+    card = str(u.get("dialogue") or u.get("ocr_clean") or "").strip()
+    if not card:
+        return line
+    ln = str(line or "").strip()
+    if ln and not _CARD_DESC_RE.search(ln) and (_card_words(ln) & _card_words(card)):
+        return ln
+    return _speak_card(card)
+
+
 def auto_repair_segments(segs, surviving, kinds, understand_by_file=None):
     """Deterministic STRUCTURAL repair before validation — the model's prose
     is never rewritten, only spans are adjusted (real ch1: wholesale singleton
@@ -1206,6 +1244,11 @@ def auto_repair_segments(segs, surviving, kinds, understand_by_file=None):
                 break
         out.insert(idx, {"span": [f],
                          "line": _grounded_pad_line(f, understand_by_file)})
+    # system cards speak their text (a describing or padded line is replaced)
+    for s in out:
+        span = list(s.get("span") or [])
+        if len(span) == 1 and str(kinds.get(span[0]) or "").lower() == "system":
+            s["line"] = system_card_line(span[0], understand_by_file, s.get("line"))
     return out
 
 
@@ -1477,6 +1520,11 @@ from identity_gate import (  # noqa: E402
 )
 
 
+# a voiced line must END: terminal punctuation (or an ellipsis / dash
+# cliffhanger), optionally followed by closing quotes/brackets
+_LINE_END_RE = re.compile(r"""(?:[.!?…]|\.\.\.|[—–-])[\s"'”’)\]]*$""")
+
+
 def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
                       echo_of=None) -> List[str]:
     """Deterministic guardrails for adaptive flow segments — pure, no LLM.
@@ -1556,6 +1604,13 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
             errors.append(f"segment {i}: line names an image file — file "
                           "names are tags, never narration; narrate what "
                           "HAPPENS across these panels instead")
+        solo_card = (n == 1 and str(kinds.get(span[0]) or "") == "system")
+        if not solo_card and not _LINE_END_RE.search(line):
+            # (a system card's own text may lack a period — the fragment net
+            # period-closes it later; story lines must END)
+            errors.append(f"segment {i}: line ends mid-sentence "
+                          f"({line[-40:]!r}) — the thought was cut off; finish "
+                          "it on a complete clause")
         if mentions_impact_marker(line):
             errors.append(f"segment {i}: line echoes the impact-SFX bracket "
                           "marker verbatim — describe the strike/stab/blow "

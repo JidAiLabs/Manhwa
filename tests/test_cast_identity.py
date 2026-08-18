@@ -531,7 +531,7 @@ def test_ch1_prince_in_white_robe_with_purple_hair_is_the_protagonist():
 
 
 def test_ch1_master_still_resolves_and_bare_white_robe_stays_unknown():
-    assert _resolve1("a young person with glowing light blue hair and skin") == "the mysterious master"
+    # ("glowing light blue hair and skin" is a TINT — see the tint test below)
     assert _resolve1("a young man in a blue hooded sweatshirt") == "the mysterious master"
     assert _resolve1("a young man in a white robe") == "unknown"        # ambiguous: no rewrite
     assert _resolve1("a masked figure in a dark red hooded cloak and grey clothing") == "an assassin member"
@@ -544,3 +544,15 @@ def test_hair_color_is_first_class_evidence_and_shades_modify_colors():
     assert ci._hair_colors(ci._informative(ci._tokens("messy, long dark purple hair"))) == {"dark", "purple"}
     assert ci._color_garment_pairs(ci._informative(ci._tokens("a light blue hooded jacket"))) == {("blue", "garment")}
     assert ci._color_garment_pairs(ci._informative(ci._tokens("a white martial arts tunic"))) == {("light", "garment")}
+
+
+def test_tinted_panel_withholds_color_evidence():
+    # nano ch1 p000019: the purple-haired prince under a blue flashback tint,
+    # described "glowing light blue hair and skin" -> must NOT become the
+    # light-blue-haired master (skin is never blue: that's the light)
+    assert _resolve1("a young person with glowing light blue hair and skin") == "unknown"
+    assert _resolve1("a silhouetted figure with white hair") == "unknown"
+    # an untinted description of the master still resolves
+    assert _resolve1("a young man in a blue hooded sweatshirt") == "the mysterious master"
+    # names still hit under a tint
+    assert _resolve1("a glowing figure, Prince Cheon, with blue skin") == "our protagonist"
