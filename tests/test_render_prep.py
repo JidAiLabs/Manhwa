@@ -2582,3 +2582,41 @@ def test_reframe_skips_a_file_shown_more_than_once():
                                         focal_for_file=lambda f: (0.5, 0.5, "art"),
                                         write_variant=lambda f, b: f)
     assert logs == []
+
+
+# ---- 2026-08-18: verdict caches must key on PIXELS, not on the filename -----
+# scenes_clean/<f> is a derived rendition (art_only crop, and since 75218d4 an
+# in-place push-in re-frame), so the same name can hold a different picture
+# between runs — a filename-keyed cache then reuses a judgment of an image that
+# no longer exists.
+
+def test_frame_digest_changes_with_the_pixels_not_the_name(tmp_path):
+    import numpy as np, cv2
+    a = tmp_path / "p1.jpg"
+    cv2.imwrite(str(a), _hramp(400, 300, base=0))
+    d1 = rp.frame_digest(str(a))
+    cv2.imwrite(str(a), _hramp(400, 300, base=60))      # same name, new picture
+    d2 = rp.frame_digest(str(a))
+    assert d1 and d2 and d1 != d2
+    assert rp.frame_digest(str(tmp_path / "missing.jpg")) == ""
+
+
+def test_cut_judge_cache_is_invalidated_when_the_frame_changes(tmp_path):
+    import json, cv2
+    clean = tmp_path / "scenes_clean"; clean.mkdir()
+    f = "p1.jpg"
+    cv2.imwrite(str(clean / f), _hramp(400, 300, base=0))
+    cache_path = tmp_path / ".cut_judge_cache.json"
+    # a cached "junk" verdict recorded against the OLD pixels
+    (cache_path).write_text(json.dumps({
+        f: {"keep": False, "reason": "blank", "digest": "stale-digest"}}))
+    junk = rp.judge_cut_visuals([f], str(clean), reuse=True,
+                                cache_path=str(cache_path))
+    assert junk == {}          # digest mismatch -> the stale verdict is ignored
+    # a cached verdict recorded against the CURRENT pixels is reused
+    (cache_path).write_text(json.dumps({
+        f: {"keep": False, "reason": "blank",
+            "digest": rp.frame_digest(str(clean / f))}}))
+    junk2 = rp.judge_cut_visuals([f], str(clean), reuse=True,
+                                 cache_path=str(cache_path))
+    assert junk2 == {f: "blank"}

@@ -2227,8 +2227,14 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
     import hashlib
 
     def _key(text: str, files: List[str], note: str = "") -> str:
+        # the frame CONTENT is part of the key: scenes_clean/<f> is a derived
+        # rendition (art_only crop, in-place push-in re-frame), so the same
+        # name can hold a different picture between runs and a name-keyed
+        # cache would reuse a judgment of an image that no longer exists.
         h = hashlib.sha1()
-        for part in (model, text[:400], "\x00".join(files[:6]), note):
+        digests = "\x00".join(
+            rp.frame_digest(os.path.join(clean_dir, f)) for f in files[:6])
+        for part in (model, text[:400], "\x00".join(files[:6]), digests, note):
             h.update(part.encode("utf-8", "replace"))
             h.update(b"\x00")
         return h.hexdigest()

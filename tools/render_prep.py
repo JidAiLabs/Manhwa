@@ -2191,6 +2191,19 @@ sliver fragment, leftover panel scraps)?
 Reply ONLY JSON: {"keep": true/false, "reason": "<short>"}"""
 
 
+def frame_digest(path: str) -> str:
+    """Short content hash of a shown frame. scenes_clean/<f> is a DERIVED
+    rendition (art_only crop, in-place push-in re-frame), so the same name can
+    hold a different picture between runs — every cached visual verdict must
+    key on the pixels, never on the filename alone. '' when unreadable."""
+    import hashlib
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha1(fh.read()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
 def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
                       exempt: Optional[set] = None,
                       model: str = "gemma4:26b",
@@ -2219,7 +2232,13 @@ def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
             if f in ex:
                 continue
             v = cache.get(f)
-            if isinstance(v, dict) and v.get("keep") is False:
+            if not isinstance(v, dict):
+                continue
+            # a cached verdict is only valid for the pixels it judged
+            if v.get("digest") and v["digest"] != frame_digest(
+                    os.path.join(clean_dir, f)):
+                continue
+            if v.get("keep") is False:
                 junk[f] = str(v.get("reason") or "")[:120]
         return junk
     try:
@@ -2250,7 +2269,8 @@ def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
             v = json.loads(m.group(0)) if m else {}
             keep = v.get("keep")
             new_cache[f] = {"keep": keep,
-                            "reason": str(v.get("reason") or "")[:120]}
+                            "reason": str(v.get("reason") or "")[:120],
+                            "digest": frame_digest(path)}
             if keep is False:
                 junk[f] = new_cache[f]["reason"]
         except Exception:
