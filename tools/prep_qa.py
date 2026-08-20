@@ -2198,7 +2198,8 @@ named or weak; empty if ok>"}}"""
 def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                     model: str = "gemma4:26b",
                     cache_path: Optional[str] = None,
-                    uncertain_files: Optional[set] = None
+                    uncertain_files: Optional[set] = None,
+                    vitems: Optional[Dict[str, Dict[str, Any]]] = None
                     ) -> List[Dict[str, Any]]:
     """Stronger 'eyes' than semantic_alignment_flags: per beat, judge whether the
     narration INVENTS or MIS-NAMES anything absent from every panel the beat
@@ -2208,7 +2209,18 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
     auto-heal loop re-narrates it and the strictly-better safeguard reverts any
     non-improvement. Runs under --semantic (and --semantic-heal). `cache_path`
     memoizes verdicts by (model, narration, shown panels) so the voiceover-time
-    re-scan reuses prepare's judgments instead of re-paying the 26B."""
+    re-scan reuses prepare's judgments instead of re-paying the 26B.
+
+    `vitems` (vision items by scene basename) supplies the judge the SAME
+    evidence the writer had. Half of a chapter's grounding_weak WARNs were the
+    judge calling on-panel DIALOGUE invented (ORV Ep1 g0022: 'invents a creator
+    expressing gratitude and offering a gift' — p000094 literally prints "AS A
+    TOKEN OF MY GRATITUDE, I WOULD LIKE TO SEND YOU A SPECIAL PRESENT"). An
+    image-only judge cannot read painted chat text reliably at frame scale, and
+    art_only crops some of it out of the shown window entirely — so the panel
+    text goes in as text, over the COVERED panel range ([[_covered_panels]]:
+    a folded caption panel is not shown but its words are what the line is
+    speaking)."""
     try:
         import ollama  # noqa: F401  (local + free; absent on bare boxes)
     except ImportError:
@@ -2217,6 +2229,24 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
     from ollama_compat import chat as _ollama_chat
     unc = {parent_scene(f) for f in (uncertain_files or set())} | set(
         uncertain_files or set())
+    v_by_base = {_base_scene(os.path.basename(str(k))): v
+                 for k, v in (vitems or {}).items()}
+    ordered_bases = sorted(v_by_base)
+
+    def _panel_text(item: Dict[str, Any], shown: List[str]) -> str:
+        """The printed text the line is speaking, over the panels it COVERS —
+        the span (what it voices), not the cuts (what is on screen)."""
+        span = [str(f) for f in (item.get("scene_files") or shown)]
+        seen, parts = set(), []
+        for base in _covered_panels(span, ordered_bases):
+            if base in seen:
+                continue
+            seen.add(base)
+            txt = " ".join(str((v_by_base.get(base) or {}).get(
+                "ocr_clean") or "").split())
+            if txt:
+                parts.append(txt)
+        return " / ".join(parts)[:700]
 
     def _judge(paths: List[str], text: str, note: str = "") -> Dict[str, Any]:
         resp = _ollama_chat(
@@ -2264,6 +2294,18 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                     + ", ".join(hedged[:3])
                     + " as visually AMBIGUOUS — hedged/vague wording about "
                     "them is correct grounding, never 'weak'.")
+        # the writer's OTHER evidence: text PRINTED on the panels this line
+        # voices. Without it the judge reports every dialogue-grounded line as
+        # invented (it cannot read painted chat text at frame scale, and the
+        # art_only crop can drop it from the shown window altogether).
+        printed = _panel_text(item, files)
+        if printed:
+            note += ("\nTEXT PRINTED ON THESE PANELS (OCR, including panels "
+                     "whose words fold into this line): " + printed
+                     + "\nA line that restates, paraphrases or COMPRESSES this "
+                     "printed text is GROUNDED — a recap is SUPPOSED to "
+                     "summarize dialogue. Flag only what is neither drawn in "
+                     "the images nor printed above.")
         work.append((seg, text, files, note))
 
     # 2. content-addressed verdict cache. A grounding verdict is a pure function
@@ -2746,7 +2788,14 @@ def _suppress_grounded_mismatches(
         vitems: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Drop narration_mismatch WARNs whose narration is supported by the group's
     OCR (on-panel dialogue). Conservative: only fires when the beat carries real
-    dialogue AND the line reproduces most of it."""
+    dialogue AND the line reproduces most of it.
+
+    NOT grounding_weak any more (2026-08-20): this was a post-hoc guess at the
+    evidence the grounding judge never received, and its proxy runs the wrong
+    way — it demands the NARRATION reproduce >=50% of the OCR, while the recap
+    rules tell the writer to COMPRESS dialogue, so a correct line can never
+    clear the bar. The judge is now handed the printed panel text directly
+    (`grounding_flags(vitems=...)`), which is the evidence, not a proxy for it."""
     g_narr: Dict[int, str] = {}
     g_ocr: Dict[int, str] = {}
     for b in (beats_obj or {}).get("beats") or []:
@@ -2761,7 +2810,7 @@ def _suppress_grounded_mismatches(
     out: List[Dict[str, Any]] = []
     dropped = 0
     for f in flags:
-        if f.get("code") in ("narration_mismatch", "grounding_weak"):
+        if f.get("code") == "narration_mismatch":
             m = _SEG_GROUP_RE.match(str(f.get("segment_id") or ""))
             gid = int(m.group(1)) if m else None
             if gid is not None and _ocr_grounds_narration(
@@ -2770,7 +2819,7 @@ def _suppress_grounded_mismatches(
                 continue   # grounded in the beat's dialogue — false positive
         out.append(f)
     if dropped:
-        print(f"[qa] suppressed {dropped} OCR-grounded grounding WARN(s)")
+        print(f"[qa] suppressed {dropped} OCR-grounded narration_mismatch WARN(s)")
     return out
 
 
@@ -2976,9 +3025,8 @@ def main() -> int:
             uncertain_files={
                 str(p.get("scene_file") or "")
                 for p in ((understood_obj or {}).get("panels") or [])
-                if p.get("uncertain")}))
-        # a number/name SPOKEN in a non-shown panel is grounded in the dialogue —
-        # drop the visual judge's false positive in that case
+                if p.get("uncertain")},
+            vitems=vitems))
         flags = _suppress_grounded_mismatches(
             flags, beats_obj, vitems)
 

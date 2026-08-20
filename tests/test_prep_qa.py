@@ -796,6 +796,51 @@ def test_grounding_flags_parallel_matches_serial(monkeypatch, tmp_path):
     assert all(f["code"] == "grounding_weak" for f in serial)
 
 
+def test_grounding_judge_gets_printed_panel_text(monkeypatch, tmp_path):
+    """The judge must be handed the text PRINTED on the panels the line voices —
+    including a covered panel that is never shown (a folded caption/chat panel).
+    Without it, gemma reports on-panel dialogue as invented: ORV Ep1 g0021
+    ("a message from tls123") was flagged although p000088 prints the handle."""
+    import sys
+    import types
+    import json as _json
+
+    seen = []
+
+    def chat(**kw):
+        content = str(kw["messages"][0]["content"])
+        seen.append(content)
+        # an honest judge: the claim is grounded iff the EVIDENCE carries it
+        ev = content.split("TEXT PRINTED", 1)[1] if "TEXT PRINTED" in content else ""
+        ok = "tls123" in ev.lower()
+        return {"message": {"content": _json.dumps(
+            {"ok": ok, "issue": "" if ok else "invented sender tls123"})}}
+
+    fake = types.ModuleType("ollama")
+    fake.chat = chat
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    for f in ("p000087.jpg", "p000089.jpg"):
+        (tmp_path / f).write_bytes(b"jpg")
+    item = _seg("g0021_p08",
+                "The protagonist stares at a message from tls123.",
+                ["p000087.jpg", "p000089.jpg"])
+    item["scene_files"] = ["p000087.jpg", "p000089.jpg"]
+    vitems = {                       # p000088 is COVERED but never shown
+        "p000087.jpg": {"ocr_clean": ""},
+        "p000088.jpg": {"ocr_clean": "TLS123 THANK YOU FOR READING"},
+        "p000089.jpg": {"ocr_clean": ""}}
+
+    flags = pq.grounding_flags({"timeline": [item]}, str(tmp_path),
+                               vitems=vitems)
+    assert "TLS123 THANK YOU FOR READING" in seen[0]
+    assert flags == []               # grounded in the folded panel's text
+
+    seen.clear()                     # without the evidence: the false positive
+    flags = pq.grounding_flags({"timeline": [item]}, str(tmp_path))
+    assert "TEXT PRINTED" not in seen[0]
+    assert [f["code"] for f in flags] == ["grounding_weak"]
+
+
 def test_grounding_cache_reuses_verdicts(monkeypatch, tmp_path):
     """The verdict cache memoizes by (model, narration, panels): a second pass
     over unchanged beats makes ZERO new gemma calls and returns identical flags —

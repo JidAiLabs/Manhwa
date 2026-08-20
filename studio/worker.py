@@ -770,6 +770,15 @@ def _replan(ep: Path, log: TextIO) -> None:
 # min and narration_accept_better reverted 12 of its 14 rewrites — the loop
 # bought 2 improved lines out of ~85. Whether that trade is worth it varies by
 # chapter, so it needs to be measurable rather than assumed.
+#
+# That measurement is STALE (2026-08-20). The 12-of-14 reverts were the four
+# restore guards fixed in 2da8fac..dc11641, and post-fix accept rates are ORV
+# Ep0 1/1, ORV Ep1 10/19, nano ch1 2/12. The cap is a BACKSTOP, not the
+# terminator: the two convergence guards below (unchanged ERROR set, identical
+# corrections) stop the loop the cycle it stops helping — and BOTH first
+# compare on cycle 2, so pinning this to 1 does not make the loop cheap, it
+# makes the guards unreachable and the heal a single blind roll. The Mini's
+# launchd pin of 1 was removed for exactly that reason; don't re-pin it below 2.
 _HEAL_MAX = max(0, int(os.environ.get("STUDIO_HEAL_MAX", "4")))
 
 # ERROR codes that live in the PLAN, not the narration: a render_prep re-run
