@@ -2870,6 +2870,22 @@ def _suppress_grounded_mismatches(
     return out
 
 
+def _freshness_flags(ep: str) -> List[Dict[str, Any]]:
+    """Manifest completeness + staleness, as QA flags — HONOURING each issue's
+    own severity.
+
+    Hard-coding ERROR here overrode the one freshness issue that is
+    deliberately a WARN: stale_video ("a chapter re-prepared but not yet
+    re-rendered is the normal state between approvals", manifest_freshness.py).
+    Promoted to ERROR it DEADLOCKS the chapter — _autopilot_clean advances only
+    on zero ERRORs, and the only thing that clears a stale video is the
+    re-voice + re-render autopilot then refuses to queue (ORV Ep0 after job
+    173). Every other freshness issue is already ERROR at source."""
+    return [_flag(iss["code"], iss.get("severity") or ERROR, iss["detail"],
+                  scene=iss.get("file", ""))
+            for iss in _verify_chapter_freshness(ep)]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--episode-dir", required=True)
@@ -2903,11 +2919,7 @@ def main() -> int:
     # Manifest completeness + staleness guard — runs before we open any file
     # so a missing or stale plan is flagged immediately rather than surfacing
     # as a confusing open() error or silent use of old cuts.
-    _freshness_issues = _verify_chapter_freshness(ep)
-    _pre_flags: List[Dict[str, Any]] = [
-        _flag(iss["code"], ERROR, iss["detail"], scene=iss.get("file", ""))
-        for iss in _freshness_issues
-    ]
+    _pre_flags: List[Dict[str, Any]] = _freshness_flags(ep)
 
     plan_path = args.plan or os.path.join(ep, "render.plan.clean.json")
     # Hard-error on a missing/corrupt/keyless plan — a silent empty "timeline"

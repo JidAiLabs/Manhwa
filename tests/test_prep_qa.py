@@ -2257,3 +2257,17 @@ def test_caption_unvoiced_still_fires_on_a_genuinely_dropped_caption():
                                      "WITHOUT TELLING ANYONE THAT WINTER"}}
     out = pq.caption_unvoiced_flags(beats, vitems)
     assert len(out) == 1 and out[0]["code"] == "caption_unvoiced"
+
+
+def test_freshness_flags_keep_their_own_severity(monkeypatch):
+    """stale_video is WARN BY DESIGN — a chapter re-prepared but not yet
+    re-rendered is the normal state between approvals. Promoting it to ERROR
+    deadlocks the chapter: autopilot advances only on zero ERRORs, and the one
+    thing that clears a stale video is the re-render it then won't queue."""
+    monkeypatch.setattr(pq, "_verify_chapter_freshness", lambda ep: [
+        {"code": "stale_video", "severity": "WARN", "file": "seg.mp4",
+         "detail": "seg.mp4 is older than render.plan.clean.json"},
+        {"code": "stale_manifest", "severity": "ERROR", "file": "beats.json",
+         "detail": "beats.json is stale"}])
+    got = {f["code"]: f["severity"] for f in pq._freshness_flags("/nope")}
+    assert got == {"stale_video": pq.WARN, "stale_manifest": pq.ERROR}
