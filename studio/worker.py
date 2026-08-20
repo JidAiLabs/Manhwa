@@ -1106,10 +1106,26 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     if verdict.codes:
         log.write("[qa] proceeding with non-blocking QA flags after heal "
                   f"(cosmetic, flagged for review): {sorted(verdict.codes)}\n")
+    _advance_after_prepare(
+        con, ch, verdict, (job.get("payload") or {}).get("auto_to"), log)
+
+    # once enough chapters are prepared, PROPOSE the channel thumbnail + a
+    # debut-arc intro teaser for review (never auto-approved, never blocking)
+    _autopropose_publish_if_ready(con, ch["series_id"], log)
+
+
+def _advance_after_prepare(con: sqlite3.Connection, ch: Dict[str, Any],
+                           verdict: QAVerdict, auto_to: Optional[str],
+                           log: TextIO) -> None:
+    """What a GREEN prepare advances to. Extracted from _h_prepare because
+    every branch here is an auto-advance decision that strands the chapter when
+    it is wrong, and both bugs it has shipped were invisible until a chapter sat
+    stuck in production: the render fall-through below (ORV Ep0, job 178) and
+    the stale_video promotion that made `verdict.codes` non-empty so none of
+    these branches could fire at all."""
     # bulk "run range to stage X": a prepare job may carry auto_to (voice|video).
     # The bulk request IS the story approval, so advance past the voice gate up to
     # the requested target — QA still had to be green (we raised above otherwise).
-    auto_to = (job.get("payload") or {}).get("auto_to")
     voice_sha = gates.gate_sha("voice", ch["ep_dir"])
     voice_valid = gates._approval_valid(con, "voice", chapter_id=ch["id"],
                                         current_sha=voice_sha)
@@ -1125,10 +1141,26 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         gates.ensure_approval(con, "voice", chapter_id=ch["id"],
                               ep_dir=ch["ep_dir"], note="autopilot")
         jobs.enqueue(con, "voiceover", chapter_id=ch["id"])
+    elif _autopilot_clean(con, ch, verdict) and voice_valid:
+        # Narration UNCHANGED (the voice approval still matches the script) but
+        # this re-prepare rebuilt the plan, so the shipped mp4 no longer matches
+        # what would be rendered today. BOTH branches above key on an INVALID
+        # voice approval, and the render branch lives in the voiceover handler
+        # — which never runs, because there is nothing to re-voice. A chapter in
+        # this state had NO path back to a fresh video: its own QA reports
+        # stale_video and nothing could ever clear it (ORV Ep0, job 178).
+        # gate_sha needs BOTH the plan and tts_index, so a None means the
+        # chapter was never voiced and there is nothing to render yet.
+        render_sha = gates.gate_sha("render", ch["ep_dir"])
+        if render_sha and not gates._approval_valid(
+                con, "render", chapter_id=ch["id"], current_sha=render_sha):
+            log.write("[autopilot] narration unchanged but the plan was "
+                      "rebuilt → render queued\n")
+            gates.ensure_approval(con, "render", chapter_id=ch["id"],
+                                  ep_dir=ch["ep_dir"], note="autopilot")
+            jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
+                         payload={"branding": "both"})
 
-    # once enough chapters are prepared, PROPOSE the channel thumbnail + a
-    # debut-arc intro teaser for review (never auto-approved, never blocking)
-    _autopropose_publish_if_ready(con, ch["series_id"], log)
 
 
 def _chapters_with_beats(con: sqlite3.Connection, series_id: int) -> List[int]:
