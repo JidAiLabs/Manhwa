@@ -1396,17 +1396,29 @@ def _h_qa_scan(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     """Standalone re-scan (dashboard 'QA scan' button). Unified with the
     prepare/voiceover gate: fails ONLY on a verdict.blocking code (or an
     invalid report) — a cosmetic ERROR (fragment_dangle, chrome_leak, …) is
-    logged and the job still passes, same policy _run_prep_and_qa enforces."""
+    logged and the job still passes, same policy _run_prep_and_qa enforces.
+
+    It runs the SAME gate set too. Dropping --semantic did not just hide the
+    grounding WARNs, it INVENTED ERRORs the prepare never reported: without the
+    judge, caption_unvoiced loses its arbiter, so a caption the writer carries
+    by paraphrase (a WARN on the prepare) comes back a hard ERROR on the
+    re-scan (ORV Ep1 g0009, 2026-08-20). A cheap scan that disagrees with the
+    authoritative one is worse than no scan. The grounding verdict cache is
+    content-addressed, so re-scanning unchanged narration is mostly hits."""
     ch = _chapter(con, job["chapter_id"])
     title = _series_title(con, ch["series_id"])
     ep = Path(ch["ep_dir"] or "")
     started_at = time.time()
     from studio.config import load as _load_cfg
-    rc = _stream([PY, str(REPO / "tools" / "prep_qa.py"),
-                  "--episode-dir", str(ep),
-                  "--series-title", title,
-                  "--max-hold-sec",
-                  str(_load_cfg().max_same_image_hold_sec)], log)
+    _cfg = _load_cfg()
+    qa_args = [PY, str(REPO / "tools" / "prep_qa.py"),
+               "--episode-dir", str(ep),
+               "--series-title", title,
+               "--max-hold-sec", str(_cfg.max_same_image_hold_sec),
+               "--semantic"]
+    if _cfg.semantic_heal:
+        qa_args.append("--semantic-heal")
+    rc = _stream(qa_args, log)
     verdict = _qa_verdict(ep, started_at=started_at)
     plan_sha = _stamp_plan_sha(ep, verdict)
     con.execute(
