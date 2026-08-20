@@ -32,6 +32,8 @@ _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
+from ollama_compat import first_json  # noqa: E402
+
 
 def chapter_digest(beats_obj: Dict[str, Any], *, max_chars: int = 6000) -> str:
     """Compact story digest for the copywriter prompt."""
@@ -76,13 +78,7 @@ Return ONLY the JSON object."""
 
 def extract_json(text: str) -> Optional[Dict[str, Any]]:
     """First {...} block in a model reply, tolerant of code fences."""
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except Exception:
-        return None
+    return first_json(text)
 
 
 def main() -> int:

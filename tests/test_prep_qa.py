@@ -796,6 +796,43 @@ def test_grounding_flags_parallel_matches_serial(monkeypatch, tmp_path):
     assert all(f["code"] == "grounding_weak" for f in serial)
 
 
+def test_narration_stale_tolerates_a_sanitizer_word_swap():
+    """The stale gate compares ~500-char group text with difflib, whose autojunk
+    heuristic drops every common CHARACTER above 200 elements — a one-word
+    difference then scores ~0.1 and fires a blocking ERROR. The script IS the
+    scrubbed view of the beats, so an advertiser-safety word swap is expected
+    and re-scripting can never clear the flag (nano ch6 g0016: 3 heal cycles,
+    sim stuck at 0.10)."""
+    line = ("Seob Meng sneers that calling someone a %s is easy, reminding "
+            "them their six-clan privileges ended the second they stepped "
+            "into this academy, and asks if they want an early expulsion "
+            "before the real competition even starts. ")
+    plan = {"timeline": [_seg("g0016_p09", (line % "wretch") * 2, ["a.jpg"])]}
+    beats = {"beats": [{"group_id": 16, "narration": (line % "bastard") * 2}]}
+    groups = {"shots": [{"group_id": 16}]}
+    script = {"narration_source": "gemini_verbatim"}
+    assert len(plan["timeline"][0]["tts_text"]) > 200      # autojunk territory
+    assert pq.alignment_flags(plan, beats, groups, script) == []
+
+
+def test_covered_window_absorbs_a_folded_panel_beside_a_lone_span():
+    """A SINGLE-panel span has no range to widen, so the fold window collapses
+    back to the span. The folded panels are exactly the ones NO span claims —
+    ORV Ep1 g0021's third segment spans p000089 alone and voices p000090's
+    'ARE YOU THE AUTHOR OF TWSA?', which no span claims."""
+    ordered = [f"p0000{n}.jpg" for n in (85, 86, 87, 88, 89, 90, 91, 92)]
+    claimed = {"p000085.jpg", "p000087.jpg", "p000089.jpg", "p000092.jpg"}
+
+    assert pq._covered_panels(["p000089.jpg"], ordered) == ["p000089.jpg"]
+    assert pq._covered_panels(["p000089.jpg"], ordered, claimed) == [
+        "p000088.jpg", "p000089.jpg", "p000090.jpg", "p000091.jpg"]
+    # it stops at the next OWNED panel — never swallows another segment's
+    assert "p000092.jpg" not in pq._covered_panels(
+        ["p000089.jpg"], ordered, claimed)
+    assert pq._covered_panels(["p000085.jpg"], ordered, claimed) == [
+        "p000085.jpg", "p000086.jpg"]
+
+
 def test_grounding_judge_gets_printed_panel_text(monkeypatch, tmp_path):
     """The judge must be handed the text PRINTED on the panels the line voices —
     including a covered panel that is never shown (a folded caption/chat panel).

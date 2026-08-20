@@ -57,3 +57,20 @@ def test_chat_reraises_backend_error(monkeypatch):
     _fake_ollama(monkeypatch, _boom)
     with pytest.raises(RuntimeError, match="backend down"):
         oc.chat(model="m", messages=[])
+
+
+def test_first_json_stops_at_the_first_object():
+    """The greedy `\\{.*\\}` this replaces spans BOTH objects when a model emits
+    two, and json.loads then dies with 'Extra data' — 5 grounding verdicts were
+    lost that way in one run, each degrading silently to 'judge failed'."""
+    first_json = oc.first_json
+
+    assert first_json('{"ok": true, "issue": ""}\n{"ok": false}') == {
+        "ok": True, "issue": ""}
+    # tolerant of code fences and leading prose, the shapes gemma actually emits
+    assert first_json('sure!\n```json\n{"keep": false}\n```') == {"keep": False}
+    # a leading ARRAY is not the object we want
+    assert first_json('[1, 2] then {"a": 1}') == {"a": 1}
+    assert first_json("no json here") is None
+    assert first_json(None) is None
+    assert first_json('{"unterminated": ') is None

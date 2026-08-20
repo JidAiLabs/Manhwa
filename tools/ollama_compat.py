@@ -58,3 +58,29 @@ def chat(**kw):
     if state == "err":
         raise val
     return val
+
+
+def first_json(raw):
+    r"""The FIRST complete JSON object in a model reply, or None.
+
+    `re.search(r"\{.*\}", raw, re.S)` — the pattern every judge call site used
+    — is GREEDY: when the model emits two objects (or one object followed by
+    prose containing a brace) the match spans BOTH and json.loads dies with
+    "Extra data: line 2 column 1". Measured 2026-08-20: 5 grounding verdicts
+    lost that way in one run across nano ch1/ch6, each degrading silently to
+    "judge failed" — and youtube_meta.extract_json swallowed the same failure
+    as a bare None. raw_decode stops at the end of the first object instead.
+    """
+    import json
+    text = str(raw or "")
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = dec.raw_decode(text[i:])
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None

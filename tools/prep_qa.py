@@ -57,6 +57,9 @@ from studio.qa_flags import longest_common_run
 from narration_consistency import audio_consistency, strip_chrome_opener
 from manifest_freshness import verify_chapter as _verify_chapter_freshness
 from manifest_io import read_manifest
+# bound HERE, not inside the judges: those call sites monkeypatch
+# sys.modules['ollama_compat'] with a chat-only fake
+from ollama_compat import first_json
 from recap_style import (
     analyze_recap_style,
     ends_terminal,
@@ -773,7 +776,17 @@ def alignment_flags(plan: Dict[str, Any], beats_obj: Dict[str, Any],
                 _norm_narr(scrub_sfx_quotes(strip_chrome_opener(narr or ""))))
         if not a or not b:
             continue
-        sim = SequenceMatcher(None, a, b).ratio()
+        # autojunk=False: difflib's autojunk heuristic calls any element in >1%
+        # of a sequence longer than 200 "popular" and drops it from the match —
+        # on CHARACTER sequences that is every common letter, so a ~500-char
+        # group scores ~0.1 for a ONE-WORD difference (measured: identical 1.00,
+        # one word 0.08, autojunk off 0.99). The gate was therefore a
+        # byte-identity tripwire: the advertiser-safety sanitizer swapping a
+        # single word — which it is SUPPOSED to do, the script is the scrubbed
+        # view of the beats — fired a blocking narration_stale that re-scripting
+        # could never clear, because the re-script reproduces the same swap
+        # (nano ch6 g0016: 3 heal cycles, no progress, sim stuck at 0.10).
+        sim = SequenceMatcher(None, a, b, autojunk=False).ratio()
         if sim < min_sim:
             flags.append(_flag(
                 "narration_stale", ERROR,
@@ -1482,22 +1495,52 @@ _SPEECH_ACT_RE = re.compile(
     re.IGNORECASE)
 
 
-def _covered_panels(span, ordered_bases: List[str]) -> List[str]:
+# How far the fold window reaches past a span, across panels NO span claims.
+# Measured over the four test chapters (ORV Ep0/Ep1, nano ch1/ch6): every run
+# of unclaimed panels is 1-3 long — a fold is an ADJACENCY, not a region. The
+# bound matters because an anomalous chapter with a large dropped stretch would
+# otherwise hand one segment the rest of the chapter as evidence and silently
+# disarm the gates that read this window.
+_FOLD_REACH = 3
+
+
+def _covered_panels(span, ordered_bases: List[str],
+                    claimed: Optional[set] = None) -> List[str]:
     """The panels a segment actually VOICES: its shown span plus everything
     between its first and last panel. A caption panel is dropped from the shown
     frames but its words fold into the neighbouring segment, so the text a line
     is speaking routinely lives on a panel the span does not list (ORV Ep1
     g0021 spans p000087+p000089 and voices p000088's chat text). Any evidence
-    window built from the span alone is blind to exactly that text."""
+    window built from the span alone is blind to exactly that text.
+
+    `claimed` (every panel some span lists) extends the window OUTWARD across
+    panels no span claims — those are precisely the folded ones — stopping at
+    the first panel another segment owns. Without it a SINGLE-panel span has no
+    range to widen, so the window collapses back to the span and the fold is
+    invisible again: ORV Ep1 g0021's third segment spans p000089 alone and
+    voices p000090's 'ARE YOU THE AUTHOR OF TWSA?', which no span claims. The
+    window is deliberately generous — it decides what a line may be grounded
+    IN, and both gates reading it only fire on text found on NO related
+    panel."""
     bases = [_base_scene(os.path.basename(str(f))) for f in (span or []) if f]
     idx = [ordered_bases.index(b) for b in bases if b in ordered_bases]
-    if len(idx) < 2:
+    if not idx:
         return bases
-    return ordered_bases[min(idx):max(idx) + 1]
+    lo, hi = min(idx), max(idx)
+    if claimed:
+        stop = lo - _FOLD_REACH
+        while lo > 0 and lo > stop and ordered_bases[lo - 1] not in claimed:
+            lo -= 1
+        stop = hi + _FOLD_REACH
+        while (hi + 1 < len(ordered_bases) and hi < stop
+               and ordered_bases[hi + 1] not in claimed):
+            hi += 1
+    return ordered_bases[lo:hi + 1]
 
 
 def _actor_noun_on_page(noun: str, span, vitems_by_base,
-                        ordered_bases: List[str]) -> bool:
+                        ordered_bases: List[str],
+                        claimed: Optional[set] = None) -> bool:
     """True when the line's actor-noun is PRINTED on a panel the segment
     voices — a chat handle, a nameplate, a signature, a caption byline.
 
@@ -1513,7 +1556,7 @@ def _actor_noun_on_page(noun: str, span, vitems_by_base,
     if len(n) < 3:
         return False
     pat = re.compile(r"\b" + re.escape(n) + r"(?![a-z])")
-    for fn in _covered_panels(span, ordered_bases):
+    for fn in _covered_panels(span, ordered_bases, claimed):
         item = vitems_by_base.get(fn) or {}
         if pat.search(_norm_narr(str(item.get("ocr_clean") or ""))):
             return True
@@ -1555,8 +1598,12 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                    for f, v in figures.items()}
     v_by_base = {_base_scene(os.path.basename(str(k))): v
                  for k, v in (vitems or {}).items()}
-    # chapter panel order — the fold window below is a RANGE over it
+    # chapter panel order — the fold window below is a RANGE over it, widened
+    # across the panels NO span claims (the folded ones)
     ordered_bases = sorted(v_by_base)
+    claimed = {_base_scene(os.path.basename(str(fn)))
+               for b in (beats_obj.get("beats") or [])
+               for s in beat_segments(b) for fn in s["span"]}
     u_by_sf = {_base_scene(os.path.basename(str(p.get("scene_file") or ""))): p
                for p in ((understood_obj or {}).get("panels") or [])
                if isinstance(p, dict) and p.get("scene_file")}
@@ -1600,7 +1647,7 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                 if span_has_dialogue and _SPEECH_ACT_RE.search(line):
                     continue
                 if _actor_noun_on_page(noun, s["span"], v_by_base,
-                                       ordered_bases):
+                                       ordered_bases, claimed):
                     continue
                 flags.append(_flag(
                     "actor_mismatch", ERROR,
@@ -2121,9 +2168,7 @@ def semantic_alignment_flags(plan: Dict[str, Any], clean_dir: str, *,
             # (2026-07-16 audit; MLX ignores this, ollama needs it)
             options={"temperature": 0, "num_predict": 200,
                      "num_ctx": 8192})
-        raw = str(resp["message"]["content"] or "")
-        m = re.search(r"\{.*\}", raw, re.S)
-        return json.loads(m.group(0)) if m else {}
+        return first_json(resp["message"]["content"]) or {}
 
     flags: List[Dict[str, Any]] = []
     for item in (plan or {}).get("timeline") or []:
@@ -2232,13 +2277,17 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
     v_by_base = {_base_scene(os.path.basename(str(k))): v
                  for k, v in (vitems or {}).items()}
     ordered_bases = sorted(v_by_base)
+    claimed = {_base_scene(os.path.basename(str(f)))
+               for it in ((plan or {}).get("timeline") or [])
+               for f in (it.get("scene_files") or [])}
 
     def _panel_text(item: Dict[str, Any], shown: List[str]) -> str:
         """The printed text the line is speaking, over the panels it COVERS —
-        the span (what it voices), not the cuts (what is on screen)."""
+        the span (what it voices), not the cuts (what is on screen), widened
+        across the panels no span claims (the folded ones)."""
         span = [str(f) for f in (item.get("scene_files") or shown)]
         seen, parts = set(), []
-        for base in _covered_panels(span, ordered_bases):
+        for base in _covered_panels(span, ordered_bases, claimed):
             if base in seen:
                 continue
             seen.add(base)
@@ -2259,9 +2308,7 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
             # partial montage (2026-07-16 audit; MLX ignores this)
             options={"temperature": 0, "num_predict": 200,
                      "num_ctx": 8192})
-        raw = str(resp["message"]["content"] or "")
-        m = re.search(r"\{.*\}", raw, re.S)
-        return json.loads(m.group(0)) if m else {}
+        return first_json(resp["message"]["content"]) or {}
 
     # 1. collect the beats to judge, in timeline order (output stays deterministic)
     work: List[Tuple[str, str, List[str], str]] = []  # (segment_id, narration, files, note)
@@ -3001,9 +3048,8 @@ def main() -> int:
                 "(paraphrase OK)? Reply ONLY JSON: {\"carried\": true/false}"}],
                 options={"temperature": 0, "num_predict": 60,
                          "num_ctx": 8192})
-            m = re.search(r"\{.*\}", str(resp["message"]["content"] or ""),
-                          re.S)
-            return bool(m and json.loads(m.group(0)).get("carried") is True)
+            v = first_json(resp["message"]["content"]) or {}
+            return bool(v.get("carried") is True)
         except Exception:
             return False
 

@@ -52,6 +52,7 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from manifest_io import write_manifest  # noqa: E402
+from ollama_compat import first_json  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -2264,9 +2265,7 @@ def judge_cut_visuals(files: Sequence[str], clean_dir: str, *,
                          # window -> silent truncation (2026-07-16 audit)
                          options={"temperature": 0, "num_predict": 150,
                                   "num_ctx": 8192})
-            raw = str(resp["message"]["content"] or "")
-            m = re.search(r"\{.*\}", raw, re.S)
-            v = json.loads(m.group(0)) if m else {}
+            v = first_json(resp["message"]["content"]) or {}
             keep = v.get("keep")
             new_cache[f] = {"keep": keep,
                             "reason": str(v.get("reason") or "")[:120],

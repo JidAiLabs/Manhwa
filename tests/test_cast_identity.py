@@ -657,9 +657,27 @@ def test_actor_mismatch_evidence_window_covers_the_folded_panels():
         "p000010.jpg": {"ocr_clean": ""},
         "p000011.jpg": {"ocr_clean": "ASSASSIN99: THANK YOU"},   # folded
         "p000012.jpg": {"ocr_clean": ""}}) == []
-    # ...but a panel OUTSIDE the covered range is not this segment's evidence
-    assert [f["code"] for f in pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST, {
+    # A LONE-panel span has no range to widen, so the window has to reach into
+    # the neighbours no span claims — those are the folded panels (ORV Ep1
+    # g0021's third segment spans p000089 alone and voices p000090's chat text).
+    lone = _beats(("The assassin draws his steel.", ["p000010.jpg"]))
+    assert pq.actor_mismatch_flags(lone, _UNDERSTOOD, CAST, {
+        "p000009.jpg": {"ocr_clean": ""},
         "p000010.jpg": {"ocr_clean": ""},
-        "p000011.jpg": {"ocr_clean": ""},
-        "p000012.jpg": {"ocr_clean": ""},
-        "p000014.jpg": {"ocr_clean": "ASSASSIN99: THANK YOU"}})] == ["actor_mismatch"]
+        "p000011.jpg": {"ocr_clean": "ASSASSIN99: THANK YOU"}}) == []
+    # ...but the window still STOPS: a panel another segment OWNS is that
+    # segment's evidence, never this one's.
+    two = {"beats": [{"group_id": 8, "segments": [
+        {"span": ["p000010.jpg"], "line": "The assassin draws his steel."},
+        {"span": ["p000011.jpg"], "line": "The rain keeps falling."}]}]}
+    assert [f["code"] for f in pq.actor_mismatch_flags(two, _UNDERSTOOD, CAST, {
+        "p000010.jpg": {"ocr_clean": ""},
+        "p000011.jpg": {"ocr_clean": "ASSASSIN99: THANK YOU"}})] \
+        == ["actor_mismatch"]
+    # ...and it is BOUNDED, so a chapter with a big dropped stretch cannot hand
+    # one segment the rest of the chapter as evidence (_FOLD_REACH, measured).
+    far = {f"p0000{n}.jpg": {"ocr_clean": ""} for n in range(10, 16)}
+    far[f"p0000{10 + pq._FOLD_REACH + 1}.jpg"] = {
+        "ocr_clean": "ASSASSIN99: THANK YOU"}
+    assert [f["code"] for f in pq.actor_mismatch_flags(
+        lone, _UNDERSTOOD, CAST, far)] == ["actor_mismatch"]
