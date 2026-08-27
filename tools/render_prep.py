@@ -3845,6 +3845,12 @@ def main() -> int:
             trimmed_cache[f] = img
         return trimmed_cache[f]
 
+    # Files the dup pass DELIBERATELY forced into substitution below: a narrated
+    # panel proven to be a cross-segment duplicate must still be swapped out (it
+    # would otherwise show the same art twice), so the narrated exemption added
+    # to the substitute call must not resurrect them.
+    forced_dup_subs: set = set()
+
     for _round in range(3):
         cuts_by_segment, xdropped = drop_cross_segment_duplicate_cuts(
             cuts_by_segment, order, _trimmed_clean, thresh=0.84,
@@ -3857,13 +3863,25 @@ def main() -> int:
             if sole:
                 cov_all[f] = 1.0      # sole survivor is a dup
                 exempt_all.discard(f)
+                forced_dup_subs.add(f)
             else:
                 all_dropped.append(f)
 
         # sole-cut segments whose survivor is hard garbage (chrome cover,
-        # husk, cross-segment duplicate) show the nearest kept story panel
+        # husk, cross-segment duplicate) show the nearest kept story panel.
+        # A panel that OWNS a narration line is exempt: substituting it away
+        # leaves the line playing over a neighbour's art, which render_prep
+        # itself then reports as `panel_substituted` ("intended art dropped,
+        # held stand-in") and which prep_qa blocks as `long_hold` once the
+        # stand-in runs past the hold cap — an unrecoverable block, since no
+        # heal can restore a dropped panel (ORV Ep18 g0025 p000099, Ep50
+        # g0012_p13 p000042, Ep8 g0006/g0010, Ep23, Ep47: all the same line).
+        # Mirrors protect_narrated_from_junk, which already gives narrated
+        # panels exactly this protection on the JUNK path below. Proven
+        # duplicates stay substitutable via forced_dup_subs.
         cuts_by_segment, subs = substitute_garbage_sole_cuts(
-            cuts_by_segment, cov_all, durations=durations, exempt=exempt_all,
+            cuts_by_segment, cov_all, durations=durations,
+            exempt=exempt_all | (narrated_files - forced_dup_subs),
             order=order)
         for seg, old, new in subs:
             all_dropped.append(old)

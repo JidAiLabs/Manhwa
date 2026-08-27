@@ -2640,3 +2640,38 @@ def test_bubble_dominance_call_site_exempts_stamped_system_panels():
     assert "system_files" in m.group(1), (
         "main() must pass the stamped system panels into the bubble-dominance "
         "exempt set, or system_card_unshown becomes an unrecoverable block")
+
+
+# ---- narrated panels survive garbage substitution (ORV Ep18/50/8/23/47) -----
+# A panel that OWNS a narration line must not be swapped for a neighbour: the
+# line then plays over art the viewer never sees, render_prep reports it as
+# panel_substituted ("intended art dropped, held stand-in"), and prep_qa blocks
+# it as long_hold once the stand-in runs past the hold cap -- unrecoverable,
+# because no heal restores a dropped panel. Fixing the two UPSTREAM droppers
+# only handed the same panel to this one (Ep18's empty_item became long_hold),
+# which is why the invariant has to hold at the LAST site in the chain.
+
+def test_narrated_sole_cut_is_not_substituted_when_exempt():
+    cbs = {"g0025_p00": [{"file": "p000099.jpg", "start": 0.0, "dur": 13.2}],
+           "g0026_p01": [{"file": "p000101.jpg", "start": 0.0, "dur": 5.0}]}
+    cov = {"p000099.jpg": 1.0, "p000101.jpg": 0.1}   # narrated panel scores garbage
+    out, subs = rp.substitute_garbage_sole_cuts(
+        cbs, cov, durations={"g0025_p00": 13.2, "g0026_p01": 5.0},
+        exempt={"p000099.jpg"}, order=["g0025_p00", "g0026_p01"])
+    assert subs == [], "a narrated panel must keep its own art"
+    assert out["g0025_p00"] == cbs["g0025_p00"]
+
+
+def test_garbage_substitution_call_site_exempts_narrated_panels():
+    import inspect, re
+    src = inspect.getsource(rp)
+    m = re.search(r"substitute_garbage_sole_cuts\(\s*cuts_by_segment,\s*cov_all,"
+                  r"\s*durations=durations,\s*exempt=([^,]*),", src)
+    assert m, "the coverage-path call to substitute_garbage_sole_cuts moved"
+    arg = m.group(1)
+    assert "narrated_files" in arg, (
+        "narrated panels must be exempt from garbage substitution, or "
+        "long_hold becomes an unrecoverable block")
+    assert "forced_dup_subs" in arg, (
+        "a narrated panel PROVEN a cross-segment duplicate must still be "
+        "substitutable -- the exemption must subtract forced_dup_subs")
