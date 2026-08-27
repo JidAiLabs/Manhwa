@@ -2620,3 +2620,23 @@ def test_cut_judge_cache_is_invalidated_when_the_frame_changes(tmp_path):
     junk2 = rp.judge_cut_visuals([f], str(clean), reuse=True,
                                  cache_path=str(cache_path))
     assert junk2 == {f: "blank"}
+
+
+# ---- ORV Ep54 regression: the CALL SITE, not the function ------------------
+# test_system_panels_exempt_from_dominance_gate above already pins the exempt
+# contract, and it passed the whole time -- the bug was that main() called
+# drop_bubble_dominated_cuts WITHOUT system_files, so a stamped system card
+# whose OCR came back empty read as a contentless husk and dropped. That is an
+# unresolvable block: system_card_unshown is CRITICAL and gates on the stamp,
+# and no heal can put a dropped panel back. There are no main-flow fixtures to
+# drive this behaviourally, so pin the call site itself.
+
+def test_bubble_dominance_call_site_exempts_stamped_system_panels():
+    import inspect, re
+    src = inspect.getsource(rp)
+    m = re.search(r"drop_bubble_dominated_cuts\(\s*new_cuts,\s*cov,"
+                  r"\s*exempt=([^)]*)\)", src)
+    assert m, "the main-flow call to drop_bubble_dominated_cuts moved or changed shape"
+    assert "system_files" in m.group(1), (
+        "main() must pass the stamped system panels into the bubble-dominance "
+        "exempt set, or system_card_unshown becomes an unrecoverable block")

@@ -3798,7 +3798,18 @@ def main() -> int:
                             has_ocr=bool(str(vit.get("ocr_clean") or "").strip())):
                         exempt.add(f)
                 cov[f] = score
-            new_cuts, bdropped = drop_bubble_dominated_cuts(new_cuts, cov, exempt=exempt)
+            # exempt_from_drop above withholds the system-card protection from a
+            # panel that is not `recoverable` (the contentless-husk carve-out) —
+            # but "recoverable" is judged on OCR/text evidence, and a stamped
+            # system card whose OCR came back EMPTY (ORV Ep54 p000111: understood
+            # as 'a blue system window containing text', ocr_clean None) reads as
+            # a husk and drops. system_card_unshown is CRITICAL and gates on the
+            # STAMP, so that drop is an unresolvable block: the heal cannot put a
+            # panel back. Pass the stamped set the gate itself uses — the same
+            # authority already seeded into exempt_all below and handed to the two
+            # dedup passes above as protect_files.
+            new_cuts, bdropped = drop_bubble_dominated_cuts(
+                new_cuts, cov, exempt=exempt | system_files)
             dropped = list(dropped) + bdropped
             cov_all.update(cov)
             exempt_all |= exempt
