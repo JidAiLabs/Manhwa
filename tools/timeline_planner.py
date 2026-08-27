@@ -1498,6 +1498,34 @@ def drop_caption_cards(group_order: List[tuple], caption_set: "set") -> Dict[int
     return {gid: [f for f in files if f not in caption_set] for gid, files in group_order}
 
 
+def montage_files_for_beat(montage_files: List[str], own_files: List[str],
+                           beat: Optional[Dict[str, Any]]) -> List[str]:
+    """The panels a beat actually shows, honouring drop_caption_cards' empty
+    entry EXCEPT when that would leave a NARRATED beat with nothing on screen.
+
+    drop_caption_cards' empty list assumes the beat is caption-only and was
+    already folded into a neighbour upstream, so it has no art of its own to
+    lose. When that assumption fails the beat keeps its line and its duration
+    but gets no cuts, and prep_qa blocks it as `empty_item` -- a hole in the
+    video (ORV Ep18 g0025: p000099 is panel_kind=story, 9% text coverage, and
+    its line describes a character "in wide-eyed horror, trembling", but
+    text_context_only_panel read its subjects as text-only and the montage
+    emptied the group).
+
+    The fix restores the beat's OWN art, never a neighbour's -- so it cannot
+    reintroduce the stand-in hold that drop_caption_cards warns about (the
+    p097x3 panel-collapse symptom). A beat with no real narration still shows
+    nothing: silence over a caption card stays dropped."""
+    if montage_files or not own_files:
+        return list(montage_files)
+    texts = [str(s.get("line") or "") for s in ((beat or {}).get("segments") or [])]
+    if not texts:
+        texts = [str((beat or {}).get("narration") or "")]
+    if any(t.strip() and not is_filler_narration(t) for t in texts):
+        return list(own_files)
+    return list(montage_files)
+
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -1654,7 +1682,9 @@ def main() -> int:
         # EXPLICIT empty montage entry (a caption-only beat shows nothing of its
         # own; never hold a stand-in copy of a neighbour) — only fall back to the
         # group's own files when the beat is absent from the montage entirely.
-        scene_files = montage.get(group_id, scene_files)
+        scene_files = montage_files_for_beat(
+            montage.get(group_id, scene_files), scene_files,
+            beats_by_gid.get(group_id))
 
         # Filter (clean preferred)
         if args.prefer_clean and args.clean_scene_dir and scene_files:
