@@ -50,7 +50,8 @@ semantic_heal = true
 # qwen-mlx expressiveness dial: STUDIO_MLX_EXAG (default 1.4) + STUDIO_MLX_TEMP.
 # Modal RETIRED (2026-06-11): no external dependencies (user directive).
 backend = "qwen-mlx"
-voice_ref = "assets/voice/narrator_ref.wav"   # LOCKED narrator (user-picked clip g0021_p02).
+voice_ref = "assets/voice/narrator_v2.wav"   # LOCKED narrator v2 (user-picked clip g0011_p04, 2026-08-31).
+                 # v1 = assets/voice/narrator_ref.wav (g0021_p02) kept for rollback.
                  # qwen-mlx/qwen clone it (Base ckpt + .txt transcript sidecar); chatterbox clones it too;
                  # kokoro ignores it (uses kokoro_voice).
 python = ".mlx_venv/bin/python"   # repo-relative -> resolves per host (Air/Mini); MLX venv (mlx-audio). qwen fallback = .qwen_venv
