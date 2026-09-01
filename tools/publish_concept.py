@@ -48,8 +48,15 @@ _HOOK_SHAPE = {
     "before_after": ('3 thumbnail labels. EVERY one must be a contrasting PAIR '
                      'written as "WEAK SIDE|STRONG SIDE" (1-2 words per side), '
                      'e.g. "TRASH|MONSTER"'),
+    # NO literal example here, deliberately. The previous wording ended
+    # 'e.g. "LEVEL 999", "RANK SSS"' and the model returned BOTH verbatim as
+    # hooks -- ORV shipped "LEVEL 999 PROPHET" on its series thumbnail while the
+    # highest number anywhere in 54 chapters of narration is 11. A worked
+    # example of the exact thing being asked for is an answer, not a format hint.
     "stat_callout": ('3 thumbnail labels, 1-4 words each; at least two must '
-                     'contain a NUMBER or rank (e.g. "LEVEL 999", "RANK SSS")'),
+                     'contain a NUMBER or RANK that ACTUALLY APPEARS in the '
+                     'STORY DIGEST below. Never invent one; if the digest has '
+                     'no numbers or ranks, write plain labels instead'),
 }
 _HOOK_DEFAULT = "3 thumbnail labels, 1-4 words each, punchy"
 
@@ -74,15 +81,78 @@ def build_concept_prompt(digest: str, banned: str, style: str) -> str:
 _DIGIT = re.compile(r"\d|\bS+\b|\brank\b|\blevel\b|\blvl\b|\bSSS?\b", re.I)
 
 
-def pick_hook(hooks: List[str], style: str) -> str:
-    """Choose the thumbnail label that best fits the style (deterministic)."""
+# The concrete NUMBER / RANK tokens a hook ASSERTS about the story. These are
+# factual claims printed on the thumbnail, so each one has to exist in the
+# source. Plain words are not claims and are never checked.
+_HOOK_CLAIM_RE = re.compile(r"\d+|\bS{2,}\b", re.IGNORECASE)
+
+
+def hook_claims(hook: str) -> List[str]:
+    """Number/rank tokens *hook* asserts (upper-cased, de-duplicated in order)."""
+    seen: List[str] = []
+    for m in _HOOK_CLAIM_RE.finditer(str(hook or "")):
+        t = m.group(0).upper()
+        if t not in seen:
+            seen.append(t)
+    return seen
+
+
+def hook_is_grounded(hook: str, corpus: str) -> bool:
+    """True when every number/rank *hook* claims actually occurs in *corpus*.
+
+    An empty corpus returns True: absence of evidence is not evidence of
+    fabrication, and silently rejecting every hook would be worse than the
+    occasional invented one. Word-bounded so "11" does not ground "999".
+    """
+    if not str(corpus or "").strip():
+        return True
+    hay = str(corpus).upper()
+    return all(re.search(r"(?<![0-9A-Z])%s(?![0-9A-Z])" % re.escape(c), hay)
+               for c in hook_claims(hook))
+
+
+def beats_text_corpus(beats_obj: Dict[str, Any]) -> str:
+    """The TEXT a hook may legitimately draw a number from.
+
+    Deliberately narrow: narration lines and beat summaries ONLY, never the raw
+    manifest. Searching serialized JSON would ground a hook on geometry -- a
+    normalized bbox like 0.9995 contains "999" and would have "verified" the
+    exact fabrication this guards against.
+    """
+    parts: List[str] = []
+    for b in (beats_obj or {}).get("beats") or []:
+        if not isinstance(b, dict):
+            continue
+        for k in ("narration", "hook", "what_happens", "summary"):
+            v = b.get(k)
+            if isinstance(v, str) and v.strip():
+                parts.append(v)
+        for s in b.get("segments") or []:
+            if isinstance(s, dict) and isinstance(s.get("line"), str):
+                parts.append(s["line"])
+    return "\n".join(parts)
+
+
+def pick_hook(hooks: List[str], style: str, *, corpus: str = "") -> str:
+    """Choose the thumbnail label that best fits the style (deterministic).
+
+    *corpus* is the story text a stat-style hook's number must appear in. The
+    stat branch used to return the FIRST hook containing any digit, which meant
+    it actively preferred an invented stat over a grounded plain label (ORV:
+    "LEVEL 999 PROPHET" was chosen over "THE SCRIPT IS BROKEN").
+    """
     hooks = [str(h).strip() for h in (hooks or []) if str(h).strip()]
     if not hooks:
         return ""
     if style == "stat_callout":
-        for h in hooks:
+        grounded = [h for h in hooks if hook_is_grounded(h, corpus)]
+        for h in grounded:
             if _DIGIT.search(h):
                 return h
+        # every stat-shaped hook invents its number: ship a grounded plain
+        # label rather than print a false claim on the thumbnail.
+        if grounded:
+            return grounded[0]
     if style == "before_after":
         for h in hooks:
             if "|" in h:
@@ -279,7 +349,7 @@ def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
     """Build the concept from beats (style) + the LLM copy. Pure/testable."""
     style = select_style(beats_obj, genre=genre)
     hooks = llm.get("hooks") or []
-    hook = pick_hook(hooks, style)
+    hook = pick_hook(hooks, style, corpus=beats_text_corpus(beats_obj))
     synopsis = str(llm.get("synopsis") or "").strip()
     hashtags = llm.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
     return {

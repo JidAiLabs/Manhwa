@@ -54,7 +54,8 @@ from beats_segments import beat_segments
 from render_prep import multi_scale_contained
 from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
-from narration_consistency import audio_consistency, strip_chrome_opener
+from narration_consistency import (audio_consistency, is_nullish_line,
+                                   strip_chrome_opener)
 from manifest_freshness import verify_chapter as _verify_chapter_freshness
 from manifest_io import read_manifest
 # bound HERE, not inside the judges: those call sites monkeypatch
@@ -1427,6 +1428,38 @@ def line_overlong_flags(beats_obj: Any) -> List[Dict[str, Any]]:
                     f"over a {n}-panel span (cap ~{cap:.0f}s / {max_words} "
                     f"words) — re-narrate tighter: {str(s['line'])[:80]!r}",
                     scene=str((s["span"] or [""])[0]), segment_id=seg_id))
+    return flags
+
+
+def narration_null_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """A segment whose LINE is a stringified null, not narration (ERROR,
+    healable, heal-THEN-block).
+
+    ORV Ep33 g0030_p16 and Ep38 g0007_p01 each carried the literal line "None."
+    sitting between two perfectly good lines — the writer's way of saying "no
+    line here", carried verbatim into the script and handed to the speaker.
+
+    Caught HERE because this is the only place it can be repaired: re-narrating
+    the group regenerates the line, whereas the downstream `audio_failed` fires
+    at the speaker where nothing can be fixed. Downstream is also not even
+    consistent — Ep33's synthesis raised (flagged, blocked) while Ep38's
+    returned 0.06s of audio, so the TTS ok-flag saw success and the chapter
+    SHIPPED ~2.4s of dead air. Shares `is_nullish_line` with the TTS refusal so
+    the two can never disagree about what counts as a null."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg_id = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s.get("line")
+            if not is_nullish_line(line):
+                continue
+            flags.append(_flag(
+                "narration_null", ERROR,
+                f"segment line is a stringified null ({str(line)!r}), not "
+                "narration — re-narrate this segment",
+                scene=str((s["span"] or [""])[0]), segment_id=seg_id))
     return flags
 
 
@@ -3030,6 +3063,7 @@ def main() -> int:
     flags.extend(span_cover_flags(plan, beats_obj, vitems))
     flags.extend(impact_mismatch_flags(beats_obj, understood_obj))
     flags.extend(line_overlong_flags(beats_obj))
+    flags.extend(narration_null_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj,
                                       vitems))

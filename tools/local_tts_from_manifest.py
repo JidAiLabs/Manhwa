@@ -42,6 +42,7 @@ if _TOOLS_DIR not in sys.path:
 from narration_consistency import (  # noqa: E402
     MOOD_KEYWORDS,
     MOOD_LEAK_STRIP_RE as _MOOD_LEAK_STRIP_RE,
+    is_nullish_line,
     narration_sha,
 )
 from manifest_io import write_manifest, input_sha  # noqa: E402
@@ -491,6 +492,20 @@ def clip_timeout_sec(expected_sec: float) -> float:
 # alias so synthesize_manifest can call the formula even though its own keyword
 # parameter `clip_timeout_sec` (an OVERRIDE value) shadows the function name.
 _clip_timeout_formula = clip_timeout_sec
+
+
+# `is_nullish_line` is imported from narration_consistency (THE authority, so
+# prep_qa's narration_null gate and this refusal can never disagree about what
+# counts as a null). The gate catches it upstream where re-narration can fix it;
+# this is the last line of defence at the speaker.
+
+# Duration sanity for a clip the backend claims it VOICED. run_guarded_synth's
+# `ok` only means the call neither raised nor timed out -- it never looks at the
+# audio -- so a backend that returns a near-empty wav is indistinguishable from
+# success. A real take is never a small fraction of its text's spoken length.
+# Deliberately loose: atempo (speed) shortens the take, and short lines vary.
+_DUR_FLOOR_RATIO = 0.35
+_DUR_CHECK_MIN_EST_SEC = 0.30
 
 
 def write_silence_wav(path: str, duration_sec: float, sr: int = 24000) -> None:
@@ -954,8 +969,15 @@ def synthesize_manifest(
                   and abs(prior_speed.get(seg_id, 1.0) - float(speed)) < 1e-3)
         cond: Dict[str, Any] = {}
         tts_failed = False
-        if not cached:
-            est = expected_audio_sec(sent_text)
+        est = expected_audio_sec(sent_text)
+        if is_nullish_line(sent_text):
+            # Refuse the backend entirely: a stringified null has no right
+            # answer, and letting it through is how Ep38 shipped dead air.
+            write_silence_wav(audio_path, est)
+            tts_failed = True
+            print(f"[fail] {seg_id}: refusing to voice a null-ish line "
+                  f"{sent_text!r} — this segment needs re-narrating")
+        elif not cached:
             timeout = float(clip_timeout_sec) if clip_timeout_sec is not None \
                 else _clip_timeout_formula(est)
             guard = run_guarded_synth(
@@ -971,6 +993,21 @@ def synthesize_manifest(
                 # snappier delivery (pitch-preserved tempo), transcript unchanged
                 apply_atempo(audio_path, speed)
         dur = duration_fn(audio_path)
+        # A take the backend called successful but that is a small fraction of
+        # its text's spoken length is dead audio `ok` cannot see. Cached clips
+        # were vetted by the run that produced them; placeholders are already
+        # flagged. Runs AFTER atempo, so the ratio absorbs the speed-up.
+        # `dur > 0` is REQUIRED, not incidental: a 0.0 reading means "duration
+        # could not be read" (missing soundfile, a stub/short file) just as much
+        # as "empty", and treating that as evidence would fail every clip in the
+        # run and block the chapter — far worse than the dead air it guards.
+        # Ep38's bad take measured 0.0565s, comfortably above zero.
+        if (not tts_failed and not cached
+                and est >= _DUR_CHECK_MIN_EST_SEC
+                and 0.0 < dur < _DUR_FLOOR_RATIO * est):
+            tts_failed = True
+            print(f"[fail] {seg_id}: voiced {dur:.2f}s for ~{est:.2f}s of text "
+                  f"(under {_DUR_FLOOR_RATIO:.0%}) — treating as unvoiced")
 
         clip_row: Dict[str, Any] = {
             "segment_id": seg_id,

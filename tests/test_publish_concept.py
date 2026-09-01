@@ -32,8 +32,12 @@ def test_description_has_synopsis_tags_boilerplate_but_no_real_name():
 
 
 def test_assemble_concept_is_coherent_and_copyright_safe():
+    # the beats must actually SAY the rank the hook claims: pick_hook now
+    # rejects a stat hook whose number/rank is absent from the story (the fixture
+    # previously said "rank S" while the hook claimed "SSS" -- the same inflation
+    # that put "LEVEL 999" on ORV's thumbnail when the real maximum is 11).
     beats = {"beats": [{"group_id": 1, "what_happens": "he checks his status "
-                        "window; level and rank S skill appear"}]}
+                        "window; level and rank SSS skill appear"}]}
     llm = {"title": "When a Nobody Awakens the Rarest Class!",
            "hooks": ["GENIUS", "RANK SSS", "HE WINS"],
            "synopsis": "A mocked boy awakens a hidden class. 🔥",
@@ -281,3 +285,64 @@ def test_bundle_concept_uses_scored_climax_when_available(tmp_path):
     # scored picker chose the transformation (chapter 2); beats argmax would
     # have chosen chapter 1 (explosive, first)
     assert c["climax_chapter_index"] == 1
+
+
+# ---- hook grounding (ORV "LEVEL 999 PROPHET") -----------------------------
+# The stat_callout shape spec used to END with 'e.g. "LEVEL 999", "RANK SSS"'.
+# The model returned BOTH examples verbatim as hooks, and pick_hook's stat
+# branch returned the FIRST hook containing any digit -- actively preferring the
+# invented stat over the one hook actually derived from the story. ORV's series
+# thumbnail shipped "LEVEL 999 PROPHET"; the highest number anywhere in 54
+# chapters of narration is 11.
+
+def _beats(*lines):
+    return {"beats": [{"group_id": i, "segments": [{"line": ln}]}
+                      for i, ln in enumerate(lines)]}
+
+
+def test_hook_claims_extracts_numbers_and_ranks():
+    assert pc.hook_claims("LEVEL 999 PROPHET") == ["999"]
+    assert pc.hook_claims("RANK SSS KNOWLEDGE") == ["SSS"]
+    assert pc.hook_claims("THE SCRIPT IS BROKEN") == []
+
+
+def test_hook_grounding_rejects_an_invented_number():
+    corpus = "He reaches Level 3. Later the floor 11 gate opens."
+    assert pc.hook_is_grounded("LEVEL 3 PROPHET", corpus)
+    assert not pc.hook_is_grounded("LEVEL 999 PROPHET", corpus)
+    # word-bounded: 11 must not ground 999, and 3 must not ground 33
+    assert not pc.hook_is_grounded("LEVEL 33 HERO", corpus)
+
+
+def test_hook_grounding_is_permissive_without_a_corpus():
+    # no evidence != proof of fabrication; never reject everything silently
+    assert pc.hook_is_grounded("LEVEL 999", "")
+
+
+def test_pick_hook_prefers_a_grounded_label_over_an_invented_stat():
+    hooks = ["LEVEL 999 PROPHET", "RANK SSS KNOWLEDGE", "THE SCRIPT IS BROKEN"]
+    corpus = "He is called a prophet. The script is broken. Level 3 clears."
+    # both stat hooks invent their number -> the grounded plain label wins
+    assert pc.pick_hook(hooks, "stat_callout", corpus=corpus) == "THE SCRIPT IS BROKEN"
+
+
+def test_pick_hook_keeps_a_grounded_stat():
+    hooks = ["THE SCRIPT IS BROKEN", "LEVEL 3 PROPHET"]
+    corpus = "He claws his way to Level 3 before the scenario ends."
+    assert pc.pick_hook(hooks, "stat_callout", corpus=corpus) == "LEVEL 3 PROPHET"
+
+
+def test_beats_corpus_never_grounds_on_geometry():
+    # a normalized bbox (0.9995) contains "999"; serializing the manifest would
+    # have "verified" the exact fabrication this guards against.
+    beats = _beats("He reaches Level 3.")
+    beats["beats"][0]["box_norm"] = [0.876, 0.9995, 0.1, 0.2]
+    corpus = pc.beats_text_corpus(beats)
+    assert "999" not in corpus
+    assert not pc.hook_is_grounded("LEVEL 999", corpus)
+
+
+def test_stat_callout_prompt_carries_no_copyable_number():
+    spec = pc.build_concept_prompt("digest", "", "stat_callout")
+    assert "LEVEL 999" not in spec and "RANK SSS" not in spec
+    assert "STORY DIGEST" in spec

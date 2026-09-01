@@ -178,3 +178,28 @@ def is_voiced_current(plan_obj: Dict[str, Any],
     """True when every narrated segment has audio voiced from its current text."""
     r = audio_consistency(plan_obj, index_obj)
     return not r["stale"] and not r["missing"]
+
+
+# ---------------------------------------------------------------------------
+# Stringified-null narration lines (ORV Ep33 g0030_p16, Ep38 g0007_p01)
+# ---------------------------------------------------------------------------
+# Both chapters carried the literal line "None." between two real lines -- the
+# writer's way of saying "no line here", taken verbatim into the script. The
+# downstream failure is NOT consistent, which is why this belongs upstream where
+# re-narration can fix it: Ep33's synthesis raised (silence placeholder, flagged,
+# chapter blocked) while Ep38's returned normally with 0.06s of audio, so the
+# TTS ok-flag saw success and the chapter SHIPPED ~2.4s of dead air in a 2.5s
+# slot. THE authority for "this is a null, not speech" -- prep_qa's gate and the
+# TTS refusal both consume this one predicate so they can never disagree.
+NULLISH_LINE_RE = re.compile(
+    r"^\s*(?:none|null|nil|nan|undefined|n\s*/?\s*a)\s*[.!?…]*\s*$",
+    re.IGNORECASE)
+
+
+def is_nullish_line(text: Any) -> bool:
+    """True when *text* is a stringified null rather than narration.
+
+    Whole-string only: "No one moves." and "None of them survive." are real
+    narration and must never match.
+    """
+    return bool(NULLISH_LINE_RE.match(str(text or "")))

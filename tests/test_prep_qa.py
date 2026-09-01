@@ -2271,3 +2271,54 @@ def test_freshness_flags_keep_their_own_severity(monkeypatch):
          "detail": "beats.json is stale"}])
     got = {f["code"]: f["severity"] for f in pq._freshness_flags("/nope")}
     assert got == {"stale_video": pq.WARN, "stale_manifest": pq.ERROR}
+
+
+# ---------------------------------------------------------------------------
+# narration_null (ORV Ep33 g0030_p16 / Ep38 g0007_p01)
+# ---------------------------------------------------------------------------
+# Both chapters carried the literal line "None." between two real lines. Caught
+# HERE because this is the only stage that can repair it -- re-narrating the
+# group writes a real line, whereas the downstream audio_failed check fires at
+# the speaker AND is not reliable for this: Ep33's synthesis raised (flagged,
+# blocked) while Ep38's returned 0.06s of audio, so the TTS ok-flag saw success
+# and the chapter shipped ~2.4s of dead air inside a 2.5s slot.
+
+def test_narration_null_flags_catch_a_stringified_null_line():
+    beats = {"beats": [{"group_id": 30, "segments": [
+        {"span": ["p000098.jpg"], "line": "The window flashes a grim warning."},
+        {"span": ["p000099.jpg"], "line": "None."}]}]}
+    fl = pq.narration_null_flags(beats)
+    assert [f["code"] for f in fl] == ["narration_null"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0030"
+    assert fl[0]["scene"] == "p000099.jpg"
+
+
+def test_narration_null_flags_cover_the_other_null_spellings():
+    for null in ("None", "null", "N/A", "n/a", "NaN", "undefined", "nil."):
+        beats = {"beats": [{"group_id": 1, "segments": [
+            {"span": ["p000001.jpg"], "line": null}]}]}
+        assert pq.narration_null_flags(beats), null
+
+
+def test_narration_null_flags_never_fire_on_real_narration():
+    # the words matter: these are ordinary lines that merely START with "no"
+    for line in ("No one moves.", "None of them survive the scenario.",
+                 "Nothing stirs in the dark.", "He says nothing at all."):
+        beats = {"beats": [{"group_id": 2, "segments": [
+            {"span": ["p000002.jpg"], "line": line}]}]}
+        assert pq.narration_null_flags(beats) == [], line
+
+
+def test_narration_null_is_healable_and_blocking():
+    # heal-THEN-block: the re-roll gets a chance, but a null can never SHIP
+    import importlib.util as _u
+    from pathlib import Path as _P
+    root = _P(__file__).resolve().parent.parent
+    s = _u.spec_from_file_location("nheal", root / "tools" / "narration_heal.py")
+    nh = _u.module_from_spec(s); s.loader.exec_module(s and nh)
+    assert "narration_null" in nh.HEALABLE
+    assert "re-narrate" in nh._note_for("narration_null", "").lower() or \
+           "write a real line" in nh._note_for("narration_null", "").lower()
+    wsrc = (root / "studio" / "worker.py").read_text()
+    assert '"narration_null",' in wsrc.split("_CRITICAL_QA_CODES = {")[1].split("}")[0]

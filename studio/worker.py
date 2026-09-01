@@ -343,6 +343,14 @@ _CRITICAL_QA_CODES = {
     # (role_stale, its title-inheritance sibling, stays heal-only until its
     # precision is measured — the actor_mismatch precedent.)
     "dead_actor",
+    # a segment's line is a stringified null ("None.") rather than narration —
+    # the writer's "no line here" carried verbatim. Heal-THEN-block: the code is
+    # in narration_heal.HEALABLE so the re-roll writes a real line first, and
+    # blocking survives only when healing can't clear it. It MUST block: the
+    # downstream audio_failed check is not reliable for this (ORV Ep33's
+    # synthesis raised and was caught, while Ep38's returned 0.06s of audio, so
+    # the TTS ok-flag saw success and the chapter shipped ~2.4s of dead air).
+    "narration_null",
 }
 # DELIBERATELY NOT critical: "visual_loop". It looks like montage_degenerate's
 # sibling, but render_prep.cap_repeats_with_holds caps every NON-exempt panel at

@@ -29,6 +29,11 @@ from typing import Any, Dict, List
 HEALABLE = {
     "caption_unvoiced", "chrome_narration", "fragment_dangle",
     "filler_narration", "beats_incomplete",
+    # the line is a stringified null ("None.") rather than narration — the
+    # writer's "no line here" taken verbatim. Re-narration IS the fix: the
+    # re-roll simply writes a real line. Heal-THEN-block (also in the worker's
+    # _CRITICAL_QA_CODES) so a null can never ship if healing can't clear it.
+    "narration_null",
     "empty_item", "silent_group", "grounding_weak",
     # a beat's first line opens with a cold scene reset instead of bridging
     # from the previous line (2026-07-16 transitions wave) — WARN, healed
@@ -106,6 +111,10 @@ def _note_for(code: str, detail: str) -> str:
                 "'the screen/chapter shows'.")
     if code == "fragment_dangle":
         return "The narration is a dangling fragment — make it a complete sentence."
+    if code == "narration_null":
+        return ("This line is the literal word 'None' (or null/N/A) instead of "
+                "narration — it was never written. Write a real line for this "
+                "panel: say what happens in it, grounded in the art.")
     if code == "truncated_line":
         return ("This line STOPS MID-SENTENCE — the thought never ends. "
                 "Re-narrate it as a complete sentence that finishes the "

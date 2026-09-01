@@ -223,3 +223,81 @@ def test_synthesize_manifest_continues_past_a_hung_clip(tmp_path):
     # both clip files exist on disk (alignment preserved)
     assert (tmp_path / "clips" / "g0001_p00.wav").exists()
     assert (tmp_path / "clips" / "g0002_p01.wav").exists()
+
+
+# ---- null-ish lines + duration sanity (ORV Ep33 / Ep38) -------------------
+# Ep33 g0030_p16 and Ep38 g0007_p01 both carried the literal narration line
+# "None." between two real lines. The failure was NOT consistent: Ep33's synth
+# raised (placeholder, flagged, chapter blocked) while Ep38's RETURNED NORMALLY
+# with 0.06s of audio, so run_guarded_synth reported ok and the chapter shipped
+# ~2.4s of dead air inside a 2.5s slot. `ok` only means the call did not raise
+# or time out -- it never inspects the audio.
+
+def test_is_nullish_line_matches_stringified_nulls():
+    for s in ("None", "None.", "none", " NULL ", "nan", "N/A", "n/a", "undefined", "nil."):
+        assert lt.is_nullish_line(s), s
+
+
+def test_is_nullish_line_keeps_real_narration():
+    for s in ("No one moves.", "Nothing stirs in the dark.", "None of them survive.",
+              "Nan grips the blade.", "He says nothing."):
+        assert not lt.is_nullish_line(s), s
+
+
+def _script_with(lines):
+    return {"sections": [{
+        "section_index": 0,
+        "tts_paragraphs_v3": list(lines),
+        "shots": [{"group_id": i + 1, "beat_id": i + 1} for i in range(len(lines))],
+    }]}
+
+
+def test_nullish_line_is_never_sent_to_the_backend(tmp_path):
+    seen = []
+
+    def synth(text, out_path, exaggeration):
+        seen.append(text)
+        Path(out_path).write_bytes(b"RIFFok")
+
+    index = lt.synthesize_manifest(
+        _script_with(["[excited] None.", "[calm] A real line that should be voiced."]),
+        str(tmp_path), backend="kokoro", synth_fn=synth,
+        duration_fn=lt.wav_duration_sec, clip_timeout_sec=0.5, clip_retries=0,
+        group_mode=False)
+
+    clips = {c["segment_id"]: c for c in index["clips"]}
+    assert clips["g0001_p00"]["tts_failed"] is True
+    assert not any("None" in t for t in seen), "null-ish text reached the backend"
+    # the real line still voiced, and the segment is kept for alignment
+    assert clips["g0002_p01"].get("tts_failed", False) is False
+    assert (tmp_path / "clips" / "g0001_p00.wav").exists()
+
+
+def test_successful_synth_with_near_empty_audio_is_failed(tmp_path):
+    # THE Ep38 CASE: the backend returns normally but writes ~nothing.
+    long_line = "[calm] " + ("a fairly long narration line that takes real time to speak. " * 2)
+
+    def synth(text, out_path, exaggeration):
+        lt.write_silence_wav(out_path, 0.05)     # "succeeds", emits 0.05s
+
+    index = lt.synthesize_manifest(
+        _script_with([long_line]), str(tmp_path),
+        backend="kokoro", synth_fn=synth, duration_fn=lt.wav_duration_sec,
+        clip_timeout_sec=0.5, clip_retries=0, group_mode=False)
+
+    clip = index["clips"][0]
+    assert clip["tts_failed"] is True, "a near-empty 'successful' take must fail"
+
+
+def test_short_but_valid_take_is_not_failed(tmp_path):
+    # guard against over-firing: a genuinely short line voiced proportionally
+    def synth(text, out_path, exaggeration):
+        lt.write_silence_wav(out_path, lt.expected_audio_sec(text) * 0.9)
+
+    index = lt.synthesize_manifest(
+        _script_with(["[calm] A perfectly ordinary narration line goes here."]),
+        str(tmp_path), backend="kokoro", synth_fn=synth,
+        duration_fn=lt.wav_duration_sec, clip_timeout_sec=0.5, clip_retries=0,
+        group_mode=False)
+
+    assert index["clips"][0].get("tts_failed", False) is False
