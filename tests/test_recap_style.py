@@ -1037,3 +1037,32 @@ def test_tighten_declines_when_no_single_sentence_fits():
     out, notes = rs.tighten_overlong_segments(segs, {})
     assert out[0]["line"] == segs[0]["line"]
     assert notes == []
+
+
+# ---- stringified nulls are not shippable lines (ORV Ep33 g0030) -----------
+# The g0026 story again. The heal DID regenerate the group, the regen fell back
+# to pads, and because "None." read as usable the span-pin fallback restored it:
+#   [segments] span-pin g0030: regen fell back to pads — kept previous lines
+# The validity floor was already there; its definition of "usable" just did not
+# know about nulls. Fixed in the ONE predicate every restore guard consults.
+
+def test_usable_narration_line_rejects_stringified_nulls():
+    for null in ("None.", "None", "null", "N/A", "n/a", "NaN", "nil.", "undefined"):
+        assert not rs.usable_narration_line(null), null
+
+
+def test_usable_narration_line_keeps_real_lines_that_merely_start_with_no():
+    for line in ("No one moves.", "None of them survive the scenario.",
+                 "Nothing stirs in the dark.", "Nan grips the hilt."):
+        assert rs.usable_narration_line(line), line
+
+
+def test_beat_with_a_null_line_is_not_restorable():
+    # the exact shape of ORV Ep33 g0030: two real lines, one null
+    beat = {"segments": [
+        {"span": ["p000108.jpg"], "line": "The window flashes a grim warning."},
+        {"span": ["p000109.jpg"], "line": "A blue interface lists the details."},
+        {"span": ["p000110.jpg"], "line": "None."}]}
+    assert not rs.beat_lines_usable(beat), (
+        "a beat carrying a null line must read as unshippable, or the span-pin "
+        "fallback restores it over the grounded pads")

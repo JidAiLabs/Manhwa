@@ -22,7 +22,10 @@ from beats_segments import (  # noqa: E402
 # generation-time + QA leak-net (mentions_mood_tag_leak, below) never drifts
 # from the TTS-side stripper and the sha normalization that consume the SAME
 # compiled pattern.
-from narration_consistency import MOOD_LEAK_STRIP_RE  # noqa: E402
+from narration_consistency import (  # noqa: E402
+    MOOD_LEAK_STRIP_RE,
+    is_nullish_line,
+)
 
 
 RECAP_STYLE_RULES = """RECAP-CHANNEL WRITING RULES — apply these while preserving
@@ -415,6 +418,14 @@ def usable_narration_line(text: str) -> bool:
     every time and a revert guard put the bookkeeping back."""
     ln = str(text or "").strip()
     if not ln:
+        return False
+    # A stringified null ("None.", "N/A") is the writer's "no line here" carried
+    # verbatim — never speech, and exactly the thing a restore guard must not
+    # put back. ORV Ep33 g0030 is the g0026 story again: the heal regenerated
+    # the group, the regen fell back to pads, and because "None." read as usable
+    # the fallback restored it. Same predicate the prep_qa gate and the TTS
+    # refusal use, so all three agree on what counts as a null.
+    if is_nullish_line(ln):
         return False
     if mentions_image_file(ln) or mentions_impact_marker(ln):
         return False
