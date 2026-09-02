@@ -44,21 +44,40 @@ _BASE_TAGS = ("manhwa recap, manhwa, webtoon, manhwa recaps, manga recap, "
 # actually reachable. Without this the model was only told "punchy", so the
 # before_after branch (which looks for an "A|B" pair) never matched and the
 # split composition always fell back to a generic literal BEFORE / AFTER.
+# What a thumbnail label IS, learned from the thumbnails that actually perform.
+# Every one of them is a NAMETAG you could point an arrow at -- what a character
+# IS or BECAME (a role, a rank, a title), a power number, or a status flash. NOT
+# one is atmospheric. Mood phrases ("the story bleeds in", "no more hiding")
+# read as captions on a picture and are exactly what this spec exists to stop.
+# Deliberately no worked example: handing the model a finished label is how
+# "LEVEL 999" got copied out of this very prompt and onto a live thumbnail.
+_HOOK_GRAMMAR = (
+    "A label is a NAMETAG, not a caption: it names WHAT SOMEONE IS or WHAT THEY "
+    "BECAME — a role, a title, a rank, a status — so a viewer could draw an "
+    "arrow from it to a person in the picture. Never a mood, never atmosphere, "
+    "never a sentence or a clause. Use this story's OWN words for the role. ")
+
 _HOOK_SHAPE = {
-    "before_after": ('3 thumbnail labels. EVERY one must be a contrasting PAIR '
-                     'written as "WEAK SIDE|STRONG SIDE" (1-2 words per side), '
-                     'e.g. "TRASH|MONSTER"'),
+    "before_after": (_HOOK_GRAMMAR +
+                     '3 labels. EVERY one is a contrasting PAIR of ROLES or '
+                     'RANKS written as "BEFORE SIDE|AFTER SIDE" (1-2 words per '
+                     'side): what this character was, then what they became. '
+                     'Both sides must be states this story actually gives them'),
     # NO literal example here, deliberately. The previous wording ended
     # 'e.g. "LEVEL 999", "RANK SSS"' and the model returned BOTH verbatim as
     # hooks -- ORV shipped "LEVEL 999 PROPHET" on its series thumbnail while the
     # highest number anywhere in 54 chapters of narration is 11. A worked
     # example of the exact thing being asked for is an answer, not a format hint.
-    "stat_callout": ('3 thumbnail labels, 1-4 words each; at least two must '
-                     'contain a NUMBER or RANK that ACTUALLY APPEARS in the '
-                     'STORY DIGEST below. Never invent one; if the digest has '
-                     'no numbers or ranks, write plain labels instead'),
+    "stat_callout": (_HOOK_GRAMMAR +
+                     '3 labels, 1-4 words each; at least two must contain a '
+                     'NUMBER or RANK that ACTUALLY APPEARS in the STORY DIGEST '
+                     'below. Never invent one; if the digest has no numbers or '
+                     'ranks, use the role or title it does give instead'),
 }
-_HOOK_DEFAULT = "3 thumbnail labels, 1-4 words each, punchy"
+_HOOK_DEFAULT = (_HOOK_GRAMMAR +
+                 '3 labels, 1-3 words each. Each names a role, title, rank or '
+                 'status this story gives someone — the kind of tag that could '
+                 'sit beside a character with an arrow pointing at them')
 
 
 def build_concept_prompt(digest: str, banned: str, style: str) -> str:

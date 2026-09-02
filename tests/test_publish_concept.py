@@ -221,7 +221,11 @@ def test_hook_prompt_asks_for_the_shape_each_style_needs():
     p_stat = pc.build_concept_prompt("d", "Banned", "stat_callout")
     assert "NUMBER" in p_stat or "RANK" in p_stat
     p_def = pc.build_concept_prompt("d", "Banned", "power_reveal")
-    assert "punchy" in p_def
+    # the default spec used to just say "punchy", which produced atmospheric
+    # captions ("Story Bleeds In"). Every thumbnail label that works is a
+    # NAMETAG -- a role/title/rank/status you could point an arrow at.
+    assert "NAMETAG" in p_def and "role" in p_def
+    assert "arrow" in p_def
     for p in (p_ba, p_stat, p_def):
         assert "Banned" in p          # ban list survives in every variant
 
