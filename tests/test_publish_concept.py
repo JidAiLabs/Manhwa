@@ -346,3 +346,30 @@ def test_stat_callout_prompt_carries_no_copyable_number():
     spec = pc.build_concept_prompt("digest", "", "stat_callout")
     assert "LEVEL 999" not in spec and "RANK SSS" not in spec
     assert "STORY DIGEST" in spec
+
+
+# ---- forced style (variant generation) ------------------------------------
+# The hook SHAPE differs per style -- before_after wants an "A|B" pair -- so a
+# forced style must reach BOTH build_concept_prompt and assemble_concept, or the
+# model writes hooks for one style while pick_hook selects for another.
+
+def test_forced_style_overrides_the_auto_selection():
+    beats = {"beats": [{"group_id": 1, "what_happens": "he checks his status "
+                        "window; level and rank SSS skill appear"}]}
+    llm = {"title": "T", "hooks": ["WEAK|GOD", "GENIUS"], "synopsis": "S",
+           "hashtags": ["#m"]}
+    auto = pc.assemble_concept(beats, llm, series_title="X")
+    forced = pc.assemble_concept(beats, llm, series_title="X",
+                                 style="before_after")
+    assert auto["style"] == "stat_callout"        # what the story implies
+    assert forced["style"] == "before_after"      # what we asked for
+    assert forced["hook"] == "WEAK|GOD"           # picked for the FORCED style
+    assert forced["style_overlay"] == pc.style_for("before_after")["overlay"]
+
+
+def test_empty_style_keeps_the_production_auto_path():
+    beats = {"beats": [{"group_id": 1, "what_happens": "a quiet conversation"}]}
+    llm = {"title": "T", "hooks": ["GENIUS"], "synopsis": "S", "hashtags": ["#m"]}
+    a = pc.assemble_concept(beats, llm, series_title="X")
+    b = pc.assemble_concept(beats, llm, series_title="X", style="")
+    assert a["style"] == b["style"]

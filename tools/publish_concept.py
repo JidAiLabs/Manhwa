@@ -345,9 +345,15 @@ def select_before_ref(beats_objs: List[Dict[str, Any]], ep_dirs: List[str], *,
 
 def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
                      series_title: str, genre: str = "",
-                     official_link: str = "") -> Dict[str, Any]:
-    """Build the concept from beats (style) + the LLM copy. Pure/testable."""
-    style = select_style(beats_obj, genre=genre)
+                     official_link: str = "",
+                     style: str = "") -> Dict[str, Any]:
+    """Build the concept from beats (style) + the LLM copy. Pure/testable.
+
+    *style* forces the thumbnail style instead of deriving it from the beats.
+    The hook SHAPE differs per style (before_after wants an "A|B" pair), so the
+    same value must reach build_concept_prompt and this call or the hooks the
+    model wrote will not match the style they are picked for."""
+    style = style or select_style(beats_obj, genre=genre)
     hooks = llm.get("hooks") or []
     hook = pick_hook(hooks, style, corpus=beats_text_corpus(beats_obj))
     synopsis = str(llm.get("synopsis") or "").strip()
@@ -386,7 +392,8 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
                          *, durations: List[float], series_title: str,
                          genre: str = "", official_link: str = "",
                          labels: Optional[List[str]] = None,
-                         ep_dirs: Optional[List[str]] = None) -> Dict[str, Any]:
+                         ep_dirs: Optional[List[str]] = None,
+                         style: str = "") -> Dict[str, Any]:
     """Concept for a VIDEO (bundle of N chapters): arc title/synopsis from the
     aggregated chapters, style+refs from the bundle's CLIMAX chapter, and the
     Parts (YouTube-chapter) timestamps appended to the description."""
@@ -396,7 +403,7 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
     climax_ci, refs = scored if scored else select_bundle_climax(beats_list)
     style_beats = beats_list[climax_ci] if 0 <= climax_ci < len(beats_list) else {}
     c = assemble_concept(style_beats, llm, series_title=series_title,
-                         genre=genre, official_link=official_link)
+                         genre=genre, official_link=official_link, style=style)
     c["parts"] = parts_timestamps(durations, labels)
     c["climax_chapter_index"] = climax_ci
     # The before_after composition needs BOTH halves: a weak "before" panel and
@@ -439,6 +446,11 @@ def main() -> int:
                     "(never in title/desc/thumb) + pinned-comment credit")
     ap.add_argument("--genre", default="")
     ap.add_argument("--official-link", default="")
+    ap.add_argument("--style", default="",
+                    choices=["", "power_reveal", "stat_callout", "before_after"],
+                    help="force the thumbnail style instead of deriving it "
+                         "from the beats — for generating variants to compare. "
+                         "Empty (default) = auto-select, the production path.")
     ap.add_argument("--ollama-model", default="gemma4:26b")
     ap.add_argument("--digest-chapters", type=int, default=24,
                     help="max chapters described to the LLM (bundle mode). "
@@ -458,8 +470,8 @@ def main() -> int:
         _sc = select_bundle_climax_scored(eps)
         climax_ci = (_sc[0] if _sc
                      else (select_bundle_climax(beats_list)[0] if beats_list else 0))
-        style = select_style(beats_list[climax_ci] if beats_list else {},
-                             genre=args.genre)
+        style = args.style or select_style(
+            beats_list[climax_ci] if beats_list else {}, genre=args.genre)
         digest = bundle_digest(beats_list, max_chapters=args.digest_chapters,
                                climax_index=climax_ci)
         if len(beats_list) > args.digest_chapters:
@@ -471,17 +483,18 @@ def main() -> int:
         concept = build_bundle_concept(beats_list, llm, durations=durations,
                                        series_title=args.series_title, genre=args.genre,
                                        official_link=args.official_link,
-                                       ep_dirs=eps)
+                                       ep_dirs=eps, style=style)
         out = args.out or os.path.join(eps[0], "render", "bundle_publish_meta.json")
     else:
         if not args.episode_dir:
             ap.error("need --episode-dir (single) or --episode-dirs (bundle)")
         beats_obj = json.load(open(os.path.join(args.episode_dir, "manifest.beats.json")))
-        style = select_style(beats_obj, genre=args.genre)
+        style = args.style or select_style(beats_obj, genre=args.genre)
         llm = _gemma(build_concept_prompt(chapter_digest(beats_obj), args.series_title, style),
                      args.ollama_model)
         concept = assemble_concept(beats_obj, llm, series_title=args.series_title,
-                                   genre=args.genre, official_link=args.official_link)
+                                   genre=args.genre, official_link=args.official_link,
+                                   style=style)
         out = args.out or os.path.join(args.episode_dir, "render", "publish_meta.json")
 
     os.makedirs(os.path.dirname(out), exist_ok=True)
