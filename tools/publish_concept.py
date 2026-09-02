@@ -551,7 +551,17 @@ def _gemma(prompt: str, model: str) -> Dict[str, Any]:
     resp = _chat(model=model, think=False,
                  messages=[{"role": "user", "content": prompt}],
                  options={"temperature": 0.8, "num_predict": 800})
-    return extract_json((resp.get("message") or {}).get("content") or "") or {}
+    raw = (resp.get("message") or {}).get("content") or ""
+    got = extract_json(raw)
+    if not got:
+        # LOUD. This returned {} silently, so a run that produced nothing wrote
+        # an EMPTY concept (hook='' title='') and reported [ok]. Measured on
+        # qwen3.6:27b: it wrote a good title and three good hooks, then emitted
+        # one unquoted hashtag, and the whole reply was discarded without a word.
+        raise RuntimeError(
+            "%s returned no parseable JSON (%d chars). First 200: %r"
+            % (model, len(raw), raw[:200]))
+    return got
 
 
 def _plan_duration(ep: str) -> float:

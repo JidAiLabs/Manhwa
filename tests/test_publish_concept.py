@@ -441,3 +441,28 @@ def test_bundle_badge_states_a_fact_about_the_upload():
 def test_story_vocabulary_is_empty_without_manifests(tmp_path):
     assert pc.story_vocabulary([str(tmp_path)]) == set()
     assert pc.story_vocabulary([]) == set()
+
+
+# ---- a model reply must not be discarded on a trailing syntax slip --------
+# qwen3.6:27b wrote a good title and three good hooks, then part-way through the
+# LAST array emitted `#litRPG,` instead of `"#litRPG",`. raw_decode failed on the
+# whole object, _gemma returned {} SILENTLY, and the run wrote an empty concept
+# (hook='' title='') while reporting [ok]. Two defects: the parse, and the silence.
+
+def test_first_json_recovers_a_reply_with_bare_array_tokens():
+    import importlib.util as _u
+    from pathlib import Path as _P
+    s = _u.spec_from_file_location(
+        "oc", _P(__file__).resolve().parent.parent / "tools" / "ollama_compat.py")
+    oc = _u.module_from_spec(s); s.loader.exec_module(oc)
+    bad = ('{"title": "T", "hooks": ["A", "B"], '
+           '"hashtags": ["#manhwa", #litRPG, #webtoonrecap]}')
+    got = oc.first_json(bad)
+    assert got and got["title"] == "T"
+    assert got["hooks"] == ["A", "B"]
+    assert got["hashtags"] == ["#manhwa", "#litRPG", "#webtoonrecap"]
+    # already-valid JSON is untouched, and true garbage still fails
+    assert oc.first_json('{"a": [1, 2]}') == {"a": [1, 2]}
+    assert oc.first_json("no json here") is None
+    # a repaired parse recovers content, it never invents any
+    assert oc.first_json('{"x": [1,2,]}') == {"x": [1, 2]}

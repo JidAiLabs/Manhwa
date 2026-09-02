@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import threading
 
 # inner httpx client timeout (socket-level)
@@ -74,13 +75,40 @@ def first_json(raw):
     import json
     text = str(raw or "")
     dec = json.JSONDecoder()
-    for i, ch in enumerate(text):
-        if ch != "{":
+    for attempt in (text, _repair_json(text)):
+        if not attempt:
             continue
-        try:
-            obj, _ = dec.raw_decode(text[i:])
-        except ValueError:
-            continue
-        if isinstance(obj, dict):
-            return obj
+        for i, ch in enumerate(attempt):
+            if ch != "{":
+                continue
+            try:
+                obj, _ = dec.raw_decode(attempt[i:])
+            except ValueError:
+                continue
+            if isinstance(obj, dict):
+                return obj
     return None
+
+
+# Bare (unquoted) string values inside an array — the defect measured on
+# qwen3.6:27b, which wrote a valid object and then part-way through the LAST
+# array emitted `#litRPG,` instead of `"#litRPG",`. One trailing slip made the
+# whole object unparseable, so an excellent title and three good hooks were
+# silently thrown away and the caller wrote an EMPTY concept. Repairing costs
+# nothing when the JSON is already valid (the strict pass above runs first).
+_BARE_TOKEN_RE = re.compile(r"(?<=[,\[])(\s*)(#[^\s,\]\}\"]+)(\s*)(?=[,\]])")
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _repair_json(text):
+    """Best-effort fix for the JSON defects local models actually emit.
+
+    Deliberately narrow: quote bare #tokens in arrays and drop trailing commas.
+    It never rewrites values, so a repaired parse cannot invent content -- it
+    only recovers content the model already wrote.
+    """
+    if not text:
+        return ""
+    fixed = _BARE_TOKEN_RE.sub(lambda m: '%s"%s"%s' % (m.group(1), m.group(2), m.group(3)), text)
+    fixed = _TRAILING_COMMA_RE.sub(r"\1", fixed)
+    return fixed if fixed != text else ""
