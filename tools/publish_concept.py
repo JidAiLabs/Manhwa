@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
-from thumbnail_styles import select_style, style_for          # noqa: E402
+from thumbnail_styles import STYLE_MODULES, select_style, style_for  # noqa: E402
 from youtube_meta import chapter_digest, extract_json          # noqa: E402
 
 # Channel-static boilerplate (edit Patreon / email once). Real series name is NOT
@@ -614,7 +614,11 @@ def main() -> int:
     ap.add_argument("--genre", default="")
     ap.add_argument("--official-link", default="")
     ap.add_argument("--style", default="",
-                    choices=["", "power_reveal", "stat_callout", "before_after"],
+                    # DERIVED from the registry, never hand-listed: a
+                    # hardcoded list silently went stale the moment `triptych`
+                    # was added, and argparse rejected --style triptych with
+                    # exit 2 after the style itself was already working.
+                    choices=[""] + sorted(STYLE_MODULES),
                     help="force the thumbnail style instead of deriving it "
                          "from the beats — for generating variants to compare. "
                          "Empty (default) = auto-select, the production path.")

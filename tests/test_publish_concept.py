@@ -483,3 +483,17 @@ def test_triptych_hook_needs_three_parts():
 def test_triptych_style_is_registered_with_split3():
     ov = pc.style_for("triptych")["overlay"]
     assert ov.get("split3") is True
+
+
+def test_style_cli_choices_track_the_registry():
+    """The choices list was hand-written and went stale the moment `triptych`
+    was added: the style worked, but argparse rejected --style triptych with
+    exit 2. Deriving them means a new style module can never desync again."""
+    import re as _re
+    src = (Path(__file__).resolve().parent.parent
+           / "tools" / "publish_concept.py").read_text()
+    m = _re.search(r'--style"[^)]*choices=([^,\n]+)', src)
+    assert m, "the --style argument moved or changed shape"
+    assert "STYLE_MODULES" in m.group(1), (
+        "choices must derive from the style registry, not a hand-written list")
+    assert "triptych" in pc.STYLE_MODULES
