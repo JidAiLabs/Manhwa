@@ -375,37 +375,58 @@ def test_empty_style_keeps_the_production_auto_path():
     assert a["style"] == b["style"]
 
 
-# ---- subject tags must name something the STORY actually contains ---------
-# The competitor layouts read as tags stuck onto things, not a caption. But a
-# tag names a thing, so unlike a hook it is checked word-by-word: a generic
-# power-fantasy trope must not attach itself to a story that is not one.
+# ---- subject tags come from ENUMERATED data, not a corpus search ----------
+# Checking a tag against the narration blob does not work: at ~208k words nearly
+# every common English word appears somewhere, so "WEAK -> GOD" and "DEMON KING"
+# both passed. Frequency fails the other way -- it ranks 'king' (95) and 'god'
+# (48) above 'script' (10), admitting the trope and rejecting this story's most
+# central idea. So the vocabulary is enumerated: cast names the extractor found
+# on the pages, plus words printed on stamped in-world SYSTEM screens.
 
-def test_tag_grounding_requires_every_content_word():
-    corpus = "A dokkaebi opens the main scenario. Sangah runs for the subway."
-    assert pc.tag_is_grounded("THE DOKKAEBI", corpus)
-    assert pc.tag_is_grounded("MAIN SCENARIO", corpus)
-    assert not pc.tag_is_grounded("DEMON KING", corpus)     # neither word present
-    assert not pc.tag_is_grounded("MAIN QUEST", corpus)     # 'quest' absent
+VOCAB = {"dokkaebi", "scenario", "main", "system", "constellation", "coins",
+         "skill", "sangah", "bihyeong"}
+
+
+def test_tag_grounding_requires_every_word_in_the_vocabulary():
+    assert pc.tag_is_grounded("THE DOKKAEBI", VOCAB)
+    assert pc.tag_is_grounded("MAIN SCENARIO", VOCAB)
+    assert not pc.tag_is_grounded("DEMON KING", VOCAB)
+
+
+def test_generic_power_fantasy_tropes_are_rejected():
+    """The exact strings the old corpus check let through."""
+    for trope in ("WEAK -> GOD", "TRASH -> LEGEND", "DEMON KING", "SSS RANK"):
+        assert not pc.tag_is_grounded(trope, VOCAB), trope
 
 
 def test_tag_with_no_checkable_word_is_rejected():
-    # "THE ONE" asserts a thing that cannot be traced to the story at all
-    assert not pc.tag_is_grounded("THE ONE", "a dokkaebi appears")
+    assert not pc.tag_is_grounded("THE ONE", VOCAB)
 
 
-def test_pick_tags_grounds_positions_and_caps_count():
-    corpus = "A dokkaebi opens the main scenario. Sangah watches the subway."
-    tags = pc.pick_tags(["THE DOKKAEBI", "DEMON KING", "MAIN SCENARIO",
-                         "SANGAH"], corpus)
+def test_empty_vocabulary_rejects_rather_than_waves_through():
+    # an unverifiable tag is not a safe default; the badge carries the layout
+    assert not pc.tag_is_grounded("MAIN SCENARIO", set())
+
+
+def test_pick_tags_orders_story_specific_first_then_caps():
+    """vocab ORDERS, it does not reject: an enumerated word list rejected THE
+    SCRIPT and THE PROPHET (narration prose, never on a system screen), so the
+    model's reading decides WHAT a tag says and the vocabulary only decides
+    which of its tags lead. DEMON KING is not rejected here -- it simply sorts
+    behind the two story-specific tags and falls outside the 2-tag limit."""
+    tags = pc.pick_tags(["DEMON KING", "THE DOKKAEBI", "MAIN SCENARIO"], VOCAB)
     assert [t["text"] for t in tags] == ["THE DOKKAEBI", "MAIN SCENARIO"]
+    # with room for it, the ungrounded tag is KEPT (ordered last), not dropped
+    three = pc.pick_tags(["DEMON KING", "THE DOKKAEBI"], VOCAB, limit=2)
+    assert [t["text"] for t in three] == ["THE DOKKAEBI", "DEMON KING"]
     assert tags[0]["pos"] == "lower_left" and tags[0]["arrow"] is True
     assert tags[1]["pos"] == "mid_left"
 
 
-def test_pick_tags_rejects_an_invented_number_in_a_tag():
-    corpus = "he clears scenario 1 and reaches level 3"
-    assert pc.pick_tags(["LEVEL 999"], corpus) == []
-    assert [t["text"] for t in pc.pick_tags(["SCENARIO 1"], corpus)] == ["SCENARIO 1"]
+def test_pick_tags_still_rejects_an_invented_number():
+    assert pc.pick_tags(["SCENARIO 999"], VOCAB, corpus="he clears scenario 1") == []
+    got = pc.pick_tags(["SCENARIO 1"], VOCAB, corpus="he clears scenario 1")
+    assert [t["text"] for t in got] == ["SCENARIO 1"]
 
 
 def test_bundle_badge_states_a_fact_about_the_upload():
@@ -415,3 +436,8 @@ def test_bundle_badge_states_a_fact_about_the_upload():
     c = pc.build_bundle_concept(chs, llm, durations=[60.0] * 7,
                                 series_title="X")
     assert c["badge"] == "7 CHAPTERS"      # true of the upload, not the story
+
+
+def test_story_vocabulary_is_empty_without_manifests(tmp_path):
+    assert pc.story_vocabulary([str(tmp_path)]) == set()
+    assert pc.story_vocabulary([]) == set()

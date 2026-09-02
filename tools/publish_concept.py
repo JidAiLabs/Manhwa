@@ -72,10 +72,13 @@ def build_concept_prompt(digest: str, banned: str, style: str) -> str:
         '  "title": "clickbait recap title, 60-95 chars, trope-based, CAPS for '
         'emphasis, NO real names",\n'
         f'  "hooks": ["{hook_spec}"],\n'
-        '  "tags": ["2-3 SHORT thumbnail tags, 1-2 words each, naming a REAL '
-        'thing from the STORY DIGEST — a character role, a creature, a place, '
-        'an in-world system term. Not a sentence, not a claim, no invented '
-        'numbers. A transformation may be written as \\"BEFORE -> AFTER\\""],\n'
+        '  "tags": ["2-3 SHORT thumbnail tags, 1-2 words each. Each must name '
+        'something THIS story actually contains, using ITS OWN words from the '
+        'STORY DIGEST — the creature, role, place or in-world term it really '
+        'uses. Do NOT fall back on generic fantasy labels (demon king, S-rank, '
+        'chosen one) unless the digest itself uses them: a tag that would fit '
+        'any manhwa is worthless. Never invent a number or rank. A '
+        'transformation may be written as \\"BEFORE -> AFTER\\""],\n'
         '  "synopsis": "2-4 sentence teaser with emojis, trope framing, NO real '
         'names",\n'
         '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
@@ -123,38 +126,99 @@ _TAG_STOPWORDS = frozenset({
 })
 
 
-def tag_is_grounded(tag: str, corpus: str) -> bool:
-    """True when every CONTENT word of *tag* occurs in *corpus*.
+def story_vocabulary(ep_dirs: Optional[List[str]]) -> set:
+    """Terms that are TRUE BY CONSTRUCTION, for validating subject tags.
 
-    A tag names something in the story (a role, a creature, a system term), so
-    unlike a hook it is checked word-by-word, not just for invented numbers. A
-    tag with nothing checkable ("THE ONE") is rejected: it asserts a thing that
-    cannot be traced to the story, which is exactly how a generic power-fantasy
-    trope sneaks onto a thumbnail for a story that is not one.
+    NOT a corpus search. Checking a tag against the narration blob does not
+    work: at ~208k words nearly every common English word appears somewhere, so
+    "WEAK -> GOD" and "DEMON KING" both passed. Word frequency fails the other
+    way -- it ranks 'king' (95) and 'god' (48) above 'script' (10), admitting
+    the generic trope while rejecting this story's most central idea.
+
+    So the vocabulary is ENUMERATED instead of inferred, from two sources that
+    cannot contain a word the story does not actually use:
+      * cast names the extractor found ON the pages (manifest.cast.json)
+      * words printed on panels the understanding stamped as in-world SYSTEM
+        screens -- their OCR lives in manifest.vision.json, not the understood
+        manifest, whose ocr_clean is empty for these panels.
+    Stopwords are dropped and a system word must appear at least twice, so OCR
+    noise and ordinary English do not become "story terms".
     """
-    if not str(corpus or "").strip():
-        return True
-    hay = str(corpus).lower()
-    words = [w for w in re.findall(r"[a-z']{4,}", str(tag or "").lower())
+    vocab: set = set()
+    counts: Dict[str, int] = {}
+    for d in (ep_dirs or []):
+        try:
+            cast = json.load(open(os.path.join(d, "manifest.cast.json")))
+        except Exception:
+            cast = {}
+        for m in (cast.get("cast") or cast.get("members") or []):
+            for w in re.findall(r"[a-z']{3,}",
+                                str((m or {}).get("name") or
+                                    (m or {}).get("id") or "").lower()):
+                vocab.add(w)
+        try:
+            u = json.load(open(os.path.join(d, "manifest.panels.understood.json")))
+            v = json.load(open(os.path.join(d, "manifest.vision.json")))
+        except Exception:
+            continue
+        sysf = {os.path.basename(str(p.get("scene_file") or ""))
+                for p in (u.get("panels") or [])
+                if str(p.get("panel_kind") or "").lower() == "system"}
+        for it in (v.get("items") or []):
+            if os.path.basename(str(it.get("scene_file") or "")) not in sysf:
+                continue
+            for w in re.findall(r"[a-z']{3,}",
+                                str(it.get("ocr_clean") or "").lower()):
+                counts[w] = counts.get(w, 0) + 1
+    vocab |= {w for w, n in counts.items()
+              if n >= 2 and w not in _TAG_STOPWORDS}
+    return vocab - _TAG_STOPWORDS
+
+
+def tag_is_grounded(tag: str, vocab: set) -> bool:
+    """True when every CONTENT word of *tag* is in the enumerated *vocab*.
+
+    A tag NAMES something, so it is checked word by word. A tag with nothing
+    checkable ("THE ONE") is rejected: it asserts a thing that cannot be traced
+    to the story, which is how a generic power-fantasy trope attaches itself to
+    a story that is not one. An empty vocabulary rejects every tag rather than
+    waving them through -- an unverifiable tag is not a safe default here, and
+    the badge still carries the layout on its own.
+    """
+    words = [w for w in re.findall(r"[a-z']{3,}", str(tag or "").lower())
              if w not in _TAG_STOPWORDS]
-    if not words:
+    if not words or not vocab:
         return False
-    return all(w in hay for w in words)
+    return all(w in vocab for w in words)
 
 
-def pick_tags(tags: Any, corpus: str, limit: int = 2) -> List[Dict[str, Any]]:
+def pick_tags(tags: Any, vocab: set, corpus: str = "",
+              limit: int = 2) -> List[Dict[str, Any]]:
     """Grounded subject tags with layout positions, most specific first.
 
     Positions are assigned here (not by the model): lower-left then upper-left,
     which is where the working layouts put their subject labels — opposite the
     main hook so the two never stack."""
     slots = [("lower_left", True), ("mid_left", False)]
+    cands = [str(t or "").strip() for t in (tags or []) if str(t or "").strip()]
+    # stable sort: tags whose words appear in the enumerated story vocabulary
+    # (cast names, in-world system screens) lead, the rest keep their order.
+    if vocab:
+        cands.sort(key=lambda s: 0 if tag_is_grounded(s, vocab) else 1)
     out: List[Dict[str, Any]] = []
-    for t in (tags or []):
-        s = str(t or "").strip()
-        if not s or len(out) >= min(limit, len(slots)):
-            continue
-        if not (tag_is_grounded(s, corpus) and hook_is_grounded(s, corpus)):
+    for s in cands:
+        if len(out) >= min(limit, len(slots)):
+            break
+        # Guard only what is FALSIFIABLE. A number or rank is a claim about the
+        # story ("LEVEL 999" was false: the real maximum is 11), so it is
+        # checked. A thematic word is a description, not a claim -- and the
+        # model reading 17k chars of this chapter's narration judges that far
+        # better than any word list. An enumerated vocabulary was tried and
+        # rejected THE SCRIPT and THE PROPHET, this story's two most central
+        # ideas, because they are narration prose and never printed on a system
+        # screen. `vocab`, when supplied, only ORDERS tags (most story-specific
+        # first); it never rejects one.
+        if not hook_is_grounded(s, corpus):
             continue
         pos, arrow = slots[len(out)]
         out.append({"text": s.upper(), "pos": pos, "arrow": arrow})
@@ -396,7 +460,8 @@ def select_before_ref(beats_objs: List[Dict[str, Any]], ep_dirs: List[str], *,
 def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
                      series_title: str, genre: str = "",
                      official_link: str = "",
-                     style: str = "") -> Dict[str, Any]:
+                     style: str = "",
+                     vocab: Optional[set] = None) -> Dict[str, Any]:
     """Build the concept from beats (style) + the LLM copy. Pure/testable.
 
     *style* forces the thumbnail style instead of deriving it from the beats.
@@ -407,7 +472,7 @@ def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
     hooks = llm.get("hooks") or []
     corpus = beats_text_corpus(beats_obj)
     hook = pick_hook(hooks, style, corpus=corpus)
-    tags = pick_tags(llm.get("tags"), corpus)
+    tags = pick_tags(llm.get("tags"), vocab or set(), corpus=corpus)
     synopsis = str(llm.get("synopsis") or "").strip()
     hashtags = llm.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
     return {
@@ -455,8 +520,11 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
     scored = select_bundle_climax_scored(ep_dirs or [])
     climax_ci, refs = scored if scored else select_bundle_climax(beats_list)
     style_beats = beats_list[climax_ci] if 0 <= climax_ci < len(beats_list) else {}
+    # the vocabulary spans the WHOLE bundle: a system term or cast name printed
+    # in any chapter of this video is fair to tag, not just the climax chapter's
     c = assemble_concept(style_beats, llm, series_title=series_title,
-                         genre=genre, official_link=official_link, style=style)
+                         genre=genre, official_link=official_link, style=style,
+                         vocab=story_vocabulary(ep_dirs))
     c["parts"] = parts_timestamps(durations, labels)
     c["climax_chapter_index"] = climax_ci
     # Status badge: a FACT about this upload, never a claim about the story, so
@@ -552,7 +620,8 @@ def main() -> int:
                      args.ollama_model)
         concept = assemble_concept(beats_obj, llm, series_title=args.series_title,
                                    genre=args.genre, official_link=args.official_link,
-                                   style=style)
+                                   style=style,
+                                   vocab=story_vocabulary([args.episode_dir]))
         out = args.out or os.path.join(args.episode_dir, "render", "publish_meta.json")
 
     os.makedirs(os.path.dirname(out), exist_ok=True)
