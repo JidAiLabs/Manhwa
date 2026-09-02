@@ -1889,7 +1889,14 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
     if not eps:
         raise RuntimeError("no processed chapters yet — prepare at least one "
                            "chapter (narration) before generating a thumbnail")
-    out_dir = REPO / "dist" / f"series_{sid}"
+    # VARIANT mode: an explicit style renders to its OWN directory and leaves
+    # the live thumbnail (and its approval) untouched, so styles can be compared
+    # without clobbering the one currently published. The paid image step needs
+    # GEMINI_API_KEY from the login keychain, which only this launchd-run worker
+    # can reach — a non-interactive ssh session cannot unlock it.
+    style = str((job.get("payload") or {}).get("style") or "").strip()
+    out_dir = REPO / "dist" / (f"series_{sid}_{style}" if style
+                               else f"series_{sid}")
     out_dir.mkdir(parents=True, exist_ok=True)
     concept_path = out_dir / "concept.json"
     env = _series_env(con, sid)
@@ -1898,6 +1905,7 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         # 1) coherent arc concept (style + hook + climax refs) — $0 local Gemma
         rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                       "--episode-dirs", ",".join(eps), "--series-title", title,
+                      *(["--style", style] if style else []),
                       "--out", str(concept_path)], log, env=env)
         if rc != 0:
             raise RuntimeError(f"publish_concept exited {rc}")
@@ -1911,10 +1919,14 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
                       "--out-dir", str(out_dir)], log, env=env)
         if rc != 0:
             raise RuntimeError(f"thumbnail_build exited {rc}")
-    # 3) a freshly built thumbnail must be re-approved before it's "the one"
-    con.execute("DELETE FROM approval WHERE gate='thumbnail' AND series_id=?",
-                (sid,))
-    con.commit()
+    # 3) a freshly built thumbnail must be re-approved before it's "the one".
+    # A VARIANT is not the one: it rendered to its own directory and never
+    # touched the live image, so revoking the live approval would be wrong.
+    if not style:
+        con.execute(
+            "DELETE FROM approval WHERE gate='thumbnail' AND series_id=?",
+            (sid,))
+        con.commit()
 
 
 HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]] = {
