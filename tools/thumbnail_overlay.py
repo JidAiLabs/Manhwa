@@ -170,9 +170,14 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
         _outlined(draw, (bx, int(H * 0.03)), str(badge).strip().upper(),
                   _font(int(H * 0.062)), anchor=banc)
 
-    # short subject tags, each optionally arrowed at what it names
+    # SPLIT compositions already spend both halves on the before/after pair --
+    # those two labels ARE the subject tags. Adding more piles every extra
+    # element onto the left half (measured: badge + hook + a mid-left tag + a
+    # lower-left tag + a diagonal arrow across the "before" character, against
+    # one lonely label on the right) and the arrow, aimed at frame centre, cuts
+    # straight over the artwork. Tags are for single-composition styles.
     f_tag = _font(int(H * 0.095))
-    for t in (tags or []):
+    for t in ([] if style_overlay.get("split") else (tags or [])):
         text = str((t or {}).get("text") or "").strip().upper()
         if not text:
             continue

@@ -122,3 +122,28 @@ def test_empty_tags_are_skipped_not_drawn_blank(tmp_path):
     ov.render_overlay(base, b, hook="H", style_overlay=style,
                       tags=[{"text": "  ", "pos": "lower_left"}, {}])
     assert Path(a).read_bytes() == Path(b).read_bytes()
+
+
+def test_split_styles_do_not_stack_extra_tags_on_one_half(tmp_path):
+    """A split composition spends both halves on the before/after pair, so the
+    two labels ARE the tags. Adding more put badge + hook + two tags + a
+    diagonal arrow all on the LEFT half against one label on the right."""
+    base = _stub(tmp_path)
+    style = {"label_pos": "split", "split": True, "arrow": "none", "marks": []}
+    a = str(tmp_path / "a.jpg"); b = str(tmp_path / "b.jpg")
+    ov.render_overlay(base, a, hook="READER|TARGET", style_overlay=style)
+    ov.render_overlay(base, b, hook="READER|TARGET", style_overlay=style,
+                      tags=[{"text": "CONSTELLATION", "pos": "lower_left",
+                             "arrow": True},
+                            {"text": "NIGHTMARE -> REALITY", "pos": "mid_left"}])
+    assert Path(a).read_bytes() == Path(b).read_bytes()
+
+
+def test_non_split_styles_still_draw_tags(tmp_path):
+    base = _stub(tmp_path)
+    style = {"label_pos": "upper_right", "arrow": "none", "marks": []}
+    a = str(tmp_path / "a.jpg"); b = str(tmp_path / "b.jpg")
+    ov.render_overlay(base, a, hook="READER", style_overlay=style)
+    ov.render_overlay(base, b, hook="READER", style_overlay=style,
+                      tags=[{"text": "DOKKAEBI", "pos": "lower_left"}])
+    assert Path(a).read_bytes() != Path(b).read_bytes()
