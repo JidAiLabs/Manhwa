@@ -72,6 +72,10 @@ def build_concept_prompt(digest: str, banned: str, style: str) -> str:
         '  "title": "clickbait recap title, 60-95 chars, trope-based, CAPS for '
         'emphasis, NO real names",\n'
         f'  "hooks": ["{hook_spec}"],\n'
+        '  "tags": ["2-3 SHORT thumbnail tags, 1-2 words each, naming a REAL '
+        'thing from the STORY DIGEST — a character role, a creature, a place, '
+        'an in-world system term. Not a sentence, not a claim, no invented '
+        'numbers. A transformation may be written as \\"BEFORE -> AFTER\\""],\n'
         '  "synopsis": "2-4 sentence teaser with emojis, trope framing, NO real '
         'names",\n'
         '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
@@ -109,6 +113,52 @@ def hook_is_grounded(hook: str, corpus: str) -> bool:
     hay = str(corpus).upper()
     return all(re.search(r"(?<![0-9A-Z])%s(?![0-9A-Z])" % re.escape(c), hay)
                for c in hook_claims(hook))
+
+
+# Words a tag can contain without naming anything — never evidence of grounding.
+_TAG_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "into", "from", "that", "this", "then",
+    "his", "her", "its", "their", "our", "you", "your", "are", "was", "were",
+    "has", "have", "who", "what", "when", "where", "will", "wont", "cant",
+})
+
+
+def tag_is_grounded(tag: str, corpus: str) -> bool:
+    """True when every CONTENT word of *tag* occurs in *corpus*.
+
+    A tag names something in the story (a role, a creature, a system term), so
+    unlike a hook it is checked word-by-word, not just for invented numbers. A
+    tag with nothing checkable ("THE ONE") is rejected: it asserts a thing that
+    cannot be traced to the story, which is exactly how a generic power-fantasy
+    trope sneaks onto a thumbnail for a story that is not one.
+    """
+    if not str(corpus or "").strip():
+        return True
+    hay = str(corpus).lower()
+    words = [w for w in re.findall(r"[a-z']{4,}", str(tag or "").lower())
+             if w not in _TAG_STOPWORDS]
+    if not words:
+        return False
+    return all(w in hay for w in words)
+
+
+def pick_tags(tags: Any, corpus: str, limit: int = 2) -> List[Dict[str, Any]]:
+    """Grounded subject tags with layout positions, most specific first.
+
+    Positions are assigned here (not by the model): lower-left then upper-left,
+    which is where the working layouts put their subject labels — opposite the
+    main hook so the two never stack."""
+    slots = [("lower_left", True), ("mid_left", False)]
+    out: List[Dict[str, Any]] = []
+    for t in (tags or []):
+        s = str(t or "").strip()
+        if not s or len(out) >= min(limit, len(slots)):
+            continue
+        if not (tag_is_grounded(s, corpus) and hook_is_grounded(s, corpus)):
+            continue
+        pos, arrow = slots[len(out)]
+        out.append({"text": s.upper(), "pos": pos, "arrow": arrow})
+    return out
 
 
 def beats_text_corpus(beats_obj: Dict[str, Any]) -> str:
@@ -355,7 +405,9 @@ def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
     model wrote will not match the style they are picked for."""
     style = style or select_style(beats_obj, genre=genre)
     hooks = llm.get("hooks") or []
-    hook = pick_hook(hooks, style, corpus=beats_text_corpus(beats_obj))
+    corpus = beats_text_corpus(beats_obj)
+    hook = pick_hook(hooks, style, corpus=corpus)
+    tags = pick_tags(llm.get("tags"), corpus)
     synopsis = str(llm.get("synopsis") or "").strip()
     hashtags = llm.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
     return {
@@ -364,6 +416,7 @@ def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
         "style_overlay": style_for(style)["overlay"],
         "hook": hook,
         "hooks": hooks,
+        "tags": tags,
         "synopsis": synopsis,
         "hashtags": hashtags,
         "description": build_description(synopsis, hashtags),
@@ -406,6 +459,11 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
                          genre=genre, official_link=official_link, style=style)
     c["parts"] = parts_timestamps(durations, labels)
     c["climax_chapter_index"] = climax_ci
+    # Status badge: a FACT about this upload, never a claim about the story, so
+    # it carries the competitor layout's badge slot with nothing to fabricate.
+    n = len(beats_list or [])
+    if n:
+        c["badge"] = "%d CHAPTERS" % n
     # The before_after composition needs BOTH halves: a weak "before" panel and
     # the transformed climax. Climax refs alone painted both halves from one
     # moment. The before panel usually lives in an earlier chapter, so it is an

@@ -373,3 +373,45 @@ def test_empty_style_keeps_the_production_auto_path():
     a = pc.assemble_concept(beats, llm, series_title="X")
     b = pc.assemble_concept(beats, llm, series_title="X", style="")
     assert a["style"] == b["style"]
+
+
+# ---- subject tags must name something the STORY actually contains ---------
+# The competitor layouts read as tags stuck onto things, not a caption. But a
+# tag names a thing, so unlike a hook it is checked word-by-word: a generic
+# power-fantasy trope must not attach itself to a story that is not one.
+
+def test_tag_grounding_requires_every_content_word():
+    corpus = "A dokkaebi opens the main scenario. Sangah runs for the subway."
+    assert pc.tag_is_grounded("THE DOKKAEBI", corpus)
+    assert pc.tag_is_grounded("MAIN SCENARIO", corpus)
+    assert not pc.tag_is_grounded("DEMON KING", corpus)     # neither word present
+    assert not pc.tag_is_grounded("MAIN QUEST", corpus)     # 'quest' absent
+
+
+def test_tag_with_no_checkable_word_is_rejected():
+    # "THE ONE" asserts a thing that cannot be traced to the story at all
+    assert not pc.tag_is_grounded("THE ONE", "a dokkaebi appears")
+
+
+def test_pick_tags_grounds_positions_and_caps_count():
+    corpus = "A dokkaebi opens the main scenario. Sangah watches the subway."
+    tags = pc.pick_tags(["THE DOKKAEBI", "DEMON KING", "MAIN SCENARIO",
+                         "SANGAH"], corpus)
+    assert [t["text"] for t in tags] == ["THE DOKKAEBI", "MAIN SCENARIO"]
+    assert tags[0]["pos"] == "lower_left" and tags[0]["arrow"] is True
+    assert tags[1]["pos"] == "mid_left"
+
+
+def test_pick_tags_rejects_an_invented_number_in_a_tag():
+    corpus = "he clears scenario 1 and reaches level 3"
+    assert pc.pick_tags(["LEVEL 999"], corpus) == []
+    assert [t["text"] for t in pc.pick_tags(["SCENARIO 1"], corpus)] == ["SCENARIO 1"]
+
+
+def test_bundle_badge_states_a_fact_about_the_upload():
+    chs = [{"beats": [{"what_happens": "a dokkaebi opens the scenario"}]}
+           for _ in range(7)]
+    llm = {"title": "T", "hooks": ["GENIUS"], "synopsis": "S", "hashtags": ["#m"]}
+    c = pc.build_bundle_concept(chs, llm, durations=[60.0] * 7,
+                                series_title="X")
+    assert c["badge"] == "7 CHAPTERS"      # true of the upload, not the story

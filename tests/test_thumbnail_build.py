@@ -26,8 +26,10 @@ def _patch(monkeypatch, calls):
             f.write(b"PNG")
         return models[0]
 
-    def fake_overlay(art, out, *, hook, style_overlay, speech):
-        calls.update(overlay_hook=hook, overlay_art=art)
+    def fake_overlay(art, out, *, hook, style_overlay, speech,
+                     badge="", tags=None):
+        calls.update(overlay_hook=hook, overlay_art=art,
+                     overlay_badge=badge, overlay_tags=tags)
         with open(out, "wb") as f:
             f.write(b"JPG")
 

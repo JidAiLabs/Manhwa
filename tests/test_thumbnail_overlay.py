@@ -53,3 +53,72 @@ def test_empty_hook_is_safe(tmp_path):
                       style_overlay={"label_pos": "upper_right", "arrow": "none",
                                      "marks": [], "speech_slots": 0})
     assert Image.open(out).size == (1280, 720)
+
+
+# ---- multi-label layout (badge + subject tags + transformation) ------------
+# One centred phrase reads as a caption on a picture. The layouts that work read
+# as TAGS STUCK ONTO THINGS: a small status badge, one or two short arrowed
+# labels, and a transformation label with the arrow BETWEEN the two states.
+
+def test_single_hook_callers_are_byte_identical(tmp_path):
+    """The whole extension is opt-in: no badge, no tags -> unchanged output."""
+    base = _stub(tmp_path)
+    style = {"label_pos": "upper_right", "arrow": "to_hero", "marks": ["!"],
+             "speech_slots": 1}
+    a = str(tmp_path / "a.jpg"); b = str(tmp_path / "b.jpg")
+    ov.render_overlay(base, a, hook="GENIUS", style_overlay=style, speech=["HOW?!"])
+    ov.render_overlay(base, b, hook="GENIUS", style_overlay=style, speech=["HOW?!"],
+                      badge="", tags=None)
+    assert Path(a).read_bytes() == Path(b).read_bytes()
+
+
+def test_badge_paints_and_sits_opposite_the_main_label(tmp_path):
+    base = _stub(tmp_path)
+    plain = str(tmp_path / "plain.jpg"); badged = str(tmp_path / "badged.jpg")
+    style = {"label_pos": "upper_right", "arrow": "none", "marks": []}
+    ov.render_overlay(base, plain, hook="GENIUS", style_overlay=style)
+    ov.render_overlay(base, badged, hook="GENIUS", style_overlay=style,
+                      badge="FULL RECAP")
+    assert _yellow_pixels(badged) > _yellow_pixels(plain)
+    # main label is upper-RIGHT, so the badge must land on the LEFT half
+    im = Image.open(badged).convert("RGB")
+    left = im.crop((0, 0, 400, 120))
+    assert sum(1 for r, g, b in left.getdata() if r > 200 and g > 170 and b < 90) > 200
+
+
+def test_tags_render_at_their_positions(tmp_path):
+    base = _stub(tmp_path)
+    out = str(tmp_path / "tagged.jpg"); plain = str(tmp_path / "plain.jpg")
+    style = {"label_pos": "upper_right", "arrow": "none", "marks": []}
+    ov.render_overlay(base, plain, hook="HOOK", style_overlay=style)
+    ov.render_overlay(base, out, hook="HOOK", style_overlay=style,
+                      tags=[{"text": "THE DOKKAEBI", "pos": "lower_left",
+                             "arrow": True}])
+    assert _yellow_pixels(out) > _yellow_pixels(plain)
+    im = Image.open(out).convert("RGB")
+    lower_left = im.crop((0, 520, 520, 700))
+    assert sum(1 for r, g, b in lower_left.getdata()
+               if r > 200 and g > 170 and b < 90) > 200
+
+
+def test_transformation_label_splits_on_an_arrow(tmp_path):
+    assert ov._split_transform("TRASH -> GOD") == ("TRASH", "GOD")
+    assert ov._split_transform("READER → PROPHET") == ("READER", "PROPHET")
+    assert ov._split_transform("JUST ONE LABEL") is None
+    base = _stub(tmp_path)
+    out = str(tmp_path / "x.jpg"); flat = str(tmp_path / "flat.jpg")
+    style = {"label_pos": "lower_left", "arrow": "none", "marks": []}
+    ov.render_overlay(base, flat, hook="READER", style_overlay=style)
+    ov.render_overlay(base, out, hook="READER -> PROPHET", style_overlay=style)
+    # two states + a drawn arrow paint more than the single word
+    assert _yellow_pixels(out) > _yellow_pixels(flat)
+
+
+def test_empty_tags_are_skipped_not_drawn_blank(tmp_path):
+    base = _stub(tmp_path)
+    a = str(tmp_path / "a.jpg"); b = str(tmp_path / "b.jpg")
+    style = {"label_pos": "upper_right", "arrow": "none", "marks": []}
+    ov.render_overlay(base, a, hook="H", style_overlay=style)
+    ov.render_overlay(base, b, hook="H", style_overlay=style,
+                      tags=[{"text": "  ", "pos": "lower_left"}, {}])
+    assert Path(a).read_bytes() == Path(b).read_bytes()

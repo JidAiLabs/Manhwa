@@ -15,6 +15,7 @@ no model — unit-tested by compositing onto a stub image.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
@@ -54,10 +55,49 @@ def _anchor_xy(pos: str, W: int, H: int) -> Tuple[Tuple[int, int], str]:
         "upper_right": ((int(W * 0.97), int(H * 0.08)), "ra"),
         "upper_left": ((int(W * 0.03), int(H * 0.08)), "la"),
         "lower_right": ((int(W * 0.97), int(H * 0.80)), "ra"),
+        "lower_left": ((int(W * 0.03), int(H * 0.80)), "la"),
+        "mid_left": ((int(W * 0.03), int(H * 0.44)), "la"),
+        "mid_right": ((int(W * 0.97), int(H * 0.44)), "ra"),
         "on_object": ((int(W * 0.50), int(H * 0.78)), "ma"),
         "split": ((int(W * 0.25), int(H * 0.06)), "ma"),
         "center": ((int(W * 0.50), int(H * 0.10)), "ma"),
     }.get(pos, ((int(W * 0.97), int(H * 0.08)), "ra"))
+
+
+# A transformation tag ("A -> B") is one label, not two: the arrow glyph sits
+# BETWEEN the states so the eye reads the change in one hop. Distinct from the
+# `split` style, which puts two labels at opposite corners of a split image.
+_TRANSFORM_SEP_RE = re.compile(r"\s*(?:->|=>|→)\s*")
+
+
+def _split_transform(text: str) -> Optional[Tuple[str, str]]:
+    """('TRASH', 'GOD') for a transformation tag, else None."""
+    parts = [p.strip() for p in _TRANSFORM_SEP_RE.split(str(text or "")) if p.strip()]
+    return (parts[0], parts[1]) if len(parts) == 2 else None
+
+
+def _draw_transform(draw: ImageDraw.ImageDraw, xy: Tuple[int, int],
+                    left: str, right: str, font: ImageFont.FreeTypeFont,
+                    anchor: str, W: int) -> None:
+    """Draw 'LEFT → RIGHT' with a real arrow between the two states."""
+    gap = int(font.size * 0.9)
+    lw = int(draw.textlength(left, font=font))
+    rw = int(draw.textlength(right, font=font))
+    total = lw + gap + rw
+    x, y = xy
+    # resolve the anchor to a left edge so the composite stays inside the frame
+    if anchor.startswith("r"):
+        x0 = x - total
+    elif anchor.startswith("m"):
+        x0 = x - total // 2
+    else:
+        x0 = x
+    x0 = max(int(W * 0.02), min(x0, int(W * 0.98) - total))
+    _outlined(draw, (x0, y), left, font, anchor="la")
+    ay = y + int(font.size * 0.42)
+    _arrow(draw, (x0 + lw + int(gap * 0.15), ay),
+           (x0 + lw + int(gap * 0.85), ay), max(5, font.size // 9))
+    _outlined(draw, (x0 + lw + gap, y), right, font, anchor="la")
 
 
 def _arrow(draw: ImageDraw.ImageDraw, start: Tuple[int, int],
@@ -76,9 +116,26 @@ def _arrow(draw: ImageDraw.ImageDraw, start: Tuple[int, int],
 def render_overlay(base_image: str, out_path: str, *, hook: str,
                    style_overlay: Dict[str, Any],
                    speech: Optional[List[str]] = None,
-                   size: Tuple[int, int] = (1280, 720)) -> str:
-    """Composite the branded text layer (label + arrow + marks + speech) for one
-    hook onto *base_image* (the Nano Banana art). Returns *out_path*."""
+                   size: Tuple[int, int] = (1280, 720),
+                   badge: str = "",
+                   tags: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Composite the branded text layer onto *base_image*. Returns *out_path*.
+
+    A single centred phrase reads as a caption on a picture; the thumbnails that
+    actually work read as TAGS STUCK ONTO THINGS — a small status badge, one or
+    two short labels with arrows onto their subject, and a transformation label.
+    So beyond the main *hook* this draws:
+
+    *badge* — a small corner tag for TRUE video metadata ("FULL RECAP",
+      "CH 1-55"). Deliberately separate from the hook: a badge states a fact
+      about the upload, never a claim about the story, so it can never invent
+      anything.
+    *tags*  — [{"text", "pos", "arrow"}] short labels (1-2 words) at named
+      positions, each optionally arrowed toward the subject. "A -> B" in any
+      label renders as a transformation with the arrow between the states.
+
+    Both are optional and default to nothing, so existing single-hook callers
+    render byte-identically."""
     W, H = size
     img = Image.open(base_image).convert("RGB").resize((W, H))
     draw = ImageDraw.Draw(img)
@@ -94,12 +151,41 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
     elif hook:
         f = _font(int(H * 0.16))
         (lx, ly), anc = _anchor_xy(label_pos, W, H)
-        _outlined(draw, (lx, ly), hook, f, anchor=anc)
-        if style_overlay.get("arrow", "none") != "none":
+        xform = _split_transform(hook)
+        if xform:
+            _draw_transform(draw, (lx, ly), xform[0], xform[1], f, anc, W)
+        else:
+            _outlined(draw, (lx, ly), hook, f, anchor=anc)
+        if style_overlay.get("arrow", "none") != "none" and not xform:
             # arrow from just under the label toward frame center (the subject)
             sx = lx - (int(W * 0.10) if anc == "ra" else -int(W * 0.10))
             _arrow(draw, (sx, ly + int(H * 0.14)),
                    (int(W * 0.52), int(H * 0.46)), max(6, H // 90))
+
+    # status badge: a FACT about the upload (chapter range, full recap), never a
+    # claim about the story. Sits opposite the main label so the two never stack.
+    if badge:
+        bpos = "upper_right" if label_pos == "upper_left" else "upper_left"
+        (bx, by), banc = _anchor_xy(bpos, W, H)
+        _outlined(draw, (bx, int(H * 0.03)), str(badge).strip().upper(),
+                  _font(int(H * 0.062)), anchor=banc)
+
+    # short subject tags, each optionally arrowed at what it names
+    f_tag = _font(int(H * 0.095))
+    for t in (tags or []):
+        text = str((t or {}).get("text") or "").strip().upper()
+        if not text:
+            continue
+        (tx, ty), tanc = _anchor_xy(str(t.get("pos") or "lower_left"), W, H)
+        tx2 = _split_transform(text)
+        if tx2:
+            _draw_transform(draw, (tx, ty), tx2[0], tx2[1], f_tag, tanc, W)
+        else:
+            _outlined(draw, (tx, ty), text, f_tag, anchor=tanc)
+            if t.get("arrow"):
+                sx = tx - (int(W * 0.06) if tanc == "ra" else -int(W * 0.06))
+                _arrow(draw, (sx, ty + int(H * 0.09)),
+                       (int(W * 0.50), int(H * 0.50)), max(5, H // 110))
 
     # floating reaction marks
     f_mark = _font(int(H * 0.14))

@@ -52,7 +52,9 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
     render_overlay(art_path, out, hook=concept.get("hook", ""),
                    style_overlay=concept.get("style_overlay")
                    or style_for(style)["overlay"],
-                   speech=concept.get("speech") or [])
+                   speech=concept.get("speech") or [],
+                   badge=concept.get("badge") or "",
+                   tags=concept.get("tags") or [])
     return {"style": style, "hook": concept.get("hook"), "model": used,
             "art": art_path, "thumbnail": out, "refs": refs}
 
