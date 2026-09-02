@@ -470,3 +470,16 @@ def test_first_json_recovers_a_reply_with_bare_array_tokens():
     assert oc.first_json("no json here") is None
     # a repaired parse recovers content, it never invents any
     assert oc.first_json('{"x": [1,2,]}') == {"x": [1, 2]}
+
+
+def test_triptych_hook_needs_three_parts():
+    """A two-part hook would leave the third panel unlabelled."""
+    hooks = ["READER|PROPHET", "ORDINARY|AWAKENING|PROPHET", "GENIUS"]
+    assert pc.pick_hook(hooks, "triptych") == "ORDINARY|AWAKENING|PROPHET"
+    # before_after is happy with two
+    assert pc.pick_hook(hooks, "before_after") == "READER|PROPHET"
+
+
+def test_triptych_style_is_registered_with_split3():
+    ov = pc.style_for("triptych")["overlay"]
+    assert ov.get("split3") is True

@@ -64,6 +64,18 @@ STYLE_MODULES: Dict[str, Dict[str, Any]] = {
         "overlay": {"label_pos": "lower_right", "arrow": "to_monster",
                     "marks": [], "speech_slots": 1},
     },
+    "triptych": {
+        "art_prompt": (
+            "THREE vertical panels of equal width, side by side, divided by "
+            "clean vertical borders. Each panel shows the SAME hero at a "
+            "different stage of the story, left to right: first ordinary and "
+            "unremarkable, then the turning point mid-transformation, then "
+            "fully realised and powerful. Distinct palette per panel (cool and "
+            "dim, then charged, then bright and saturated). Leave clear space "
+            "at the BOTTOM of each panel for a label."),
+        "overlay": {"label_pos": "split", "arrow": "none",
+                    "marks": [], "speech_slots": 0, "split3": True},
+    },
     "before_after": {
         "art_prompt": (
             "A split composition: LEFT the hero at his weakest (beaten, dim, "

@@ -147,3 +147,30 @@ def test_non_split_styles_still_draw_tags(tmp_path):
     ov.render_overlay(base, b, hook="READER", style_overlay=style,
                       tags=[{"text": "DOKKAEBI", "pos": "lower_left"}])
     assert Path(a).read_bytes() != Path(b).read_bytes()
+
+
+def test_triptych_draws_three_labels_one_under_each_panel(tmp_path):
+    """The most common performing layout: three vertical panels, one label at
+    the BOTTOM of each. A two-part hook must not leave a panel unlabelled."""
+    base = _stub(tmp_path)
+    out = str(tmp_path / "t.jpg")
+    style = {"label_pos": "split", "split3": True, "arrow": "none", "marks": []}
+    ov.render_overlay(base, out, hook="ORDINARY|AWAKENING|PROPHET",
+                      style_overlay=style)
+    im = Image.open(out).convert("RGB")
+    # one label low in each vertical third
+    for x0, x1 in ((0, 426), (426, 853), (853, 1280)):
+        band = im.crop((x0, 520, x1, 700))
+        assert sum(1 for r, g, b in band.getdata()
+                   if r > 200 and g > 170 and b < 90) > 150, (x0, x1)
+
+
+def test_triptych_suppresses_extra_tags_like_split(tmp_path):
+    base = _stub(tmp_path)
+    style = {"label_pos": "split", "split3": True, "arrow": "none", "marks": []}
+    a = str(tmp_path / "a.jpg"); b = str(tmp_path / "b.jpg")
+    ov.render_overlay(base, a, hook="A|B|C", style_overlay=style)
+    ov.render_overlay(base, b, hook="A|B|C", style_overlay=style,
+                      tags=[{"text": "DOKKAEBI", "pos": "lower_left",
+                             "arrow": True}])
+    assert Path(a).read_bytes() == Path(b).read_bytes()

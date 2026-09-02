@@ -58,6 +58,13 @@ _HOOK_GRAMMAR = (
     "never a sentence or a clause. Use this story's OWN words for the role. ")
 
 _HOOK_SHAPE = {
+    "triptych": (_HOOK_GRAMMAR +
+                 '3 labels. EVERY one is a THREE-part progression written as '
+                 '"FIRST|MIDDLE|LAST" (1-2 words per part) — what this '
+                 'character is at the start, at the turning point, and at the '
+                 'end of the arc. Each part is a role or status this story '
+                 'actually gives them, in its own words. A part may end in "?" '
+                 'where the story leaves it open'),
     "before_after": (_HOOK_GRAMMAR +
                      '3 labels. EVERY one is a contrasting PAIR of ROLES or '
                      'RANKS written as "BEFORE SIDE|AFTER SIDE" (1-2 words per '
@@ -286,6 +293,11 @@ def pick_hook(hooks: List[str], style: str, *, corpus: str = "") -> str:
         # label rather than print a false claim on the thumbnail.
         if grounded:
             return grounded[0]
+    if style == "triptych":
+        # needs THREE parts: a two-part hook would leave the last panel unlabelled
+        for h in hooks:
+            if h.count("|") >= 2:
+                return h
     if style == "before_after":
         for h in hooks:
             if "|" in h:
