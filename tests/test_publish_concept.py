@@ -497,3 +497,54 @@ def test_style_cli_choices_track_the_registry():
     assert "STYLE_MODULES" in m.group(1), (
         "choices must derive from the style registry, not a hand-written list")
     assert "triptych" in pc.STYLE_MODULES
+
+
+# ---- two-stage: understand the story, THEN write the copy -----------------
+# The digest is 17k chars of moment-to-moment narration stitched across 24
+# chapters -- not a story, its debris. Asked to write a title straight from
+# that, the model returned fragment-shaped copy ("THE STORY IS REAL",
+# "TARGET"). Validating the OUTPUT could never fix a bad INPUT.
+
+def test_brief_prompt_asks_what_the_story_is_not_for_copy():
+    p = pc.build_brief_prompt("some narration", "Banned")
+    for field in ("premise", "protagonist", "engine", "arc", "distinctive"):
+        assert field in p, field
+    assert "Do not write any marketing copy yet" in p
+    assert "Banned" in p          # ban list survives into stage 1
+
+
+def test_package_prompt_writes_from_the_brief_not_the_narration():
+    brief = {"premise": "P", "protagonist": "H", "engine": "E"}
+    p = pc.build_package_prompt(brief, "Banned")
+    assert "STORY UNDERSTANDING" in p and '"premise": "P"' in p
+    # the MODEL picks the layout -- a keyword heuristic kept choosing
+    # stat_callout for a series whose largest number is 11
+    assert "thumbnail_style" in p and "triptych" in p
+    assert "could ONLY belong to this story" in p
+
+
+def test_assemble_package_honours_the_models_layout_choice():
+    beats = {"beats": [{"segments": [{"line": "he reaches level 3"}]}]}
+    pkg = {"title": "T", "description": "D", "thumbnail_style": "triptych",
+           "style_reason": "it is a progression",
+           "labels": ["READER|PLAYER|PROPHET"], "hashtags": ["#m"]}
+    c = pc.assemble_package(beats, {"premise": "P"}, pkg, series_title="X")
+    assert c["style"] == "triptych"
+    assert c["style_overlay"]["split3"] is True
+    assert c["hook"] == "READER|PLAYER|PROPHET"
+    assert c["brief"] == {"premise": "P"}
+
+
+def test_assemble_package_falls_back_on_an_unknown_style():
+    pkg = {"title": "T", "thumbnail_style": "not_a_real_style",
+           "labels": ["HERO"], "hashtags": []}
+    c = pc.assemble_package({}, {}, pkg, series_title="X")
+    assert c["style"] == pc.DEFAULT_STYLE        # never crashes the run
+
+
+def test_assemble_package_still_rejects_an_invented_number():
+    beats = {"beats": [{"segments": [{"line": "he reaches level 3"}]}]}
+    pkg = {"title": "T", "thumbnail_style": "power_reveal",
+           "labels": ["LEVEL 999", "THE READER"], "hashtags": []}
+    c = pc.assemble_package(beats, {}, pkg, series_title="X")
+    assert c["hook"] == "THE READER"   # the false claim is skipped

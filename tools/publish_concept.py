@@ -23,7 +23,12 @@ from typing import Any, Dict, List, Optional
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
-from thumbnail_styles import STYLE_MODULES, select_style, style_for  # noqa: E402
+from thumbnail_styles import (  # noqa: E402
+    DEFAULT_STYLE,
+    STYLE_MODULES,
+    select_style,
+    style_for,
+)
 from youtube_meta import chapter_digest, extract_json          # noqa: E402
 
 # Channel-static boilerplate (edit Patreon / email once). Real series name is NOT
@@ -85,6 +90,112 @@ _HOOK_DEFAULT = (_HOOK_GRAMMAR +
                  '3 labels, 1-3 words each. Each names a role, title, rank or '
                  'status this story gives someone — the kind of tag that could '
                  'sit beside a character with an arrow pointing at them')
+
+
+def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
+                     pkg: Dict[str, Any], *, series_title: str,
+                     official_link: str = "") -> Dict[str, Any]:
+    """Concept from the two-stage understanding. Pure/testable.
+
+    The model's own layout choice wins, validated against the registry (an
+    unknown name falls back to the default rather than crashing the run). The
+    labels it wrote for THAT layout become the hook, so the shape it chose and
+    the text it wrote can never disagree -- the failure mode when a keyword
+    heuristic picked the layout and the model wrote for a different one.
+    """
+    style = str(pkg.get("thumbnail_style") or "").strip()
+    if style not in STYLE_MODULES:
+        style = DEFAULT_STYLE
+    labels = [str(x).strip() for x in (pkg.get("labels") or []) if str(x).strip()]
+    corpus = beats_text_corpus(beats_obj)
+    # numbers stay guarded: a rank or level is a checkable claim about the
+    # story, and an invented one is what put LEVEL 999 on a live thumbnail.
+    hook = next((s for s in labels if hook_is_grounded(s, corpus)), "")
+    synopsis = str(pkg.get("description") or "").strip()
+    hashtags = pkg.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
+    return {
+        "title": str(pkg.get("title") or "").strip(),
+        "style": style,
+        "style_reason": str(pkg.get("style_reason") or "").strip(),
+        "style_overlay": style_for(style)["overlay"],
+        "hook": hook,
+        "hooks": labels,
+        "brief": brief,
+        "synopsis": synopsis,
+        "hashtags": hashtags,
+        "description": build_description(synopsis, hashtags),
+        "pinned_comment": pinned_comment(series_title, official_link),
+    }
+
+
+def build_brief_prompt(digest: str, banned: str) -> str:
+    """STAGE 1: understand the story before writing a word of copy.
+
+    The digest is raw narration prose -- 17k chars of moment-to-moment
+    voiceover stitched across 24 chapters. Asked to write a title straight from
+    that, a model pattern-matches on fragments and returns fragment-shaped
+    copy ("THE STORY IS REAL", "TARGET"). No amount of validating the OUTPUT
+    fixes that; the input was never a story, just its debris.
+
+    So first make it state what the story IS. A human writing this copy reads
+    the series, forms a view, and only then writes the title. This is that step.
+    """
+    return (
+        "You are reading the narration of a manhwa recap to UNDERSTAND the "
+        "story. Do not write any marketing copy yet.\n"
+        f"NEVER repeat this licensed title or any part of it: {banned or '(none)'}\n\n"
+        "Return ONLY JSON:\n"
+        "{\n"
+        '  "premise": "one sentence: the situation the story sets up",\n'
+        '  "protagonist": "who they are and what makes THEM different from '
+        'the usual manhwa lead — their actual edge, not a power level",\n'
+        '  "engine": "the thing that keeps happening that drives the story",\n'
+        '  "arc": "how the protagonist''s situation CHANGES from the first of '
+        'these chapters to the last",\n'
+        '  "distinctive": ["2-4 things a reader would remember about THIS '
+        'series that they would not find in a generic power-fantasy manhwa"],\n'
+        '  "why_watch": "the curiosity a viewer would click to satisfy"\n'
+        "}\n\nSTORY NARRATION:\n" + digest)
+
+
+def build_package_prompt(brief: Dict[str, Any], banned: str,
+                         styles: Optional[List[str]] = None) -> str:
+    """STAGE 2: write the whole publish package FROM the understanding.
+
+    Takes the stage-1 brief, not the raw narration -- the model is now writing
+    about a story it has stated in its own words, which is the difference
+    between describing a series and echoing its debris. It also CHOOSES the
+    thumbnail layout: which composition suits the story is a judgement about
+    the story, and a keyword heuristic kept picking stat_callout for a series
+    whose largest number is 11.
+    """
+    opts = styles or ["power_reveal", "before_after", "triptych",
+                      "vs_monster", "humiliation", "feat_object"]
+    return (
+        "You are writing the YouTube package for a manhwa recap. You have "
+        "already read the series; your understanding of it is below.\n"
+        f"NEVER use this licensed title or any part of it: {banned or '(none)'}\n"
+        "No real character names anywhere in the output.\n\n"
+        "STORY UNDERSTANDING:\n" + json.dumps(brief, indent=2) + "\n\n"
+        "Write copy that could ONLY belong to this story. Anything that would "
+        "fit any manhwa is a failure.\n\n"
+        "Return ONLY JSON:\n"
+        "{\n"
+        '  "title": "YouTube title, 60-95 chars. State the specific situation '
+        'and the turn it takes. CAPS on the 2-3 words that carry the hook",\n'
+        '  "description": "3-5 sentences a viewer reads to decide. Open with '
+        'the premise, say what changes, end on the open question. No hashtag '
+        'list, no boilerplate — prose only",\n'
+        f'  "thumbnail_style": "ONE of: {", ".join(opts)} — choose the '
+        'composition that fits THIS story\'s shape, and say why in reason",\n'
+        '  "style_reason": "one sentence: why that composition suits it",\n'
+        '  "labels": ["the thumbnail text for the layout you chose. A label is '
+        'a NAMETAG naming what someone IS or BECAME — a role, title or status, '
+        'in this story\'s own words. Never a mood or a sentence. For a 2-panel '
+        'layout give \\"BEFORE|AFTER\\"; for a 3-panel layout \\"FIRST|MIDDLE|'
+        'LAST\\"; otherwise a single 1-3 word label"],\n'
+        '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
+        "}")
 
 
 def build_concept_prompt(digest: str, banned: str, style: str) -> str:
@@ -622,6 +733,10 @@ def main() -> int:
                     help="force the thumbnail style instead of deriving it "
                          "from the beats — for generating variants to compare. "
                          "Empty (default) = auto-select, the production path.")
+    ap.add_argument("--single-shot", action="store_true",
+                    help="the OLD one-call path: write copy straight from the "
+                         "raw narration digest. Kept for comparison; the "
+                         "default now understands the story first (two calls).")
     ap.add_argument("--ollama-model", default="gemma4:26b")
     ap.add_argument("--digest-chapters", type=int, default=24,
                     help="max chapters described to the LLM (bundle mode). "
@@ -649,12 +764,35 @@ def main() -> int:
             print(f"[..] digest: sampled {args.digest_chapters} of "
                   f"{len(beats_list)} chapters (climax #{climax_ci + 1} kept) "
                   f"— {len(digest):,} chars")
-        llm = _gemma(build_concept_prompt(digest, args.series_title, style),
-                     args.ollama_model)
-        concept = build_bundle_concept(beats_list, llm, durations=durations,
-                                       series_title=args.series_title, genre=args.genre,
-                                       official_link=args.official_link,
-                                       ep_dirs=eps, style=style)
+        if args.single_shot:
+            llm = _gemma(build_concept_prompt(digest, args.series_title, style),
+                         args.ollama_model)
+            concept = build_bundle_concept(
+                beats_list, llm, durations=durations,
+                series_title=args.series_title, genre=args.genre,
+                official_link=args.official_link, ep_dirs=eps, style=style)
+        else:
+            # STAGE 1 — understand the series, STAGE 2 — write from that.
+            brief = _gemma(build_brief_prompt(digest, args.series_title),
+                           args.ollama_model)
+            print("[..] brief: %s" % str(brief.get("premise") or "")[:110])
+            pkg = _gemma(
+                build_package_prompt(brief, args.series_title,
+                                     [args.style] if args.style else None),
+                args.ollama_model)
+            style_beats = beats_list[climax_ci] if beats_list else {}
+            concept = assemble_package(
+                style_beats, brief, pkg, series_title=args.series_title,
+                official_link=args.official_link)
+            _sc2 = select_bundle_climax_scored(eps)
+            concept["climax_chapter_index"] = climax_ci
+            concept["refs"] = (_sc2[1] if _sc2
+                               else select_bundle_climax(beats_list)[1])
+            concept["parts"] = parts_timestamps(durations)
+            if beats_list:
+                concept["badge"] = "%d CHAPTERS" % len(beats_list)
+            concept["description"] = (concept["description"] + "\n\n"
+                                      + "\n".join(concept["parts"]))
         out = args.out or os.path.join(eps[0], "render", "bundle_publish_meta.json")
     else:
         if not args.episode_dir:
