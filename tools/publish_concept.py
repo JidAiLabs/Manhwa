@@ -606,8 +606,11 @@ def protagonist_portrait_files(ep_dir: str, max_figures: int = 2) -> set:
     out: set = set()
     for f, figs in (resolve_figures_by_file(u, c) or {}).items():
         names = [str(x.get("name") or "") for x in (figs or []) if x.get("name")]
-        named = [n for n in names if n and n.lower() != "unknown"]
-        if lead in names and len(named) <= max_figures:
+        # Count EVERY figure, not just the identified ones. Counting only named
+        # figures let a five-figure battle panel score as 2 -- the three
+        # 'unknown' entries are still people in the frame, and one of them is
+        # what the image model copied.
+        if lead in names and len(names) <= max_figures:
             out.add(os.path.basename(str(f)))
     return out
 
