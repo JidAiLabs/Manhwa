@@ -195,6 +195,8 @@ COMPOSITION:
 CHARACTER FIDELITY:
 - Use the EXACT character designs from the reference images: same face, hairstyle, hair color, clothing. Repaint them in clean, high-detail webtoon/anime style — do NOT copy panel crops literally.
 - IGNORE and DO NOT reproduce any speech bubbles, on-page text, watermarks, or UI from the references.
+- ADD NOTHING the references do not show. No weapons, swords, armour, capes, uniforms, wings, masks or props unless that exact item appears on the character in a reference image. If the references show ordinary clothes, the character wears ordinary clothes in every panel.
+- This character's appearance comes ONLY from the references. Do NOT borrow the design, silhouette, costume or signature props of any other manhwa, manga or anime character, however well known. A generic genre look is a failure; the references are the only source.
 
 TEXT: render NO text whatsoever — no words, letters, numbers, logos, series name, or captions. Leave clean negative space in the upper and corner areas for text to be added later.
 

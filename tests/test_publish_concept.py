@@ -638,3 +638,19 @@ def test_protagonist_portrait_files_is_empty_without_manifests(tmp_path):
     # a missing/unreadable chapter must not crash the picker, it just yields
     # no portraits and the caller falls back a tier
     assert pc.protagonist_portrait_files(str(tmp_path)) == set()
+
+
+def test_climax_refs_send_several_portraits_not_one():
+    """One reference is weak constraint: against a genre prompt the model fills
+    the rest from its priors and imports costumes and props that appear nowhere
+    in this story. Several panels of the same lead pin appearance by evidence."""
+    import importlib.util as _u
+    from pathlib import Path as _P
+    s = _u.spec_from_file_location(
+        "tg", _P(__file__).resolve().parent.parent / "tools" / "thumbnail_gen.py")
+    tg = _u.module_from_spec(s); s.loader.exec_module(tg)
+    p = tg.build_art_prompt("COMPOSITION HERE")
+    # the fidelity block must forbid invented props and borrowed designs
+    assert "ADD NOTHING the references do not show" in p
+    assert "swords" in p or "weapons" in p
+    assert "any other manhwa" in p

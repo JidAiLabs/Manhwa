@@ -668,7 +668,18 @@ def select_bundle_climax_scored(ep_dirs: List[str]):
     if not climax:
         return None
     sf = climax.get("scene_file")
-    return climax["_ep_index"], ([sf] if sf else [])
+    if not sf:
+        return climax["_ep_index"], []
+    # ONE reference is weak constraint: against a genre prompt the model fills
+    # the rest from its priors and drifts toward whatever famous series that
+    # description matches, importing costumes and props (a giant sword) that
+    # appear nowhere in this story. Send several panels of the SAME lead from
+    # the same chapter so appearance is pinned by evidence, not by one frame.
+    ep_i = climax["_ep_index"]
+    extra = [p["scene_file"] for p in panels
+             if p.get("_ep_index") == ep_i and p.get("_is_portrait")
+             and p.get("scene_file") and p["scene_file"] != sf]
+    return ep_i, [sf] + extra[:2]
 
 
 def _kept_panels(beats_obj: Dict[str, Any]):
