@@ -540,6 +540,37 @@ def select_bundle_climax(beats_objs: List[Dict[str, Any]]):
     return best[1], best[2]
 
 
+# A reference panel exists to show the image model WHO the character is. The
+# scorer ranks panels by dramatic signal alone, and in a system-driven story the
+# most dramatic panel is very often a status window -- so the ORV thumbnail was
+# generated from two references containing no person at all, and the prompt's
+# "use the EXACT character designs from the reference images" was unfollowable.
+# The model invented a military uniform because nothing showed it a human.
+_UI_SUBJECT_RE = re.compile(
+    r"\b(?:window|notification|screen|display|message|panel of text|text box|"
+    r"dialog|interface|status|menu|card|logo|caption|subtitle|watermark|"
+    r"speech bubble|thought bubble|sound effect|sfx)\b", re.IGNORECASE)
+
+
+def panel_shows_a_character(panel: Dict[str, Any]) -> bool:
+    """True when a panel actually depicts a person, per the understanding.
+
+    Deliberately an EXCLUSION test, not a list of person-words: a character can
+    be described in ways no keyword list anticipates ("a large glowing red eye
+    on a pale distorted face"), whereas UI panels describe themselves in a small
+    and stable vocabulary. A panel with no recorded subjects is rejected -- no
+    evidence of a character is not evidence of one.
+    """
+    kind = str((panel or {}).get("panel_kind") or "").strip().lower()
+    if kind in {"system", "caption", "empty"}:
+        return False
+    subs = [str(s).strip() for s in ((panel or {}).get("subjects") or [])
+            if str(s).strip()]
+    if not subs:
+        return False
+    return not all(_UI_SUBJECT_RE.search(s) for s in subs)
+
+
 def select_bundle_climax_scored(ep_dirs: List[str]):
     """Pick the arc's peak from the UNDERSTOOD PANELS, scored by the same
     weighted signal model the teaser uses (teaser_planner.score_panel), so the
@@ -569,7 +600,11 @@ def select_bundle_climax_scored(ep_dirs: List[str]):
             panels.append(q)
     if not panels:
         return None
-    climax = _tp.select_climax_panel(panels)
+    # Rank only panels that SHOW someone. Falling back to the unfiltered set
+    # keeps a chapter with no usable character panel working rather than
+    # returning nothing -- but it is a fallback, not the normal path.
+    with_people = [p for p in panels if panel_shows_a_character(p)]
+    climax = _tp.select_climax_panel(with_people or panels)
     if not climax:
         return None
     sf = climax.get("scene_file")
@@ -604,13 +639,31 @@ def select_before_ref(beats_objs: List[Dict[str, Any]], ep_dirs: List[str], *,
     Searches the earliest chapters first for a calm/tense kept panel, which is
     where a protagonist is most likely to be shown at their weakest.
     """
+    fallback = ""
     for ci in range(0, max(1, min(climax_ci, len(beats_objs)))):
+        # the "before" half must SHOW the character too -- picking purely on
+        # intensity handed the image model a panel with no person in it, and
+        # the fidelity instruction had nothing to copy (see
+        # panel_shows_a_character).
+        shows: Dict[str, bool] = {}
+        if ci < len(ep_dirs):
+            try:
+                u = json.load(open(os.path.join(
+                    ep_dirs[ci], "manifest.panels.understood.json")))
+                shows = {os.path.basename(str(p.get("scene_file") or "")):
+                         panel_shows_a_character(p)
+                         for p in (u.get("panels") or [])}
+            except Exception:
+                shows = {}
         for fn, inten in _kept_panels(beats_objs[ci]):
-            if inten in ("calm", "tense"):
-                if ci < len(ep_dirs):
-                    return os.path.join(ep_dirs[ci], "scenes", fn)
-                return fn
-    return ""
+            if inten not in ("calm", "tense"):
+                continue
+            path = (os.path.join(ep_dirs[ci], "scenes", fn)
+                    if ci < len(ep_dirs) else fn)
+            if shows.get(fn):
+                return path
+            fallback = fallback or path
+    return fallback
 
 
 def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,

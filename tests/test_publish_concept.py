@@ -594,3 +594,30 @@ def test_single_label_layouts_are_untouched():
     pkg = {"title": "T", "thumbnail_style": "power_reveal",
            "labels": ["THE READER", "SPARE"], "hashtags": []}
     assert pc.assemble_package({}, {}, pkg, series_title="X")["hook"] == "THE READER"
+
+
+# ---- reference panels must SHOW the character ------------------------------
+# The ORV thumbnail was generated from two refs containing no person: a system
+# notification window (highest dramatic score in a system-driven story) and a
+# panel with no recorded subjects. The art prompt's "use the EXACT character
+# designs from the reference images: same face, hairstyle, clothing" was
+# therefore unfollowable, and the model invented a military uniform.
+
+def test_panel_shows_a_character_rejects_ui_and_empty_panels():
+    assert not pc.panel_shows_a_character(
+        {"subjects": ["a blue system notification window stating something"]})
+    assert not pc.panel_shows_a_character({"panel_kind": "system",
+                                           "subjects": ["a man in a suit"]})
+    assert not pc.panel_shows_a_character({"subjects": []})   # no evidence
+    assert not pc.panel_shows_a_character({})
+
+
+def test_panel_shows_a_character_accepts_people_however_described():
+    assert pc.panel_shows_a_character(
+        {"subjects": ["a man with black hair in a dark grey suit"]})
+    # an exclusion test, not a person-word list: unusual descriptions pass
+    assert pc.panel_shows_a_character(
+        {"subjects": ["a large glowing red eye on a pale, distorted face"]})
+    # mixed panel: a person alongside UI still shows a person
+    assert pc.panel_shows_a_character(
+        {"subjects": ["a status window", "a woman in a tan coat"]})
