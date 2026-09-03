@@ -571,6 +571,12 @@ def panel_shows_a_character(panel: Dict[str, Any]) -> bool:
     return not all(_UI_SUBJECT_RE.search(s) for s in subs)
 
 
+def _norm_name(s: Any) -> str:
+    """Cast ids and resolved figure names for the SAME person differ in form
+    ('our_protagonist' vs 'our protagonist'), so compare them normalised."""
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+
+
 def protagonist_name(cast_obj: Dict[str, Any]) -> str:
     """The cast entry that is the lead, by its own id/name."""
     members = (cast_obj or {}).get("cast") or (cast_obj or {}).get("members") or []
@@ -610,7 +616,12 @@ def protagonist_portrait_files(ep_dir: str, max_figures: int = 2) -> set:
         # figures let a five-figure battle panel score as 2 -- the three
         # 'unknown' entries are still people in the frame, and one of them is
         # what the image model copied.
-        if lead in names and len(names) <= max_figures:
+        # Match on a NORMALISED name: the cast carries the id ("our_protagonist")
+        # while resolve_figures_by_file returns the display name ("our
+        # protagonist"), so a literal comparison never matched and this filter
+        # silently produced nothing, falling back a tier on every chapter.
+        if _norm_name(lead) in {_norm_name(n) for n in names} \
+                and len(names) <= max_figures:
             out.add(os.path.basename(str(f)))
     return out
 
