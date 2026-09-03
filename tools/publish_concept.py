@@ -571,6 +571,47 @@ def panel_shows_a_character(panel: Dict[str, Any]) -> bool:
     return not all(_UI_SUBJECT_RE.search(s) for s in subs)
 
 
+def protagonist_name(cast_obj: Dict[str, Any]) -> str:
+    """The cast entry that is the lead, by its own id/name."""
+    members = (cast_obj or {}).get("cast") or (cast_obj or {}).get("members") or []
+    for m in members:
+        ident = str((m or {}).get("id") or (m or {}).get("name") or "").lower()
+        if "protagonist" in ident or ident in {"mc", "hero", "lead"}:
+            return str((m or {}).get("name") or (m or {}).get("id") or "")
+    return str((members[0].get("name") or members[0].get("id") or "")
+               ) if members else ""
+
+
+def protagonist_portrait_files(ep_dir: str, max_figures: int = 2) -> set:
+    """Panels where the LEAD is present and the frame is not a crowd.
+
+    Requiring merely "a person" was not enough. The chosen reference had EIGHT
+    subjects -- a boot, two system windows, a fire-breathing creature, an
+    armoured figure and three men -- and the image model copied one of them
+    faithfully: a side character in a navy polo. It was never inventing; it was
+    given a crowd and no way to know which figure was the lead.
+    """
+    try:
+        u = json.load(open(os.path.join(ep_dir, "manifest.panels.understood.json")))
+        c = json.load(open(os.path.join(ep_dir, "manifest.cast.json")))
+    except Exception:
+        return set()
+    try:
+        from cast_identity import resolve_figures_by_file
+    except Exception:
+        return set()
+    lead = protagonist_name(c)
+    if not lead:
+        return set()
+    out: set = set()
+    for f, figs in (resolve_figures_by_file(u, c) or {}).items():
+        names = [str(x.get("name") or "") for x in (figs or []) if x.get("name")]
+        named = [n for n in names if n and n.lower() != "unknown"]
+        if lead in names and len(named) <= max_figures:
+            out.add(os.path.basename(str(f)))
+    return out
+
+
 def select_bundle_climax_scored(ep_dirs: List[str]):
     """Pick the arc's peak from the UNDERSTOOD PANELS, scored by the same
     weighted signal model the teaser uses (teaser_planner.score_panel), so the
@@ -593,18 +634,23 @@ def select_bundle_climax_scored(ep_dirs: List[str]):
             data = json.load(open(man))
         except Exception:
             continue
+        portraits = protagonist_portrait_files(d)
         for p in data.get("panels") or []:
             q = dict(p)
             q["_ep_index"] = i        # rides back on the returned climax panel
             q["scene_file"] = os.path.basename(str(p.get("scene_file") or ""))
+            q["_is_portrait"] = q["scene_file"] in portraits
             panels.append(q)
     if not panels:
         return None
-    # Rank only panels that SHOW someone. Falling back to the unfiltered set
-    # keeps a chapter with no usable character panel working rather than
-    # returning nothing -- but it is a fallback, not the normal path.
+    # Three tiers, strongest first. "Shows a person" alone was not enough: the
+    # panel it chose held EIGHT subjects and the model copied a side character
+    # out of the crowd. A reference has one job -- show the image model who the
+    # lead IS -- so prefer panels where the lead is present and it is not a
+    # crowd. Each tier falls back so a chapter without one still works.
+    portrait = [p for p in panels if p.get("_is_portrait")]
     with_people = [p for p in panels if panel_shows_a_character(p)]
-    climax = _tp.select_climax_panel(with_people or panels)
+    climax = _tp.select_climax_panel(portrait or with_people or panels)
     if not climax:
         return None
     sf = climax.get("scene_file")

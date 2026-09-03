@@ -621,3 +621,20 @@ def test_panel_shows_a_character_accepts_people_however_described():
     # mixed panel: a person alongside UI still shows a person
     assert pc.panel_shows_a_character(
         {"subjects": ["a status window", "a woman in a tan coat"]})
+
+
+def test_protagonist_name_finds_the_lead_by_its_own_id():
+    cast = {"cast": [{"id": "junghyeok"}, {"id": "our_protagonist"},
+                     {"id": "jihye_lee"}]}
+    assert pc.protagonist_name(cast) == "our_protagonist"
+    # name field wins when present
+    assert pc.protagonist_name(
+        {"cast": [{"id": "mc", "name": "the lead"}]}) == "the lead"
+    # no cast at all -> empty, and the portrait filter then returns nothing
+    assert pc.protagonist_name({}) == ""
+
+
+def test_protagonist_portrait_files_is_empty_without_manifests(tmp_path):
+    # a missing/unreadable chapter must not crash the picker, it just yields
+    # no portraits and the caller falls back a tier
+    assert pc.protagonist_portrait_files(str(tmp_path)) == set()
