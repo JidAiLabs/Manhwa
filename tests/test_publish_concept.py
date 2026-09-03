@@ -548,3 +548,21 @@ def test_assemble_package_still_rejects_an_invented_number():
            "labels": ["LEVEL 999", "THE READER"], "hashtags": []}
     c = pc.assemble_package(beats, {}, pkg, series_title="X")
     assert c["hook"] == "THE READER"   # the false claim is skipped
+
+
+def test_labels_returned_as_a_bare_string_are_not_split_into_characters():
+    """A JSON schema in a prompt is a request, not a guarantee. qwen3.6 returned
+    labels as the STRING "READER|SURVIVOR|AUTHOR"; iterating it yielded one
+    CHARACTER per label and the hook became "R"."""
+    pkg = {"title": "T", "thumbnail_style": "triptych",
+           "labels": "READER|SURVIVOR|AUTHOR", "hashtags": []}
+    c = pc.assemble_package({}, {}, pkg, series_title="X")
+    assert c["hooks"] == ["READER|SURVIVOR|AUTHOR"]
+    assert c["hook"] == "READER|SURVIVOR|AUTHOR"
+
+
+def test_labels_as_a_list_still_work():
+    pkg = {"title": "T", "thumbnail_style": "before_after",
+           "labels": ["WEAK|STRONG", "OTHER"], "hashtags": []}
+    c = pc.assemble_package({}, {}, pkg, series_title="X")
+    assert c["hooks"] == ["WEAK|STRONG", "OTHER"]

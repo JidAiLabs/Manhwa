@@ -106,7 +106,13 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
     style = str(pkg.get("thumbnail_style") or "").strip()
     if style not in STYLE_MODULES:
         style = DEFAULT_STYLE
-    labels = [str(x).strip() for x in (pkg.get("labels") or []) if str(x).strip()]
+    # `labels` may come back as a bare STRING ("READER|SURVIVOR|AUTHOR") rather
+    # than a list -- iterating that yields one CHARACTER per label and the hook
+    # becomes "R". A JSON schema in a prompt is a request, not a guarantee.
+    raw_labels = pkg.get("labels") or []
+    if isinstance(raw_labels, str):
+        raw_labels = [raw_labels]
+    labels = [str(x).strip() for x in raw_labels if str(x).strip()]
     corpus = beats_text_corpus(beats_obj)
     # numbers stay guarded: a rank or level is a checkable claim about the
     # story, and an invented one is what put LEVEL 999 on a live thumbnail.
