@@ -566,3 +566,31 @@ def test_labels_as_a_list_still_work():
            "labels": ["WEAK|STRONG", "OTHER"], "hashtags": []}
     c = pc.assemble_package({}, {}, pkg, series_title="X")
     assert c["hooks"] == ["WEAK|STRONG", "OTHER"]
+
+
+def test_panelled_layouts_join_one_label_per_panel():
+    """The model returns either shape: a joined "A|B|C" string, or one list
+    entry per panel. Taking the first entry of the latter left panels 2 and 3
+    blank, so the per-panel form is joined instead."""
+    pkg = {"title": "T", "thumbnail_style": "triptych",
+           "labels": ["THE READER", "SCENARIO SURVIVOR", "STORY MANIPULATOR"],
+           "hashtags": []}
+    c = pc.assemble_package({}, {}, pkg, series_title="X")
+    assert c["hook"] == "THE READER|SCENARIO SURVIVOR|STORY MANIPULATOR"
+
+    two = {"title": "T", "thumbnail_style": "before_after",
+           "labels": ["PASSIVE READER", "STORY ARCHITECT"], "hashtags": []}
+    assert pc.assemble_package({}, {}, two, series_title="X")["hook"] == \
+        "PASSIVE READER|STORY ARCHITECT"
+
+
+def test_an_already_joined_hook_is_left_alone():
+    pkg = {"title": "T", "thumbnail_style": "triptych",
+           "labels": ["A|B|C", "spare"], "hashtags": []}
+    assert pc.assemble_package({}, {}, pkg, series_title="X")["hook"] == "A|B|C"
+
+
+def test_single_label_layouts_are_untouched():
+    pkg = {"title": "T", "thumbnail_style": "power_reveal",
+           "labels": ["THE READER", "SPARE"], "hashtags": []}
+    assert pc.assemble_package({}, {}, pkg, series_title="X")["hook"] == "THE READER"

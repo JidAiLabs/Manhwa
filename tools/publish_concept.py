@@ -113,6 +113,14 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
     if isinstance(raw_labels, str):
         raw_labels = [raw_labels]
     labels = [str(x).strip() for x in raw_labels if str(x).strip()]
+    # A panelled layout needs ONE pipe-joined hook ("A|B|C"). The model returns
+    # either shape: a joined string, or one list entry per panel. Taking the
+    # first entry of the latter left panels 2 and 3 blank, so join instead.
+    want = 3 if style_for(style)["overlay"].get("split3") else (
+        2 if style_for(style)["overlay"].get("split") else 1)
+    if want > 1 and len(labels) >= want and not any("|" in s for s in labels):
+        labels = ["|".join(labels[:want])] + labels[want:]
+
     corpus = beats_text_corpus(beats_obj)
     # numbers stay guarded: a rank or level is a checkable claim about the
     # story, and an invented one is what put LEVEL 999 on a live thumbnail.
