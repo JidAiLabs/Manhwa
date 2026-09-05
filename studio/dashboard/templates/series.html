@@ -3,7 +3,7 @@
 {% if error %}<div class="row"><span class="b warn" style="background:#e74c3c;color:#fff">⚠ {{ error }}</span></div>{% endif %}
 <div class="row">
 <form class="inline" method="post" action="/add-series-direct">
-<select name="source"><option value="asura">asura</option><option value="webtoon">webtoon</option><option value="elftoon">elftoon</option></select>
+<select name="source">{% for s in sources %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
 <input name="url" placeholder="https://…  manhwa URL" style="width:28em">
 <button class="green">add manhwa</button></form>
 <span class="kv">discovers + tracks all chapters in the background</span>

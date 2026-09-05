@@ -561,10 +561,22 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def runs_page(request: Request):
         return page("runs.html", request, jobs=jobs.runs_view(rcon()))
 
+    def _source_ids() -> list:
+        """Registered adapter ids, read from the REGISTRY so the picker can
+        never drift from what the code can actually fetch.
+
+        arenascan shipped registered-but-UNPICKABLE: the dropdown was a
+        hardcoded 3-item list, so adding an arenascan URL silently fell back to
+        the first option (asura), whose parser matches "/chapter/" and found 0
+        of 168 chapters. The series looked added and was simply empty."""
+        import studio.sources          # noqa: F401  (adapters self-register)
+        from studio.sources.base import REGISTRY
+        return sorted(REGISTRY)
+
     @app.get("/series", response_class=HTMLResponse)
     def series_page(request: Request, error: str = ""):
         return page("series.html", request, series=_series_rows(con()),
-                    error=error)
+                    sources=_source_ids(), error=error)
 
     @app.get("/series/{sid}", response_class=HTMLResponse)
     def series_detail(request: Request, sid: int):
@@ -801,7 +813,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         c = con()
         if refresh:
             discovery.fetch_trending(c)
-        return page("discovery.html", request, titles=discovery.listing(c))
+        return page("discovery.html", request, titles=discovery.listing(c),
+                    sources=_source_ids())
 
     @app.get("/catalog-health", response_class=HTMLResponse)
     def catalog_health_page(request: Request):

@@ -28,7 +28,7 @@
 {% endfor %}
 {% elif t.status in ('candidate','tracked') %}
 <form class="inline" method="post" action="/discovery/{{ t.anilist_id }}/add">
-<select name="source"><option>asura</option><option>webtoon</option><option>elftoon</option></select>
+<select name="source">{% for s in sources %}<option>{{ s }}</option>{% endfor %}</select>
 <input name="url" placeholder="series URL" style="background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:6px;width:200px">
 <button class="ghost">add</button></form>
 {% endif %}

@@ -252,12 +252,13 @@ def scan(con: sqlite3.Connection, *, client=None,
     log(f"[discovery] anilist rows: {n}")
     if searchers is None:
         # adapters self-register on import; REGISTRY maps id -> instance
-        import studio.sources.asura    # noqa: F401
-        import studio.sources.elftoon  # noqa: F401
-        import studio.sources.webtoon  # noqa: F401
-        from studio.sources.base import get as get_adapter
+        import studio.sources          # noqa: F401  (adapters self-register)
+        from studio.sources.base import REGISTRY, get as get_adapter
         searchers = {}
-        for sid in ("asura", "webtoon", "elftoon"):
+        # iterate the REGISTRY, not a literal list: a hardcoded list here goes
+        # stale the moment an adapter is added, silently excluding the new
+        # source from auto-linking (see _source_ids in app.py)
+        for sid in sorted(REGISTRY):
             try:
                 searchers[sid] = get_adapter(sid).search
             except Exception:

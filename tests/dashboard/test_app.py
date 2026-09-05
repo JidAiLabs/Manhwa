@@ -1071,3 +1071,45 @@ def test_video_creator_empty_when_nothing_rendered(client):
     con.commit()
     body = c.get("/partials/bundle-form?series_id=1").text
     assert "no rendered episodes" in body
+
+
+def test_source_picker_offers_every_registered_adapter(client):
+    """A source the code can fetch but the UI cannot offer is invisible.
+
+    arenascan shipped registered in REGISTRY + studio.toml but ABSENT from the
+    dropdown, which was a hardcoded 3-item list. Adding an arenascan URL
+    therefore submitted the first option (asura), whose parser matches
+    "/chapter/" while arenascan uses "<slug>-chapter-N/" — so it stored the
+    series under the wrong source and discovered 0 of 168 chapters. The row
+    looked added and was simply empty, with no error anywhere.
+
+    Same shape as test_every_worker_handler_has_a_lane: one authority, both
+    sides.
+    """
+    import studio.sources  # noqa: F401  (adapters self-register on import)
+    from studio.sources.base import REGISTRY
+
+    c, _ = client
+    html = c.get("/series").text
+    picker = html.split('name="source"', 1)[1].split("</select>", 1)[0]
+    missing = [sid for sid in REGISTRY if f">{sid}<" not in picker]
+    assert not missing, f"adapters registered but unpickable: {missing}"
+
+
+def test_no_template_hardcodes_the_source_list():
+    """The discovery picker only renders for candidate/tracked rows, so it
+    cannot be asserted on an empty test DB — check the template is
+    registry-driven instead. A literal <option> here is the drift that made
+    arenascan unpickable."""
+    import studio.sources  # noqa: F401
+    from pathlib import Path
+
+    from studio.sources.base import REGISTRY
+
+    tpl_dir = Path("studio/dashboard/templates")
+    for name in ("series.html", "discovery.html"):
+        text = (tpl_dir / name).read_text()
+        block = text.split('name="source"', 1)[1].split("</select>", 1)[0]
+        assert "{% for s in sources %}" in block, f"{name}: picker is not registry-driven"
+        hardcoded = [sid for sid in REGISTRY if f">{sid}<" in block]
+        assert not hardcoded, f"{name}: hardcoded source options {hardcoded}"
