@@ -1,5 +1,6 @@
 """Teaser dashboard wiring: the Plan-teaser button enqueues a plan_teaser job,
-and approve/decline set bundle.teaser_state (the concat gate reads it)."""
+and approve/decline set series.teaser_state — the teaser is ONE PER MANHWA,
+so it survives deleting a video (the concat gate reads it off the series)."""
 import pytest
 from fastapi.testclient import TestClient
 
@@ -21,54 +22,56 @@ def client(tmp_path):
                 "VALUES (?, 'full', 'Nano — Full')", (sid,))
     con.commit()
     bid = con.execute("SELECT id FROM bundle").fetchone()[0]
-    return TestClient(create_app(db_path=str(db))), con, bid
+    return TestClient(create_app(db_path=str(db))), con, sid, bid
 
 
 def test_plan_teaser_enqueues_job(client):
-    c, con, bid = client
-    r = c.post(f"/bundles/{bid}/teaser/plan", follow_redirects=False)
+    c, con, sid, bid = client
+    r = c.post(f"/series/{sid}/teaser/plan", follow_redirects=False)
     assert r.status_code == 303
     assert con.execute(
-        "SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND bundle_id=?",
-        (bid,)).fetchone()[0] == 1
+        "SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND series_id=?",
+        (sid,)).fetchone()[0] == 1
 
 
 def test_decline_sets_state(client):
-    c, con, bid = client
-    r = c.post(f"/bundles/{bid}/teaser/decline", follow_redirects=False)
+    c, con, sid, bid = client
+    r = c.post(f"/series/{sid}/teaser/decline", follow_redirects=False)
     assert r.status_code == 303
-    assert con.execute("SELECT teaser_state FROM bundle WHERE id=?",
-                       (bid,)).fetchone()[0] == "declined"
+    assert con.execute("SELECT teaser_state FROM series WHERE id=?",
+                       (sid,)).fetchone()[0] == "declined"
 
 
 def test_approve_sets_state_and_records_gate(client):
-    c, con, bid = client
-    r = c.post(f"/bundles/{bid}/teaser/approve", follow_redirects=False)
+    c, con, sid, bid = client
+    r = c.post(f"/series/{sid}/teaser/approve", follow_redirects=False)
     assert r.status_code == 303
-    assert con.execute("SELECT teaser_state FROM bundle WHERE id=?",
-                       (bid,)).fetchone()[0] == "approved"
+    assert con.execute("SELECT teaser_state FROM series WHERE id=?",
+                       (sid,)).fetchone()[0] == "approved"
     # an explicit teaser approval is recorded (concat_allowed reads it via
     # bundle.teaser_state, not a dedicated teaser_allowed gate — that dead
     # API was deleted; approval EXISTENCE is what matters here)
-    assert gates._has_approval(con, "teaser", bundle_id=bid) is True
+    assert gates._has_approval(con, "teaser", series_id=sid) is True
 
 
-def test_videos_page_renders_plan_teaser_button(client):
-    c, _, bid = client
-    r = c.get("/videos")
+def test_series_page_renders_create_teaser_button(client):
+    """The teaser is made from the SERIES page now, independently of any video
+    — one per manhwa, so it cannot be created or destroyed by video actions."""
+    c, _con, sid, _bid = client
+    r = c.get(f"/series/{sid}")
     assert r.status_code == 200
-    assert "plan teaser" in r.text.lower()
-    assert f"/bundles/{bid}/teaser/plan" in r.text
+    assert "create teaser" in r.text.lower()
+    assert f"/series/{sid}/teaser/plan" in r.text
 
 
 def test_planned_teaser_shows_review_card(client, tmp_path, monkeypatch):
-    """When a teaser is PLANNED and its manifest exists, the videos page shows a
-    review card (the hook narration + reason) with approve/decline forms."""
+    """When a teaser is PLANNED and its manifest exists, the SERIES page shows
+    the review card (hook narration + reason) with approve/decline forms."""
     import json
-    c, con, bid = client
+    c, con, sid, bid = client
     from studio.dashboard import app as _app
     monkeypatch.setattr(_app, "REPO", tmp_path)
-    tdir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    tdir = tmp_path / "dist" / f"series_{sid}" / "teaser"
     (tdir / "scenes").mkdir(parents=True)
     (tdir / "manifest.teaser.json").write_text(json.dumps({
         "source_chapters": [5],
@@ -78,19 +81,19 @@ def test_planned_teaser_shows_review_card(client, tmp_path, monkeypatch):
         "reason": "public test + humiliation",
         "rewind_line": "But to see how he got here, we go back.",
         "spoiler_boundary": "no identity reveal"}))
-    con.execute("UPDATE bundle SET teaser_state='planned' WHERE id=?", (bid,))
+    con.execute("UPDATE series SET teaser_state='planned' WHERE id=?", (sid,))
     con.commit()
-    html = c.get("/videos").text
+    html = c.get(f"/series/{sid}").text
     assert "The exam begins." in html
-    assert f"/bundles/{bid}/teaser/approve" in html
-    assert f"/bundles/{bid}/teaser/decline" in html
+    assert f"/series/{sid}/teaser/approve" in html
+    assert f"/series/{sid}/teaser/decline" in html
 
 
-def test_videos_page_links_the_teaser_file_and_flags_it_when_newer(tmp_path, monkeypatch):
-    """The teaser had no link anywhere: after re-voicing bundle 1's teaser
-    there was no way to hear it from the dashboard, and "open" plays the
-    CONCATENATED file, which still carried the OLD teaser — so the page looked
-    unchanged and the repair appeared not to have happened."""
+def test_videos_page_flags_a_teaser_newer_than_the_video(tmp_path, monkeypatch):
+    """"open" plays the CONCATENATED file, which carries the teaser as it was
+    when the concat ran. Re-voicing the teaser therefore changes nothing the
+    Videos page shows — it looked like the repair had not happened. The row now
+    says so. The teaser itself is played from the SERIES page."""
     import json
     from fastapi.testclient import TestClient
     from studio.catalog.db import connect
@@ -107,16 +110,20 @@ def test_videos_page_links_the_teaser_file_and_flags_it_when_newer(tmp_path, mon
     dist.mkdir(parents=True)
     out = dist / "bundle.mp4"
     out.write_text("video")
-    teaser = dist / "teaser.mp4"
+    sdist = tmp_path / "dist" / "series_1"       # the teaser is per MANHWA
+    sdist.mkdir(parents=True)
+    teaser = sdist / "teaser.mp4"
     teaser.write_text("teaser")
     import os, time
     os.utime(out, (time.time() - 600, time.time() - 600))   # concat is OLDER
     con.execute("INSERT INTO bundle (id, series_id, title, kind, state, "
-                "output_path, teaser_state) VALUES "
-                "(1,1,'V','manual','concatenated',?,'approved')", (str(out),))
+                "output_path) VALUES "
+                "(1,1,'V','manual','concatenated',?)", (str(out),))
+    con.execute("UPDATE series SET teaser_state='approved' WHERE id=1")
     con.commit()
 
     monkeypatch.setattr(appmod, "REPO", tmp_path)
-    html = TestClient(appmod.create_app(db_path=str(db))).get("/videos").text
-    assert "/dist/bundle_1/teaser.mp4" in html, "no way to play the teaser"
-    assert "newer than video" in html, "stale concat not flagged"
+    c = TestClient(appmod.create_app(db_path=str(db)))
+    assert "newer than video" in c.get("/videos").text, "stale concat not flagged"
+    # and the teaser itself is playable from the series page
+    assert "/dist/series_1/teaser.mp4" in c.get("/series/1").text

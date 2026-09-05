@@ -1242,7 +1242,7 @@ def _autopropose_publish_if_ready(con: sqlite3.Connection, series_id: int,
     bid = bundles.create_debut_bundle_once(
         con, series_id, ready[:threshold], title=f"Debut — first {threshold}")
     if bid is not None:
-        jobs.enqueue(con, "plan_teaser", bundle_id=bid)
+        jobs.enqueue(con, "plan_teaser", series_id=series_id)
         log.write(f"[auto-publish] created debut bundle {bid} "
                   f"({len(ready[:threshold])} chapters) -> proposing arc teaser "
                   "for review\n")
@@ -1565,9 +1565,14 @@ def _autostart_intro_if_ready(con: sqlite3.Connection, chapter_id: int,
     rows = con.execute("SELECT bundle_id FROM bundle_chapter WHERE chapter_id=?",
                        (chapter_id,)).fetchall()
     for (bid,) in rows:
-        b = con.execute("SELECT series_id, teaser_state FROM bundle WHERE id=?",
+        b = con.execute("SELECT series_id FROM bundle WHERE id=?",
                         (bid,)).fetchone()
-        if not b or b[1] != "none":
+        if not b:
+            continue
+        # the teaser is per MANHWA now, so its state lives on the series
+        ts = con.execute("SELECT teaser_state FROM series WHERE id=?",
+                         (b[0],)).fetchone()
+        if not ts or ts[0] != "none":
             continue                          # already planned/approved/declined
         ap = con.execute("SELECT autopilot FROM series WHERE id=?",
                          (b[0],)).fetchone()
@@ -1589,11 +1594,11 @@ def _autostart_intro_if_ready(con: sqlite3.Connection, chapter_id: int,
         # auto_intro — silently AUTO-APPROVING a teaser the operator never
         # reviewed. A bundle with ANY prior teaser attempt is left alone.
         if con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                       "bundle_id=? AND state IN ('queued','running','done',"
-                       "'failed')", (bid,)).fetchone()[0]:
+                       "series_id=? AND state IN ('queued','running','done',"
+                       "'failed')", (b[0],)).fetchone()[0]:
             continue
-        jobs.enqueue(con, "plan_teaser", bundle_id=bid,
-                     payload={"auto_intro": True})
+        jobs.enqueue(con, "plan_teaser", series_id=b[0],
+                     payload={"auto_intro_bundle": bid})
         log.write(f"[autopilot] bundle {bid} fully rendered -> auto-planning "
                   "arc teaser (intro+ch1)\n")
 
@@ -1611,27 +1616,37 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
     blocked waiting on a teaser that doesn't exist."""
     import shutil
     from studio import pipeline as _pl
-    bid = job["bundle_id"]
+    # The teaser is ONE PER MANHWA, not per video: it used to hang off a bundle,
+    # so deleting a video destroyed its teaser and it could not be seen or made
+    # independently of one. Scans the series' FIRST N processed chapters
+    # (publish_auto_after_chapters, default 12) so the hook stays stable no
+    # matter which ranges are bundled later.
+    sid = job["series_id"]
     cfg, project, location = _beats_cfg()
-    srow = con.execute("SELECT series_id FROM bundle WHERE id=?",
-                       (bid,)).fetchone()
-    title = _series_title(con, srow[0]) if srow else ""
-    chapter_dirs = [Path(_chapter(con, cid)["ep_dir"] or "")
-                    for cid in bundles.bundle_chapters(con, bid)]
-    out_dir = REPO / "dist" / f"bundle_{bid}" / "teaser"
+    title = _series_title(con, sid)
+    n_scan = int(getattr(cfg, "publish_auto_after_chapters", 12) or 12)
+    chapter_dirs = [Path(r[0]) for r in con.execute(
+        "SELECT ep_dir FROM chapter WHERE series_id=? AND ep_dir IS NOT NULL "
+        "AND ep_dir <> '' AND status IN "
+        "('scripted','voiced','planned','rendered') "
+        "ORDER BY number LIMIT ?", (sid, n_scan)).fetchall()]
+    if not chapter_dirs:
+        raise NonRetryableError(
+            "teaser: no processed chapters yet — prepare some first")
+    out_dir = REPO / "dist" / f"series_{sid}" / "teaser"
     # Re-plan from a clean slate: clear any prior teaser state + the rendered
     # teaser.mp4 up front, so a re-plan that selects NO window can't leave a stale
     # approved teaser that the concat would still prepend. 'planned' is set again
     # only if this run actually produces a teaser.
-    con.execute("UPDATE bundle SET teaser_state='none' WHERE id=?", (bid,))
+    con.execute("UPDATE series SET teaser_state='none' WHERE id=?", (sid,))
     con.commit()
-    teaser_mp4 = REPO / "dist" / f"bundle_{bid}" / "teaser.mp4"
+    teaser_mp4 = REPO / "dist" / f"series_{sid}" / "teaser.mp4"
     if teaser_mp4.exists():
         teaser_mp4.unlink()
     with record_stage(con, chapter_id=None, stage="plan_teaser"):
         # 1) select the window + materialize the synthetic teaser episode dir
         argv = [PY, str(REPO / "tools" / "teaser_planner.py"),
-                "--bundle-id", str(bid),
+                "--series-id", str(sid),
                 "--chapter-dirs", *[str(d) for d in chapter_dirs],
                 "--out-dir", str(out_dir),
                 "--backend", cfg.beats_backend,
@@ -1721,19 +1736,20 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
         # immediately queue the intro+ch1 concat with NO human click.
         teaser_mp4.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(str(seg), str(teaser_mp4))
-        if (job.get("payload") or {}).get("auto_intro"):
-            con.execute("UPDATE bundle SET teaser_state='approved' WHERE id=?",
-                        (bid,))
+        auto_bid = (job.get("payload") or {}).get("auto_intro_bundle")
+        if auto_bid:
+            con.execute("UPDATE series SET teaser_state='approved' WHERE id=?",
+                        (sid,))
             con.commit()
-            gates.approve(con, "teaser", bundle_id=bid, note="autopilot")
-            gates.approve(con, "concat", bundle_id=bid, note="autopilot")
-            jobs.enqueue(con, "concat", bundle_id=bid,
+            gates.approve(con, "teaser", series_id=sid, note="autopilot")
+            gates.approve(con, "concat", bundle_id=auto_bid, note="autopilot")
+            jobs.enqueue(con, "concat", bundle_id=auto_bid,
                          payload={"intro_ch1": True})
             log.write("[autopilot] teaser rendered -> auto-approved; intro+ch1 "
                       "concat queued\n")
         else:
-            con.execute("UPDATE bundle SET teaser_state='planned' WHERE id=?",
-                        (bid,))
+            con.execute("UPDATE series SET teaser_state='planned' WHERE id=?",
+                        (sid,))
             con.commit()
 
 
@@ -1757,13 +1773,21 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
     # An APPROVED arc teaser is the bundle's cold open — prepend it BEFORE the
     # branding wrap so the published order is [teaser, ch1…chN, outro]. 'planned'
     # already blocked the gate above; 'declined'/'none' simply don't prepend.
-    teaser_mp4 = REPO / "dist" / f"bundle_{bid}" / "teaser.mp4"
-    trow = con.execute("SELECT teaser_state FROM bundle WHERE id=?",
-                       (bid,)).fetchone()
-    if trow and trow[0] == "approved" and teaser_mp4.exists():
-        segs = [str(teaser_mp4)] + segs
     srow = con.execute("SELECT series_id FROM bundle WHERE id=?",
                        (bid,)).fetchone()
+    sid = srow[0] if srow else None
+    # The teaser belongs to the MANHWA and opens its FIRST video only —
+    # continuation videos never re-intro. Reading it off the series (not the
+    # bundle) is what lets a video be deleted without destroying the teaser.
+    if sid is not None:
+        first_bid = con.execute("SELECT MIN(id) FROM bundle WHERE series_id=?",
+                                (sid,)).fetchone()[0]
+        trow = con.execute("SELECT teaser_state FROM series WHERE id=?",
+                           (sid,)).fetchone()
+        teaser_mp4 = REPO / "dist" / f"series_{sid}" / "teaser.mp4"
+        if (bid == first_bid and trow and trow[0] == "approved"
+                and teaser_mp4.exists()):
+            segs = [str(teaser_mp4)] + segs
     bdir = _series_branding_dir(srow[0]) if srow else None
     if bdir is not None:
         segs = bundles.wrap_with_branding(
@@ -1800,9 +1824,13 @@ def _concat_intro_ch1(con: sqlite3.Connection, bid: int, log: TextIO) -> None:
         raise RuntimeError(f"chapter {cids[0]} (bundle {bid} first) has no "
                            "rendered segment")
     segs = [str(found)]
-    teaser_mp4 = REPO / "dist" / f"bundle_{bid}" / "teaser.mp4"
-    trow = con.execute("SELECT teaser_state FROM bundle WHERE id=?",
-                       (bid,)).fetchone()
+    # the teaser is per MANHWA (dist/series_<id>), not per video
+    _sr = con.execute("SELECT series_id FROM bundle WHERE id=?",
+                      (bid,)).fetchone()
+    teaser_mp4 = (REPO / "dist" / f"series_{_sr[0]}" / "teaser.mp4"
+                  if _sr else REPO / "dist" / "missing" / "teaser.mp4")
+    trow = con.execute("SELECT teaser_state FROM series WHERE id=?",
+                       (_sr[0],)).fetchone() if _sr else None
     if trow and trow[0] == "approved" and teaser_mp4.exists():
         segs = [str(teaser_mp4)] + segs          # teaser is the cold open
     out_dir = REPO / "dist" / f"bundle_{bid}"

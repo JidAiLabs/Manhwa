@@ -75,11 +75,11 @@ def test_h_teaser_plans_and_sets_state(tmp_path, monkeypatch):
     import studio.pipeline as pl
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)        # hermetic dist/
     monkeypatch.setattr(w, "_beats_cfg", lambda: (
         _fake_cfg(), "proj", "loc"))
-    out_dir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    out_dir = tmp_path / "dist" / f"series_{sid}" / "teaser"
 
     stream_calls: list = []
     tool_calls: list = []
@@ -102,11 +102,11 @@ def test_h_teaser_plans_and_sets_state(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "_run_tool",
                         lambda script, args, **k: tool_calls.append(script) or None)
 
-    w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+    w._h_teaser(con, {"series_id": sid, "payload": {}}, io.StringIO())
 
-    assert con.execute("SELECT teaser_state FROM bundle WHERE id=?",
-                       (bid,)).fetchone()[0] == "planned"
-    assert (tmp_path / "dist" / f"bundle_{bid}" / "teaser.mp4").exists()
+    assert con.execute("SELECT teaser_state FROM series WHERE id=?",
+                       (sid,)).fetchone()[0] == "planned"
+    assert (tmp_path / "dist" / f"series_{sid}" / "teaser.mp4").exists()
     # the chapter render tool chain ran on the synthetic teaser dir
     assert {"script_expander.py", "local_tts_from_manifest.py",
             "timeline_planner.py"} <= set(tool_calls)
@@ -124,7 +124,7 @@ def test_h_teaser_no_teaser_leaves_state_none(tmp_path, monkeypatch):
     import studio.pipeline as pl
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
     # planner "succeeds" but writes nothing -> no-teaser
     monkeypatch.setattr(w, "_stream", lambda argv, log, **k: 0)
@@ -132,12 +132,12 @@ def test_h_teaser_no_teaser_leaves_state_none(tmp_path, monkeypatch):
     monkeypatch.setattr(pl, "_run_tool",
                         lambda script, args, **k: ran.append(script))
 
-    w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+    w._h_teaser(con, {"series_id": sid, "payload": {}}, io.StringIO())
 
-    assert con.execute("SELECT teaser_state FROM bundle WHERE id=?",
-                       (bid,)).fetchone()[0] == "none"
+    assert con.execute("SELECT teaser_state FROM series WHERE id=?",
+                       (sid,)).fetchone()[0] == "none"
     assert ran == []                                  # render chain not run
-    assert not (tmp_path / "dist" / f"bundle_{bid}" / "teaser.mp4").exists()
+    assert not (tmp_path / "dist" / f"series_{sid}" / "teaser.mp4").exists()
 
 
 def test_plan_teaser_registered_in_handlers():
@@ -154,12 +154,12 @@ def test_h_concat_prepends_teaser_when_approved(tmp_path, monkeypatch):
     from studio.dashboard import gates
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
-    con.execute("UPDATE bundle SET teaser_state='approved' WHERE id=?", (bid,))
+    con.execute("UPDATE series SET teaser_state='approved' WHERE id=?", (sid,))
     con.commit()
     gates.approve(con, "concat", bundle_id=bid)     # else the gate raises first
-    teaser_mp4 = tmp_path / "dist" / f"bundle_{bid}" / "teaser.mp4"
+    teaser_mp4 = tmp_path / "dist" / f"series_{sid}" / "teaser.mp4"
     teaser_mp4.parent.mkdir(parents=True, exist_ok=True)
     teaser_mp4.write_bytes(b"\x00")
 
@@ -182,12 +182,12 @@ def test_h_concat_no_teaser_when_declined(tmp_path, monkeypatch):
     from studio.dashboard import gates
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
-    con.execute("UPDATE bundle SET teaser_state='declined' WHERE id=?", (bid,))
+    con.execute("UPDATE series SET teaser_state='declined' WHERE id=?", (sid,))
     con.commit()
     gates.approve(con, "concat", bundle_id=bid)
-    teaser_mp4 = tmp_path / "dist" / f"bundle_{bid}" / "teaser.mp4"
+    teaser_mp4 = tmp_path / "dist" / f"series_{sid}" / "teaser.mp4"
     teaser_mp4.parent.mkdir(parents=True, exist_ok=True)
     teaser_mp4.write_bytes(b"\x00")
 
@@ -216,7 +216,7 @@ def test_h_teaser_passes_spoiler_and_cost_guard_params(tmp_path, monkeypatch):
     import studio.worker as w
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
     monkeypatch.setattr(w, "_beats_cfg", lambda: (
         _fake_cfg(teaser_min_panels=6, teaser_max_hook_panels=9,
@@ -226,7 +226,7 @@ def test_h_teaser_passes_spoiler_and_cost_guard_params(tmp_path, monkeypatch):
     monkeypatch.setattr(w, "_stream", lambda argv, log, **k:
                         stream_calls.append([str(a) for a in argv]) or 0)
 
-    w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+    w._h_teaser(con, {"series_id": sid, "payload": {}}, io.StringIO())
 
     argv = next(c for c in stream_calls if any("teaser_planner.py" in a for a in c))
     assert argv[argv.index("--min-panels") + 1] == "6"
@@ -261,20 +261,20 @@ def test_h_teaser_elevenlabs_backend_routes_to_elevenlabs_tool(
     import studio.pipeline as pl
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
     monkeypatch.setattr(w, "_beats_cfg", lambda: (
         _fake_cfg(tts_backend="elevenlabs"), "proj", "loc"))
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
     monkeypatch.setenv("ELEVENLABS_VOICE_ID", "voice-123")
-    out_dir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    out_dir = tmp_path / "dist" / f"series_{sid}" / "teaser"
     monkeypatch.setattr(w, "_stream", _stream_with_teaser_manifest(out_dir))
     tool_calls: list = []
     monkeypatch.setattr(
         pl, "_run_tool",
         lambda script, args, **k: tool_calls.append((script, list(args))))
 
-    w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+    w._h_teaser(con, {"series_id": sid, "payload": {}}, io.StringIO())
 
     names = [s for s, _ in tool_calls]
     assert "elevenlabs_tts_from_manifest.py" in names
@@ -292,18 +292,18 @@ def test_h_teaser_local_backend_includes_speed(tmp_path, monkeypatch):
     import studio.pipeline as pl
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
     monkeypatch.setattr(w, "_beats_cfg", lambda: (
         _fake_cfg(tts_backend="chatterbox", tts_speed=1.15), "proj", "loc"))
-    out_dir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    out_dir = tmp_path / "dist" / f"series_{sid}" / "teaser"
     monkeypatch.setattr(w, "_stream", _stream_with_teaser_manifest(out_dir))
     tool_calls: list = []
     monkeypatch.setattr(
         pl, "_run_tool",
         lambda script, args, **k: tool_calls.append((script, list(args))))
 
-    w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+    w._h_teaser(con, {"series_id": sid, "payload": {}}, io.StringIO())
 
     local_args = next(a for s, a in tool_calls if s == "local_tts_from_manifest.py")
     assert local_args[local_args.index("--speed") + 1] == "1.15"
@@ -320,7 +320,7 @@ def test_h_teaser_sanitize_before_tts_unresolved_fails(tmp_path, monkeypatch):
     import studio.pipeline as pl
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
     monkeypatch.setattr(w, "_beats_cfg", lambda: (
         _fake_cfg(narration_sanitize=True), "proj", "loc"))
@@ -344,7 +344,7 @@ def test_h_teaser_sanitize_before_tts_unresolved_fails(tmp_path, monkeypatch):
         pl, "_run_tool", lambda script, args, **k: tool_calls.append(script))
 
     with pytest.raises(RuntimeError, match="unresolved"):
-        w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+        w._h_teaser(con, {"series_id": sid, "payload": {}}, io.StringIO())
 
     # script_expander ran (sanitize needs its output) but NO TTS/timeline
     # tool ever fired -> the block landed strictly before voicing.
@@ -392,12 +392,12 @@ def test_h_teaser_sanitize_marker_must_be_fresh_this_run(tmp_path, monkeypatch):
     import studio.pipeline as pl
 
     con = connect(tmp_path / "s.db")
-    _sid, bid, _cids = _bundle(con, tmp_path, n=2)
+    sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
     monkeypatch.setattr(w, "_beats_cfg", lambda: (
         _fake_cfg(narration_sanitize=True), "proj", "loc"))
 
-    out_dir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    out_dir = tmp_path / "dist" / f"series_{sid}" / "teaser"
 
     def fake_stream(argv, log, **k):
         sargv = [str(a) for a in argv]
@@ -424,7 +424,7 @@ def test_h_teaser_sanitize_marker_must_be_fresh_this_run(tmp_path, monkeypatch):
     os.utime(marker, (stale_time, stale_time))
 
     with pytest.raises(RuntimeError, match="marker missing/stale after run"):
-        w._h_teaser(con, {"bundle_id": bid, "payload": {}}, io.StringIO())
+        w._h_teaser(con, {"series_id": sid, "payload": {}}, io.StringIO())
 
     # No TTS call was recorded (job failed before reaching TTS)
     # This is implicitly verified by the exception — the teaser handler

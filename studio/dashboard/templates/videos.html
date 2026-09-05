@@ -32,40 +32,18 @@
 <td>{% if b.state=='concatenated' %}<span class="b ok" title="the final video file is on disk">✓ done</span>{% if b.output_path %} <a href="/dist/{{ b.output_path.split('/dist/')[-1] if '/dist/' in b.output_path else b.output_path }}" class="kv" style="color:var(--acc)">open</a>{% endif %}
 {% elif b.approved %}<span class="b ok" title="approved — press concat to build the final file">approved</span>
 {% else %}<span class="b warn" title="review the video, then approve it to unlock concat">awaits approval</span>{% endif %}</td>
-<td>{% if b.teaser_mp4 %}<a href="/dist/{{ b.teaser_mp4 }}" target="_blank" rel="noopener" class="kv" style="color:var(--acc)" title="play the teaser file itself — note the video above plays the CONCATENATED file, which carries the teaser as it was when the concat ran">▶ preview</a> {% endif %}
-{% if b.teaser_stale %}<span class="b warn" title="the teaser file is NEWER than the concatenated video — re-concat to pick it up">newer than video</span> {% endif %}
-{% if b.teaser_state=='approved' %}<span class="b ok" title="the teaser is approved and will be prepended">✓ approved</span>
-{% elif b.teaser_state=='planned' %}<span class="b warn" title="a teaser was planned — review it below before this video can concat">review below</span>
-{% elif b.teaser_state=='declined' %}<span class="kv" title="you declined the teaser; the video ships without one">declined</span>
-{% else %}<span class="kv" title="no teaser for this video">none</span>{% endif %}</td>
+<td>{% if b.carries_teaser %}{% if b.teaser_state=='approved' %}<span class="b ok" title="the manhwa's teaser opens this, its FIRST video">✓ opens this video</span>{% elif b.teaser_state=='planned' %}<span class="b warn" title="review it on the Series page before this video can concat">awaits review</span>{% elif b.teaser_state=='declined' %}<span class="kv">declined</span>{% else %}<span class="kv">none yet</span>{% endif %} {% if b.teaser_stale %}<span class="b warn" title="the teaser is NEWER than this concatenated video — re-concat to pick it up">newer than video</span> {% endif %}<a href="/series/{{ b.series_id }}" class="kv" style="color:var(--acc)">manage ↗</a>{% else %}<span class="kv" title="only a manhwa's FIRST video carries the cold open">—</span>{% endif %}</td>
 <td>
 <form class="inline" method="post" action="/approve" title="approve this video for concatenation (after you've reviewed its segments)"><input type="hidden" name="gate" value="concat">
 <input type="hidden" name="bundle_id" value="{{ b.id }}"><button class="green">approve</button></form>
-<form class="inline" method="post" action="/bundles/{{ b.id }}/teaser/plan" title="pick a high-stakes hook window from this video's episodes and render it as a cold-open teaser to review">
-<button class="ghost">{{ 're-plan teaser' if b.teaser_state != 'none' else 'plan teaser' }}</button></form>
+
 <form class="inline" method="post" action="/jobs" title="regenerate the auto title + description + YouTube-chapter timestamps for this video (copyright-safe; real name only in the pinned comment)"><input type="hidden" name="type" value="publish_meta">
 <input type="hidden" name="bundle_id" value="{{ b.id }}"><button class="ghost">↻ title</button></form>
 <form class="inline" method="post" action="/jobs" title="build the final video file: concatenate all segments (+ approved teaser + outro), no re-render"><input type="hidden" name="type" value="concat">
 <input type="hidden" name="bundle_id" value="{{ b.id }}"><button>concat</button></form>
 <form class="inline" method="post" action="/bundles/{{ b.id }}/delete" onsubmit="return confirm('Delete this video? Its episodes go back into the pool and can be bundled again — the chapters themselves are NOT touched. Only this video and its teaser/title artifacts are removed.')" title="remove this video — its episodes become available to bundle again; the chapter data is untouched"><button class="red">delete</button></form>
 </td></tr>
-{% if b.teaser_state=='planned' and b.teaser_card %}
-<tr><td colspan="6">
-<div class="seg"><span class="kv"><b>Teaser hook</b>{% if b.teaser_card.source_chapters %} — from episodes {{ b.teaser_card.source_chapters | join(', ') }}{% endif %}</span>
-{% if b.teaser_card.reason %}<div class="nar"><b>why this window:</b> {{ b.teaser_card.reason }}</div>{% endif %}
-{% if b.teaser_card.spoiler_boundary %}<div class="kv">spoiler boundary: {{ b.teaser_card.spoiler_boundary }}</div>{% endif %}
-{% for p in b.teaser_card.panels %}<div class="seg">
-{% if p.line %}<div class="nar">{{ p.line }}</div>{% endif %}
-{% if p.img %}<img src="{{ p.img }}" loading="lazy">{% endif %}
-</div>{% endfor %}
-{% if b.teaser_card.rewind_line %}<div class="nar"><b>↩ rewind:</b> {{ b.teaser_card.rewind_line }}</div>{% endif %}
-<div class="row">
-<form class="inline" method="post" action="/bundles/{{ b.id }}/teaser/approve" title="use this teaser as the video's cold open"><button class="green">approve teaser</button></form>
-<form class="inline" method="post" action="/bundles/{{ b.id }}/teaser/decline" title="ship the video without a teaser"><button class="ghost">decline</button></form>
-<form class="inline" method="post" action="/bundles/{{ b.id }}/teaser/plan" title="pick a different hook window"><button class="ghost">re-plan</button></form>
-</div></div>
-</td></tr>
-{% endif %}
+
 {% else %}<tr><td colspan="6" class="kv">no videos yet — create one above from your prepared episodes</td></tr>{% endfor %}
 </table>
 {% endblock %}

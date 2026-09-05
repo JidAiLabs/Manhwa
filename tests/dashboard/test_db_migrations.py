@@ -51,3 +51,35 @@ def test_approval_content_sha_column_added(tmp_path):
     con2 = connect(p)
     cols2 = {r[1] for r in con2.execute("PRAGMA table_info(approval)")}
     assert "content_sha" in cols2
+
+
+def test_series_teaser_state_is_added_and_carries_bundle_state(tmp_path):
+    """The teaser is one per MANHWA. It was a bundle column, so deleting a
+    video destroyed its teaser and there was no way to keep one independently.
+    Moving it to `series` must not silently drop an already-approved teaser."""
+    import sqlite3
+    from studio.catalog.db import connect
+
+    db = tmp_path / "s.db"
+    con = connect(db)
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (1,'asura','u','s','S','t')")
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (2,'asura','u2','s2','S2','t')")
+    con.execute("INSERT INTO bundle (id, series_id, title, kind, teaser_state) "
+                "VALUES (1,1,'v','manual','approved')")
+    con.execute("INSERT INTO bundle (id, series_id, title, kind, teaser_state) "
+                "VALUES (2,2,'v','manual','none')")
+    con.commit()
+    # Simulate the PRE-migration shape: rows already present, column absent.
+    # connect() migrates on first open, so without this the carry-forward runs
+    # against an empty bundle table and proves nothing.
+    con.execute("ALTER TABLE series DROP COLUMN teaser_state")
+    con.commit()
+    con.close()
+
+    # re-open: connect() runs the migrations against the existing file
+    con = connect(db)
+    got = dict(con.execute("SELECT id, teaser_state FROM series").fetchall())
+    assert got[1] == "approved", "an approved teaser was lost in the move"
+    assert got[2] == "none"

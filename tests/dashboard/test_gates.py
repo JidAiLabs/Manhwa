@@ -59,12 +59,14 @@ def test_concat_blocked_when_teaser_planned(tmp_path):
     con.execute("INSERT INTO series (source, series_url, slug, title, added_at) "
                 "VALUES ('x','u','s','T', datetime('now'))")
     sid = con.execute("SELECT id FROM series").fetchone()[0]
-    con.execute("INSERT INTO bundle (series_id, kind, teaser_state) "
-                "VALUES (?, 'manual', 'planned')", (sid,))
+    con.execute("INSERT INTO bundle (series_id, kind) "
+                "VALUES (?, 'manual')", (sid,))
+    # the teaser is per MANHWA and opens the series' FIRST video
+    con.execute("UPDATE series SET teaser_state='planned' WHERE id=?", (sid,))
     bid = con.execute("SELECT id FROM bundle").fetchone()[0]
     gates.approve(con, "concat", bundle_id=bid)
     assert gates.concat_allowed(con, bid)[0] is False        # 'planned' blocks
-    con.execute("UPDATE bundle SET teaser_state='approved' WHERE id=?", (bid,))
+    con.execute("UPDATE series SET teaser_state='approved' WHERE id=?", (sid,))
     con.commit()
     assert gates.concat_allowed(con, bid)[0] is True
     con.execute("UPDATE bundle SET teaser_state='declined' WHERE id=?", (bid,))

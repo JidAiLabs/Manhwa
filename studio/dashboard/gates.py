@@ -217,10 +217,19 @@ def concat_allowed(con: sqlite3.Connection, bundle_id: int) -> Tuple[bool, str]:
     # ship a teaser nobody approved. 'approved'/'declined'/'none' all proceed.
     # None-safe: fetchone() is None when the bundle row doesn't exist (the
     # legacy concat-gate test calls this with no bundle row).
-    row = con.execute("SELECT teaser_state FROM bundle WHERE id=?",
-                      (bundle_id,)).fetchone()
-    if row and row[0] == "planned":
-        return False, "teaser planned but not reviewed"
+    # The teaser is series-level and opens the series' FIRST video only, so an
+    # unreviewed one blocks THAT video and no other. None-safe: fetchone() is
+    # None when the bundle row doesn't exist (the legacy concat-gate test calls
+    # this with no bundle row).
+    brow = con.execute("SELECT series_id FROM bundle WHERE id=?",
+                       (bundle_id,)).fetchone()
+    if brow:
+        first_bid = con.execute("SELECT MIN(id) FROM bundle WHERE series_id=?",
+                                (brow[0],)).fetchone()[0]
+        srow = con.execute("SELECT teaser_state FROM series WHERE id=?",
+                           (brow[0],)).fetchone()
+        if bundle_id == first_bid and srow and srow[0] == "planned":
+            return False, "teaser planned but not reviewed"
     if not _has_approval(con, "concat", bundle_id=bundle_id):
         return False, "needs concat approval"
     return True, ""

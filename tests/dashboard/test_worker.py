@@ -892,15 +892,16 @@ def _seed_bundle(con, *, autopilot=1, n=2, teaser_state="none",
                  status="rendered", ep_root=None):
     """A series with `n` chapters all at `status`, grouped into one bundle."""
     con.execute("INSERT INTO series (id, source, series_url, slug, title, "
-                "added_at, autopilot) VALUES (1,'asura','u','s','S','t',?)",
-                (autopilot,))
+                "added_at, autopilot, teaser_state) "
+                "VALUES (1,'asura','u','s','S','t',?,?)",
+                (autopilot, teaser_state))
     for i in range(1, n + 1):
         ed = (str(ep_root / f"ep{i}") if ep_root is not None else f"/tmp/ep{i}")
         con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
                     "status, ep_dir, updated_at) VALUES (?,1,?,?,?,?,?,'t')",
                     (i, i, f"Ch {i}", f"u{i}", status, ed))
-    con.execute("INSERT INTO bundle (id, series_id, kind, title, teaser_state) "
-                "VALUES (1,1,'manual','S — pack',?)", (teaser_state,))
+    con.execute("INSERT INTO bundle (id, series_id, kind, title) "
+                "VALUES (1,1,'manual','S — pack')")
     for pos, i in enumerate(range(1, n + 1)):
         con.execute("INSERT INTO bundle_chapter (bundle_id, chapter_id, "
                     "position) VALUES (1,?,?)", (i, pos))
@@ -929,16 +930,16 @@ def test_autostart_intro_enqueues_plan_teaser_once(tmp_path, monkeypatch):
     bid = _seed_bundle(con, autopilot=1)
     worker._autostart_intro_if_ready(con, 2, _io.StringIO())   # last ch rendered
     n = con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                    "bundle_id=?", (bid,)).fetchone()[0]
+                    "series_id=?", (1,)).fetchone()[0]
     assert n == 1
     import json as _j
     pj = con.execute("SELECT payload_json FROM job WHERE type='plan_teaser'"
                      ).fetchone()[0]
-    assert _j.loads(pj).get("auto_intro") is True
+    assert _j.loads(pj).get("auto_intro_bundle") == 1
     # second pass (e.g. another render-completion check) must NOT double-enqueue
     worker._autostart_intro_if_ready(con, 2, _io.StringIO())
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                       "bundle_id=?", (bid,)).fetchone()[0] == 1
+                       "series_id=?", (1,)).fetchone()[0] == 1
 
 
 def test_autostart_intro_skips_when_teaser_state_not_none(tmp_path):
@@ -977,7 +978,7 @@ def test_teaser_auto_mode_approves_and_enqueues_concat(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "REPO", tmp_path)
     # pre-stage the synthetic teaser dir + its render output so the handler's
     # existence checks pass with every subprocess mocked out.
-    tdir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    tdir = tmp_path / "dist" / "series_1" / "teaser"
     (tdir / "render").mkdir(parents=True)
     (tdir / "manifest.teaser.json").write_text("{}")
     (tdir / "render" / "segment_none.mp4").write_text("v")
@@ -985,10 +986,10 @@ def test_teaser_auto_mode_approves_and_enqueues_concat(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     import studio.pipeline as _pl
     monkeypatch.setattr(_pl, "_run_tool", lambda *a, **k: 0, raising=False)
-    jobs.enqueue(con, "plan_teaser", bundle_id=bid,
-                 payload={"auto_intro": True})
+    jobs.enqueue(con, "plan_teaser", series_id=1,
+                 payload={"auto_intro_bundle": bid})
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
-    assert con.execute("SELECT teaser_state FROM bundle WHERE id=?",
+    assert con.execute("SELECT teaser_state FROM series WHERE id=?",
                        (bid,)).fetchone()[0] == "approved"
     cj = con.execute("SELECT payload_json FROM job WHERE type='concat' AND "
                      "bundle_id=?", (bid,)).fetchall()
@@ -1003,7 +1004,7 @@ def test_teaser_manual_mode_parks_for_review(tmp_path, monkeypatch):
     con = _con(tmp_path)
     bid = _seed_bundle(con, autopilot=1, ep_root=tmp_path)
     monkeypatch.setattr(worker, "REPO", tmp_path)
-    tdir = tmp_path / "dist" / f"bundle_{bid}" / "teaser"
+    tdir = tmp_path / "dist" / "series_1" / "teaser"
     (tdir / "render").mkdir(parents=True)
     (tdir / "manifest.teaser.json").write_text("{}")
     (tdir / "render" / "segment_none.mp4").write_text("v")
@@ -1011,9 +1012,9 @@ def test_teaser_manual_mode_parks_for_review(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     import studio.pipeline as _pl
     monkeypatch.setattr(_pl, "_run_tool", lambda *a, **k: 0, raising=False)
-    jobs.enqueue(con, "plan_teaser", bundle_id=bid)            # no auto_intro
+    jobs.enqueue(con, "plan_teaser", series_id=1)              # no auto_intro
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
-    assert con.execute("SELECT teaser_state FROM bundle WHERE id=?",
+    assert con.execute("SELECT teaser_state FROM series WHERE id=?",
                        (bid,)).fetchone()[0] == "planned"
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='concat'"
                        ).fetchone()[0] == 0
@@ -1034,7 +1035,10 @@ def test_concat_intro_ch1_builds_final_with_aac(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "REPO", tmp_path)
     bdir = tmp_path / "dist" / f"bundle_{bid}"
     bdir.mkdir(parents=True)
-    (bdir / "teaser.mp4").write_text("t")
+    # the teaser is per MANHWA now — dist/series_<id>/teaser.mp4
+    sdir = tmp_path / "dist" / "series_1"
+    sdir.mkdir(parents=True)
+    (sdir / "teaser.mp4").write_text("t")
     captured = {}
 
     def fake_stream(cmd, log, **kw):
@@ -1177,7 +1181,7 @@ def test_render_segment_triggers_auto_intro_for_last_chapter(
     assert con.execute("SELECT status FROM chapter WHERE id=2"
                        ).fetchone()[0] == "rendered"
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                       "bundle_id=?", (bid,)).fetchone()[0] == 1
+                       "series_id=?", (1,)).fetchone()[0] == 1
 
 
 def test_render_branding_defaults_both(tmp_path, monkeypatch):

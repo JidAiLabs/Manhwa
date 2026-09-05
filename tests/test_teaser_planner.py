@@ -320,9 +320,13 @@ def test_teaser_namespaces_scenes_by_chapter_no_basename_collision(tmp_path):
 # ---------------------------------------------------------------- Task 8
 def test_build_arg_parser_required_flags():
     p = tp.build_arg_parser()
-    args = p.parse_args(["--bundle-id", "12", "--chapter-dirs", "/a", "/b",
+    # --series-id (was --bundle-id): the teaser is ONE PER MANHWA now, so the
+    # caller labels the run with a series. It is parsed but unused, hence
+    # optional — the required inputs are the chapter dirs and the out dir.
+    args = p.parse_args(["--series-id", "12", "--chapter-dirs", "/a", "/b",
                          "--out-dir", "/o"])
-    assert args.bundle_id == 12 and args.chapter_dirs == ["/a", "/b"]
+    assert args.series_id == 12 and args.chapter_dirs == ["/a", "/b"]
+    assert p.parse_args(["--chapter-dirs", "/a", "--out-dir", "/o"]).series_id == 0
     # ollama path uses --ollama-model (NOT --model); default gemma4:26b
     assert args.ollama_model == "gemma4:26b"
     # payoff tail is OFF by default — the power reveal is the hook, not a spoiler

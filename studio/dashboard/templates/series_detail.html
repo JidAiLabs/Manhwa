@@ -76,6 +76,30 @@
 <span class="kv">regenerating clears approval — the badge always matches the image shown</span>
 </div>
 
+<h3 style="margin:.8em 0 .3em">Intro teaser <small class="kv">— one per manhwa, built from the first chapters; it opens this manhwa's FIRST video only</small></h3>
+<div class="row">
+<form class="inline" method="post" action="/series/{{ sid }}/teaser/plan">
+<button class="ghost"{% if not teaser_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 're-create teaser' if teaser_exists else 'create teaser' }}</button></form>
+{% if teaser_exists %}<a href="/dist/series_{{ sid }}/teaser.mp4?v={{ teaser_v }}" target="_blank" rel="noopener" class="kv" style="color:var(--acc)">▶ preview</a>{% endif %}
+{% if teaser_state=='approved' %}<span class="b ok">APPROVED ✓</span>
+{% elif teaser_state=='planned' %}<span class="b warn">awaits review 🔒</span>
+<form class="inline" method="post" action="/series/{{ sid }}/teaser/approve"><button class="green">approve teaser</button></form>
+<form class="inline" method="post" action="/series/{{ sid }}/teaser/decline"><button class="red">decline</button></form>
+{% elif teaser_state=='declined' %}<span class="kv">declined — videos ship without a cold open</span>
+{% else %}<span class="kv">no teaser yet</span>{% endif %}
+</div>
+{% if teaser_state=='planned' and teaser_card %}
+<div class="seg"><span class="kv"><b>Teaser hook</b>{% if teaser_card.source_chapters %} — from episodes {{ teaser_card.source_chapters | join(', ') }}{% endif %}</span>
+{% if teaser_card.reason %}<div class="nar"><b>why this window:</b> {{ teaser_card.reason }}</div>{% endif %}
+{% if teaser_card.spoiler_boundary %}<div class="kv">spoiler boundary: {{ teaser_card.spoiler_boundary }}</div>{% endif %}
+{% for p in teaser_card.panels %}<div class="seg">
+{% if p.line %}<div class="nar">{{ p.line }}</div>{% endif %}
+{% if p.img %}<img src="{{ p.img }}" loading="lazy">{% endif %}
+</div>{% endfor %}
+{% if teaser_card.rewind_line %}<div class="nar"><b>↩ rewind:</b> {{ teaser_card.rewind_line }}</div>{% endif %}
+</div>
+{% endif %}
+
 <p class="kv" style="margin:.4em 0">status is <b>live</b> — a running job shows <span class="b run pulse">▶ voicing…</span>, a stuck one shows <span class="b err">⚠ failed</span>; refreshes every few seconds.</p>
 <div id="chaptertable" hx-get="/partials/series-chapters/{{ sid }}" hx-trigger="every 4s" hx-swap="innerHTML" hx-sync="this:replace">
 {% include "partials/series_chapters.html" %}

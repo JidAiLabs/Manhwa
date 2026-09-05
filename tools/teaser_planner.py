@@ -799,7 +799,9 @@ _TEASER_SCHEMA: Dict[str, Any] = {
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="bundle-level arc teaser planner (montage selector + LLM narration + synthetic dir)")
-    ap.add_argument("--bundle-id", type=int, required=True)
+    # parsed but unused — kept so the caller can label the run. Renamed from
+    # --bundle-id when the teaser moved from a bundle to its series.
+    ap.add_argument("--series-id", type=int, required=False, default=0)
     ap.add_argument("--chapter-dirs", nargs="+", required=True,
                     help="ep_dirs of the bundle's chapters, in reading order")
     ap.add_argument("--out-dir", required=True,

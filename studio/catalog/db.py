@@ -127,6 +127,23 @@ def connect(path: Path | str) -> sqlite3.Connection:
                        ("genres", "TEXT"), ("synopsis", "TEXT")):
         if _col not in scols:
             con.execute(f"ALTER TABLE series ADD COLUMN {_col} {_typ}")
+    if "teaser_state" not in scols:
+        # The arc teaser is ONE PER MANHWA, not per video. It lived only on
+        # `bundle`, so deleting a video destroyed its teaser (delete_bundle
+        # rmtree's dist/bundle_<id>) and there was no way to see or keep one
+        # independently of a video. Carries any existing bundle-level state up
+        # to its series so an already-approved teaser survives the move,
+        # preferring approved > planned > declined.
+        con.execute("ALTER TABLE series ADD COLUMN teaser_state TEXT "
+                    "NOT NULL DEFAULT 'none'")
+        con.execute(
+            "UPDATE series SET teaser_state = COALESCE(("
+            "  SELECT b.teaser_state FROM bundle b"
+            "   WHERE b.series_id = series.id AND b.teaser_state <> 'none'"
+            "   ORDER BY CASE b.teaser_state WHEN 'approved' THEN 0"
+            "                                WHEN 'planned'  THEN 1"
+            "                                ELSE 2 END"
+            "   LIMIT 1), 'none')")
     bcols = {r[1] for r in con.execute("PRAGMA table_info(bundle)")}
     if "teaser_state" not in bcols:
         # arc-teaser sequencing: none|planned|approved|declined
