@@ -112,3 +112,83 @@ def test_create_debut_bundle_once_empty_ids_is_noop(tmp_path):
     con.commit()
     assert bundles.create_debut_bundle_once(con, 1, []) is None
     assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 0
+
+
+# ---- free range selection: already-produced episodes stay selectable -------
+
+def _rendered(con, cid, number, label, ep_dir="/tmp/x"):
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at, season) VALUES "
+                "(?,1,?,?,'u','rendered',?,'t',1)", (cid, number, label, ep_dir))
+
+
+def _seed_series(con):
+    con.execute("INSERT OR IGNORE INTO series (id, source, series_url, slug, "
+                "title, added_at) VALUES (1,'asura','u','s','S','t')")
+
+
+def test_rendered_chapters_keeps_already_bundled_and_flags_them(tmp_path):
+    """The owner wants to pick any range, including episodes already in a
+    video. unbundled_chapters HIDES those ("so a continuation batch can never
+    re-select them"), which is why the from-dropdown started at Episode 12.
+    rendered_chapters shows everything and labels what is already used, so the
+    choice is visible instead of removed."""
+    from studio.catalog.db import connect
+    from studio.dashboard import bundles
+    con = connect(tmp_path / "s.db")
+    _seed_series(con)
+    for cid, n in ((1, 1), (2, 2), (3, 3)):
+        _rendered(con, cid, n, f"Episode {n}")
+    con.commit()
+    bundles.create_bundle(con, 1, "manual", chapter_ids=[1, 2], title="v1")
+
+    assert [c["id"] for c in bundles.unbundled_chapters(con, 1)] == [3]
+
+    allc = bundles.rendered_chapters(con, 1)
+    assert [c["id"] for c in allc] == [1, 2, 3]
+    assert [c["bundled"] for c in allc] == [True, True, False]
+
+
+def test_ids_in_range_can_reuse_produced_episodes(tmp_path):
+    from studio.catalog.db import connect
+    from studio.dashboard import bundles
+    con = connect(tmp_path / "s.db")
+    _seed_series(con)
+    for cid, n in ((1, 1), (2, 2), (3, 3)):
+        _rendered(con, cid, n, f"Episode {n}")
+    con.commit()
+    bundles.create_bundle(con, 1, "manual", chapter_ids=[1, 2], title="v1")
+
+    assert bundles.unbundled_ids_in_range(con, 1, num_from=1, num_to=3) == [3]
+    assert bundles.ids_in_range(con, 1, num_from=1, num_to=3) == [1, 2, 3]
+
+
+def test_ids_in_range_still_excludes_unrendered(tmp_path):
+    """A video is a concat of FINISHED segments — an unrendered chapter has no
+    .mp4 to concatenate, so free selection must not reach it."""
+    from studio.catalog.db import connect
+    from studio.dashboard import bundles
+    con = connect(tmp_path / "s.db")
+    _seed_series(con)
+    _rendered(con, 1, 1, "Episode 1")
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at, season) VALUES "
+                "(2,1,2,'Episode 2','u','scripted','','t',1)")
+    con.commit()
+    assert bundles.ids_in_range(con, 1, num_from=1, num_to=2) == [1]
+
+
+def test_a_chapter_may_belong_to_two_videos(tmp_path):
+    """PRIMARY KEY (bundle_id, chapter_id) allows reuse across videos; only a
+    duplicate INSIDE one bundle is prevented."""
+    from studio.catalog.db import connect
+    from studio.dashboard import bundles
+    con = connect(tmp_path / "s.db")
+    _seed_series(con)
+    _rendered(con, 1, 1, "Episode 1")
+    con.commit()
+    b1 = bundles.create_bundle(con, 1, "manual", chapter_ids=[1], title="v1")
+    b2 = bundles.create_bundle(con, 1, "manual", chapter_ids=[1], title="v2")
+    assert b1 != b2
+    assert bundles.bundle_chapters(con, b1) == [1]
+    assert bundles.bundle_chapters(con, b2) == [1]

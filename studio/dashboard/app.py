@@ -1032,14 +1032,19 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         return RedirectResponse(back, status_code=303)
 
     def _bundle_form_ctx(c: sqlite3.Connection, series_id: int) -> Dict[str, Any]:
-        """Options for the new-video form: the series' unbundled chapters (so a
-        continuation can't re-pick a produced one), each as a selectable
-        from/to bound. Chapter 0 is a real option on a 0-based series."""
-        chs = bundles.unbundled_chapters(c, series_id)
-        opts = [{"value": f"{ch['number']:g}",
-                 "text": (f"{ch['number']:g} · {ch['label']}"
-                          if ch["label"] else f"{ch['number']:g}")}
-                for ch in chs]
+        """Options for the new-video form: EVERY rendered chapter of the series
+        as a selectable from/to bound, with the ones already in a video marked
+        rather than removed. Hiding them made the range un-free — a 12-episode
+        debut left the form starting at Episode 12 with no way back. Chapter 0
+        is a real option on a 0-based series."""
+        chs = bundles.rendered_chapters(c, series_id)
+        opts = []
+        for ch in chs:
+            text = (f"{ch['number']:g} · {ch['label']}"
+                    if ch["label"] else f"{ch['number']:g}")
+            if ch["bundled"]:
+                text += "  ·  already in a video"
+            opts.append({"value": f"{ch['number']:g}", "text": text})
         return {"series_id": series_id, "options": opts,
                 "first": bundles.series_bundle_count(c, series_id) == 0,
                 "series": [dict(zip(("id", "title"), r)) for r in c.execute(
@@ -1048,8 +1053,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def _range_duration(c: sqlite3.Connection, series_id: int,
                         num_from: Optional[float], num_to: Optional[float],
                         first: bool) -> Dict[str, Any]:
-        ids = bundles.unbundled_ids_in_range(c, series_id, num_from=num_from,
-                                             num_to=num_to)
+        ids = bundles.ids_in_range(c, series_id, num_from=num_from,
+                                   num_to=num_to)
         total, known = 0.0, 0
         for cid in ids:
             r = c.execute("SELECT ep_dir FROM chapter WHERE id=?",
@@ -1079,7 +1084,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         first = bundles.series_bundle_count(c, series_id) == 0
         d = _range_duration(c, series_id, num_from, num_to, first)
         if not d["count"]:
-            return HTMLResponse('<span class="kv">no unbundled chapters in '
+            return HTMLResponse('<span class="kv">no rendered chapters in '
                                 'that range</span>')
         vid = eta.fmt_eta(d["seconds"])
         pend = (f' · <b>{d["count"] - d["known"]}</b> not rendered yet'
@@ -1094,12 +1099,24 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     num_from: Optional[float] = Form(None),
                     num_to: Optional[float] = Form(None)):
         c = con()
-        ids = bundles.unbundled_ids_in_range(c, series_id, num_from=num_from,
-                                             num_to=num_to)
+        ids = bundles.ids_in_range(c, series_id, num_from=num_from,
+                                   num_to=num_to)
         if not ids:
             return RedirectResponse(
                 "/videos?error=" + quote_plus(
-                    "no unbundled chapters in that range"), status_code=303)
+                    "no rendered chapters in that range — a video is a concat "
+                    "of finished episode segments"), status_code=303)
+        # Episodes may be re-used across videos deliberately now, so
+        # "already bundled" can no longer be what stops an accidental
+        # double-submit. Refuse only an IDENTICAL video; any other range,
+        # overlapping or not, is allowed.
+        dup = bundles.bundle_with_exact_chapters(c, series_id, ids)
+        if dup is not None:
+            return RedirectResponse(
+                "/videos?error=" + quote_plus(
+                    f"video #{dup} already covers exactly those episodes — "
+                    "pick a different range, or delete it first"),
+                status_code=303)
         first = bundles.series_bundle_count(c, series_id) == 0
         nums = [r[0] for r in c.execute(
             "SELECT number FROM chapter WHERE id IN "

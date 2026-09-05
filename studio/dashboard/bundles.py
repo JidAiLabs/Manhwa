@@ -117,6 +117,51 @@ def unbundled_chapters(con: sqlite3.Connection,
             for r in rows]
 
 
+def rendered_chapters(con: sqlite3.Connection,
+                      series_id: int) -> List[dict]:
+    """EVERY rendered chapter of *series_id*, in reading order, each flagged
+    with whether it is already in a video (`bundled`).
+
+    unbundled_chapters() REMOVES produced chapters so a continuation cannot
+    re-pick them. That also made them unpickable on purpose — the new-video
+    form simply started after the last produced episode, so a 12-episode debut
+    left the range beginning at Episode 12 with no way to include anything
+    earlier. This keeps every rendered episode selectable and instead makes the
+    state visible, so re-using one is a deliberate choice rather than a hidden
+    option. Chapters that are NOT rendered are still excluded: a video is a
+    concat of finished segments, and an unrendered chapter has no .mp4.
+    """
+    rows = con.execute(
+        "SELECT c.id, c.number, c.label, c.status, c.ep_dir, "
+        "       EXISTS(SELECT 1 FROM bundle_chapter bc "
+        "              JOIN bundle b ON b.id=bc.bundle_id "
+        "              WHERE b.series_id=? AND bc.chapter_id=c.id) AS bundled "
+        "FROM chapter c WHERE c.series_id=? AND c.status='rendered' "
+        "ORDER BY c.number", (series_id, series_id)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(zip(("id", "number", "label", "status", "ep_dir", "bundled"), r))
+        d["bundled"] = bool(d["bundled"])
+        out.append(d)
+    return out
+
+
+def ids_in_range(con: sqlite3.Connection, series_id: int, *,
+                 num_from: Optional[float] = None,
+                 num_to: Optional[float] = None) -> List[int]:
+    """Rendered chapter ids inside [num_from, num_to] — INCLUDING ones already
+    in a video. The free-selection counterpart of unbundled_ids_in_range; the
+    form and the POST must agree, or the dropdown would offer an episode the
+    POST then silently drops. Bounds are sentinel-free (None -> the series'
+    min/max) so chapter 0 is a real bound."""
+    lo, hi = num_from, num_to
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    return [ch["id"] for ch in rendered_chapters(con, series_id)
+            if (lo is None or ch["number"] >= lo)
+            and (hi is None or ch["number"] <= hi)]
+
+
 def unbundled_ids_in_range(con: sqlite3.Connection, series_id: int, *,
                            num_from: Optional[float] = None,
                            num_to: Optional[float] = None) -> List[int]:
@@ -132,6 +177,26 @@ def unbundled_ids_in_range(con: sqlite3.Connection, series_id: int, *,
         if (lo is None or n >= lo) and (hi is None or n <= hi):
             out.append(ch["id"])
     return out
+
+
+def bundle_with_exact_chapters(con: sqlite3.Connection, series_id: int,
+                               chapter_ids: List[int]) -> Optional[int]:
+    """The id of an existing bundle of *series_id* holding EXACTLY this set of
+    chapters, else None.
+
+    Episodes may now be re-used across videos deliberately, so "already
+    bundled" can no longer be the thing that stops a double-submit. This keeps
+    that protection precisely: an identical video is refused, while any
+    genuinely different range — overlapping or not — is allowed.
+    """
+    want = set(chapter_ids)
+    if not want:
+        return None
+    for (bid,) in con.execute("SELECT id FROM bundle WHERE series_id=?",
+                              (series_id,)).fetchall():
+        if set(bundle_chapters(con, bid)) == want:
+            return bid
+    return None
 
 
 def series_bundle_count(con: sqlite3.Connection, series_id: int) -> int:

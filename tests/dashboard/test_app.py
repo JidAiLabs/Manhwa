@@ -260,7 +260,15 @@ def test_bundle_create_from_a_range(client):
 
 
 def test_bundle_create_excludes_already_bundled_chapters(client):
-    """A continuation batch must not re-offer produced chapters."""
+    """Posting the SAME range twice still makes only one video.
+
+    Produced episodes are now re-selectable on purpose (the range used to skip
+    them, so a 12-episode debut left the form starting at Episode 12 with no
+    way back). That means "already bundled" can no longer be what stops an
+    accidental double-submit — bundle_with_exact_chapters does, by refusing an
+    IDENTICAL video while allowing any other range. The assertions below are
+    unchanged; only the mechanism protecting them is.
+    """
     c, con = client
     con.execute("UPDATE chapter SET ep_dir='/tmp/ep1', status='rendered' "
                 "WHERE id=1")
@@ -274,6 +282,30 @@ def test_bundle_create_excludes_already_bundled_chapters(client):
                follow_redirects=False)
     assert r.status_code == 303
     assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 1
+
+
+def test_a_produced_episode_can_be_reused_in_a_different_video(client):
+    """The capability the owner asked for: pick any range, including episodes
+    already in a video, as long as the resulting video is not identical."""
+    c, con = client
+    con.execute("UPDATE chapter SET ep_dir='/tmp/ep1', status='rendered' "
+                "WHERE id=1")
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at, season) VALUES "
+                "(2,1,2,'Chapter 2','u','rendered','/tmp/ep2','t',1)")
+    con.commit()
+
+    c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
+           follow_redirects=False)
+    # episode 1 is now produced — a wider range must still be able to include it
+    c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 2},
+           follow_redirects=False)
+
+    from studio.dashboard import bundles
+    assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 2
+    ids = [set(bundles.bundle_chapters(con, b)) for (b,) in
+           con.execute("SELECT id FROM bundle ORDER BY id")]
+    assert ids == [{1}, {1, 2}], ids
 
 
 def test_cancel_route(client):
