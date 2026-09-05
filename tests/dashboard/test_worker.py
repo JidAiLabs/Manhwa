@@ -908,9 +908,23 @@ def _seed_bundle(con, *, autopilot=1, n=2, teaser_state="none",
     return 1
 
 
-def test_autostart_intro_enqueues_plan_teaser_once(tmp_path):
+def _teaser_on(monkeypatch):
+    """Pin [teaser].enabled for a test instead of reading production config.
+
+    _autostart_intro_if_ready gates on _beats_cfg().teaser_enabled, so these
+    tests were asserting behaviour that depended on studio.toml — they broke the
+    moment the owner turned the auto-start off. A unit test must supply its own
+    config; only the gate is read, the rest of the path queries the DB.
+    """
+    monkeypatch.setattr(
+        worker, "_beats_cfg",
+        lambda: (types.SimpleNamespace(teaser_enabled=True), None, None))
+
+
+def test_autostart_intro_enqueues_plan_teaser_once(tmp_path, monkeypatch):
     """All chapters rendered + autopilot on + teaser_state none -> exactly one
     plan_teaser (carrying auto_intro), and a second pass does NOT re-enqueue."""
+    _teaser_on(monkeypatch)
     con = _con(tmp_path)
     bid = _seed_bundle(con, autopilot=1)
     worker._autostart_intro_if_ready(con, 2, _io.StringIO())   # last ch rendered
@@ -1144,6 +1158,7 @@ def test_render_segment_triggers_auto_intro_for_last_chapter(
     """End-to-end: rendering the LAST chapter of an autopilot bundle flips it to
     'rendered' AND enqueues the auto plan_teaser (the hook is wired into the
     render-completion path)."""
+    _teaser_on(monkeypatch)
     con = _con(tmp_path)
     bid = _seed_bundle(con, autopilot=1, status="rendered", ep_root=tmp_path)
     # ch2 is the one we're about to render: pending + gated green

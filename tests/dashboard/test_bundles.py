@@ -192,3 +192,25 @@ def test_a_chapter_may_belong_to_two_videos(tmp_path):
     assert b1 != b2
     assert bundles.bundle_chapters(con, b1) == [1]
     assert bundles.bundle_chapters(con, b2) == [1]
+
+
+def test_new_video_is_named_after_the_manhwa_and_range(tmp_path):
+    """"Debut — first 12" said neither which manhwa nor which episodes."""
+    from fastapi.testclient import TestClient
+    from studio.catalog.db import connect
+    from studio.dashboard.app import create_app
+    db = tmp_path / "s.db"
+    con = connect(db)
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (1,'asura','u','s','Omniscient Reader','t')")
+    for cid, n in ((1, 1), (2, 2)):
+        con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                    "status, ep_dir, updated_at, season) VALUES "
+                    "(?,1,?,?,'u','rendered','/tmp/e','t',1)",
+                    (cid, n, f"Episode {n}"))
+    con.commit()
+    TestClient(create_app(db_path=str(db))).post(
+        "/bundles", data={"series_id": 1, "num_from": 1, "num_to": 2},
+        follow_redirects=False)
+    title = con.execute("SELECT title FROM bundle WHERE id=1").fetchone()[0]
+    assert title == "Omniscient Reader — Episodes 1–2", title

@@ -1132,7 +1132,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         nums = [r[0] for r in c.execute(
             "SELECT number FROM chapter WHERE id IN "
             f"({','.join('?' for _ in ids)}) ORDER BY number", ids)]
-        title = (f"Episodes {nums[0]:g}–{nums[-1]:g}" if nums else "Video")
+        srow = c.execute("SELECT title FROM series WHERE id=?",
+                         (series_id,)).fetchone()
+        sname = str((srow[0] if srow else "") or "").strip()
+        # name it after the manhwa AND the range picked, so a list of videos is
+        # readable without opening them ("Debut — first 12" said neither)
+        span = f"Episodes {nums[0]:g}–{nums[-1]:g}" if nums else "Video"
+        title = f"{sname} — {span}" if sname else span
         bid = bundles.create_bundle(c, series_id, "manual", chapter_ids=ids,
                                     title=title)
         # auto title/description from the arc (gemma) — replaces the provisional

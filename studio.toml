@@ -83,7 +83,13 @@ art_only_straddle_push_frac = 0.10
 [teaser]
 # bundle-level arc teaser: pick a high-stakes window from a bundle's chapters,
 # render a short teaser.mp4, and prepend it to the bundle concat.
-enabled = true
+# OFF (2026-09-05, owner): this flag also gates the AUTO-DEBUT BUNDLE, whose
+# guard is "does this series have a bundle right now" rather than the
+# "propose exactly ONCE, ever" rule the thumbnail proposer uses. So a deleted
+# video was silently re-created by the next prepare. The owner creates video
+# ranges by hand; the teaser is one per manhwa and lives at
+# dist/series_<id>/teaser.mp4.
+enabled = false
 shortlist_n = 4
 min_panels = 4
 max_hook_panels = 10
