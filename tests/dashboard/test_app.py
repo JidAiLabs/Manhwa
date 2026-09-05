@@ -1113,3 +1113,29 @@ def test_no_template_hardcodes_the_source_list():
         assert "{% for s in sources %}" in block, f"{name}: picker is not registry-driven"
         hardcoded = [sid for sid in REGISTRY if f">{sid}<" in block]
         assert not hardcoded, f"{name}: hardcoded source options {hardcoded}"
+
+
+def test_planned_and_rendered_have_distinct_badges(client):
+    """`planned` and `rendered` shared the .b.ok class, so both drew the same
+    green pill and the chapter list could not be read at a glance — a chapter
+    awaiting render looked identical to a finished one.
+
+    Asserts they differ rather than pinning a specific colour, so a future
+    palette change is free but a re-collision fails.
+    """
+    import re
+    c, con = client
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, updated_at, season) VALUES (2,1,2,'Chapter 2',"
+                "'https://asura.example/nano/ch2','rendered','t',1)")
+    con.commit()
+
+    html = c.get("/series/1").text
+    classes = {}
+    for m in re.finditer(r'<span class="b ([a-z]+)">\s*(planned|rendered)\s*</span>', html):
+        classes[m.group(2)] = m.group(1)
+
+    assert {"planned", "rendered"} <= set(classes), (
+        f"both pills should render; got {classes}")
+    assert classes["planned"] != classes["rendered"], (
+        f"planned and rendered share badge class {classes['planned']!r}")

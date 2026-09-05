@@ -11,7 +11,7 @@
 {%- elif c.job and c.job.state == 'failed' -%}
   <span class="b err">⚠ {{ c.job.label }} failed</span> <span class="kv">at {{ c.status }}</span>
 {%- else -%}
-  <span class="b {{ 'ok' if c.status in ('planned', 'rendered') else ('new' if c.status == 'discovered' else 'q') }}">{{ c.status }}</span>
+  <span class="b {{ 'ok' if c.status == 'rendered' else ('plan' if c.status == 'planned' else ('new' if c.status == 'discovered' else 'q')) }}">{{ c.status }}</span>
 {%- endif -%}
 </td>
 <td class="kv">{{ c.season or '—' }}</td>

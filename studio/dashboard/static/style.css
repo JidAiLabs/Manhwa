@@ -17,6 +17,11 @@ td{padding:9px 12px;border-top:1px solid var(--line);vertical-align:middle}
 .b.ok{background:#11331f;color:var(--ok)}.b.run{background:#221640;color:var(--run)}
 .b.q{background:#1c2733;color:var(--dim)}.b.warn{background:#33270f;color:var(--warn)}
 .b.err{background:#371511;color:var(--err)}.b.new{background:#0e2a3d;color:var(--acc)}
+/* `planned` is DONE-but-not-rendered: it shared .b.ok with `rendered`,
+   so the two terminal-looking states were the same green. Teal is the
+   only hue not already spoken for (ok/green, warn/amber, err/red,
+   acc/blue, run/purple, q/grey). */
+.b.plan{background:#0d2e2a;color:#3ec9b4}
 .bar{height:7px;border-radius:4px;background:#0c1116;overflow:hidden;min-width:160px;display:inline-block;vertical-align:middle}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--ok))}
 button{background:var(--acc);border:0;color:#06121f;font-weight:700;border-radius:7px;padding:7px 13px;cursor:pointer}
