@@ -203,3 +203,27 @@ def is_nullish_line(text: Any) -> bool:
     narration and must never match.
     """
     return bool(NULLISH_LINE_RE.match(str(text or "")))
+
+
+# A bare letter is not a null, so is_nullish_line let ORV Ep64 g0029_p11's line
+# 'G.' through every narration gate; TTS retried three times, returned 0.14s,
+# and the duration floor caught it at the SPEAKER -- the one place nothing can
+# be repaired. Measured over the whole 5,459-segment corpus, exactly two lines
+# carry no pronounceable word ('G.' in Ep64, "''." in Ep86) and both are
+# defects, while 'Meanwhile.' and 'Not right.' are legitimate. That is why this
+# tests pronounceability and NOT word count -- a length floor would have
+# rejected a real transition line.
+_SPEAKABLE_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+
+
+def is_unvoiceable_line(text: Any) -> bool:
+    """True when *text* cannot be spoken as narration: a stringified null, or
+    a line with no pronounceable word (a lone letter, punctuation, bare digits).
+
+    THE authority for "never send this to the speaker" -- prep_qa's gate, the
+    TTS refusal and recap_style.usable_narration_line all consume this one
+    predicate so a line can never be voiceable to one and not the others.
+    """
+    if is_nullish_line(text):
+        return True
+    return not _SPEAKABLE_WORD_RE.search(str(text or ""))

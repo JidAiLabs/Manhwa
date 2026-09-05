@@ -181,8 +181,12 @@ def test_gate_does_not_take_a_rewrite_that_voices_LESS_of_the_caption():
 
 
 def test_caption_floor_is_silent_when_the_old_line_already_covers_it():
-    old = [{"group_id": 22, "narration": "a"}]
-    new = [{"group_id": 22, "narration": "b"}]
+    # Real sentences, not "a"/"b": a one-letter line is unvoiceable, so the
+    # VALIDITY floor now fires before the judge is ever asked and the verdict
+    # would be old_unshippable. The floor order is deliberate; this test is
+    # about the caption floor staying silent, so give it shippable prose.
+    old = [{"group_id": 22, "narration": "He looks at his phone."}]
+    new = [{"group_id": 22, "narration": "He glances down at the screen."}]
     accepted, decisions = ab.gate_beats(
         old, new, judge=lambda o, n: "A_better", caption_gap=lambda b: 0)
     assert decisions[0]["verdict"] == "A_better"                   # judge ruled

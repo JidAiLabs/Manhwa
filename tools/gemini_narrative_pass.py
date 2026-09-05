@@ -247,6 +247,34 @@ def _build_vision_map(vision_manifest: Dict[str, Any]) -> Dict[str, Dict[str, An
     return {it.get("scene_file"): it for it in items if it.get("scene_file")}
 
 
+def merge_vision_ocr(u_by_file: Dict[str, Any],
+                     vision_by_file: Dict[str, Any]) -> Dict[str, Any]:
+    """Carry each panel's `ocr_clean` from the VISION manifest into the
+    understanding map, in place.
+
+    `system_card_line` reads a card's words from the understanding
+    (`u.get("ocr_clean")`), but panel_understand never writes that field into
+    its own panels — it only reads it off the vision items to build its prompt.
+    So the lookup was dead code: it returned "" for every card, the guard fell
+    through to "no card text -> the line as given", and a model line of "None."
+    shipped as narration. ORV Ep74 g0013 and Ep83 g0003 each parked a chapter
+    on a blocking narration_null that four heal cycles could not clear, because
+    re-narrating cannot invent text the writer was never shown.
+
+    Existing understanding values always win; only blank/missing ones are
+    filled, so this can never overwrite a real reading.
+    """
+    for f, u in (u_by_file or {}).items():
+        if not isinstance(u, dict):
+            continue
+        if str(u.get("ocr_clean") or "").strip():
+            continue
+        ocr = str(((vision_by_file or {}).get(f) or {}).get("ocr_clean") or "").strip()
+        if ocr:
+            u["ocr_clean"] = ocr
+    return u_by_file
+
+
 def _load_cast_list(cast_path: str) -> List[Dict[str, Any]]:
     """Load manifest.cast.json -> its `cast` array (list of members). Empty list
     on a missing/unreadable/malformed file (never raises). Reused by the cast
@@ -2096,6 +2124,8 @@ def main() -> int:
                for a, b in (groups_m.get("echo_pairs") or []) if a and b}
 
     vision_by_file = _build_vision_map(vision_m)
+    # system cards speak their OCR; the understanding never carries it
+    merge_vision_ocr(u_by_file, vision_by_file)
 
     if args.backend == "ollama":
         client = None

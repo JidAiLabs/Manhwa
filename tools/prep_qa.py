@@ -55,6 +55,7 @@ from render_prep import multi_scale_contained
 from scene_chrome import is_chrome_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 from narration_consistency import (audio_consistency, is_nullish_line,
+                                   is_unvoiceable_line,
                                    strip_chrome_opener)
 from manifest_freshness import verify_chapter as _verify_chapter_freshness
 from manifest_io import read_manifest
@@ -1453,11 +1454,13 @@ def narration_null_flags(beats_obj: Any) -> List[Dict[str, Any]]:
         seg_id = f"g{int(b.get('group_id') or 0):04d}"
         for s in beat_segments(b):
             line = s.get("line")
-            if not is_nullish_line(line):
+            if not is_unvoiceable_line(line):
                 continue
+            _why = ("is a stringified null" if is_nullish_line(line)
+                    else "has no pronounceable word")
             flags.append(_flag(
                 "narration_null", ERROR,
-                f"segment line is a stringified null ({str(line)!r}), not "
+                f"segment line {_why} ({str(line)!r}), not "
                 "narration — re-narrate this segment",
                 scene=str((s["span"] or [""])[0]), segment_id=seg_id))
     return flags

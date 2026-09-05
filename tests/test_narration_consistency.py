@@ -125,3 +125,51 @@ def test_branding_and_silent_segments_ignored():
     idx = _index(("g0002_p01", {"text_sha": nc.narration_sha("Real line.")}))
     r = nc.audio_consistency(plan, idx)
     assert r["fresh"] == ["g0002_p01"] and not r["stale"] and not r["missing"]
+
+
+# ---------------------------------------------------------------------------
+# is_unvoiceable_line — a line the speaker cannot say
+# ---------------------------------------------------------------------------
+# ORV Ep64 g0029_p11 parked a chapter on `audio_failed`: the line was 'G.', a
+# single letter. TTS retried three times, produced 0.14s, and the duration
+# floor correctly refused it — but nothing upstream had rejected the line, so
+# the failure surfaced at the speaker where nothing can be repaired.
+#
+# Measured across all 5,459 segments of the processed corpus, exactly two lines
+# have no pronounceable word: 'G.' (Ep64) and "''." (Ep86). Both are defects.
+# A word-COUNT floor would be wrong -- 'Meanwhile.' is a legitimate one-word
+# transition, and 'Not right.' a legitimate two-word line. The property that
+# separates them is pronounceability, not length.
+
+from tools.narration_consistency import is_unvoiceable_line, is_nullish_line
+
+
+def test_unvoiceable_catches_the_two_real_corpus_defects():
+    assert is_unvoiceable_line("G.")      # ORV Ep64 g0029_p11 -> 0.14s of audio
+    assert is_unvoiceable_line("''.")     # ORV Ep86
+
+
+def test_unvoiceable_still_catches_stringified_nulls():
+    for s in ("None.", "null", "N/A", "nil"):
+        assert is_unvoiceable_line(s), s
+
+
+def test_unvoiceable_keeps_short_but_real_lines():
+    """The corpus's genuine short lines must survive -- these are narration."""
+    for s in ("Meanwhile.", "Not right.", "Why should he?",
+              "The current scenario.", "No one moves.", "None of them survive."):
+        assert not is_unvoiceable_line(s), s
+
+
+def test_nullish_predicate_is_unchanged():
+    """is_nullish_line keeps its narrow whole-string contract."""
+    assert is_nullish_line("None.")
+    assert not is_nullish_line("G.")          # a defect, but not a NULL
+    assert not is_nullish_line("No one moves.")
+
+
+def test_usable_narration_line_rejects_unvoiceable():
+    """The restore guards must never put an unvoiceable line back."""
+    from tools.recap_style import usable_narration_line
+    assert not usable_narration_line("G.")
+    assert usable_narration_line("Meanwhile.")

@@ -1460,3 +1460,54 @@ def test_editing_a_line_drops_its_stale_punch_shadow():
     assert "line_plain" not in beat["segments"][0]     # changed -> shadow dropped
     assert beat["segments"][1]["line_plain"] == "kept."  # unchanged -> untouched
     assert beat["narration"] == "shorter. kept."
+
+
+# ---------------------------------------------------------------------------
+# system cards must SPEAK their text — the ocr_clean source bug
+# ---------------------------------------------------------------------------
+# ORV Ep74 g0013 (p000061.jpg) and Ep83 g0003 (p000017.jpg) each parked a
+# chapter on a blocking `narration_null`: the segment line was the literal
+# string "None." and four heal cycles could not clear it.
+#
+# The card text was never missing. It sits in manifest.vision.json
+# ("60X [YOU HAVE GAINED A NEW SKILL THAT HELPS YOU COMMUNICATE WITH OTHER
+# WORLD SPECIES.]", 15 OCR words). But system_card_line reads the card from the
+# UNDERSTANDING manifest, and panel_understand never writes `ocr_clean` into
+# its own panels — it only READS the field off the vision items (line 901) to
+# build its prompt. So `u.get("ocr_clean")` was dead code that could never be
+# non-empty: `card` came back "", the guard fell through to "no card text ->
+# the line as given", and the model's "None." shipped as narration.
+#
+# Same family as the thumbnail cast-id/display-name bug: a lookup against the
+# wrong source returns empty and a fallback swallows it. No error, no warning.
+
+_CARD_OCR = ("60X [YOU HAVE GAINED A NEW SKILL THAT HELPS YOU COMMUNICATE "
+             "WITH OTHER WORLD SPECIES.]")
+
+
+def test_system_card_speaks_vision_ocr_after_merge():
+    """The real Ep74 panel: understanding carries no card text, vision does."""
+    u_by_file = {"p000061.jpg": {"scene_file": "p000061.jpg",
+                                 "panel_kind": "system",
+                                 "dialogue": "", "action": "none"}}
+    vision_by_file = {"p000061.jpg": {"scene_file": "p000061.jpg",
+                                      "ocr_clean": _CARD_OCR}}
+    gnp.merge_vision_ocr(u_by_file, vision_by_file)
+    out = gnp.system_card_line("p000061.jpg", u_by_file, "None.")
+    from tools.recap_style import is_nullish_line
+    assert not is_nullish_line(out), f"null survived: {out!r}"
+    assert "skill" in out.lower() and "communicate" in out.lower()
+
+
+def test_merge_never_overwrites_understanding_ocr():
+    u_by_file = {"a.jpg": {"ocr_clean": "REAL CARD TEXT."}}
+    gnp.merge_vision_ocr(u_by_file, {"a.jpg": {"ocr_clean": "vision version"}})
+    assert u_by_file["a.jpg"]["ocr_clean"] == "REAL CARD TEXT."
+
+
+def test_merge_leaves_panel_without_vision_ocr_untouched():
+    """No card text anywhere -> documented contract: the line as given."""
+    u_by_file = {"b.jpg": {"panel_kind": "system", "dialogue": ""}}
+    gnp.merge_vision_ocr(u_by_file, {"b.jpg": {"ocr_clean": "   "}})
+    assert not str(u_by_file["b.jpg"].get("ocr_clean") or "").strip()
+    assert gnp.system_card_line("b.jpg", u_by_file, "A line.") == "A line."

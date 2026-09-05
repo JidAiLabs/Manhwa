@@ -43,6 +43,7 @@ from narration_consistency import (  # noqa: E402
     MOOD_KEYWORDS,
     MOOD_LEAK_STRIP_RE as _MOOD_LEAK_STRIP_RE,
     is_nullish_line,
+    is_unvoiceable_line,
     narration_sha,
 )
 from manifest_io import write_manifest, input_sha  # noqa: E402
@@ -970,7 +971,7 @@ def synthesize_manifest(
         cond: Dict[str, Any] = {}
         tts_failed = False
         est = expected_audio_sec(sent_text)
-        if is_nullish_line(sent_text):
+        if is_unvoiceable_line(sent_text):
             # Refuse the backend entirely: a stringified null has no right
             # answer, and letting it through is how Ep38 shipped dead air.
             write_silence_wav(audio_path, est)

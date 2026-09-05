@@ -25,6 +25,7 @@ from beats_segments import (  # noqa: E402
 from narration_consistency import (  # noqa: E402
     MOOD_LEAK_STRIP_RE,
     is_nullish_line,
+    is_unvoiceable_line,
 )
 
 
@@ -425,7 +426,7 @@ def usable_narration_line(text: str) -> bool:
     # the group, the regen fell back to pads, and because "None." read as usable
     # the fallback restored it. Same predicate the prep_qa gate and the TTS
     # refusal use, so all three agree on what counts as a null.
-    if is_nullish_line(ln):
+    if is_unvoiceable_line(ln):
         return False
     if mentions_image_file(ln) or mentions_impact_marker(ln):
         return False
