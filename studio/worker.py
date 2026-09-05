@@ -1260,7 +1260,7 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
     allowed, why = gates.voice_allowed(
         con, job["chapter_id"], gates.chapter_ep_dir(con, job["chapter_id"]))
     if not allowed:
-        raise RuntimeError(f"voiceover blocked: {why}")
+        raise NonRetryableError(f"voiceover blocked: {why}")
     ch = _chapter(con, job["chapter_id"])
     # An EXPLICIT voiceover job must actually voice: `studio run` resumes by
     # status, so on a chapter already voiced/planned/rendered it silently
@@ -1366,7 +1366,7 @@ def _h_branding_segments(con: sqlite3.Connection, job: Dict[str, Any],
                            "thumbnail from")
     thumb = Path(row[0]) / "render" / "thumbnail.png"
     if not thumb.exists():
-        raise RuntimeError(f"series thumbnail missing: {thumb} — generate "
+        raise NonRetryableError(f"series thumbnail missing: {thumb} — generate "
                            "it first (tools/thumbnail_gen.py)")
     bdir = _series_branding_dir(sid)
     bdir.mkdir(parents=True, exist_ok=True)
@@ -1421,7 +1421,7 @@ def _h_chain(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
     if crosses_voice:
         allowed, why = gates.voice_allowed(con, ch["id"], ch["ep_dir"])
         if not allowed:
-            raise RuntimeError(f"voiceover blocked: {why}")
+            raise NonRetryableError(f"voiceover blocked: {why}")
     with record_stage(con, chapter_id=ch["id"], stage=f"chain:{target}",
                       series_id=ch["series_id"]):
         rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
@@ -1487,7 +1487,7 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
     allowed, why = gates.render_allowed(
         con, job["chapter_id"], gates.chapter_ep_dir(con, job["chapter_id"]))
     if not allowed:
-        raise RuntimeError(f"render blocked: {why}")
+        raise NonRetryableError(f"render blocked: {why}")
     ch = _chapter(con, job["chapter_id"])
     # branding "intro"/"outro"/"none" (-> single.mp4) is dead: render_prep has
     # hard-forced those segment durations to 0 since 2026-06-29, so every
@@ -1740,7 +1740,7 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
 def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None:
     allowed, why = gates.concat_allowed(con, job["bundle_id"])
     if not allowed:
-        raise RuntimeError(f"concat blocked: {why}")
+        raise NonRetryableError(f"concat blocked: {why}")
     bid = job["bundle_id"]
     if (job.get("payload") or {}).get("intro_ch1"):
         # AUTO-INTRO deliverable: teaser + the bundle's FIRST chapter only (NOT

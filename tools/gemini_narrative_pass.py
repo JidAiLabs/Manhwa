@@ -1197,8 +1197,37 @@ _CARD_DESC_RE = re.compile(
     re.IGNORECASE)
 
 
+# A system window is DRAWN with brackets/angles; a narrator never says them.
+# Measured over the processed corpus: 417 of 516 system cards carrying OCR text
+# have this markup ("[THE CONSTELLATION'S BLESSING HAS ACTIVATED…]",
+# "<SUB SCENARIO - ESCAPE>").
+_CARD_MARKUP_RE = re.compile(r"[\[\]<>‹›〈〉]")
+# A scan watermark stamped at the head of a card ("60X [YOU HAVE…",
+# "0 X [ACTIVATING…"). Keyed on the FOLLOWING bracket rather than on bare
+# leading digits, because in every observed case the stamp precedes the window
+# — and that keeps a legitimate "3X DAMAGE" or "10 XP" intact.
+_CARD_STAMP_RE = re.compile(r"^\s*[-–—]?\s*\d+\s*[Xx]\s*(?=[\[<‹〈])")
+# bullet/punctuation debris left at the head once the markup is gone
+_CARD_LEAD_JUNK_RE = re.compile(r"^[\s\-–—•·:;,.]+")
+
+
+def clean_card_text(text: str) -> str:
+    """A system card's WORDS, with the window's markup removed.
+
+    The card text is spoken verbatim when the writer's own line does not cover
+    it, so anything that is drawing rather than speech has to go first:
+    bracket/angle markup, and a leading scan watermark. Returns "" when nothing
+    pronounceable survives — the caller treats that as "no card text" and keeps
+    the writer's line instead of voicing an empty string.
+    """
+    t = _CARD_STAMP_RE.sub("", str(text or ""))
+    t = _CARD_MARKUP_RE.sub(" ", t)
+    t = _CARD_LEAD_JUNK_RE.sub("", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def _speak_card(text: str) -> str:
-    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    t = clean_card_text(text)
     if not t:
         return t
     t = t[:1].upper() + t[1:].lower()
@@ -1215,7 +1244,7 @@ def system_card_line(f, understand_by_file, line):
     text (understanding dialogue / OCR), sentence-cased. No card text -> the
     line as given."""
     u = (understand_by_file or {}).get(f) or {}
-    card = str(u.get("dialogue") or u.get("ocr_clean") or "").strip()
+    card = clean_card_text(u.get("dialogue") or u.get("ocr_clean") or "")
     if not card:
         return line
     ln = str(line or "").strip()

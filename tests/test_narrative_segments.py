@@ -1511,3 +1511,64 @@ def test_merge_leaves_panel_without_vision_ocr_untouched():
     gnp.merge_vision_ocr(u_by_file, {"b.jpg": {"ocr_clean": "   "}})
     assert not str(u_by_file["b.jpg"].get("ocr_clean") or "").strip()
     assert gnp.system_card_line("b.jpg", u_by_file, "A line.") == "A line."
+
+
+# ---------------------------------------------------------------------------
+# card text is SPOKEN, so its markup must not be
+# ---------------------------------------------------------------------------
+# Measured over the processed corpus: 417 of 516 system cards with OCR text
+# carry bracket/angle markup ("[THE CONSTELLATION'S BLESSING HAS ACTIVATED…]",
+# "<SUB SCENARIO - ESCAPE>"). That markup is how the site draws a system
+# window, not something a narrator says.
+#
+# A smaller set also carries a scan watermark at the head — 60X, 00X, "0 X".
+# In every observed case the stamp sits immediately before an opening bracket,
+# so the strip keys on THAT, never on bare leading digits: a legitimate
+# "3X DAMAGE" must survive.
+
+def test_card_markup_is_not_spoken():
+    from tools.gemini_narrative_pass import clean_card_text
+    out = clean_card_text(
+        "[THE CONSTELLATION'S BLESSING HAS ACTIVATED DEUS EX MACHINA.]")
+    assert "[" not in out and "]" not in out
+    assert out.startswith("THE CONSTELLATION")
+
+
+def test_angle_markup_is_not_spoken():
+    from tools.gemini_narrative_pass import clean_card_text
+    out = clean_card_text("<SUB SCENARIO - ESCAPE> CATEGORY: SUB")
+    assert "<" not in out and ">" not in out
+    assert out.startswith("SUB SCENARIO")
+
+
+def test_leading_scan_watermark_is_dropped():
+    from tools.gemini_narrative_pass import clean_card_text
+    for raw in ("60X [YOU HAVE GAINED A NEW SKILL.]",
+                "0 X [ACTIVATING BOOKMARK NUMBER ONE.]",
+                "- <SUB SCENARIO - ESCAPE> CATEGORY: SUB"):
+        out = clean_card_text(raw)
+        assert not out[:4].strip().rstrip("X").isdigit(), out
+        assert out[:1].isalpha(), out
+
+
+def test_a_real_multiplier_is_never_mistaken_for_a_watermark():
+    """The stamp strip requires an opening bracket after it — bare digits stay."""
+    from tools.gemini_narrative_pass import clean_card_text
+    assert clean_card_text("3X DAMAGE DEALT.").startswith("3X DAMAGE")
+    assert "10 XP" in clean_card_text("10 XP GAINED.")
+
+
+def test_speak_card_emits_no_markup():
+    from tools.gemini_narrative_pass import _speak_card
+    out = _speak_card("60X [YOU HAVE GAINED A NEW SKILL.]")
+    assert not any(ch in out for ch in "[]<>")
+    assert out.startswith("You have gained")
+    assert out.endswith(".")
+
+
+def test_card_that_is_only_markup_falls_back_to_the_given_line():
+    """Nothing pronounceable left -> the card cannot be spoken, so the writer's
+    line stands rather than shipping an empty segment."""
+    from tools.gemini_narrative_pass import system_card_line
+    u = {"p.jpg": {"panel_kind": "system", "dialogue": "", "ocr_clean": "[ ] <>"}}
+    assert system_card_line("p.jpg", u, "A real line.") == "A real line."

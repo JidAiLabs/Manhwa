@@ -2241,3 +2241,59 @@ def test_heal_visual_drops_never_drops_a_narrated_MULTI_panel_span(tmp_path, mon
     stuck = worker._heal_visual_drops(con, ch, ep, open(tmp_path / "l.txt", "w"))
     assert stuck == set()                          # not blocking
     assert not (ep / "auto_drops.json").exists()   # and no futile drop written
+
+
+# ---- approval gates are permanent, not transient -------------------------
+
+def _seed_scripted(con, cid=41):
+    con.execute("INSERT OR IGNORE INTO series (id, source, series_url, slug, "
+                "title, added_at) VALUES (1,'asura','u','s','S','t')")
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at) VALUES "
+                "(?,1,1,'Ch 1','u','scripted','/tmp/nope','t')", (cid,))
+    con.commit()
+
+
+def test_voiceover_approval_block_is_not_retried(tmp_path):
+    """An approval gate cannot be cleared by re-running — only by a human.
+
+    ORV Ep64 burned all three retries inside the 14 minutes before the owner
+    approved, leaving three IDENTICAL failures in the job list that read like a
+    real fault. Same rule as test_deterministic_qa_block_is_not_retried: fail
+    once, park it, say why.
+    """
+    con = _con(tmp_path)
+    _seed_scripted(con, cid=41)
+    jid = jobs.enqueue(con, "voiceover", chapter_id=41)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path))
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (jid,)).fetchone()
+    assert state == "failed" and "blocked" in err
+    assert "auto-retry" not in err, f"approval block was retried: {err}"
+    queued = con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover' AND "
+                         "state='queued'").fetchone()[0]
+    assert queued == 0, "a retry was re-enqueued for a permanent block"
+
+
+def test_render_approval_block_is_not_retried(tmp_path):
+    con = _con(tmp_path)
+    _seed_scripted(con, cid=42)
+    jid = jobs.enqueue(con, "render_segment", chapter_id=42)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path))
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (jid,)).fetchone()
+    assert state == "failed"
+    assert "auto-retry" not in err, f"render gate was retried: {err}"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='render_segment' "
+                       "AND state='queued'").fetchone()[0] == 0
+
+
+def test_chain_voice_gate_block_is_not_retried(tmp_path):
+    con = _con(tmp_path)
+    _seed_scripted(con, cid=43)
+    jid = jobs.enqueue(con, "chain", chapter_id=43, payload={"target": "planned"})
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path))
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (jid,)).fetchone()
+    assert state == "failed"
+    assert "auto-retry" not in err, f"chain voice gate was retried: {err}"
