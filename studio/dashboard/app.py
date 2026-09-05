@@ -779,6 +779,17 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
             # prefer the AUTO-generated title (publish_meta) over the
             # provisional "Episodes X–Y" set at creation
+            # the teaser is a real file but had no link anywhere: after a
+            # re-voice there was no way to hear it from the dashboard at all,
+            # and "open" plays the CONCATENATED video, which still carries the
+            # teaser as it was when the concat ran.
+            tf = REPO / "dist" / f"bundle_{b['id']}" / "teaser.mp4"
+            b["teaser_mp4"] = (f"bundle_{b['id']}/teaser.mp4"
+                               if tf.exists() else "")
+            b["teaser_stale"] = bool(
+                b["teaser_mp4"] and b.get("output_path")
+                and Path(b["output_path"]).exists()
+                and tf.stat().st_mtime > Path(b["output_path"]).stat().st_mtime)
             auto = ""
             mp = REPO / "dist" / f"bundle_{b['id']}" / "publish_meta.json"
             if mp.exists():

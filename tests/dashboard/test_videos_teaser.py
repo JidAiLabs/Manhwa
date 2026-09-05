@@ -84,3 +84,39 @@ def test_planned_teaser_shows_review_card(client, tmp_path, monkeypatch):
     assert "The exam begins." in html
     assert f"/bundles/{bid}/teaser/approve" in html
     assert f"/bundles/{bid}/teaser/decline" in html
+
+
+def test_videos_page_links_the_teaser_file_and_flags_it_when_newer(tmp_path, monkeypatch):
+    """The teaser had no link anywhere: after re-voicing bundle 1's teaser
+    there was no way to hear it from the dashboard, and "open" plays the
+    CONCATENATED file, which still carried the OLD teaser — so the page looked
+    unchanged and the repair appeared not to have happened."""
+    import json
+    from fastapi.testclient import TestClient
+    from studio.catalog.db import connect
+    from studio.dashboard import app as appmod
+
+    db = tmp_path / "s.db"
+    con = connect(db)
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (1,'asura','u','s','S','t')")
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at, season) VALUES "
+                "(1,1,1,'Ch 1','u','rendered','',' t',1)")
+    dist = tmp_path / "dist" / "bundle_1"
+    dist.mkdir(parents=True)
+    out = dist / "bundle.mp4"
+    out.write_text("video")
+    teaser = dist / "teaser.mp4"
+    teaser.write_text("teaser")
+    import os, time
+    os.utime(out, (time.time() - 600, time.time() - 600))   # concat is OLDER
+    con.execute("INSERT INTO bundle (id, series_id, title, kind, state, "
+                "output_path, teaser_state) VALUES "
+                "(1,1,'V','manual','concatenated',?,'approved')", (str(out),))
+    con.commit()
+
+    monkeypatch.setattr(appmod, "REPO", tmp_path)
+    html = TestClient(appmod.create_app(db_path=str(db))).get("/videos").text
+    assert "/dist/bundle_1/teaser.mp4" in html, "no way to play the teaser"
+    assert "newer than video" in html, "stale concat not flagged"
