@@ -33,11 +33,29 @@ def test_all_pages_render(client):
 
 
 def _pass_qa(con, cid=1):
-    """A chapter that has actually passed QA. /approve now ENFORCES the render
-    gate rather than only hiding the button, so a render-approval test must
-    set up a chapter that is genuinely approvable."""
+    """A chapter that is genuinely approvable: QA green AND the artifacts an
+    approval binds to actually on disk.
+
+    /approve enforces the gate rather than only hiding the button, and
+    gates.approvable now also refuses when gate_sha() is None — there is
+    nothing to approve when the subject file does not exist (ORV Episode 100
+    was approved for voice while still `discovered` with no ep_dir). So a
+    fixture has to materialise the files, not just the QA row.
+
+    An ep_dir the caller already set up is left alone — test_approve_endpoint
+    _stores_content_sha builds its own and asserts against its sha.
+    """
+    import tempfile
     con.execute("INSERT INTO stage_run (chapter_id, stage, ok) "
                 "VALUES (?, 'qa_scan', 1)", (cid,))
+    row = con.execute("SELECT ep_dir FROM chapter WHERE id=?", (cid,)).fetchone()
+    if not (row and str(row[0] or "").strip()):
+        ep = Path(tempfile.mkdtemp())
+        (ep / "tts").mkdir(parents=True, exist_ok=True)
+        (ep / "manifest.script.json").write_text('{"paragraphs": []}')
+        (ep / "render.plan.clean.json").write_text('{"cuts": []}')
+        (ep / "tts" / "tts_index.json").write_text('{"clips": []}')
+        con.execute("UPDATE chapter SET ep_dir=? WHERE id=?", (str(ep), cid))
     con.commit()
 
 
@@ -1139,3 +1157,49 @@ def test_planned_and_rendered_have_distinct_badges(client):
         f"both pills should render; got {classes}")
     assert classes["planned"] != classes["rendered"], (
         f"planned and rendered share badge class {classes['planned']!r}")
+
+
+# ---- approvals must not precede the thing they approve --------------------
+
+def _discovered_chapter(con, cid=77):
+    """A chapter as `add-series` leaves it: a URL and nothing else on disk."""
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, ep_dir, updated_at, season) VALUES "
+                "(?,1,77,'Episode 77','https://x/77','discovered','','t',1)", (cid,))
+    con.commit()
+
+
+def test_voice_cannot_be_approved_before_there_is_a_script(client):
+    """ORV Episode 100: chapter 102 sat at `discovered` with an EMPTY ep_dir —
+    its prepare had been queued for two days and never run. A voice approval
+    was accepted anyway, and because approving voice auto-enqueues a voiceover,
+    the job started 2s later, overtook the queued prepare and died on
+    FileNotFoundError: 'render.plan.json' — burning 3 retries.
+
+    post_approve already guarded `render` for exactly this ("a manufactured
+    dead-letter, and an approval record for something that was never
+    approvable"); voice never got the same treatment.
+    """
+    c, con = client
+    _discovered_chapter(con, 77)
+
+    r = c.post("/approve", data={"gate": "voice", "chapter_id": 77},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert "error=" in r.headers["location"]
+
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE chapter_id=77 AND "
+                       "gate='voice'").fetchone()[0] == 0, "approval was recorded"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE chapter_id=77 AND "
+                       "type='voiceover'").fetchone()[0] == 0, "voiceover was enqueued"
+
+
+def test_render_approval_guard_still_refuses_bad_qa(client):
+    """The pre-existing render guard must survive the refactor."""
+    c, con = client
+    _discovered_chapter(con, 78)
+    r = c.post("/approve", data={"gate": "render", "chapter_id": 78},
+               follow_redirects=False)
+    assert r.status_code == 303 and "error=" in r.headers["location"]
+    assert con.execute("SELECT COUNT(*) FROM job WHERE chapter_id=78 AND "
+                       "type='render_segment'").fetchone()[0] == 0

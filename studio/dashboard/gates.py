@@ -146,6 +146,48 @@ def latest_qa_ok(con: sqlite3.Connection, chapter_id: int) -> bool:
     return bool(r and r[0])
 
 
+# Gates whose approval is bound to CONTENT via gate_sha(). If that returns
+# None the artifact does not exist yet, so there is literally nothing to
+# approve -- the approval could never be matched against anything later.
+_SHA_BOUND_GATES = ("voice", "render")
+
+_NOTHING_YET = {
+    "voice": "no narration script on disk",
+    "render": "no render plan on disk",
+}
+
+
+def approvable(con: sqlite3.Connection, gate: str, *,
+               chapter_id: Optional[int] = None,
+               ep_dir: Optional[Union[str, Path]] = None) -> Tuple[bool, str]:
+    """Can *gate* be approved AT ALL right now? -> (ok, reason_if_not).
+
+    An approval must never precede the thing it approves. ORV Episode 100
+    (chapter 102) sat at `discovered` with an empty ep_dir -- its prepare had
+    been queued two days and never run -- yet a voice approval was accepted,
+    and since approving voice auto-enqueues a voiceover, the job started two
+    seconds later, overtook the queued prepare, and died on
+    FileNotFoundError: 'render.plan.json' after three retries.
+
+    post_approve already enforced this for `render` alone ("a manufactured
+    dead-letter, and an approval record for something that was never
+    approvable"). This generalises that rule so every gate gets it, rather
+    than each new gate having to remember.
+
+    NOTE this is deliberately NOT applied to the prepare STAGE: prepare is what
+    CREATES ep_dir (its first step is the lazy fetch), so requiring artifacts
+    before it would break every new chapter.
+    """
+    if gate == "render" and chapter_id and not latest_qa_ok(con, chapter_id):
+        return False, ("cannot approve render: the latest QA scan is missing "
+                       "or failed — re-run prepare → QA first")
+    if gate in _SHA_BOUND_GATES and gate_sha(gate, ep_dir) is None:
+        return False, (f"cannot approve {gate}: nothing to approve yet "
+                       f"({_NOTHING_YET[gate]}) — this chapter has not been "
+                       "prepared, so wait for its prepare job to run")
+    return True, ""
+
+
 def voice_allowed(con: sqlite3.Connection, chapter_id: int,
                   ep_dir: Optional[Union[str, Path]] = None) -> Tuple[bool, str]:
     """Confirm-upstream-before-expensive-downstream: the narration must be

@@ -1006,13 +1006,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # enqueue a job that failed a minute later inside the worker's own
         # gate check — a manufactured dead-letter, and an approval record for
         # something that was never approvable.
-        if gate == "render" and chapter_id and not gates.latest_qa_ok(
-                c, chapter_id):
-            return RedirectResponse(
-                f"/chapter/{chapter_id}?error="
-                + quote_plus("cannot approve render: the latest QA scan is "
-                             "missing or failed — re-run prepare → QA first"),
-                status_code=303)
+        ok, why = gates.approvable(c, gate, chapter_id=chapter_id,
+                                   ep_dir=ep_dir)
+        if not ok:
+            back = f"/chapter/{chapter_id}" if chapter_id else "/videos"
+            return RedirectResponse(f"{back}?error=" + quote_plus(why),
+                                    status_code=303)
         gates.approve(c, gate, series_id=series_id, chapter_id=chapter_id,
                       bundle_id=bundle_id, note=note,
                       content_sha=gates.gate_sha(gate, ep_dir))
