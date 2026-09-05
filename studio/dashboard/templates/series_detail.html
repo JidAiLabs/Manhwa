@@ -82,10 +82,10 @@
 <button class="ghost"{% if not teaser_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 're-create teaser' if teaser_exists else 'create teaser' }}</button></form>
 {% if teaser_exists %}<a href="/dist/series_{{ sid }}/teaser.mp4?v={{ teaser_v }}" target="_blank" rel="noopener" class="kv" style="color:var(--acc)">▶ preview</a>{% endif %}
 {% if teaser_state=='approved' %}<span class="b ok">APPROVED ✓</span>
-{% elif teaser_state=='planned' %}<span class="b warn">awaits review 🔒</span>
+{% elif teaser_state=='declined' %}<span class="kv">declined — videos ship without a cold open</span>
+{% elif teaser_state=='planned' or teaser_exists %}<span class="b warn">awaits review 🔒</span>
 <form class="inline" method="post" action="/series/{{ sid }}/teaser/approve"><button class="green">approve teaser</button></form>
 <form class="inline" method="post" action="/series/{{ sid }}/teaser/decline"><button class="red">decline</button></form>
-{% elif teaser_state=='declined' %}<span class="kv">declined — videos ship without a cold open</span>
 {% else %}<span class="kv">no teaser yet</span>{% endif %}
 </div>
 {% if teaser_state=='planned' and teaser_card %}

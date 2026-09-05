@@ -127,3 +127,33 @@ def test_videos_page_flags_a_teaser_newer_than_the_video(tmp_path, monkeypatch):
     assert "newer than video" in c.get("/videos").text, "stale concat not flagged"
     # and the teaser itself is playable from the series page
     assert "/dist/series_1/teaser.mp4" in c.get("/series/1").text
+
+
+def test_an_existing_teaser_file_is_reviewable_even_when_state_is_none(tmp_path, monkeypatch):
+    """A teaser can exist on disk while its state reads 'none' — exactly what
+    the bundle→series migration produced, because the 'approved' state lived on
+    a bundle that had already been deleted.
+
+    With approve/decline keyed on state=='planned', the ONLY control offered was
+    "re-create teaser", which re-runs the planner and would destroy the very
+    file the owner asked to keep. Offer review whenever the file is there.
+    """
+    from fastapi.testclient import TestClient
+    from studio.catalog.db import connect
+    from studio.dashboard import app as appmod
+
+    db = tmp_path / "s.db"
+    con = connect(db)
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (1,'asura','u','s','S','t')")
+    con.commit()
+    sdist = tmp_path / "dist" / "series_1"
+    sdist.mkdir(parents=True)
+    (sdist / "teaser.mp4").write_text("teaser")
+
+    monkeypatch.setattr(appmod, "REPO", tmp_path)
+    html = TestClient(appmod.create_app(db_path=str(db))).get("/series/1").text
+    assert con.execute("SELECT teaser_state FROM series WHERE id=1"
+                       ).fetchone()[0] == "none"
+    assert "/series/1/teaser/approve" in html, "no way to approve an existing teaser"
+    assert "/dist/series_1/teaser.mp4" in html, "no way to play it first"
