@@ -4,6 +4,8 @@ base_url = "https://asurascans.com"
 base_url = "https://www.webtoons.com"
 [sources.elftoon]
 base_url = "https://elftoon.com"
+[sources.arenascan]
+base_url = "https://arenascan.com"
 
 [detect]
 backend = "yolo"
