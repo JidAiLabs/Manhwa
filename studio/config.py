@@ -16,7 +16,12 @@ class Config:
     yolo_weights: Path
     detect_backend: str          # "yolo" | "gemini"
     beats_model: str = "gemini-2.5-flash"   # writer model (vertex id or ollama tag)
-    beats_backend: str = "vertex"            # "vertex" | "ollama" (local Gemma)
+    beats_backend: str = "ollama"            # local gemma via ollama. LOCAL-ONLY
+                                             # is a project hard rule, so the
+                                             # DEFAULT must be the free path —
+                                             # it used to default to "vertex",
+                                             # meaning a missing/renamed toml key
+                                             # would silently start billing.
     script_model: str = "gpt-4.1-mini"      # OpenAI model for the script stage
     tts_backend: str = "elevenlabs"         # "elevenlabs" | "chatterbox" | "kokoro"
     tts_voice_ref: str = ""                 # optional reference wav for voice cloning
@@ -193,7 +198,7 @@ def load(path: Path | None = None) -> Config:
             Path(d.get("yolo_weights", "")).expanduser()),
         detect_backend=d.get("backend", "yolo"),
         beats_model=m.get("beats_model", "gemini-2.5-flash"),
-        beats_backend=m.get("beats_backend", "vertex"),
+        beats_backend=m.get("beats_backend", "ollama"),
         script_model=m.get("script_model", "gpt-4.1-mini"),
         tts_backend=t.get("backend", "elevenlabs"),
         tts_voice_ref=t.get("voice_ref", ""),

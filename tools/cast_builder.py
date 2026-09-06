@@ -425,7 +425,12 @@ def main() -> int:
             # 12-min job restart) — one more roll with more room to finish
             print(f"[warn] cast JSON unparseable ({e}); retrying once with a "
                   "larger num_predict")
-            resp = client.chat(
+            # `_ollama_chat`, NOT `client.chat`: this is the ollama branch, and
+            # the only `client` in scope is the genai one bound LATER (line ~437)
+            # in the vertex branch — so this raised UnboundLocalError and the
+            # self-repair below never ran once. Even bound, genai.Client has no
+            # .chat(); its API is client.models.generate_content().
+            resp = _ollama_chat(
                 model=args.model,
                 messages=[{"role": "user", "content": "\n".join(text_blobs),
                            "images": [str(pth) for pth in images]}],
