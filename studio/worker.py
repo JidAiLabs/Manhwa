@@ -351,6 +351,11 @@ _CRITICAL_QA_CODES = {
     # synthesis raised and was caught, while Ep38's returned 0.06s of audio, so
     # the TTS ok-flag saw success and the chapter shipped ~2.4s of dead air).
     "narration_null",
+    # a line that stops mid-sentence ("...at the risk of being banned from").
+    # Heal-THEN-block like narration_null: repair_spoken_line now amputates a
+    # never-terminal tail deterministically and the heal re-writes the rest;
+    # a survivor is unshippable — ORV Ep128 shipped one as "cosmetic".
+    "truncated_line",
 }
 # DELIBERATELY NOT critical: "visual_loop". It looks like montage_degenerate's
 # sibling, but render_prep.cap_repeats_with_holds caps every NON-exempt panel at

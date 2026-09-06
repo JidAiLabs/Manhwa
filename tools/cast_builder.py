@@ -287,6 +287,20 @@ STORY_CAST_RULE = (
     "the dialogue could not provide."
 )
 
+SERIES_CAST_RULE = (
+    "LOCKED SERIES CAST (owner-verified, authoritative over anything you see "
+    "in this chapter):\n"
+    "{CAST}\n"
+    "  - Use these names exactly. Their look is FIXED: whatever you write for "
+    "them will be replaced by the locked description, so spend your effort on "
+    "everyone else.\n"
+    "  - Any character NOT listed must be described CONTRASTIVELY: state what "
+    "tells them apart from the locked member they most resemble (glasses, "
+    "coat colour, beard, hair length). Never give a new character a look that "
+    "also fits a locked description — two indistinguishable descriptions mean "
+    "the narration names the wrong person.\n"
+)
+
 RECURRING_RULE = (
     "RECURRING FIGURES OBSERVED (from per-panel analysis of the whole chapter):\n"
     "{FIGURES}\n"
@@ -295,6 +309,68 @@ RECURRING_RULE = (
     "figure who performs or receives violence is story-important by definition; "
     "never omit them."
 )
+
+
+_REGISTRY_FIELDS = ("canonical_name", "spoken_name", "visual_description",
+                    "not", "is_protagonist")
+
+
+def _name_keys(m: Dict[str, Any]) -> set:
+    keys = {str(m.get("canonical_name") or "").strip().lower()}
+    keys.update(str(a).strip().lower() for a in (m.get("aliases") or []))
+    keys.discard("")
+    return keys
+
+
+def apply_series_cast(cast: Dict[str, Any], registry: Any):
+    """The owner's series registry wins over this chapter's guess.
+
+    A member gemma emitted that matches a registry entry (both protagonist,
+    or any shared name/alias) takes the entry's name, look and `not` traits
+    VERBATIM — cast_builder re-guessed appearance per chapter and once gave
+    two characters the same look (ORV Ep128). A second gemma member matching
+    the same entry is folded into it (aliases kept). Entries absent from the
+    chapter are NOT injected. Returns (cast, members_locked)."""
+    entries = [e for e in ((registry or {}).get("cast") or [])
+               if isinstance(e, dict) and e.get("canonical_name")]
+    out: List[Dict[str, Any]] = []
+    claimed: Dict[int, Dict[str, Any]] = {}
+    for m in cast.get("cast") or []:
+        hit = next((i for i, e in enumerate(entries)
+                    if (bool(m.get("is_protagonist")) and bool(e.get("is_protagonist")))
+                    or (_name_keys(m) & _name_keys(e))), None)
+        if hit is None:
+            out.append(m)
+            continue
+        extra = (set(m.get("aliases") or []) | {str(m.get("canonical_name") or "")}) - {""}
+        if hit in claimed:
+            locked = claimed[hit]
+            locked["aliases"] = sorted((set(locked.get("aliases") or []) | extra)
+                                       - {locked["canonical_name"]})
+            continue
+        e = entries[hit]
+        locked = dict(m)
+        for k in _REGISTRY_FIELDS:
+            if k in e:
+                locked[k] = e[k]
+        locked["aliases"] = sorted((set(e.get("aliases") or []) | extra)
+                                   - {locked["canonical_name"]})
+        claimed[hit] = locked
+        out.append(locked)
+    return dict(cast, cast=out), len(claimed)
+
+
+def _series_cast_block(registry: Any) -> str:
+    lines = []
+    for e in ((registry or {}).get("cast") or []):
+        if not isinstance(e, dict) or not e.get("canonical_name"):
+            continue
+        aka = ", ".join(str(a) for a in (e.get("aliases") or []))
+        never = ", ".join(str(x) for x in (e.get("not") or []))
+        lines.append(f"  - {e['canonical_name']}" + (f" (aka {aka})" if aka else "")
+                     + f" — look: {e.get('visual_description') or '?'}"
+                     + (f"; NEVER: {never}" if never else ""))
+    return SERIES_CAST_RULE.replace("{CAST}", "\n".join(lines)) if lines else ""
 
 
 def main() -> int:
@@ -315,7 +391,15 @@ def main() -> int:
                          "character list read from the chapter's own dialogue. "
                          "Its NAMES are authoritative; this pass supplies the "
                          "appearance the story pass cannot see.")
+    ap.add_argument("--series-cast", default="",
+                    help="ongoing/<slug>/series_cast.json — the owner's locked "
+                         "cast: names + looks restored verbatim, never re-guessed")
     args = ap.parse_args()
+
+    registry = None
+    if args.series_cast and os.path.exists(args.series_cast):
+        registry = _load(args.series_cast)
+    series_block = _series_cast_block(registry)
 
     vision = _load(args.vision_manifest)
     items = _vision_items(vision)
@@ -345,6 +429,8 @@ def main() -> int:
 
     import ollama
     text_blobs = [SYSTEM]
+    if series_block:
+        text_blobs.append(series_block)
     if story_block:
         text_blobs.append(story_block)
     if figures_block:
@@ -396,11 +482,18 @@ def main() -> int:
     cast, name_fixes = sanitize_cast_names(cast, _page_words(items))
     for cid, bad, good in name_fixes:
         print(f"[fix] cast {cid}: invented name {bad!r} (not in chapter OCR) -> {good!r}")
+    if registry is not None:
+        # AFTER sanitize: a locked name absent from this chapter's OCR must
+        # survive (sanitize would have replaced it with a handle)
+        cast, n_locked = apply_series_cast(cast, registry)
+        print(f"[series] {n_locked} cast member(s) locked from {args.series_cast}")
     inputs = [args.groups_manifest, args.vision_manifest]
     if args.understood and os.path.exists(args.understood):
         inputs.append(args.understood)
     if args.chapter_story and os.path.exists(args.chapter_story):
         inputs.append(args.chapter_story)
+    if registry is not None:
+        inputs.append(args.series_cast)
     write_manifest(args.out, cast, inputs=tuple(inputs),
                    tool="cast_builder",
                    extra_meta={"model": args.model, "images_used": len(images),

@@ -730,6 +730,32 @@ def test_repair_does_not_amputate_a_complete_clause_ending_on_a_function_word():
         == "But there is no mercy to be found.")
 
 
+def test_repair_amputates_a_long_never_terminal_stub_at_the_last_clause():
+    # ORV Ep128 g0019 (2026-09-06): gemma stopped on "from" — a word no
+    # sentence can end on — after a 7-word stub. The <=2-word window left it
+    # "for the heal", the heal re-roll reproduced the identical text, and the
+    # chapter shipped a mid-sentence line. A NEVER-terminal tail is cut back
+    # to the last clause separator whatever its length, provided a real
+    # clause remains. The em dash here carries no spaces (typographic).
+    line = ("The first announces an S-rank Main Scenario involving planetary "
+            "extinction, while the second reveals a hidden 'Serpent Hunting' "
+            "mission that promises the trust of a powerful Queen—at the "
+            "risk of being banned from")
+    assert rs.repair_spoken_line(line) == (
+        "The first announces an S-rank Main Scenario involving planetary "
+        "extinction, while the second reveals a hidden 'Serpent Hunting' "
+        "mission that promises the trust of a powerful Queen.")
+    # a MAYBE-terminal ending keeps the short-stub rule (the clause above)
+    assert (rs.repair_spoken_line("In the end, he knows what this is")
+            == "In the end, he knows what this is")
+    # never-terminal but no separator to cut at -> unchanged (QA blocks it)
+    assert (rs.repair_spoken_line("He walks into the risk of being banned from")
+            == "He walks into the risk of being banned from")
+    # the comma inside a number is not a clause separator
+    assert (rs.repair_spoken_line("He pays a total of 1,000 to the")
+            == "He pays a total of 1,000 to the")
+
+
 def test_repair_spoken_line_leaves_short_complete_lines_untouched():
     assert rs.repair_spoken_line("No.") == "No."
     assert rs.repair_spoken_line("Run!") == "Run!"

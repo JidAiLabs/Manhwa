@@ -496,7 +496,7 @@ def _capturing_stub(ep_dir: Path):
 def _fake_repo_root(tmp_path: Path) -> Path:
     """A repo root the stage helpers can resolve paths against."""
     root = tmp_path / "fakeroot"
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=True)
     return root
 
 
@@ -561,6 +561,19 @@ class TestBeatedCastWiring:
         assert gem_args[gem_args.index("--cast") + 1] == str(ep_dir / "manifest.cast.json")
         # beats keep the canonical unified filename (no .narr.json fork)
         assert gem_args[gem_args.index("--out") + 1] == str(ep_dir / "manifest.beats.json")
+        # no series registry beside the chapter -> the flag is not passed
+        cast_argv = next(a for n, a in stub.calls if n == "cast_builder.py")
+        assert "--series-cast" not in cast_argv
+
+    def test_series_cast_registry_is_passed_when_present(self, tmp_path, monkeypatch):
+        # <repo>/cast/<slug>.json, slug = ep_dir.parent.name; the owner's
+        # locked names + looks reach cast_builder (ORV Ep128 identity swaps)
+        reg = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.json"
+        reg.parent.mkdir(parents=True)
+        reg.write_text('{"cast": []}')
+        stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False)
+        cast_argv = next(a for n, a in stub.calls if n == "cast_builder.py")
+        assert cast_argv[cast_argv.index("--series-cast") + 1] == str(reg)
 
     def test_existing_cast_skips_cast_builder(self, tmp_path, monkeypatch):
         stub, ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=True)

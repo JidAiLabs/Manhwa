@@ -309,6 +309,15 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             print("[beated] manifest.cast.json predates its groups/vision "
                   "inputs -> rebuilding cast (stale names would leak into "
                   "the narration)")
+        # the owner's locked series cast (names + looks): git-tracked under
+        # cast/<slug>.json so it syncs Air<->Mini like code, outside the deps
+        # DAG — this mtime check is its freshness edge
+        series_cast = _REPO_ROOT / "cast" / f"{ep_dir.parent.name}.json"
+        if (not cast_stale and p["cast"].exists() and series_cast.exists()
+                and series_cast.stat().st_mtime > p["cast"].stat().st_mtime):
+            cast_stale = True
+            print("[beated] series_cast.json is newer than manifest.cast.json "
+                  "-> rebuilding cast")
         if not p["cast"].exists() or cast_stale:
             # One call → chapter cast registry (manifest.cast.json) so the
             # narration names the same character consistently. Skipped when the
@@ -325,6 +334,8 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                          # this pass supplies the appearance it cannot see
                          "--chapter-story", str(chapter_story),
                          "--model", cfg.beats_model]
+            if series_cast.exists():
+                cast_args += ["--series-cast", str(series_cast)]
             _run_tool("cast_builder.py", cast_args)
         # Story-state ledger (2026-07-20): projects the chapter story onto
         # per-beat facts (deaths propagate, dead role-holders' titles get

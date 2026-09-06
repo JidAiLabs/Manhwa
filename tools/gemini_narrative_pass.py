@@ -16,6 +16,8 @@ Local-only: the writer runs on ollama (Gemma 4). No cloud SDK, no creds.
 """
 
 import argparse
+import bisect
+import functools
 import json
 import os
 import random
@@ -1149,18 +1151,62 @@ def _card_words(text: str):
     return {w for w in re.findall(r"[a-z0-9]+", str(text or "").lower()) if len(w) > 2}
 
 
+# macOS ships this on every machine the pipeline runs on (Apple Vision OCR
+# is the only OCR backend, so the pipeline is macOS-only already).
+_DICT_PATH = "/usr/share/dict/words"
+
+
+@functools.lru_cache(maxsize=4)
+def _dict_words(path: str):
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            ordered = sorted({w.strip().lower() for w in f if w.strip()})
+    except OSError:
+        ordered = []
+    return ordered, frozenset(ordered)
+
+
+def ocr_looks_clipped(text: str, min_clipped: int = 2) -> bool:
+    """True when OCR reads like a crop cut mid-word: >= min_clipped alpha
+    tokens that are NOT words but ARE prefixes of words ("scenar", "extin",
+    "pla" — ORV Ep128's half-cropped system card). A plain dictionary ratio
+    misses this (15 of that card's 17 tokens were real words; only the line
+    ends were cut). Fail-open (False) without a dictionary."""
+    ordered, words = _dict_words(_DICT_PATH)
+    if not ordered:
+        return False
+    clipped = 0
+    for t in re.findall(r"[A-Za-z]{3,}", str(text or "")):
+        t = t.lower()
+        if t in words:
+            continue
+        i = bisect.bisect_left(ordered, t)
+        if i < len(ordered) and ordered[i].startswith(t):
+            clipped += 1
+            if clipped >= min_clipped:
+                return True
+    return False
+
+
 def system_card_line(f, understand_by_file, line):
     """The line to voice on solo system panel *f*: the model's line when it
     voices the card (shares content, doesn't describe it), else the card's own
     text (understanding dialogue / OCR), sentence-cased. No card text -> the
     line as given."""
     u = (understand_by_file or {}).get(f) or {}
-    card = clean_card_text(u.get("dialogue") or u.get("ocr_clean") or "")
+    dialogue = clean_card_text(u.get("dialogue") or "")
+    card = dialogue or clean_card_text(u.get("ocr_clean") or "")
     if not card:
         return line
     ln = str(line or "").strip()
     if ln and not _CARD_DESC_RE.search(ln) and (_card_words(ln) & _card_words(card)):
         return ln
+    if not dialogue and ocr_looks_clipped(card):
+        # the model's transcription is absent and the OCR is of a clipped
+        # crop — voicing it verbatim reads garbage aloud ("Main scenar
+        # abandoned w… drive th planet p… to extin"); the writer's line,
+        # even a description, is the lesser evil
+        return line
     return _speak_card(card)
 
 

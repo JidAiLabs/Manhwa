@@ -93,6 +93,64 @@ def test_hoodie_is_the_stranger_not_the_hooded_assassins():
     assert _names(ci.resolve_figures(u, PROFILES)) == ["unnamed stranger"]
 
 
+# --- look-alikes (ORV Ep128, 2026-09-06) ------------------------------------
+# The real cast_builder output, verbatim: two men, one description.
+ORV_LOOKALIKE_CAST = {"cast": [
+    {"id": "protagonist", "canonical_name": "our protagonist",
+     "role": "protagonist", "is_protagonist": True, "aliases": ["Dokja Kim"],
+     "visual_description": ("A young man with dark, messy hair and glasses, "
+                            "wearing a black shirt over a white t-shirt and a "
+                            "dark jacket.")},
+    {"id": "michio_shoji", "canonical_name": "Michio Shoji", "role": "ally",
+     "is_protagonist": False, "aliases": ["Michio"],
+     "visual_description": ("A young man with dark hair and glasses, wearing "
+                            "a black button-down shirt over a white t-shirt "
+                            "and a dark jacket.")},
+]}
+
+# What the owner's series registry locks in (looks written POSITIVELY;
+# exclusions go in `not`).
+ORV_REGISTRY_CAST = {"cast": [
+    {"id": "protagonist", "canonical_name": "our protagonist",
+     "role": "protagonist", "is_protagonist": True, "aliases": ["Dokja Kim"],
+     "visual_description": ("A young man with dark hair, wearing a long white "
+                            "coat over a black shirt."),
+     "not": ["glasses"]},
+    {"id": "michio_shoji", "canonical_name": "Michio Shoji", "role": "ally",
+     "is_protagonist": False, "aliases": ["Michio"],
+     "visual_description": ("A young man with dark hair and glasses, wearing "
+                            "a black button-down shirt over a white t-shirt "
+                            "and a dark jacket.")},
+]}
+
+
+def test_two_identical_descriptions_never_resolve_on_one_incidental_word():
+    # the chapter's actual verdicts: p000025 -> Dokja purely on "messy",
+    # p000026 -> Michio purely on "button". One look = unknown, not a coin flip.
+    prof = ci.cast_profiles(ORV_LOOKALIKE_CAST)
+    name, ev = ci.resolve_name("a young man with messy dark hair and glasses", prof)
+    assert name == "unknown" and "lookalike" in ev, (name, ev)
+    name, _ = ci.resolve_name("a young man in the background with dark hair, "
+                              "glasses, and a dark blue button-down shirt over "
+                              "a white graphic t-shirt", prof)
+    assert name == "unknown"
+
+
+def test_registry_looks_and_not_traits_separate_the_pair():
+    prof = ci.cast_profiles(ORV_REGISTRY_CAST)
+    # p000024: the white coat IS Dokja (was "a stranger")
+    name, _ = ci.resolve_name("a young man with dark hair wearing a long white "
+                              "coat over a black shirt", prof)
+    assert name == "our protagonist"
+    # p000079: glasses + suit -> Michio; Dokja's `not: glasses` keeps him out
+    name, ev = ci.resolve_name("a young man with dark hair, wearing glasses, a "
+                               "black suit jacket, and a white shirt", prof)
+    assert name == "Michio Shoji", (name, ev)
+    # an explicit NAME still beats a forbidden trait (a penalty, not a veto)
+    name, _ = ci.resolve_name("Dokja Kim, in glasses for once", prof)
+    assert name == "our protagonist"
+
+
 def test_ambiguous_subject_resolves_to_unknown_never_a_guess():
     # 'light' pairs with garments for BOTH protagonist and stranger — a tie
     # without a shared faction token must yield unknown (evidence preserved)

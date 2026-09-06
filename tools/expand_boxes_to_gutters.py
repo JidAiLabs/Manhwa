@@ -195,6 +195,66 @@ def expand_box_to_gutters(
     new_y1 = int(clamp(new_y1, new_y0 + 2, h))
     return [new_x0, new_y0, new_x1, new_y1]
 
+def _iou_px(a: List[int], b: List[int]) -> float:
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    if inter <= 0:
+        return 0.0
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / float(ua) if ua > 0 else 0.0
+
+
+def _extend(profile: "np.ndarray", start: int, step: int, limit: int,
+            min_frac: float, run_len: int) -> int:
+    """Walk *profile* from *start* by *step*; return the last index whose
+    value is >= min_frac, giving up after run_len consecutive misses (a
+    white text line inside a card is a short miss, the page edge is not)."""
+    last, misses, i = start, 0, start + step
+    while 0 <= i < len(profile) and abs(i - start) <= limit:
+        if profile[i] >= min_frac:
+            last, misses = i, 0
+        else:
+            misses += 1
+            if misses >= run_len:
+                break
+        i += step
+    return last
+
+
+def refine_card_box(arr: "np.ndarray", box: List[int], *, tol: int = 24,
+                    min_frac: float = 0.25, run_len: int = 18,
+                    max_expand: int = 900) -> List[int]:
+    """Grow a system-card box to the card's own flat-colour rectangle.
+
+    YOLO can box a SLIVER of a big UI card (ORV Ep128: 187px of a 1000px
+    card) and the gutter walk cannot widen it — the card's decorated frame
+    breaks the pure-white column run before the page edge, so the crop kept
+    half of every text line and OCR read "Main scenar… to extin…". Cards are
+    solid-fill rectangles, so the card's own colour is the boundary: take the
+    box interior's median colour, mark every pixel within *tol* of it, and
+    walk columns (on the seed rows) then rows (on the grown columns) outward
+    while >= min_frac of the line is card-coloured. Gutter-coloured interiors
+    (white/black cards) are left to the existing run logic. ponytail: tol is
+    a flat-fill assumption; a gradient card needs a per-side tolerance."""
+    h, w = arr.shape[:2]
+    x0, y0, x1, y1 = (int(v) for v in box)
+    x0, x1, y0, y1 = max(0, x0), min(w, x1), max(0, y0), min(h, y1)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return list(box)
+    dom = np.median(arr[y0:y1, x0:x1].reshape(-1, 3), axis=0)
+    if dom.min() >= 245 or dom.max() <= 10:
+        return list(box)
+    inside = (np.abs(arr.astype(np.int16) - dom.astype(np.int16)) <= tol).all(axis=-1)
+    cols = inside[y0:y1, :].mean(axis=0)
+    nx0 = _extend(cols, x0, -1, max_expand, min_frac, run_len)
+    nx1 = _extend(cols, x1 - 1, +1, max_expand, min_frac, run_len) + 1
+    rows = inside[:, nx0:nx1].mean(axis=1)
+    ny0 = _extend(rows, y0, -1, max_expand, min_frac, run_len)
+    ny1 = _extend(rows, y1 - 1, +1, max_expand, min_frac, run_len) + 1
+    return [nx0, ny0, nx1, ny1]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stitch-manifest", required=True)
@@ -237,6 +297,13 @@ def main() -> int:
             im = im.convert("RGB")
             w, h = im.size
             row_white, row_black, row_edge, col_white, col_black, col_edge = _rowcol_scores(im)
+            arr = np.asarray(im)
+            # detector-promoted system cards: refined by their own fill colour
+            cards_px = [norm_to_px(c.get("box"), w, h)
+                        for c in (ch.get("cards_norm") or [])
+                        if isinstance(c, dict) and "system_box" in (c.get("classes") or [])
+                        and isinstance(c.get("box"), list) and len(c["box"]) == 4]
+            cards_refined = 0
 
             boxes = ch.get("panels_norm") or []
             boxes_px = []
@@ -259,6 +326,12 @@ def main() -> int:
                     black_min=float(args.black_min),
                     edge_max=float(args.edge_max),
                 )
+                if any(_iou_px(bpx, c) >= 0.5 for c in cards_px):
+                    cb = refine_card_box(arr, bpx, max_expand=int(args.max_expand),
+                                         run_len=int(args.run_len))
+                    eb = [min(eb[0], cb[0]), min(eb[1], cb[1]),
+                          max(eb[2], cb[2]), max(eb[3], cb[3])]
+                    cards_refined += 1
                 expanded_norm.append(px_to_norm_xyxy(eb, w, h))
 
             new_ch = dict(ch)
@@ -271,6 +344,7 @@ def main() -> int:
                 "edge_max": float(args.edge_max),
                 "merge_gap_px": int(args.merge_gap_px),
                 "merge_x_overlap": float(args.merge_x_overlap),
+                "cards_refined": cards_refined,
             }
             out_chunks.append(new_ch)
 

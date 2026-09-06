@@ -1275,6 +1275,56 @@ def test_auto_repair_voices_system_card_text_instead_of_describing_it():
     assert out3[1]["line"] == "7th generation nano machine, starting activation."
 
 
+# ORV Ep128 g0019 (2026-09-06): a system card whose CROP was clipped — YOLO
+# boxed a sliver and the gutter walk could not widen it — reached the narrator
+# as its raw OCR, half of every line missing: "Main scenar abandoned w category:
+# main difficulty: s clear conditions: drive th planet p 97815t pl/ to extin…".
+# The understanding had no `dialogue` for it, so the OCR was voiced verbatim.
+_CH130_CLIPPED_OCR = ("Main scenar abandoned w category: main difficulty: s "
+                      "clear conditions: drive th planet p 97815t pl/ to extin "
+                      "time limit: 40 days rewards: 200,000 coins,??? "
+                      "penalty for failure: -")
+_CH130_CLEAN_CARD = ("HIDDEN SCENARIO - SERPENT HUNTING CATEGORY: HIDDEN "
+                     "DIFFICULTY: S- CLEAR CONDITION: HUNT DOWN THE TARGET IN "
+                     "THE AREA WHERE THE SIXTH MAIN SCENARIO IS HELD.")
+
+
+def _small_dict(tmp_path):
+    words = ["abandoned", "area", "category", "clear", "coins", "condition",
+             "conditions", "days", "difficulty", "down", "drive", "extinction",
+             "failure", "held", "hidden", "hunt", "hunting", "limit", "main",
+             "penalty", "planet", "place", "rewards", "scenario", "serpent",
+             "sixth", "target", "the", "time", "where"]
+    p = tmp_path / "words"
+    p.write_text("\n".join(words))
+    return str(p)
+
+
+def test_clipped_ocr_is_detected_by_cut_words_not_by_word_ratio(tmp_path, monkeypatch):
+    monkeypatch.setattr(gnp, "_DICT_PATH", _small_dict(tmp_path))
+    # 15 of the card's 17 alpha tokens ARE words — a dictionary ratio passes it;
+    # the signature is words cut mid-way: 'scenar'→scenario, 'extin'→extinction
+    assert gnp.ocr_looks_clipped(_CH130_CLIPPED_OCR)
+    assert not gnp.ocr_looks_clipped(_CH130_CLEAN_CARD)
+    # no dictionary -> fail-open (status quo)
+    monkeypatch.setattr(gnp, "_DICT_PATH", str(tmp_path / "missing"))
+    assert not gnp.ocr_looks_clipped(_CH130_CLIPPED_OCR)
+
+
+def test_system_card_line_never_voices_clipped_ocr_verbatim(tmp_path, monkeypatch):
+    monkeypatch.setattr(gnp, "_DICT_PATH", _small_dict(tmp_path))
+    desc = "A blue system interface screen displays details for a main scenario."
+    # OCR only, clipped -> the writer's line survives (even a description)
+    u = {"p2.jpg": {"ocr_clean": _CH130_CLIPPED_OCR}}
+    assert gnp.system_card_line("p2.jpg", u, desc) == desc
+    # OCR only, clean -> spoken verbatim, sentence-cased
+    u = {"p2.jpg": {"ocr_clean": _CH130_CLEAN_CARD}}
+    assert gnp.system_card_line("p2.jpg", u, desc).startswith("Hidden scenario")
+    # the model's own transcription is trusted regardless of the dictionary
+    u = {"p2.jpg": {"dialogue": _CH130_CLIPPED_OCR}}
+    assert gnp.system_card_line("p2.jpg", u, desc).startswith("Main scenar")
+
+
 def test_validate_rejects_a_line_cut_mid_sentence():
     # nano ch1 g0019: "…terrified that he might be seeing the true power of a" —
     # the model's output stopped mid-clause; a line must END (., !, ?, …, or a

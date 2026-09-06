@@ -560,17 +560,24 @@ def _words(text: str) -> List[str]:
 # fired and the dangle was voiced. A speakable clip must END the thought.
 _TERMINAL_CHARS = ".!?…"
 _TRAILING_CLOSERS = "\"'”’»)]}"
-# Grammar words a sentence can never END on — the signature of a truncated
-# tail ("...only the", "...the sound of"). Used to pick between amputating a
-# dangling tail vs simply closing a complete clause with a period.
-_FUNCTION_TAIL_WORDS = frozenset({
+# Grammar words a sentence can NEVER end on — articles, prepositions,
+# conjunctions, possessive determiners. A tail ending here is a truncation,
+# full stop ("...only the", "...banned from"), so cutting back to the last
+# clause separator is always safe, however long the stub.
+_NEVER_TERMINAL_TAIL = frozenset({
     "a", "an", "the", "of", "to", "and", "or", "but", "nor", "with", "by",
     "for", "in", "on", "at", "as", "into", "onto", "from", "than", "his",
-    "her", "their", "its", "my", "your", "our", "only", "so", "that",
-    "this", "these", "those", "is", "are", "was", "were", "be", "been",
-    "very", "such", "no", "any", "some", "toward", "towards", "while",
-    "when", "because", "though", "although", "if", "whose", "which", "who",
+    "her", "their", "its", "my", "your", "our", "only", "very", "such",
+    "toward", "towards", "while", "when", "because", "though", "although",
+    "if", "whose",
 })
+# Words a sentence CAN end on ("he knows what this is") that still usually
+# mark a truncated tail — for these only a SHORT stub is ever cut.
+_MAYBE_TERMINAL_TAIL = frozenset({
+    "so", "that", "this", "these", "those", "is", "are", "was", "were",
+    "be", "been", "no", "any", "some", "which", "who",
+})
+_FUNCTION_TAIL_WORDS = _NEVER_TERMINAL_TAIL | _MAYBE_TERMINAL_TAIL
 
 
 # Round-2 E3 truncation MUTATION: "…sends blood splattering across an
@@ -660,19 +667,38 @@ def repair_spoken_line(text: str) -> str:
         last = (s.split()[-1].rstrip(_TRAILING_CLOSERS + _TERMINAL_CHARS)
                 .rstrip(_TRAILING_CLOSERS).lower())
         if last in _FUNCTION_TAIL_WORDS or _POSSESSIVE_END_RE.search(last):
-            # writer-truncated tail ("...to be found, only the"): amputate a
-            # SHORT (<=2-word) dangling stub after the last clause separator
-            # — keeps every complete clause, adds no invented facts. A wider
-            # window used to eat whole trailing clauses that merely ENDED on
-            # a function word ("In the end, he knows what this is" ->
-            # wrongly amputated to "In the end."); capping the tail at 2
-            # words means a real clause survives and only a genuine short
-            # stub gets cut. With no separator to cut at (or the tail is too
-            # long to be a stub), leave it: the truncated_line QA flag heals
-            # it with a real re-write instead.
-            m = re.match(r"^(.*[,;:—–])\s+\S+(?:\s+\S+){0,1}$", s)
-            if m and m.group(1).rstrip(",;:—– ").strip():
-                s = m.group(1).rstrip(",;:—– ").strip() + "."
+            # writer-truncated tail, two cases:
+            #  * NEVER-terminal last word ("...banned from", "...only the"):
+            #    everything after the last clause separator is a stub,
+            #    however long — cut it when what remains is a real clause
+            #    (>=4 words ending on a content word). Gemma stops
+            #    mid-sentence DETERMINISTICALLY (ORV Ep128 g0019: the heal
+            #    re-roll reproduced the identical 7-word stub), so leaving a
+            #    long stub "for the heal" shipped it.
+            #  * MAYBE-terminal ("...what this is") or a possessive: only a
+            #    SHORT (<=2-word) stub is cut — a wider window used to eat
+            #    complete clauses that merely ENDED on such a word.
+            # With no separator to cut at, leave it: the truncated_line QA
+            # flag blocks the chapter until a real re-write clears it.
+            head = ""
+            if last in _NEVER_TERMINAL_TAIL:
+                # ',;:' need a following space (not the comma in "1,000");
+                # an em/en dash is a separator with or without spaces
+                m = re.match(r"^(.*(?:[,;:]\s|[—–]))\s*\S+(?:\s+\S+)*$", s)
+                if m:
+                    h = m.group(1).rstrip(",;:—– ").strip()
+                    hw = h.split()
+                    hl = (hw[-1].rstrip(_TRAILING_CLOSERS).lower()
+                          if hw else "")
+                    if (len(hw) >= 4 and hl not in _FUNCTION_TAIL_WORDS
+                            and not _POSSESSIVE_END_RE.search(hl)):
+                        head = h
+            if not head:
+                m = re.match(r"^(.*[,;:—–])\s+\S+(?:\s+\S+){0,1}$", s)
+                if m and m.group(1).rstrip(",;:—– ").strip():
+                    head = m.group(1).rstrip(",;:—– ").strip()
+            if head:
+                s = head + "."
         elif s[-1] not in _TERMINAL_CHARS:
             # a complete clause that just lost its final punctuation
             s = s + "."

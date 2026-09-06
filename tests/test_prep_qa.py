@@ -1917,7 +1917,7 @@ def test_truncated_line_flags_quiet_on_terminal_lines():
     from tools.narration_heal import HEALABLE
     assert "truncated_line" in HEALABLE
     import studio.worker as worker
-    assert "truncated_line" not in worker._CRITICAL_QA_CODES
+    assert "truncated_line" in worker._CRITICAL_QA_CODES
 
 
 def test_display_meta_and_camera_pov_fire_shot_description_flags():

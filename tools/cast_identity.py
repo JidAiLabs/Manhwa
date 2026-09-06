@@ -241,6 +241,12 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
         specific = _specific(_drop_shade_modifiers(toks))
         appearance = {_color_class(t) for t in specific}
         appearance.update("garment" for t in specific if t in _GARMENT)
+        # owner-declared traits this member NEVER shows (series registry
+        # `not`, e.g. Dokja: ["glasses"]) — normalised exactly like
+        # appearance so the two sides meet on the same token
+        ftoks = _informative(_tokens(" ".join(
+            str(x) for x in (m.get("not") or []))))
+        forbid = {_color_class(t) for t in _specific(_drop_shade_modifiers(ftoks))}
         role = str(m.get("role") or "").strip().lower()
         raw_name = [t.lower() for t in _WORD_RE.findall(name)]
         profiles.append({
@@ -249,6 +255,7 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
             "appearance": appearance,
             "pairs": _color_garment_pairs(toks),
             "hair": _hair_colors(toks),
+            "forbid": forbid,
             "role": role,
             # the FACTION member of a same-faction tie: role says so, or the
             # canonical name itself is plural ('the assassins') — cast_builder
@@ -308,6 +315,12 @@ def _score(profile: Dict[str, Any], text: str) -> Tuple[float, List[str]]:
     for nt in name_hits:
         score += 10.0
         ev.append(nt)
+    forbidden = sorted((profile.get("forbid") or set()) & toks)
+    if forbidden:
+        # the owner says this member never shows these: appearance alone can
+        # not resolve through them (-5 = one pair + hair), a name still can
+        score -= 5.0
+        ev.append("not:" + "+".join(forbidden))
     if not _color_evidence_valid(text):
         # tinted panel: only names + non-color, non-lighting appearance
         # tokens count (glow/skin/the bare garment marker describe the light
@@ -380,6 +393,15 @@ def _looks_person(text: str) -> bool:
     return bool(toks & _PERSONISH) or bool(toks & _GARMENT)
 
 
+def _overlap(a: Set[str], b: Set[str]) -> float:
+    """Overlap coefficient |A∩B| / min(|A|,|B|). Jaccard under-reads the
+    real look-alike pair (8/11 = 0.73 after token normalisation); overlap
+    reads it as 8/9 = 0.89."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / float(min(len(a), len(b)))
+
+
 def resolve_name(text: str, profiles: Sequence[Dict[str, Any]]
                  ) -> Tuple[str, str]:
     """(canonical_name|'unknown', evidence) for ONE figure-describing string.
@@ -404,6 +426,22 @@ def resolve_name(text: str, profiles: Sequence[Dict[str, Any]]
                     key=lambda t: (-t[0][0], t[1]))
     (best, ev), name = scored[0]
     runner = scored[1][0][0] if len(scored) > 1 else 0.0
+    if len(scored) > 1 and best >= 2.0 and runner >= 2.0 and best - runner < 3.0:
+        # LOOK-ALIKE guard (ORV Ep128, 2026-09-06): cast_builder gave Dokja
+        # and Michio token-identical descriptions ("dark hair, glasses, black
+        # shirt over a white t-shirt, dark jacket") and the oracle then split
+        # them on ONE incidental word — "messy" → Dokja, "button" → Michio —
+        # naming the wrong man for a whole chapter. Two profiles whose
+        # appearance sets nearly coincide, with no name evidence on either
+        # side and less than one real piece of evidence (a pair or hair)
+        # between them, are one look — unknown, never a coin flip. Faction
+        # ties (shared name tokens) keep their own rule below.
+        pa, pb = by_name[name], by_name[scored[1][1]]
+        toks = _subject_tokens(text)
+        if (not (pa["name_tokens"] & toks) and not (pb["name_tokens"] & toks)
+                and not (pa["name_tokens"] & pb["name_tokens"])
+                and _overlap(pa["appearance"], pb["appearance"]) >= 0.8):
+            return "unknown", f"{text[:60]} ~ lookalike:{name}|{scored[1][1]}"
     if best >= 2.0 and best - runner >= 1.0:
         return name, f"{text[:60]} ~ {'+'.join(ev[:4])}"
     if best >= 2.0:
