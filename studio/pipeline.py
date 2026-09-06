@@ -59,6 +59,7 @@ def _run_tool(script_name: str, args_list: list[str], *, python_exe: str = "") -
     env["PYTHONPATH"] = os.pathsep.join(
         [str(repo_root), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
+    print("$ " + " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True, env=env)
     # check=True raises CalledProcessError on non-zero exit
 
@@ -68,18 +69,6 @@ def _run_tool(script_name: str, args_list: list[str], *, python_exe: str = "") -
 # ---------------------------------------------------------------------------
 
 import os
-
-def _check_vertex_adc() -> None:
-    """Raise MissingCredential if Vertex AI ADC is not configured."""
-    # GOOGLE_APPLICATION_CREDENTIALS or gcloud default credentials file
-    creds_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    adc_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
-    if not creds_file and not adc_path.exists():
-        raise MissingCredential(
-            "beated",
-            "GOOGLE_APPLICATION_CREDENTIALS or `gcloud auth application-default login`",
-        )
-
 
 def _check_openai() -> None:
     if not os.environ.get("OPENAI_API_KEY"):
@@ -164,7 +153,8 @@ def _stage_detect(ep_dir: Path, cfg: Config) -> None:
         detect_panels(str(p["stitch"]), str(p["panels"]), str(cfg.yolo_weights))
     else:
         raise RuntimeError(
-            f"detect_backend '{cfg.detect_backend}' needs Vertex auth; SP1 supports 'yolo'")
+            f"detect_backend '{cfg.detect_backend}' is not supported; "
+            "'yolo' is the only detector")
     _run_tool("expand_boxes_to_gutters.py",
               ["--stitch-manifest", str(p["stitch"]),
                "--panels-manifest", str(p["panels"]),
@@ -250,35 +240,22 @@ def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
               "skip re-understanding/re-grouping")
         return
     understood = ep_dir / "manifest.panels.understood.json"
-    if cfg.beats_backend == "ollama":
-        backend = ["--backend", "ollama", "--ollama-model", cfg.beats_model]
-    else:
-        keys = _REPO_ROOT / "keys" / "gcp-vision.json"
-        if keys.exists():
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
-            project = json.loads(keys.read_text()).get("project_id", "")
-        else:
-            _check_vertex_adc()
-            project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-        location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-        backend = ["--backend", "vertex", "--model", cfg.beats_model,
-                   "--project", project, "--location", location]
+    backend = ["--model", cfg.beats_model]
     understand_args = ["--vision-manifest", str(p["vision"]),
                        "--out", str(understood), "--resume"] + backend
-    if cfg.beats_backend == "ollama":
-        # Parallelize the per-panel understand to THIS machine's OLLAMA_NUM_PARALLEL
-        # (Mini=4, Air=2) — measured ~2x on the chapter's slowest stage. A no-op
-        # (sequential) when OLLAMA_NUM_PARALLEL is unset/1, and capped so a
-        # mis-set env can't oversubscribe the GPU into OOM.
-        try:
-            conc = max(1, min(int(os.environ.get("OLLAMA_NUM_PARALLEL", "1") or "1"), 6))
-        except ValueError:
-            conc = 1
-        if conc > 1:
-            # Tall panels OOM Metal at high concurrency — step down for them.
-            conc = _understand_concurrency(conc, _max_scene_height(p["scenes"]))
-        if conc > 1:
-            understand_args += ["--concurrency", str(conc)]
+    # Parallelize the per-panel understand to THIS machine's OLLAMA_NUM_PARALLEL
+    # (Mini=4, Air=2) — measured ~2x on the chapter's slowest stage. A no-op
+    # (sequential) when OLLAMA_NUM_PARALLEL is unset/1, and capped so a
+    # mis-set env can't oversubscribe the GPU into OOM.
+    try:
+        conc = max(1, min(int(os.environ.get("OLLAMA_NUM_PARALLEL", "1") or "1"), 6))
+    except ValueError:
+        conc = 1
+    if conc > 1:
+        # Tall panels OOM Metal at high concurrency — step down for them.
+        conc = _understand_concurrency(conc, _max_scene_height(p["scenes"]))
+    if conc > 1:
+        understand_args += ["--concurrency", str(conc)]
     _run_tool("panel_understand.py", understand_args)
     _run_tool("story_group.py",
               ["--understood", str(understood),
@@ -287,18 +264,6 @@ def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
 
 
 def _stage_beated(ep_dir: Path, cfg: Config) -> None:
-    # Prefer the repo's gcp service-account key for Vertex Gemini auth (no gcloud
-    # needed). A service account can only authenticate its OWN project, so use
-    # the project_id baked into the key, not whatever GOOGLE_CLOUD_PROJECT says.
-    import json
-    keys = _REPO_ROOT / "keys" / "gcp-vision.json"
-    if keys.exists():
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
-        project = json.loads(keys.read_text()).get("project_id", "")
-    else:
-        _check_vertex_adc()
-        project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
     p = _ep_paths(ep_dir)
     # keep-base: reuse the EXISTING beats' exact wording as the grounded base
     # (no LLM regeneration), so a hand-picked / approved descriptive take is
@@ -332,11 +297,7 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             story_args = ["--vision-manifest", str(p["vision"]),
                           "--understood", str(p["understood"]),
                           "--out", str(chapter_story),
-                          "--project", project, "--location", location,
                           "--model", cfg.beats_model]
-            story_args += (["--backend", "ollama"]
-                           if cfg.beats_backend == "ollama"
-                           else ["--backend", "vertex"])
             try:
                 _run_tool("story_pass.py", story_args)
             except Exception as e:      # never block the chapter on it
@@ -363,10 +324,7 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                          # names + completeness from the chapter's dialogue;
                          # this pass supplies the appearance it cannot see
                          "--chapter-story", str(chapter_story),
-                         "--project", project, "--location", location,
                          "--model", cfg.beats_model]
-            if cfg.beats_backend == "ollama":
-                cast_args += ["--backend", "ollama"]
             _run_tool("cast_builder.py", cast_args)
         # Story-state ledger (2026-07-20): projects the chapter story onto
         # per-beat facts (deaths propagate, dead role-holders' titles get
@@ -381,17 +339,11 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                            "--cast", str(p["cast"]),
                            "--chapter-story", str(chapter_story),
                            "--out", str(ledger),
-                           "--project", project, "--location", location,
                            "--model", cfg.beats_model]
-            if cfg.beats_backend == "ollama":
-                ledger_args += ["--backend", "ollama"]
-            else:
-                ledger_args += ["--backend", "vertex"]
             _run_tool("story_ledger.py", ledger_args)
         beats_args = ["--groups-manifest", str(p["groups"]),
                       "--vision-manifest", str(p["vision"]),
                       "--out", str(p["beats"]),
-                      "--project", project, "--location", location,
                       "--model", cfg.beats_model,
                       "--cast", str(p["cast"]),
                       # chapter spine (logline + arc) from story_group -> beats
@@ -403,9 +355,6 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                       # adaptive flow segments vs legacy per_panel — passed
                       # explicitly so config (not the tool's env default) rules
                       "--segmentation", cfg.segmentation or "adaptive"]
-        if cfg.beats_backend == "ollama":
-            beats_args += ["--backend", "ollama",
-                           "--ollama-model", cfg.beats_model]
         _run_tool("gemini_narrative_pass.py",
                   beats_args + [
                    # Panels per group the writer SEES. Not cheap: measured on
@@ -424,13 +373,8 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                       "--cast", str(p["cast"]),
                       "--story", str(ep_dir / "manifest.story.json"),
                       "--episode-dir", str(ep_dir),
-                      "--humor", cfg.punchup]
-        if cfg.beats_backend == "ollama":
-            punch_args += ["--backend", "ollama",
-                           "--ollama-model", cfg.beats_model]
-        else:
-            punch_args += ["--backend", "vertex", "--model", cfg.beats_model,
-                           "--project", project, "--location", location]
+                      "--humor", cfg.punchup,
+                      "--model", cfg.beats_model]
         _run_tool("narration_punchup.py", punch_args)
 
 
@@ -452,7 +396,7 @@ def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
     # exact text the voiced stage reads from sections[].tts_paragraphs_v3). Run
     # the sanitize+reframe pass over it IN PLACE — deterministic safe swaps, then
     # an LLM reframe of any flagged/blocked line (softened per the denylist
-    # notes) using the same Gemma/Vertex backend the beated stage resolved, then
+    # notes) using the same local Gemma the beated stage uses, then
     # re-sanitize. It writes manifest.sanitize.json; _stage_voiced refuses to
     # voice when that marker lists unresolved blocks. ON by default (safety).
     if cfg.narration_sanitize:
@@ -461,27 +405,13 @@ def _stage_scripted(ep_dir: Path, cfg: Config) -> None:
 
 def _run_sanitize_pass(ep_dir: Path, cfg: Config, p: dict) -> None:
     """Run narration_sanitize_pass over the script manifest. The reframe LLM
-    backend mirrors _stage_beated (ollama Gemma, or Vertex via the repo SA key
-    project). Seed = ep dir name so swap rotation is deterministic per chapter."""
-    import json
+    runs on the same local Gemma the beated stage uses. Seed = ep dir name so
+    swap rotation is deterministic per chapter."""
     sanitize_args = ["--script", str(p["script"]),
                      "--seed", ep_dir.name,
-                     "--marker", str(ep_dir / "manifest.sanitize.json")]
-    if cfg.beats_backend == "ollama":
-        sanitize_args += ["--reframe-backend", "ollama",
-                          "--reframe-model", cfg.beats_model]
-    else:
-        keys = _REPO_ROOT / "keys" / "gcp-vision.json"
-        if keys.exists():
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(keys)
-            project = json.loads(keys.read_text()).get("project_id", "")
-        else:
-            _check_vertex_adc()
-            project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-        location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-        sanitize_args += ["--reframe-backend", "vertex",
-                          "--reframe-model", cfg.beats_model,
-                          "--project", project, "--location", location]
+                     "--marker", str(ep_dir / "manifest.sanitize.json"),
+                     "--reframe-backend", "ollama",
+                     "--reframe-model", cfg.beats_model]
     # exit 2 = UNRESOLVED blocks remain. We DON'T fail the scripted stage on
     # that (the marker is written either way and the QA/voiced gate enforces it);
     # but a genuine crash (missing backend, bad manifest) must surface. The tool

@@ -9,7 +9,7 @@ sequence into story-sized beats + flashback boundaries) and the per-beat
 narrator (Pass 3).
 
 It reuses the battle-tested multimodal call from gemini_narrative_pass
-(`_call_model_with_backoff`: ollama/Gemma or Vertex, schema-constrained, 429-safe).
+(`_call_model_with_backoff`: local ollama/Gemma, schema-constrained, retry-safe).
 
 Out: manifest.panels.understood.json = {panels:[{scene_file, description,
 subjects[], action, dialogue, setting, intensity}]}.
@@ -1151,15 +1151,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vision-manifest", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--backend", choices=["vertex", "ollama"], default="ollama")
-    ap.add_argument("--ollama-model", default="gemma4:26b")
-    ap.add_argument("--model", default="gemini-2.5-flash")
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default="")
-    # 0.0 (2026-07-16): understanding is ANALYSIS, not writing — its subjects
-    # wording feeds cast resolution, panel_kind gates, and the narration's
-    # factual source, so sampling variance here is pure downstream noise.
-    # Creative temperature belongs to the writer (0.2) and punchup (0.7).
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
+    ap.add_argument("--model", "--ollama-model", dest="model",
+                    default="gemma4:26b")
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--max-output-tokens", type=int, default=400)
     ap.add_argument("--resume", action="store_true",
@@ -1182,15 +1177,7 @@ def main() -> int:
     if not items:
         raise SystemExit("no vision items (expected key: items)")
 
-    client = None
-    model = args.ollama_model
-    if args.backend == "vertex":
-        from google import genai
-        if not args.project or not args.location:
-            raise SystemExit("--project/--location required for --backend vertex")
-        client = genai.Client(vertexai=True, project=args.project,
-                              location=args.location)
-        model = args.model
+    model = args.model
 
     prior: Dict[str, Dict[str, Any]] = {}
     if args.resume and os.path.exists(args.out):
@@ -1203,13 +1190,13 @@ def main() -> int:
 
     def call_fn(payload: Dict[str, Any], scene_path: Optional[str]):
         parsed, _raw, _usage = _call_model_with_backoff(
-            client=client, model=model, system_instruction=SYSTEM,
+            model=model, system_instruction=SYSTEM,
             user_payload=payload, image_paths=[scene_path] if scene_path else [],
             response_schema=PANEL_SCHEMA, max_output_tokens=args.max_output_tokens,
-            temperature=args.temperature, backoff_max=60.0, backend=args.backend)
+            temperature=args.temperature, backoff_max=60.0)
         return parsed
 
-    conc = max(1, int(args.concurrency)) if args.backend == "ollama" else 1
+    conc = max(1, int(args.concurrency))
     if conc > 1:
         print(f"[understand] batched-parallel: {conc} panels/batch "
               f"({len(items)} panels)", flush=True)

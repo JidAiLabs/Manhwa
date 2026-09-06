@@ -1144,11 +1144,10 @@ def main() -> int:
     ap.add_argument("--story-out", default="",
                     help="manifest.story.json (chapter spine); default: beside --out")
     ap.add_argument("--series-title", default="", help="chrome BAN (cover/title)")
-    ap.add_argument("--backend", choices=["vertex", "ollama"], default="ollama")
-    ap.add_argument("--ollama-model", default="gemma4:26b")
-    ap.add_argument("--model", default="gemini-2.5-flash")
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default="")
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
+    ap.add_argument("--model", "--ollama-model", dest="model",
+                    default="gemma4:26b")
     ap.add_argument("--max-beat-len", type=int, default=DEFAULT_MAX_BEAT_LEN,
                     help="cap PANELS per context span so each beat stays small "
                          "enough for the model to emit valid JSON (default "
@@ -1213,22 +1212,13 @@ def main() -> int:
             print(f"[chrome] OCR-regex added (non-story only): {sorted(ocr_chrome - cards)}")
     story = [p for p in panels if p.get("scene_file") not in excluded]
 
-    client = None
-    model = args.ollama_model
-    if args.backend == "ollama":
-        # _call_model reads STUDIO_BEATS_NUM_CTX. Grouping runs at the SAME
-        # verified 8192 ceiling as per-beat narration (_GROUP_NUM_CTX):
-        # fit_grouping_payload guarantees the prompt fits under it, so this
-        # call never needs — and the fleet never grants — more.
-        os.environ["STUDIO_BEATS_NUM_CTX"] = str(
-            _normalized_group_num_ctx(args.num_ctx))
-    if args.backend == "vertex":
-        from google import genai
-        if not args.project or not args.location:
-            raise SystemExit("--project/--location required for --backend vertex")
-        client = genai.Client(vertexai=True, project=args.project,
-                              location=args.location)
-        model = args.model
+    model = args.model
+    # _call_model reads STUDIO_BEATS_NUM_CTX. Grouping runs at the SAME
+    # verified 8192 ceiling as per-beat narration (_GROUP_NUM_CTX):
+    # fit_grouping_payload guarantees the prompt fits under it, so this
+    # call never needs — and the fleet never grants — more.
+    os.environ["STUDIO_BEATS_NUM_CTX"] = str(
+        _normalized_group_num_ctx(args.num_ctx))
 
     # the LAST attempt's raw/parsed response, kept for the rejection dump —
     # without this a spine rejection discards the very evidence it needs.
@@ -1282,10 +1272,10 @@ def main() -> int:
                              .encode("utf-8"))
             sent_tok = _prompt_token_estimate(cur_payload)
             parsed, raw, _usage = _call_model_with_backoff(
-                client=client, model=model, system_instruction=instruction,
+                model=model, system_instruction=instruction,
                 user_payload=cur_payload, image_paths=[], response_schema=schema,
                 max_output_tokens=3000, temperature=args.temperature,
-                backoff_max=60.0, backend=args.backend)
+                backoff_max=60.0)
             last_call["raw"], last_call["parsed"] = raw, parsed
             last_call["prompt_desc"] = f"{sent_bytes}B (~{sent_tok}tok)"
             # require_spine=False (a chunk of the CHUNKED FALLBACK): this slice
@@ -1339,10 +1329,10 @@ def main() -> int:
                     + ". Return logline and premise again, grounded only in "
                     "the arc labels and first/last panel given.")
             parsed, raw, _usage = _call_model_with_backoff(
-                client=client, model=model, system_instruction=instruction,
+                model=model, system_instruction=instruction,
                 user_payload=payload, image_paths=[], response_schema=CHAPTER_SPINE_SCHEMA,
                 max_output_tokens=400, temperature=args.temperature,
-                backoff_max=60.0, backend=args.backend)
+                backoff_max=60.0)
             last_call["raw"], last_call["parsed"] = raw, parsed
             last_call["prompt_desc"] = (
                 f"{len(json.dumps(payload, ensure_ascii=False).encode('utf-8'))}B "

@@ -16,7 +16,7 @@ to rewrite the single narration line keeping the SAME story meaning but clean.
 The model call is INJECTED as ``call_fn`` so this is unit-testable with a stub
 (no live model / network). The pipeline passes a ``call_fn`` that wraps
 ``gemini_narrative_pass._call_model_with_backoff`` with the resolved
-ollama/Gemma (or Vertex) backend — see studio/pipeline.py _stage_scripted.
+local ollama/Gemma backend — see studio/pipeline.py _stage_scripted.
 
     call_fn(system: str, user_payload: dict, schema: dict, max_tokens: int) -> dict|None
 
@@ -42,7 +42,7 @@ ReframeCallFn = Callable[[str, Dict[str, Any], Dict[str, Any], int], Optional[Di
 
 # Schema the reframe model must satisfy (kept tiny + permissive: a single
 # rewritten line). Shaped like gemini_narrative_pass schemas (OBJECT/STRING) so
-# the same Vertex/ollama call path validates it without translation.
+# the same ollama call path validates it without translation.
 REFRAME_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {"narration": {"type": "STRING"}},

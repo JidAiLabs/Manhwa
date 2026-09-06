@@ -14,14 +14,11 @@ class SiteCfg:
 class Config:
     sites: dict[str, SiteCfg]
     yolo_weights: Path
-    detect_backend: str          # "yolo" | "gemini"
-    beats_model: str = "gemini-2.5-flash"   # writer model (vertex id or ollama tag)
-    beats_backend: str = "ollama"            # local gemma via ollama. LOCAL-ONLY
-                                             # is a project hard rule, so the
-                                             # DEFAULT must be the free path —
-                                             # it used to default to "vertex",
-                                             # meaning a missing/renamed toml key
-                                             # would silently start billing.
+    detect_backend: str          # "yolo" — the only supported detector
+    beats_model: str = "gemma4:26b"         # writer model (ollama tag). LOCAL-ONLY
+                                             # is a project hard rule: there is no
+                                             # backend knob, because a knob is what
+                                             # kept flipping this back to billing.
     script_model: str = "gpt-4.1-mini"      # OpenAI model for the script stage
     tts_backend: str = "elevenlabs"         # "elevenlabs" | "chatterbox" | "kokoro"
     tts_voice_ref: str = ""                 # optional reference wav for voice cloning
@@ -68,10 +65,6 @@ class Config:
     teaser_payoff_tail_frac: float = 0.20   # spoiler guard: never pull a window
                                              # from the last fraction of the
                                              # bundle's reading order.
-    teaser_model: str = "gemini-2.5-flash"  # mirrors the beats backend (Vertex
-                                             # Gemini / ollama Gemma) — NOT an
-                                             # OpenAI id; the model call reuses
-                                             # _call_model_with_backoff.
     publish_auto_after_chapters: int = 12   # [publish]: once this many chapters
                                              # of a series are PREPARED (beats on
                                              # disk), auto-PROPOSE the channel
@@ -197,8 +190,7 @@ def load(path: Path | None = None) -> Config:
                       else REPO_ROOT / _w)(
             Path(d.get("yolo_weights", "")).expanduser()),
         detect_backend=d.get("backend", "yolo"),
-        beats_model=m.get("beats_model", "gemini-2.5-flash"),
-        beats_backend=m.get("beats_backend", "ollama"),
+        beats_model=m.get("beats_model", "gemma4:26b"),
         script_model=m.get("script_model", "gpt-4.1-mini"),
         tts_backend=t.get("backend", "elevenlabs"),
         tts_voice_ref=t.get("voice_ref", ""),
@@ -237,8 +229,6 @@ def load(path: Path | None = None) -> Config:
         teaser_max_hook_scan_chapters=int(tr.get("max_hook_scan_chapters", 12)),
         teaser_max_seconds=int(tr.get("max_seconds", 90)),
         teaser_payoff_tail_frac=float(tr.get("payoff_tail_frac", 0.20)),
-        teaser_model=(os.environ.get("STUDIO_TEASER_MODEL")
-                      or tr.get("model", "gemini-2.5-flash")),
         publish_auto_after_chapters=int(
             os.environ.get("STUDIO_PUBLISH_AUTO_AFTER")
             or pub.get("auto_after_chapters", 12)),

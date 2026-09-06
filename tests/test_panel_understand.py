@@ -562,10 +562,10 @@ def test_call_model_downscales_images_for_local_model(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ollama_compat, "chat", fake_chat)
     gnp._call_model(
-        client=None, model="gemma4:26b", system_instruction="s",
+        model="gemma4:26b", system_instruction="s",
         user_payload={}, image_paths=[str(tall)],
         response_schema={"type": "object"}, max_output_tokens=10,
-        temperature=0.0, backend="ollama")
+        temperature=0.0)
     assert captured["h"] == 2560
 
 
@@ -601,10 +601,10 @@ def test_call_model_bounds_total_height_for_multi_image_group(tmp_path, monkeypa
 
     monkeypatch.setattr(ollama_compat, "chat", fake_chat)
     gnp._call_model(
-        client=None, model="gemma4:26b", system_instruction="s",
+        model="gemma4:26b", system_instruction="s",
         user_payload={}, image_paths=paths,
         response_schema={"type": "object"}, max_output_tokens=10,
-        temperature=0.0, backend="ollama")
+        temperature=0.0)
     assert seen["heights"] == [1365, 1365, 1365]
 
 

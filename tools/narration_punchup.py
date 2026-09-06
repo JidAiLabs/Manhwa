@@ -14,7 +14,7 @@ overlong, name-mangled or fact-inflated FALL BACK to the original.
 Usage:
   python tools/narration_punchup.py --beats <ep>/manifest.beats.json \
       --out <ep>/manifest.beats.punch.json [--cast <ep>/manifest.cast.json] \
-      [--backend vertex|ollama] [--model gemini-2.5-flash] \
+      [--model gemma4:26b] \
       [--humor full|light]
 """
 
@@ -358,7 +358,7 @@ _MOOD_RE = re.compile(r"^\s*(\[[a-z _-]+\])", re.I)
 
 # Span word budget (spec 2026-07-02 §3.1: "the budget survives punchup").
 # Tiny arithmetic duplicated from gemini_narrative_pass.validate_segments —
-# importing that module would pull google-genai into this ollama-first tool.
+# kept local so this tool stays importable without the writer module.
 # HARD gates only — reject the UNSHIPPABLE rewrite, not taste (see the writer
 # validator's rationale: 6.0/2.0 fought gemma's natural rhythm; marginal-thin
 # clips are floor-extended by the planner, long holds were routine).
@@ -862,12 +862,10 @@ def main() -> int:
     ap.add_argument("--episode-dir", default="",
                     help="enables caption protection (vision+scenes manifests)")
     ap.add_argument("--cast", default="")
-    ap.add_argument("--backend", choices=["vertex", "ollama"],
-                    default="ollama")
-    ap.add_argument("--model", default="gemini-2.5-flash")
-    ap.add_argument("--ollama-model", default="gemma4:26b")
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default="us-central1")
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
+    ap.add_argument("--model", "--ollama-model", dest="model",
+                    default="gemma4:26b")
     ap.add_argument("--humor", choices=["full", "light", "cinematic"],
                     default="full")
     ap.add_argument("--genre", default="",
@@ -885,7 +883,7 @@ def main() -> int:
                     help="per-panel lines per rewrite call; 0=auto by context")
     ap.add_argument("--batch-workers", type=int,
                     default=int(os.environ.get("STUDIO_PUNCHUP_WORKERS", "2")),
-                    help="parallel Ollama rewrite calls (Vertex stays serial)")
+                    help="parallel Ollama rewrite calls")
     ap.add_argument("--num-ctx", type=int,
                     default=int(os.environ.get("STUDIO_PUNCHUP_NUM_CTX", "16384")),
                     help="Ollama context window for rewrite calls")
@@ -965,43 +963,30 @@ def main() -> int:
             story_context=story_context,
             niche=niche_p, niche_secondary=niche_s)
 
-    if args.backend == "ollama":
-        import ollama  # noqa: F401 — availability probe
-        from ollama_compat import chat as _ollama_chat
+    import ollama  # noqa: F401 — availability probe
+    from ollama_compat import chat as _ollama_chat
 
-        def _run_ollama(item: tuple[int, List[Dict[str, Any]]]):
-            index, batch = item
-            resp = _ollama_chat(
-                model=args.ollama_model,
-                messages=[{"role": "user", "content": _prompt(batch, index)}],
-                think=False,
-                options={
-                    "temperature": 0.7,
-                    "num_ctx": args.num_ctx,
-                    # Transport guard only: enough room for flexible pacing
-                    # without turning max tokens into a style rule.
-                    "num_predict": max(900, len(batch) * 90),
-                })
-            raw = (resp.get("message") or {}).get("content") or ""
-            return index, _extract_json_array(raw)
+    def _run_ollama(item: tuple[int, List[Dict[str, Any]]]):
+        index, batch = item
+        resp = _ollama_chat(
+            model=args.model,
+            messages=[{"role": "user", "content": _prompt(batch, index)}],
+            think=False,
+            options={
+                "temperature": 0.7,
+                "num_ctx": args.num_ctx,
+                # Transport guard only: enough room for flexible pacing
+                # without turning max tokens into a style rule.
+                "num_predict": max(900, len(batch) * 90),
+            })
+        raw = (resp.get("message") or {}).get("content") or ""
+        return index, _extract_json_array(raw)
 
-        work = list(enumerate(batches))
-        workers = max(1, min(int(args.batch_workers or 1), len(work)))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = list(pool.map(_run_ollama, work))
-        punched = [row for _i, rows in sorted(results) for row in rows]
-    else:
-        from thumbnail_gen import _make_client  # self-heals stale cred paths
-        attempts = _make_client(args.location)
-        if not attempts:
-            print("[err] no auth available")
-            return 1
-        _, client = attempts[0]
-        punched = []
-        for index, batch in enumerate(batches):
-            resp = client.models.generate_content(
-                model=args.model, contents=[_prompt(batch, index)])
-            punched.extend(_extract_json_array(resp.text or ""))
+    work = list(enumerate(batches))
+    workers = max(1, min(int(args.batch_workers or 1), len(work)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(_run_ollama, work))
+    punched = [row for _i, rows in sorted(results) for row in rows]
 
     if use_per_panel:
         # Build (group_id, panel_index) -> narration lookup from the LLM response

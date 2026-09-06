@@ -88,9 +88,8 @@ def main() -> int:
                     help="INTERNAL ban-list only — the licensed name must "
                          "never appear in the output")
     ap.add_argument("--model", default="gemma4:26b")
-    ap.add_argument("--backend", choices=["vertex", "ollama"],
-                    default="ollama")
-    ap.add_argument("--location", default="us-central1")
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
     ap.add_argument("--out", default="",
                     help="default <episode>/render/youtube_meta.json")
     args = ap.parse_args()
@@ -117,18 +116,6 @@ def main() -> int:
             meta = extract_json(resp["message"]["content"] or "")
         except Exception as e:
             print(f"[warn] ollama/{args.model}: {e}")
-    if not meta:
-        from thumbnail_gen import _make_client
-        for kind, client in _make_client(args.location):
-            try:
-                resp = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=[build_meta_prompt(digest, args.series_title)])
-                meta = extract_json(resp.text or "")
-                if meta and meta.get("title"):
-                    break
-            except Exception as e:
-                print(f"[warn] {kind}: {e}")
     if not meta:
         print("[err] no usable metadata returned")
         return 1

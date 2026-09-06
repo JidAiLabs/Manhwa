@@ -26,8 +26,7 @@ def pytest_collection_modifyitems(config, items):
 # export real keys (creds.env, direnv, ...). Deleting them here, before every
 # test, makes that true instead of accidentally true.
 _AMBIENT_CRED_KEYS = (
-    "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
-    "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION",
+    "OPENAI_API_KEY", "ELEVENLABS_API_KEY",
 )
 
 

@@ -25,9 +25,7 @@ def _fake_cfg(**overrides):
     read — Task 13 wiring widened that surface (spoiler/cost-guard params +
     narration_sanitize + teaser_enabled), so tests that pin down one field
     still need the rest present. Callers override only what they care about."""
-    base = dict(
-        beats_backend="vertex", beats_model="gemini-2.5-flash",
-        teaser_model="gemini-2.5-flash", teaser_max_hook_scan_chapters=12,
+    base = dict(beats_model="gemma4:26b", teaser_max_hook_scan_chapters=12,
         teaser_shortlist_n=4, teaser_min_panels=4, teaser_max_hook_panels=10,
         teaser_payoff_tail_frac=0.2, teaser_max_seconds=90,
         teaser_enabled=True, narration_sanitize=False,
@@ -77,8 +75,7 @@ def test_h_teaser_plans_and_sets_state(tmp_path, monkeypatch):
     con = connect(tmp_path / "s.db")
     sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)        # hermetic dist/
-    monkeypatch.setattr(w, "_beats_cfg", lambda: (
-        _fake_cfg(), "proj", "loc"))
+    monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg())
     out_dir = tmp_path / "dist" / f"series_{sid}" / "teaser"
 
     stream_calls: list = []
@@ -218,10 +215,8 @@ def test_h_teaser_passes_spoiler_and_cost_guard_params(tmp_path, monkeypatch):
     con = connect(tmp_path / "s.db")
     sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
-    monkeypatch.setattr(w, "_beats_cfg", lambda: (
-        _fake_cfg(teaser_min_panels=6, teaser_max_hook_panels=9,
-                  teaser_payoff_tail_frac=0.33, teaser_max_seconds=45),
-        "proj", "loc"))
+    monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg(teaser_min_panels=6, teaser_max_hook_panels=9,
+                  teaser_payoff_tail_frac=0.33, teaser_max_seconds=45))
     stream_calls: list = []
     monkeypatch.setattr(w, "_stream", lambda argv, log, **k:
                         stream_calls.append([str(a) for a in argv]) or 0)
@@ -263,8 +258,7 @@ def test_h_teaser_elevenlabs_backend_routes_to_elevenlabs_tool(
     con = connect(tmp_path / "s.db")
     sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
-    monkeypatch.setattr(w, "_beats_cfg", lambda: (
-        _fake_cfg(tts_backend="elevenlabs"), "proj", "loc"))
+    monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg(tts_backend="elevenlabs"))
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
     monkeypatch.setenv("ELEVENLABS_VOICE_ID", "voice-123")
     out_dir = tmp_path / "dist" / f"series_{sid}" / "teaser"
@@ -294,8 +288,7 @@ def test_h_teaser_local_backend_includes_speed(tmp_path, monkeypatch):
     con = connect(tmp_path / "s.db")
     sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
-    monkeypatch.setattr(w, "_beats_cfg", lambda: (
-        _fake_cfg(tts_backend="chatterbox", tts_speed=1.15), "proj", "loc"))
+    monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg(tts_backend="chatterbox", tts_speed=1.15))
     out_dir = tmp_path / "dist" / f"series_{sid}" / "teaser"
     monkeypatch.setattr(w, "_stream", _stream_with_teaser_manifest(out_dir))
     tool_calls: list = []
@@ -322,8 +315,7 @@ def test_h_teaser_sanitize_before_tts_unresolved_fails(tmp_path, monkeypatch):
     con = connect(tmp_path / "s.db")
     sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
-    monkeypatch.setattr(w, "_beats_cfg", lambda: (
-        _fake_cfg(narration_sanitize=True), "proj", "loc"))
+    monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg(narration_sanitize=True))
 
     def fake_stream(argv, log, **k):
         sargv = [str(a) for a in argv]
@@ -363,8 +355,7 @@ def test_autostart_intro_skipped_when_teaser_disabled(tmp_path, monkeypatch):
     sid, bid, cids = _bundle(con, tmp_path, n=2)
     con.execute("UPDATE series SET autopilot=1 WHERE id=?", (sid,))
     con.commit()
-    monkeypatch.setattr(w, "_beats_cfg", lambda: (
-        _fake_cfg(teaser_enabled=False), "proj", "loc"))
+    monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg(teaser_enabled=False))
 
     # AUTO-START: disabled -> no plan_teaser even though fully rendered +
     # autopilot is on (both other preconditions satisfied).
@@ -394,8 +385,7 @@ def test_h_teaser_sanitize_marker_must_be_fresh_this_run(tmp_path, monkeypatch):
     con = connect(tmp_path / "s.db")
     sid, bid, _cids = _bundle(con, tmp_path, n=2)
     monkeypatch.setattr(w, "REPO", tmp_path)
-    monkeypatch.setattr(w, "_beats_cfg", lambda: (
-        _fake_cfg(narration_sanitize=True), "proj", "loc"))
+    monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg(narration_sanitize=True))
 
     out_dir = tmp_path / "dist" / f"series_{sid}" / "teaser"
 

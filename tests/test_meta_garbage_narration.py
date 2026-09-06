@@ -95,9 +95,8 @@ def test_meta_garbage_then_clean_line_retries_to_clean(monkeypatch):
     Mirrors the existing empty-narration retry guard."""
     calls = {"n": 0}
 
-    def stub(*, client, model, system_instruction, user_payload, image_paths,
-             response_schema, max_output_tokens, temperature, backoff_max,
-             backend="vertex"):
+    def stub(*, model, system_instruction, user_payload, image_paths,
+             response_schema, max_output_tokens, temperature, backoff_max):
         calls["n"] += 1
         if calls["n"] == 1:
             obj = {"beat_title": "Beat", "what_happens": "The duel begins.",
@@ -110,9 +109,9 @@ def test_meta_garbage_then_clean_line_retries_to_clean(monkeypatch):
 
     monkeypatch.setattr(gnp, "_call_model_with_backoff", stub)
     beat = gnp._generate_beat_for_group(
-        client=None, model="m", system_instruction="sys",
+        model="m", system_instruction="sys",
         payload={"scene_files": ["p1.jpg"]}, image_paths=[], beat_schema={},
-        gid=14, retries=1, max_output_tokens=512, backoff_max=5.0, backend="ollama")
+        gid=14, retries=1, max_output_tokens=512, backoff_max=5.0)
     assert calls["n"] == 2
     assert beat["narration"] == "Cheon Mu Geum steps onto the dueling ground."
     assert gnp._is_meta_garbage(beat["narration"]) is False
@@ -129,9 +128,9 @@ def test_meta_garbage_on_last_attempt_falls_back_to_clean(monkeypatch):
 
     monkeypatch.setattr(gnp, "_call_model_with_backoff", stub)
     beat = gnp._generate_beat_for_group(
-        client=None, model="m", system_instruction="sys",
+        model="m", system_instruction="sys",
         payload={"scene_files": ["p1.jpg"]}, image_paths=[], beat_schema={},
-        gid=14, retries=1, max_output_tokens=512, backoff_max=5.0, backend="ollama")
+        gid=14, retries=1, max_output_tokens=512, backoff_max=5.0)
     # both what_happens AND narration were garbage -> neutral bridge, not garbage
     assert gnp._is_meta_garbage(beat["narration"]) is False
     assert beat["narration"].strip() != ""

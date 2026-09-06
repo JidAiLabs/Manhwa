@@ -566,7 +566,7 @@ def test_apply_punchup_legacy_lines_keep_aggressive_compression():
 
 def test_span_budget_constants_match_the_writer_validator():
     # punchup deliberately DUPLICATES the budget constants (importing
-    # gemini_narrative_pass would pull google-genai into the ollama-first
+    # importing gemini_narrative_pass would pull the writer module into the
     # tool) — this parity pin makes a silent divergence impossible: tune the
     # writer's budget and this fails until punchup's gate follows.
     import importlib.util as _ilu

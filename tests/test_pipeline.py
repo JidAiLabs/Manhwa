@@ -39,7 +39,6 @@ def _make_cfg(tmp_path: Path) -> Config:
         detect_backend="yolo",
         # production uses local Gemma — grouped (now LLM: understand+story-group)
         # needs no cloud cred on this backend; the cred wall stays at beated.
-        beats_backend="ollama",
     )
 
 
@@ -134,26 +133,18 @@ def _detect_stub(ep_dir_ref: list[Path]):
 # ---------------------------------------------------------------------------
 
 def _block_cred_gated_stages(monkeypatch, pipeline_mod) -> None:
-    """Patch credential checkers so cred-gated stages (beated+) always raise.
+    """Patch the remaining credential checkers so the paid stages always raise.
 
-    This keeps SP1-only tests hermetic regardless of local gcloud/env state.
+    The beats writer is local (ollama) and has no credential gate at all, so
+    these SP1 tests stop the run at ``grouped`` via ``until=`` instead of
+    leaning on a cloud auth failure to halt the pipeline for them.
     """
-    from pathlib import Path as _Path
-
-    def _raise_beated():
-        raise pipeline_mod.MissingCredential("beated", "GOOGLE_APPLICATION_CREDENTIALS")
-
     def _raise_scripted():
         raise pipeline_mod.MissingCredential("scripted", "OPENAI_API_KEY")
 
     def _raise_voiced():
         raise pipeline_mod.MissingCredential("voiced", "ELEVENLABS_API_KEY")
 
-    # Point _REPO_ROOT at a key-less path so _stage_beated takes the
-    # _check_vertex_adc() branch (otherwise it would auth via the real repo's
-    # keys/gcp-vision.json and the cred-gate would never fire).
-    monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", _Path("/nonexistent-studio-test-root"))
-    monkeypatch.setattr(pipeline_mod, "_check_vertex_adc", _raise_beated)
     monkeypatch.setattr(pipeline_mod, "_check_openai", _raise_scripted)
     monkeypatch.setattr(pipeline_mod, "_check_elevenlabs", _raise_voiced)
 
@@ -179,11 +170,12 @@ class TestRunChapterFullProgress:
         chapter = _make_chapter(con, ep_dir, status="downloaded")
 
         cfg = _make_cfg(tmp_path)
-        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now,
+                                 until="grouped")
 
         final = repo.get_chapter(con, chapter.id)
-        # beated_failed because credentials are blocked — grouped is last success
-        assert final.status == "beated_failed", f"Expected 'beated_failed', got '{final.status}'"
+        # grouped is the last SP1 stage this run asks for
+        assert final.status == "grouped", f"Expected 'grouped', got '{final.status}'"
 
     def test_sp1_stages_complete_grouped(self, tmp_path, monkeypatch):
         """All SP1 stages complete; grouped is last successful status before cred wall."""
@@ -203,7 +195,8 @@ class TestRunChapterFullProgress:
         con = connect(tmp_path / "test.db")
         chapter = _make_chapter(con, ep_dir, status="downloaded")
         cfg = _make_cfg(tmp_path)
-        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now,
+                                 until="grouped")
 
         # grouped marker must exist (tool stub touched it)
         assert (ep_dir / "manifest.groups.json").exists()
@@ -243,10 +236,11 @@ class TestRunChapterFullProgress:
         monkeypatch.setattr(repo, "set_chapter_status", tracking_set_status)
 
         cfg = _make_cfg(tmp_path)
-        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now,
+                                 until="grouped")
 
-        # SP1 stages succeed, then beated_failed stops the pipeline
-        assert statuses_set == ["stitched", "detected", "scened", "visioned", "grouped", "beated_failed"]
+        # every SP1 stage succeeds, in order, up to the requested stop
+        assert statuses_set == ["stitched", "detected", "scened", "visioned", "grouped"]
 
     def test_reconcile_runs_between_scened_and_visioned(self, tmp_path, monkeypatch):
         """reconcile_seam_panels.py is invoked AFTER panels_to_scenes.py and BEFORE
@@ -264,7 +258,8 @@ class TestRunChapterFullProgress:
 
         con = connect(tmp_path / "test.db")
         chapter = _make_chapter(con, ep_dir, status="downloaded")
-        pipeline_mod.run_chapter(con, chapter, _make_cfg(tmp_path), now_fn=_now)
+        pipeline_mod.run_chapter(con, chapter, _make_cfg(tmp_path), now_fn=_now,
+                                 until="grouped")
 
         calls = tool_stub.calls
         assert "reconcile_seam_panels.py" in calls
@@ -328,13 +323,14 @@ class TestIdempotency:
         chapter = _make_chapter(con, ep_dir, status="grouped")
         cfg = _make_cfg(tmp_path)
 
-        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now,
+                                 until="grouped")
 
         assert "panel_understand.py" in tool_stub.calls
         assert "story_group.py" in tool_stub.calls
         assert "chunk_stitch_adaptive.py" not in tool_stub.calls
         assert (ep_dir / "manifest.groups.json").exists()
-        assert repo.get_chapter(con, chapter.id).status == "beated_failed"
+        assert repo.get_chapter(con, chapter.id).status == "grouped"
 
 
 class TestResumability:
@@ -399,11 +395,12 @@ class TestResumability:
         _block_cred_gated_stages(monkeypatch, pipeline_mod)
 
         cfg = _make_cfg(tmp_path)
-        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
+        pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now,
+                                 until="grouped")
 
         resumed_ch = repo.get_chapter(con, chapter.id)
-        # scened → visioned → grouped succeed, then beated_failed stops it
-        assert resumed_ch.status == "beated_failed", f"Expected 'beated_failed', got '{resumed_ch.status}'"
+        # scened → visioned → grouped succeed, then the requested stop
+        assert resumed_ch.status == "grouped", f"Expected 'grouped', got '{resumed_ch.status}'"
         # Confirm scened and beyond were run (stitched/detected were skipped)
         assert "panels_to_scenes.py" in tool_stub.calls
         assert "chunk_stitch_adaptive.py" not in tool_stub.calls
@@ -440,7 +437,6 @@ class TestMissingCredential:
         )
 
         # Ensure no env credentials present
-        monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
 
@@ -452,15 +448,10 @@ class TestMissingCredential:
 
         monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
 
-        # Fake ADC file present so vertex passes, but OPENAI absent
-        fake_adc = tmp_path / "adc.json"
-        fake_adc.write_text("{}")
-        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(fake_adc))
-
         pipeline_mod.run_chapter(con, chapter, cfg, now_fn=_now)
 
         ch = repo.get_chapter(con, chapter.id)
-        # beated stage runs (vertex cred ok via env), scripted fails (no OPENAI)
+        # beated runs (local, no creds), scripted fails on the missing OPENAI key
         assert ch.status == "scripted_failed"
         assert "OPENAI_API_KEY" in (ch.error or "")
 
@@ -502,11 +493,10 @@ def _capturing_stub(ep_dir: Path):
     return stub
 
 
-def _fake_repo_root_with_key(tmp_path: Path) -> Path:
-    """Repo root whose keys/gcp-vision.json lets _stage_beated auth hermetically."""
+def _fake_repo_root(tmp_path: Path) -> Path:
+    """A repo root the stage helpers can resolve paths against."""
     root = tmp_path / "fakeroot"
-    (root / "keys").mkdir(parents=True)
-    (root / "keys" / "gcp-vision.json").write_text('{"project_id": "test-proj"}')
+    root.mkdir(parents=True)
     return root
 
 
@@ -537,8 +527,7 @@ class TestBeatedCastWiring:
         if pre_cast:
             (ep_dir / "manifest.cast.json").touch()
 
-        monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", _fake_repo_root_with_key(tmp_path))
-        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "to-be-overwritten")
+        monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", _fake_repo_root(tmp_path))
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
 
@@ -600,7 +589,7 @@ class TestCastStaleness:
             (ep_dir / name).write_text("{}")
             os.utime(ep_dir / name, (mt, mt))
         monkeypatch.setattr(pipeline_mod, "_REPO_ROOT",
-                            _fake_repo_root_with_key(tmp_path))
+                            _fake_repo_root(tmp_path))
         stub = _capturing_stub(ep_dir)
         monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
         cfg = replace(_make_cfg(tmp_path), punchup="off")
@@ -731,14 +720,11 @@ def _beated_fixture(tmp_path, monkeypatch, *, marker: bool,
         (ep / m).write_text("{}")
     if marker:
         (ep / ".narration_keepbase").touch()
-    (tmp_path / "keys").mkdir()
-    (tmp_path / "keys" / "gcp-vision.json").write_text(json.dumps({"project_id": "t"}))
     monkeypatch.setattr(pipeline_mod, "_REPO_ROOT", tmp_path)
     stub = _tool_stub([ep])
     monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
     cfg = Config(sites={}, yolo_weights=tmp_path / "f.pt", detect_backend="yolo",
-                 punchup="cinematic", beats_backend="ollama",
-                 segmentation=segmentation)
+                 punchup="cinematic", segmentation=segmentation)
     pipeline_mod._stage_beated(ep, cfg)
     return stub
 

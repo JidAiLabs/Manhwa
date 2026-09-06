@@ -179,21 +179,6 @@ def _ollama_call(model: str, num_ctx: int):
     return _call
 
 
-def _vertex_call(model: str, project: str, location: str):
-    from google import genai
-    from google.genai import types
-    client = genai.Client(vertexai=True, project=project, location=location)
-
-    def _call(prompt: str) -> Dict[str, Any]:
-        resp = client.models.generate_content(
-            model=model, contents=[prompt],
-            config=types.GenerateContentConfig(
-                temperature=0.2, response_mime_type="application/json",
-                response_schema=STORY_SCHEMA))
-        return json.loads(resp.text)
-    return _call
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--vision-manifest", required=True)
@@ -201,10 +186,9 @@ def main() -> int:
                     help="manifest.panels.understood.json — skips chrome/empty "
                          "panels; optional (transcript still works without it)")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--backend", choices=["vertex", "ollama"], default="ollama")
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
     ap.add_argument("--model", default="gemma4:26b")
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default="us-central1")
     ap.add_argument("--num-ctx", type=int,
                     default=int(os.environ.get("STUDIO_STORY_NUM_CTX", "16384")))
     ap.add_argument("--retries", type=int, default=3,
@@ -222,9 +206,7 @@ def main() -> int:
     if not transcript.strip():
         raise SystemExit("[story] empty transcript — no panels to read")
 
-    call = (_ollama_call(args.model, args.num_ctx)
-            if args.backend == "ollama"
-            else _vertex_call(args.model, args.project, args.location))
+    call = _ollama_call(args.model, args.num_ctx)
     # RETRY: one unparseable roll must not drop the whole chapter back to the
     # ledger's per-window fallback (nano ch1 job 68 did exactly that — the
     # stage exited 1 and the chapter silently lost its story). The call is

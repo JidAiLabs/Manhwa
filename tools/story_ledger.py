@@ -283,43 +283,28 @@ def _windows(panels: List[Dict[str, Any]], size: int = 14, overlap: int = 4
     return out or [panels]
 
 
-def arbitrate(digest: str, *, backend: str, model: str, project: str = "",
-              location: str = "us-central1", num_ctx: int = 16384
+def arbitrate(digest: str, *, model: str, num_ctx: int = 16384
               ) -> Dict[str, Any]:
     """The single model call. Raises on transport/parse errors — the caller
     fail-softs to a visual-only ledger."""
-    if backend == "ollama":
-        from ollama_compat import chat as _ollama_chat
+    from ollama_compat import chat as _ollama_chat
 
-        def _lower_types(o):
-            if isinstance(o, dict):
-                return {k: (v.lower() if k == "type" and isinstance(v, str)
-                            else _lower_types(v))
-                        for k, v in o.items() if k != "propertyOrdering"}
-            if isinstance(o, list):
-                return [_lower_types(x) for x in o]
-            return o
+    def _lower_types(o):
+        if isinstance(o, dict):
+            return {k: (v.lower() if k == "type" and isinstance(v, str)
+                        else _lower_types(v))
+                    for k, v in o.items() if k != "propertyOrdering"}
+        if isinstance(o, list):
+            return [_lower_types(x) for x in o]
+        return o
 
-        resp = _ollama_chat(
-            model=model,
-            messages=[{"role": "user", "content": SYSTEM + "\n\n" + digest}],
-            format=_lower_types(LEDGER_SCHEMA), think=False,
-            options={"temperature": 0.2, "num_ctx": num_ctx,
-                     "num_predict": 2000})
-        return json.loads(resp["message"]["content"])
-    from google import genai
-    from google.genai import types
-    client = genai.Client(vertexai=True, project=project, location=location)
-    resp = client.models.generate_content(
+    resp = _ollama_chat(
         model=model,
-        contents=[SYSTEM + "\n\n" + digest],
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-            response_schema=LEDGER_SCHEMA,
-        ),
-    )
-    return json.loads(resp.text)
+        messages=[{"role": "user", "content": SYSTEM + "\n\n" + digest}],
+        format=_lower_types(LEDGER_SCHEMA), think=False,
+        options={"temperature": 0.2, "num_ctx": num_ctx,
+                 "num_predict": 2000})
+    return json.loads(resp["message"]["content"])
 
 
 # --- deterministic derivation ---------------------------------------------------
@@ -823,11 +808,9 @@ def main() -> int:
                          "present its events ARE the facts and no model call "
                          "is made here.")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--backend", choices=["vertex", "ollama"],
-                    default="ollama")
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
     ap.add_argument("--model", default="gemma4:26b")
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default="us-central1")
     ap.add_argument("--num-ctx", type=int,
                     default=int(os.environ.get("STUDIO_LEDGER_NUM_CTX",
                                                "16384")))
@@ -838,9 +821,7 @@ def main() -> int:
     cast = _load(args.cast)
 
     def _arb(digest: str) -> Dict[str, Any]:
-        return arbitrate(digest, backend=args.backend, model=args.model,
-                         project=args.project, location=args.location,
-                         num_ctx=args.num_ctx)
+        return arbitrate(digest, model=args.model, num_ctx=args.num_ctx)
 
     story = (_load(args.chapter_story)
              if args.chapter_story and os.path.exists(args.chapter_story)

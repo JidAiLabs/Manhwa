@@ -227,11 +227,10 @@ def main() -> int:
     ap.add_argument("--vision-manifest", default="")
     ap.add_argument("--scenes-dir", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--backend", choices=["vertex", "ollama"], default="ollama")
-    ap.add_argument("--ollama-model", default="gemma4:26b")
-    ap.add_argument("--model", default="gemini-2.5-flash")
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default="")
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
+    ap.add_argument("--model", "--ollama-model", dest="model",
+                    default="gemma4:26b")
     ap.add_argument("--temperature", type=float, default=0.0)
     args = ap.parse_args()
 
@@ -241,19 +240,14 @@ def main() -> int:
     new_beats = new_doc.get("beats") or []
 
     from gemini_narrative_pass import _call_model_with_backoff  # noqa: E402
-    client = None
-    model = args.ollama_model
-    if args.backend == "vertex":
-        from google import genai
-        client = genai.Client(vertexai=True, project=args.project, location=args.location)
-        model = args.model
+    model = args.model
 
     def call_fn(payload, image_paths):
         parsed, _raw, _u = _call_model_with_backoff(
-            client=client, model=model, system_instruction=SYSTEM,
+            model=model, system_instruction=SYSTEM,
             user_payload=payload, image_paths=image_paths,
             response_schema=VERDICT_SCHEMA, max_output_tokens=200,
-            temperature=args.temperature, backoff_max=60.0, backend=args.backend)
+            temperature=args.temperature, backoff_max=60.0)
         return parsed
 
     judge = _make_judge(call_fn, args.scenes_dir)

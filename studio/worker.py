@@ -624,19 +624,13 @@ def _last_qa_plan_sha(con: sqlite3.Connection, chapter_id: int) -> "str | None":
 
 
 def _beats_cfg():
-    """(cfg, project, location) for the beats/punchup/script tools, sourced the
-    same way _stage_beated does (SA key project, no gcloud)."""
+    """Config for the beats/punchup/script tools. Every one of them runs on the
+    local ollama Gemma — there is no backend to resolve."""
     from studio.config import load as _load_cfg
-    cfg = _load_cfg()
-    keys = REPO / "keys" / "gcp-vision.json"
-    project = (json.loads(keys.read_text()).get("project_id", "")
-               if keys.exists() else os.environ.get("GOOGLE_CLOUD_PROJECT", ""))
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-    return cfg, project, location
+    return _load_cfg()
 
 
-def _regen_flagged(ep: Path, cfg, project: str, location: str,
-                   corr_path: str, env, log: TextIO) -> None:
+def _regen_flagged(ep: Path, cfg, corr_path: str, env, log: TextIO) -> None:
     """Re-narrate ONLY the corrected groups from their panels (--resume keeps
     every other line), then re-apply persona + re-derive the verbatim script."""
     beats, cast = str(ep / "manifest.beats.json"), str(ep / "manifest.cast.json")
@@ -647,7 +641,6 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
     gargs = [PY, str(REPO / "tools" / "gemini_narrative_pass.py"),
              "--groups-manifest", str(ep / "manifest.groups.json"),
              "--vision-manifest", vision, "--out", beats,
-             "--project", project, "--location", location,
              "--model", cfg.beats_model, "--cast", cast,
              "--story", str(ep / "manifest.story.json"),
              # the understanding, exactly like the primary beated stage: the
@@ -663,8 +656,6 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
              # cycle — so it must not be the one paying the 6-image premium:
              # measured 107.6s/call at 6 images vs 77.5s at 3.
              "--resume", "--corrections", corr_path, "--max-images-per-group", "3"]
-    if cfg.beats_backend == "ollama":
-        gargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]
     if _stream(gargs, log, env=env) != 0:
         raise RuntimeError("gemini_narrative_pass (heal) failed")
     if (cfg.punchup or "off") != "off":
@@ -683,11 +674,7 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
                  "--episode-dir", str(ep), "--humor", cfg.punchup]
         if _gids:
             pargs += ["--only-groups", ",".join(str(g) for g in _gids)]
-        if cfg.beats_backend == "ollama":
-            pargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]
-        else:
-            pargs += ["--backend", "vertex", "--model", cfg.beats_model,
-                      "--project", project, "--location", location]
+        pargs += ["--model", cfg.beats_model]
         _stream(pargs, log, env=env)
     if getattr(cfg, "semantic_heal", False):
         # strictly-better safeguard: keep each regenerated line ONLY if a judge
@@ -697,12 +684,8 @@ def _regen_flagged(ep: Path, cfg, project: str, location: str,
         aargs = [PY, str(REPO / "tools" / "narration_accept_better.py"),
                  "--old", str(preheal), "--new", beats,
                  "--scenes-dir", str(ep / "scenes_clean"),
-                 "--vision-manifest", vision, "--out", beats]
-        if cfg.beats_backend == "ollama":
-            aargs += ["--backend", "ollama", "--ollama-model", cfg.beats_model]
-        else:
-            aargs += ["--backend", "vertex", "--model", cfg.beats_model,
-                      "--project", project, "--location", location]
+                 "--vision-manifest", vision, "--out", beats,
+                 "--model", cfg.beats_model]
         _stream(aargs, log, env=env)
     _rescript(ep, cfg, env, log)
 
@@ -737,21 +720,17 @@ def _run_sanitize(ep: Path, log: TextIO) -> None:
     """Re-run narration_sanitize_pass so manifest.sanitize.json reflects the
     CURRENT manifest.script.json — same tool/CLI contract and backend routing
     as pipeline._run_sanitize_pass, self-contained like the other heal helpers
-    (loads its own cfg/project/location via _beats_cfg). rc==2 means
+    (loads its own cfg via _beats_cfg). rc==2 means
     'unresolved blocks recorded' (the marker is written either way; the
     voiced-stage gate is what enforces it, not this helper) — not a failure.
     Any other non-zero rc is a genuine tool crash and surfaces as the
     heal-step failure it is."""
-    cfg, project, location = _beats_cfg()
+    cfg = _beats_cfg()
     sargs = [PY, str(REPO / "tools" / "narration_sanitize_pass.py"),
              "--script", str(ep / "manifest.script.json"),
              "--seed", ep.name,
-             "--marker", str(ep / "manifest.sanitize.json")]
-    if cfg.beats_backend == "ollama":
-        sargs += ["--reframe-backend", "ollama", "--reframe-model", cfg.beats_model]
-    else:
-        sargs += ["--reframe-backend", "vertex", "--reframe-model", cfg.beats_model,
-                  "--project", project, "--location", location]
+             "--marker", str(ep / "manifest.sanitize.json"),
+             "--reframe-backend", "ollama", "--reframe-model", cfg.beats_model]
     rc = _stream(sargs, log)
     if rc not in (0, 2):
         raise RuntimeError(f"narration_sanitize_pass (heal) failed (rc={rc})")
@@ -806,16 +785,16 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
     from studio.config import load as _load_cfg
     cfg = _load_cfg()
     semantic_heal = bool(getattr(cfg, "semantic_heal", False))
-    project = location = env = None
+    env = None
     used_fast_qa = False
     prev_error_codes: "set | None" = None      # convergence guard (no-progress)
     prev_corr_fp: "str | None" = None          # guard 2: corrections treadmill
     stuck = False
 
-    def _ensure_cfg() -> None:                 # load cloud/ollama routing lazily
-        nonlocal cfg, project, location, env
-        if project is None:
-            cfg, project, location = _beats_cfg()
+    def _ensure_cfg() -> None:                 # load cfg + series env lazily
+        nonlocal cfg, env
+        if env is None:
+            cfg = _beats_cfg()
             env = _series_env(con, ch["series_id"])
 
     for cycle in range(1, _HEAL_MAX + 1):
@@ -895,7 +874,7 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
         _ensure_cfg()
         log.write(f"[heal] cycle {cycle}/{_HEAL_MAX}: re-narrating {ncorr} "
                   "flagged group(s) from their panels\n")
-        _regen_flagged(ep, cfg, project, location, str(corr), env, log)
+        _regen_flagged(ep, cfg, str(corr), env, log)
         with record_stage(con, chapter_id=ch["id"], stage="planned",
                           series_id=ch["series_id"]):
             _replan(ep, log)
@@ -1206,7 +1185,7 @@ def _autopropose_publish_if_ready(con: sqlite3.Connection, series_id: int,
 
     A no-op when auto_after_chapters == 0.
     """
-    cfg, _, _ = _beats_cfg()
+    cfg = _beats_cfg()
     threshold = int(getattr(cfg, "publish_auto_after_chapters", 0) or 0)
     if threshold <= 0:
         return
@@ -1559,7 +1538,7 @@ def _autostart_intro_if_ready(con: sqlite3.Connection, chapter_id: int,
     when [teaser].enabled is False — that config knob gates ONLY this
     auto-start path; the manual dashboard 'Plan teaser' button stays
     unconditional."""
-    cfg, _, _ = _beats_cfg()
+    cfg = _beats_cfg()
     if not cfg.teaser_enabled:
         return
     rows = con.execute("SELECT bundle_id FROM bundle_chapter WHERE chapter_id=?",
@@ -1622,7 +1601,7 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
     # (publish_auto_after_chapters, default 12) so the hook stays stable no
     # matter which ranges are bundled later.
     sid = job["series_id"]
-    cfg, project, location = _beats_cfg()
+    cfg = _beats_cfg()
     title = _series_title(con, sid)
     n_scan = int(getattr(cfg, "publish_auto_after_chapters", 12) or 12)
     chapter_dirs = [Path(r[0]) for r in con.execute(
@@ -1649,18 +1628,13 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
                 "--series-id", str(sid),
                 "--chapter-dirs", *[str(d) for d in chapter_dirs],
                 "--out-dir", str(out_dir),
-                "--backend", cfg.beats_backend,
                 "--max-scan-chapters", str(cfg.teaser_max_hook_scan_chapters),
                 "--shortlist-n", str(cfg.teaser_shortlist_n),
                 "--min-panels", str(cfg.teaser_min_panels),
                 "--max-hook-panels", str(cfg.teaser_max_hook_panels),
                 "--payoff-tail-frac", str(cfg.teaser_payoff_tail_frac),
-                "--max-seconds", str(cfg.teaser_max_seconds)]
-        if cfg.beats_backend == "ollama":
-            argv += ["--ollama-model", cfg.beats_model]
-        else:
-            argv += ["--model", cfg.teaser_model,
-                     "--project", project, "--location", location]
+                "--max-seconds", str(cfg.teaser_max_seconds),
+                "--model", cfg.beats_model]
         if _stream(argv, log) != 0:
             raise RuntimeError("teaser_planner failed")
         if not (out_dir / "manifest.teaser.json").exists():

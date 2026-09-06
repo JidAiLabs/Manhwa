@@ -9,7 +9,7 @@ Names come from the dialogue/OCR (proper names or address terms like "Ancestor-n
 unnamed-but-recurring figures get a stable descriptive handle. gemini_narrative_pass
 then threads this in (--cast) so every group's narration matches faces to the cast.
 
-Auth mirrors gemini_narrative_pass (Vertex AI via the gcp-vision SA key).
+Runs on the local ollama Gemma — no credentials, no cloud.
 
   V=.eval_venv/bin/python
   $V tools/cast_builder.py \
@@ -25,9 +25,6 @@ import re
 import os
 import sys
 from typing import Any, Dict, List, Optional
-
-from google import genai
-from google.genai import types
 
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
@@ -300,34 +297,15 @@ RECURRING_RULE = (
 )
 
 
-def _img_part(path: str) -> Optional[types.Part]:
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except Exception:
-        return None
-    try:
-        return types.Part.from_bytes(data=data, mime_type="image/jpeg")
-    except TypeError:
-        return types.Part.from_bytes(bytes=data, mime_type="image/jpeg")
-
-
-def _text_part(s: str) -> types.Part:
-    try:
-        return types.Part.from_text(text=s)
-    except TypeError:
-        return types.Part.from_text(s)
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--groups-manifest", required=True)
     ap.add_argument("--vision-manifest", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"))
-    ap.add_argument("--model", default="gemini-2.5-flash")
-    ap.add_argument("--backend", choices=["vertex", "ollama"], default="vertex")
+    ap.add_argument("--model", "--ollama-model", dest="model",
+                    default="gemma4:26b")
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
     ap.add_argument("--max-images", type=int, default=24)
     ap.add_argument("--understood", default="",
                     help="manifest.panels.understood.json — recurring-figure "
@@ -338,14 +316,6 @@ def main() -> int:
                          "Its NAMES are authoritative; this pass supplies the "
                          "appearance the story pass cannot see.")
     args = ap.parse_args()
-
-    project = args.project
-    if args.backend == "vertex" and not project:
-        keys = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
-        if keys and os.path.exists(keys):
-            project = json.loads(open(keys).read()).get("project_id", "")
-    if args.backend == "vertex" and not project:
-        raise SystemExit("No --project and could not derive project_id from GOOGLE_APPLICATION_CREDENTIALS")
 
     vision = _load(args.vision_manifest)
     items = _vision_items(vision)
@@ -373,83 +343,55 @@ def main() -> int:
             figures_block = RECURRING_RULE.replace(
                 "{FIGURES}", "\n".join(f"  - {f}" for f in figs))
 
-    parts: List[types.Part] = [_text_part(SYSTEM)]
+    import ollama
+    text_blobs = [SYSTEM]
     if story_block:
-        parts.append(_text_part(story_block))
+        text_blobs.append(story_block)
     if figures_block:
-        parts.append(_text_part(figures_block))
-    parts.append(_text_part("ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n" + "\n".join(ocr)))
-    parts.append(_text_part(f"\n{len(images)} sample panels follow (spread across the chapter):"))
-    for p in images:
-        ip = _img_part(p)
-        if ip is not None:
-            parts.append(ip)
+        text_blobs.append(figures_block)
+    text_blobs += ["ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n"
+                   + "\n".join(ocr),
+                   f"\n{len(images)} sample panels follow:"]
+    import re as _re
 
-    if args.backend == "ollama":
-        import ollama
-        text_blobs = [SYSTEM]
-        if story_block:
-            text_blobs.append(story_block)
-        if figures_block:
-            text_blobs.append(figures_block)
-        text_blobs += ["ALL DIALOGUE / OCR IN THE CHAPTER (scene_file: text):\n"
-                       + "\n".join(ocr),
-                       f"\n{len(images)} sample panels follow:"]
-        import re as _re
+    def _lower_types(o):
+        if isinstance(o, dict):
+            return {k: (v.lower() if k == "type" and isinstance(v, str)
+                        else _lower_types(v))
+                    for k, v in o.items() if k != "propertyOrdering"}
+        if isinstance(o, list):
+            return [_lower_types(x) for x in o]
+        return o
 
-        def _lower_types(o):
-            if isinstance(o, dict):
-                return {k: (v.lower() if k == "type" and isinstance(v, str)
-                            else _lower_types(v))
-                        for k, v in o.items() if k != "propertyOrdering"}
-            if isinstance(o, list):
-                return [_lower_types(x) for x in o]
-            return o
-
-        import sys as _sys
-        _here = os.path.dirname(os.path.abspath(__file__))
-        if _here not in _sys.path:
-            _sys.path.insert(0, _here)
-        from ollama_compat import chat as _ollama_chat
+    import sys as _sys
+    _here = os.path.dirname(os.path.abspath(__file__))
+    if _here not in _sys.path:
+        _sys.path.insert(0, _here)
+    from ollama_compat import chat as _ollama_chat
+    resp = _ollama_chat(
+        model=args.model,
+        messages=[{"role": "user", "content": "\n".join(text_blobs),
+                   "images": [str(pth) for pth in images]}],
+        format=_lower_types(CAST_SCHEMA), think=False,
+        options={"temperature": 0.2, "num_ctx": 16384,
+                 "num_predict": 2400})
+    try:
+        cast = json.loads(resp["message"]["content"])
+    except json.JSONDecodeError as e:
+        # self-repair retry (nano ch1 job 144: an unterminated string cost a
+        # 12-min job restart) — one more roll with more room to finish
+        print(f"[warn] cast JSON unparseable ({e}); retrying once with a "
+              "larger num_predict")
+        # `_ollama_chat`, NOT `client.chat`: a stale `client.chat` here
+        # raised UnboundLocalError, so the self-repair never ran once.
         resp = _ollama_chat(
             model=args.model,
             messages=[{"role": "user", "content": "\n".join(text_blobs),
                        "images": [str(pth) for pth in images]}],
             format=_lower_types(CAST_SCHEMA), think=False,
-            options={"temperature": 0.2, "num_ctx": 16384,
-                     "num_predict": 2400})
-        try:
-            cast = json.loads(resp["message"]["content"])
-        except json.JSONDecodeError as e:
-            # self-repair retry (nano ch1 job 144: an unterminated string cost a
-            # 12-min job restart) — one more roll with more room to finish
-            print(f"[warn] cast JSON unparseable ({e}); retrying once with a "
-                  "larger num_predict")
-            # `_ollama_chat`, NOT `client.chat`: this is the ollama branch, and
-            # the only `client` in scope is the genai one bound LATER (line ~437)
-            # in the vertex branch — so this raised UnboundLocalError and the
-            # self-repair below never ran once. Even bound, genai.Client has no
-            # .chat(); its API is client.models.generate_content().
-            resp = _ollama_chat(
-                model=args.model,
-                messages=[{"role": "user", "content": "\n".join(text_blobs),
-                           "images": [str(pth) for pth in images]}],
-                format=_lower_types(CAST_SCHEMA), think=False,
-                options={"temperature": 0.3, "num_ctx": 16384,
-                         "num_predict": 4000})
-            cast = json.loads(resp["message"]["content"])
-    else:
-        client = genai.Client(vertexai=True, project=project, location=args.location)
-        resp = client.models.generate_content(
-            model=args.model,
-            contents=[types.Content(role="user", parts=parts)],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                response_mime_type="application/json",
-                response_schema=CAST_SCHEMA,
-            ),
-        )
-        cast = json.loads(resp.text)
+            options={"temperature": 0.3, "num_ctx": 16384,
+                     "num_predict": 4000})
+        cast = json.loads(resp["message"]["content"])
     # names come from the page — replace invented proper names (nano ch1: "Alden")
     cast, name_fixes = sanitize_cast_names(cast, _page_words(items))
     for cid, bad, good in name_fixes:

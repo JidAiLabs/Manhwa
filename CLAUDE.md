@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A **manhwa/webtoon → narrated video** pipeline for the YouTube channel **OriginPower Manhwa Recap**. It fetches manhwa chapters, slices them into panels/scenes (trained YOLO), extracts OCR (Google Vision), writes narrative beats (Gemini) + a recap script (OpenAI), voices it (ElevenLabs), plans a timeline, and renders in Blender VSE. The `tools/` scripts are the pipeline stages (manifest-in → manifest-out); the **`studio/` package is the orchestrated front-end** that drives them.
 
-> **USE `studio/` — don't run `tools/` by hand.** There's a working CLI + SQLite catalog. See "studio/ — the front-end" below. Git repo on `main`. Tests: `.eval_venv/bin/python -m pytest -q` (~1554 passing). Use the existing venv `.eval_venv/` (Python 3.12 + torch/ultralytics/cv2/openai/google-genai/google-cloud-vision/gallery-dl).
+> **USE `studio/` — don't run `tools/` by hand.** There's a working CLI + SQLite catalog. See "studio/ — the front-end" below. Git repo on `main`. Tests: `.eval_venv/bin/python -m pytest -q` (~2288 passing). Use the existing venv `.eval_venv/` (Python 3.12 + torch/ultralytics/cv2/openai/gallery-dl; `google-genai` is installed for `tools/thumbnail_gen.py` ONLY).
 
 ### Dependency model (2026-07-06 refactor — the single invalidation authority)
 
@@ -40,12 +40,12 @@ $V -m studio status [series_id]                                # chapter status 
 | Stage | Needs | Notes |
 |-------|-------|-------|
 | `visioned` (OCR) | `keys/gcp-vision.json` | repo key; auto-set |
-| `beated` (Gemini beats) | same `keys/gcp-vision.json` SA key | **no gcloud needed** — pipeline uses the SA's OWN project (`gen-lang-client-…`), not `GOOGLE_CLOUD_PROJECT` |
+| `beated` (beats) | **none** | local ollama Gemma (`gemma4:26b`). LOCAL-ONLY is a hard rule: there is no cloud code path and no backend knob |
 | `scripted` (recap script) | **none by default** | default `[models].narration_source = "gemini_verbatim"` voices the image-grounded beats narration verbatim — deterministic, $0, no key. `OPENAI_API_KEY` (in creds.env) only for `legacy`/`openai_polish` |
 | `voiced` (TTS) | depends on `[tts].backend` | **`chatterbox`/`kokoro` = local, FREE, no key** (default chatterbox). `elevenlabs` needs `ELEVENLABS_API_KEY`+`ELEVENLABS_VOICE_ID` |
 
 ### Models & cost (configurable in `studio.toml`)
-- `[models].beats_model` (Gemini, default `gemini-2.5-flash`; `gemini-2.5-flash-lite` ~5× cheaper) and `[models].script_model` (OpenAI, default **`gpt-5-nano`** — note `gpt-4.1-mini` API-retires **2026-10-14**; only used when narration_source ≠ gemini_verbatim).
+- `[models].beats_model` (ollama tag, default `gemma4:26b`) and `[models].script_model` (OpenAI, default **`gpt-5-nano`** — note `gpt-4.1-mini` API-retires **2026-10-14**; only used when narration_source ≠ gemini_verbatim).
 - `[models].narration_source` (default **`gemini_verbatim`**): the scripted stage voices `beats[].narration` (the image-grounded Gemini line, A/B winner) VERBATIM — no LLM call, with shout-caps→sentence-case normalization (cast names preserved via `manifest.cast.json`) and caps/panel-intensity→mood-tag escalation. The beated stage auto-builds the chapter cast (`cast_builder.py`, idempotent) and passes `--cast`.
 - `[tts].backend` = `chatterbox` | `chatterbox-turbo` | `qwen` | `kokoro` | `elevenlabs`. Adapter `tools/local_tts_from_manifest.py` emits the same `clips/{segment_id}.wav` + `tts_index.json` contract for all. **Each local backend needs its OWN venv** (conflicting deps) — set `[tts].python` to the right one per backend:
   - **chatterbox** (MIT, expressive emotion dial) + **chatterbox-turbo** (fast, flat) → `.tts_venv` (torch 2.6). `python3.12 -m venv .tts_venv && .tts_venv/bin/pip install chatterbox-tts`.
@@ -93,7 +93,8 @@ Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), 
   the 4 first chapters to `visioned`, run "prepare → QA" per chapter on the dashboard to
   exercise the new pipeline end-to-end, review, then voice (Qwen) + render only once it looks
   right. **A pull that touches `studio/worker.py` or `studio/dashboard/**` needs a daemon
-  restart (`launchctl kickstart -k`); tools + pipeline.py are subprocesses → fresh on pull.**
+  restart (`launchctl kickstart -k`). `studio/pipeline.py` is IMPORTED by the worker, so it needs the
+  restart too; only `tools/` are subprocesses → fresh on pull.**
 
 ---
 
@@ -105,7 +106,7 @@ Each stage consumes the prior stage's manifest(s). Run in this order:
 
 1. **Scrape** — `capture_chapter.py --url <U> --name <chapter>` (Playwright/Chromium) scrolls a reader page, tiles screenshots, stitches to one PNG in `out/raw/`. *Or* skip scraping and use pre-downloaded episode JPGs under `ongoing/<Series>/<Ep…>/`.
 2. **Chunk-stitch** — `tools/chunk_stitch_adaptive.py` → `stitch_chunks/chunk_*.jpg` + `manifest.stitch.json`. Cuts only at safe gutter bands (white/black/flat fades) so panels/text are never bisected; overflows until a safe cut is found.
-3. **Panel detection (LLM)** — `tools/gemini_panel_boxes.py` (reads `manifest.stitch.json`) → `manifest.panels.json` (normalized `[ymin,xmin,ymax,xmax]` boxes per chunk). Then `tools/expand_boxes_to_gutters.py` → `manifest.panels.expanded.json` (snaps boxes out to gutters).
+3. **Panel detection (YOLO)** — `studio/detect/yolo_panels.py` (reads `manifest.stitch.json`) → `manifest.panels.json` (normalized `[ymin,xmin,ymax,xmax]` boxes per chunk). Then `tools/expand_boxes_to_gutters.py` → `manifest.panels.expanded.json` (snaps boxes out to gutters).
 4. **Materialize scenes** — `tools/panels_to_scenes.py` (stitch + panels.expanded) → scene JPGs + `manifest.scenes.json`. Splits merged crops on internal gutters before trimming. (`panels_materialize.py` is an alternate that flattens to `panels/panel_*.jpg` + `manifest.panels_flat.json`.)
 5. **Vision** — `tools/vision_extract.py` (Google Cloud Vision) → `manifest.vision.json`: OCR words/blocks with normalized bboxes, faces, objects, text coverage, camera targets. Core input for almost every downstream stage.
 6. **Group into shots** — `tools/scene_group_builder.py` (reads vision manifest) → `manifest.groups.json`. Deterministic, no LLM; merges only consecutive panels.
@@ -131,7 +132,7 @@ Each stage consumes the prior stage's manifest(s). Run in this order:
 ## Auth / credentials
 
 - **Google Cloud Vision** (`vision_extract.py`, `vision_anchors.py`): uses `vision.ImageAnnotatorClient()` — set `GOOGLE_APPLICATION_CREDENTIALS=keys/gcp-vision.json` (service-account key already in repo at `keys/gcp-vision.json`).
-- **Gemini** (`gemini_*.py`): Vertex AI via `genai.Client(vertexai=True, project=…, location=…)` — auth with `gcloud auth application-default login`; pass `--project` / `--location`. Default model `gemini-2.5-flash`.
+- **Local LLM** (`gemini_narrative_pass.py` and every other writer/judge stage): ollama at `OLLAMA_HOST`, default model `gemma4:26b`. No credentials. The only paid model in the repo is `tools/thumbnail_gen.py` (`GEMINI_API_KEY`, image generation, owner-approved ~$0.13/img).
 - **OpenAI** (`script_expander.py`): `OpenAI()` reads `OPENAI_API_KEY` from env. Default model `gpt-4.1-mini`.
 - **ElevenLabs** (`elevenlabs_tts_from_manifest.py`): `ELEVENLABS_API_KEY` env var. Models `eleven_v3` / `eleven_multilingual_v2`.
 

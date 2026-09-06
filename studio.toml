@@ -21,10 +21,9 @@ yolo_weights = "assets/models/webtoon_panels_v4.pt"
 [models]
 # LLM models per stage (cost-tunable). Swap to cheaper tiers freely; the
 # usage_cost logger reports exact tokens + $ per run so quality/cost is A/B-able.
-# beats: the writer. CONFIRMED 2026-06-12: local Gemma 4 via Ollama ($0,
-# ~55s/group on MPS; A/B'd vs Flash — 0 parse errors, 79% selection agreement).
-# Flash remains one config flip away: backend="vertex", model="gemini-2.5-flash".
-beats_backend = "ollama"
+# beats: the writer. Local Gemma 4 via Ollama ($0, ~55s/group on MPS).
+# LOCAL-ONLY is a project hard rule — there is no backend key, and no cloud
+# code path left to select.
 beats_model = "gemma4:26b"
 # script: OpenAI. gpt-4.1-mini is API-deprecating 2026-10-14; gpt-5-nano is ~5x cheaper.
 script_model = "gpt-5-nano"
@@ -93,7 +92,6 @@ max_hook_panels = 10
 max_hook_scan_chapters = 12   # cost guard only
 max_seconds = 90              # cost guard only
 payoff_tail_frac = 0.20       # spoiler guard: never pull from the last 20%
-model = "gemini-2.5-flash"    # beats backend model (Vertex/ollama), not OpenAI
 
 [publish]
 # Once this many chapters of a series are PREPARED (beats on disk), the worker

@@ -15,9 +15,7 @@ def _fake_cfg(**overrides):
     """Cfg double for _h_teaser's config surface (mirrors the factory of the
     same name in tests/test_teaser_worker.py). Callers override only what
     they care about."""
-    base = dict(
-        beats_backend="ollama", beats_model="gemma", teaser_model="gemma",
-        teaser_max_hook_scan_chapters=3, teaser_shortlist_n=4,
+    base = dict( beats_model="gemma",        teaser_max_hook_scan_chapters=3, teaser_shortlist_n=4,
         teaser_min_panels=4, teaser_max_hook_panels=10,
         teaser_payoff_tail_frac=0.2, teaser_max_seconds=90,
         narration_sanitize=False,
@@ -426,9 +424,7 @@ def test_heal_to_green_regenerates_only_flagged_then_stops(tmp_path, monkeypatch
             json.dump(seq.pop(0) if seq else {}, open(out, "w"))
         return 0
     monkeypatch.setattr(worker, "_stream", fake_stream)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
-        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
-                              punchup="cinematic", script_model="s"), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: types.SimpleNamespace(beats_model="m",                              punchup="cinematic", script_model="s"))
     regen = []
     monkeypatch.setattr(worker, "_regen_flagged",
                         lambda *a, **k: regen.append(1))
@@ -459,9 +455,7 @@ def _run_heal_capture(tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(worker, "_stream", fake_stream)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
-        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
-                              punchup="cinematic", script_model="s"), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: types.SimpleNamespace(beats_model="m",                              punchup="cinematic", script_model="s"))
     worker._heal_to_green(con, ch, ep, open(tmp_path / "log.txt", "w"))
     return heal_cmds, qa_cmds
 
@@ -491,10 +485,9 @@ def test_heal_to_green_semantic_default_passes_grounding_warn(
 
 def _heal_cfg():
     import types
-    return (types.SimpleNamespace(beats_model="m", beats_backend="ollama",
-                                  punchup="off", script_model="s",
+    return types.SimpleNamespace(beats_model="m",                                  punchup="off", script_model="s",
                                   narration_source="gemini_verbatim",
-                                  semantic_heal=False), "p", "l")
+                                  semantic_heal=False)
 
 
 def test_heal_to_green_narration_stale_only_rescripts_and_stops(
@@ -919,7 +912,7 @@ def _teaser_on(monkeypatch):
     """
     monkeypatch.setattr(
         worker, "_beats_cfg",
-        lambda: (types.SimpleNamespace(teaser_enabled=True), None, None))
+        lambda: types.SimpleNamespace(teaser_enabled=True))
 
 
 def test_autostart_intro_enqueues_plan_teaser_once(tmp_path, monkeypatch):
@@ -982,7 +975,7 @@ def test_teaser_auto_mode_approves_and_enqueues_concat(tmp_path, monkeypatch):
     (tdir / "render").mkdir(parents=True)
     (tdir / "manifest.teaser.json").write_text("{}")
     (tdir / "render" / "segment_none.mp4").write_text("v")
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_fake_cfg(), "proj", "loc"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _fake_cfg())
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     import studio.pipeline as _pl
     monkeypatch.setattr(_pl, "_run_tool", lambda *a, **k: 0, raising=False)
@@ -1008,7 +1001,7 @@ def test_teaser_manual_mode_parks_for_review(tmp_path, monkeypatch):
     (tdir / "render").mkdir(parents=True)
     (tdir / "manifest.teaser.json").write_text("{}")
     (tdir / "render" / "segment_none.mp4").write_text("v")
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_fake_cfg(), "proj", "loc"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _fake_cfg())
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
     import studio.pipeline as _pl
     monkeypatch.setattr(_pl, "_run_tool", lambda *a, **k: 0, raising=False)
@@ -1384,8 +1377,7 @@ def test_run_sanitize_shells_narration_sanitize_pass(tmp_path, monkeypatch):
     import types
     ep = tmp_path / "ep"
     ep.mkdir()
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
-        types.SimpleNamespace(beats_backend="ollama", beats_model="m"), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: types.SimpleNamespace( beats_model="m"))
     seen = {}
 
     def fake_stream(cmd, log, **kw):
@@ -1411,8 +1403,7 @@ def test_run_sanitize_raises_on_real_failure(tmp_path, monkeypatch):
     import pytest
     ep = tmp_path / "ep"
     ep.mkdir()
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
-        types.SimpleNamespace(beats_backend="ollama", beats_model="m"), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: types.SimpleNamespace( beats_model="m"))
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 1)
     with pytest.raises(RuntimeError):
         worker._run_sanitize(ep, open(tmp_path / "log.txt", "w"))
@@ -1630,11 +1621,10 @@ def test_regen_flagged_passes_understanding_to_the_writer(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw:
                         calls.append(" ".join(map(str, cmd))) or 0)
-    cfg = types.SimpleNamespace(beats_model="gemma", beats_backend="ollama",
-                                punchup="off", script_model="s",
+    cfg = types.SimpleNamespace(beats_model="gemma",                                punchup="off", script_model="s",
                                 narration_source="gemini_verbatim",
                                 narration_sanitize=False)
-    worker._regen_flagged(ep, cfg, "", "", str(ep / "corr.json"), None,
+    worker._regen_flagged(ep, cfg, str(ep / "corr.json"), None,
                           open(tmp_path / "log.txt", "w"))
     gnp = [c for c in calls if "gemini_narrative_pass.py" in c]
     assert gnp, "heal regen must invoke the narration writer"
@@ -1678,9 +1668,7 @@ def test_heal_treadmill_guard_stops_on_identical_corrections(
     monkeypatch.setattr(worker, "_regen_flagged",
                         lambda *a, **k: regen.append(1))
     monkeypatch.setattr(worker, "_replan", lambda *a, **k: None)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
-        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
-                              punchup="cinematic", script_model="s"), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: types.SimpleNamespace(beats_model="m",                              punchup="cinematic", script_model="s"))
     fake_qa(con, ch, None)                       # seed the initial QA report
     logf = tmp_path / "log.txt"
     worker._heal_to_green(con, ch, ep, open(logf, "w"))
@@ -1716,9 +1704,7 @@ def test_heal_repreps_once_for_render_fixable_remnants(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "_regen_flagged",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("must not re-narrate")))
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
-        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
-                              punchup="cinematic", script_model="s"), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: types.SimpleNamespace(beats_model="m",                              punchup="cinematic", script_model="s"))
     logf = tmp_path / "log.txt"
     worker._heal_to_green(con, ch, ep, open(logf, "w"))
     assert len(preps) == 1 and preps[0].get("reuse_clean") is True
@@ -1758,9 +1744,7 @@ def test_heal_repreps_render_fixable_after_stuck_stop(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "_run_prep_and_qa", fake_qa)
     monkeypatch.setattr(worker, "_regen_flagged", lambda *a, **k: None)
     monkeypatch.setattr(worker, "_replan", lambda *a, **k: None)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (
-        types.SimpleNamespace(beats_model="m", beats_backend="ollama",
-                              punchup="cinematic", script_model="s"), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: types.SimpleNamespace(beats_model="m",                              punchup="cinematic", script_model="s"))
     fake_qa(con, ch, None)
     preps.clear()
     logf = tmp_path / "log.txt"
@@ -2048,7 +2032,7 @@ def _series_with_prepared(con, tmp_path, n, *, sid=1):
 
 def test_autopropose_thumbnail_once_threshold_reached(tmp_path, monkeypatch):
     con = _con(tmp_path)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     _series_with_prepared(con, tmp_path, 3)
     import io
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())
@@ -2058,7 +2042,7 @@ def test_autopropose_thumbnail_once_threshold_reached(tmp_path, monkeypatch):
 
 def test_autopropose_does_nothing_below_threshold(tmp_path, monkeypatch):
     con = _con(tmp_path)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     _series_with_prepared(con, tmp_path, 2)          # threshold is 3
     import io
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())
@@ -2069,7 +2053,7 @@ def test_autopropose_does_nothing_below_threshold(tmp_path, monkeypatch):
 def test_autopropose_is_idempotent(tmp_path, monkeypatch):
     """Firing on every prepare must not pile up duplicate jobs or bundles."""
     con = _con(tmp_path)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     _series_with_prepared(con, tmp_path, 3)
     import io
     for _ in range(4):
@@ -2084,7 +2068,7 @@ def test_autopropose_is_idempotent(tmp_path, monkeypatch):
 def test_autopropose_creates_a_debut_bundle_of_exactly_n_chapters(tmp_path,
                                                                   monkeypatch):
     con = _con(tmp_path)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     _series_with_prepared(con, tmp_path, 5)          # threshold 3 -> first 3
     import io
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())
@@ -2097,7 +2081,7 @@ def test_autopropose_teaser_is_a_proposal_not_auto_intro(tmp_path, monkeypatch):
     """The teaser must land as a REVIEW proposal (teaser_state -> planned via
     the handler), never auto-approved behind the operator's back."""
     con = _con(tmp_path)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     _series_with_prepared(con, tmp_path, 3)
     import io, json as _json
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())
@@ -2109,7 +2093,7 @@ def test_autopropose_teaser_is_a_proposal_not_auto_intro(tmp_path, monkeypatch):
 def test_autopropose_respects_an_existing_bundle_layout(tmp_path, monkeypatch):
     """If the operator already made bundles, don't auto-create a debut one."""
     con = _con(tmp_path)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     _series_with_prepared(con, tmp_path, 3)
     from studio.dashboard import bundles
     bundles.create_bundle(con, 1, "full", title="mine")
@@ -2123,7 +2107,7 @@ def test_autopropose_respects_an_existing_bundle_layout(tmp_path, monkeypatch):
 
 def test_autopropose_skips_thumbnail_that_already_exists(tmp_path, monkeypatch):
     con = _con(tmp_path)
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     _series_with_prepared(con, tmp_path, 3)
     thumb = worker.REPO / "dist" / "series_1" / "thumbnail_yt.jpg"
     thumb.parent.mkdir(parents=True, exist_ok=True)
@@ -2144,7 +2128,7 @@ def test_autopropose_skips_thumbnail_that_already_exists(tmp_path, monkeypatch):
 def test_autopropose_off_when_threshold_zero(tmp_path, monkeypatch):
     con = _con(tmp_path)
     monkeypatch.setattr(worker, "_beats_cfg",
-                        lambda: (_cfg_pub(publish_auto_after_chapters=0), "p", "l"))
+                        lambda: _cfg_pub(publish_auto_after_chapters=0))
     _series_with_prepared(con, tmp_path, 5)
     import io
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())
@@ -2159,7 +2143,7 @@ def test_debut_bundle_creation_survives_concurrent_prepares(tmp_path,
     and TWO teaser proposals. create_debut_bundle_once serializes on
     BEGIN IMMEDIATE, so exactly one bundle + one teaser survive."""
     import threading
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     con = _con(tmp_path)
     _series_with_prepared(con, tmp_path, 3)
     db = str(tmp_path / "s.db")
@@ -2193,7 +2177,7 @@ def test_failed_thumbnail_proposal_is_not_re_fired_every_prepare(tmp_path,
                                                                  monkeypatch):
     """A permanently-failing thumbnail (e.g. no API key) must not re-enqueue on
     every subsequent chapter prepare — propose ONCE, ever."""
-    monkeypatch.setattr(worker, "_beats_cfg", lambda: (_cfg_pub(), "p", "l"))
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
     con = _con(tmp_path)
     _series_with_prepared(con, tmp_path, 3)
     import io
@@ -2212,7 +2196,7 @@ def test_autostart_intro_leaves_a_failed_proposed_teaser_alone(tmp_path,
     auto-intro path must NOT then re-plan it as an auto_intro (which would
     auto-approve a teaser the operator never reviewed)."""
     monkeypatch.setattr(worker, "_beats_cfg",
-                        lambda: (_cfg_pub(teaser_enabled=True), "p", "l"))
+                        lambda: _cfg_pub(teaser_enabled=True))
     con = _con(tmp_path)
     con.execute("INSERT INTO series (id, source, series_url, slug, title, "
                 "added_at, autopilot) VALUES (1,'a','u','s','S','t',1)")

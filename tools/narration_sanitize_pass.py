@@ -251,10 +251,8 @@ def main() -> int:
                     help="write the pass result here (default: <script dir>/manifest.sanitize.json)")
     # The pipeline injects the reframe backend via these flags; without them the
     # pass runs the deterministic layer only (swaps + block gating, no LLM).
-    ap.add_argument("--reframe-backend", choices=["none", "vertex", "ollama"], default="none")
+    ap.add_argument("--reframe-backend", choices=["none", "ollama"], default="none")
     ap.add_argument("--reframe-model", default="")
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default="")
     args = ap.parse_args()
 
     script_path = Path(args.script)
@@ -262,9 +260,7 @@ def main() -> int:
 
     call_fn: Optional[ReframeCallFn] = None
     if args.reframe_backend != "none":
-        call_fn = _build_backend_call_fn(
-            backend=args.reframe_backend, model=args.reframe_model,
-            project=args.project, location=args.location)
+        call_fn = _build_backend_call_fn(model=args.reframe_model)
 
     summary = sanitize_script(script_obj, seed=args.seed, call_fn=call_fn)
 
@@ -283,24 +279,16 @@ def main() -> int:
     return 0
 
 
-def _build_backend_call_fn(
-    *, backend: str, model: str, project: str, location: str
-) -> ReframeCallFn:
+def _build_backend_call_fn(*, model: str) -> ReframeCallFn:
     """Wrap gemini_narrative_pass._call_model_with_backoff into the injected
-    ``call_fn`` shape. Mirrors how _stage_beated resolves the Gemma/Vertex
-    backend. Only constructed on the LLM path (CLI --reframe-backend != none).
+    ``call_fn`` shape. Only constructed on the LLM path
+    (CLI --reframe-backend != none).
     """
     from gemini_narrative_pass import _call_model_with_backoff  # noqa: E402
-    from google import genai  # noqa: E402
-
-    client: Optional[Any] = None
-    if backend == "vertex":
-        client = genai.Client(vertexai=True, project=project, location=location)
 
     def call_fn(system: str, user_payload: Dict[str, Any],
                 schema: Dict[str, Any], max_tokens: int) -> Optional[Dict[str, Any]]:
         obj, _raw, _usage = _call_model_with_backoff(
-            client=client,
             model=model,
             system_instruction=system,
             user_payload=user_payload,
@@ -309,7 +297,6 @@ def _build_backend_call_fn(
             max_output_tokens=max_tokens,
             temperature=0.3,
             backoff_max=60.0,
-            backend=backend,
         )
         return obj
 

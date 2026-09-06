@@ -197,18 +197,17 @@ discovered → downloaded → stitched → detected → scened → visioned
 | `scened`    | `panels_to_scenes.py`                       | `manifest.scenes.json` + scene JPGs|
 | `visioned`  | `vision_extract.py` *(GCP Vision key)*      | `manifest.vision.json`             |
 | `grouped`   | `scene_group_builder.py`                    | `manifest.groups.json`             |
-| `beated`    | `gemini_narrative_pass.py` *(Vertex ADC)*   | `manifest.beats.json`              |
+| `beated`    | `gemini_narrative_pass.py` *(local ollama)* | `manifest.beats.json`              |
 | `scripted`  | `script_expander.py` *(OPENAI_API_KEY)*     | `manifest.script.json`             |
 | `voiced`    | `elevenlabs_tts_from_manifest.py` *(ElevenLabs)* | `tts/tts_index.json` + clips  |
 | `planned`   | `timeline_planner.py`                       | `render.plan.json`                 |
 
 **Credential requirements by stage:**
 
-- `stitched` → `grouped`: deterministic, no API credentials required.
+- `stitched` → `beated`: local only (YOLO + Apple Vision OCR + ollama Gemma),
+  no API credentials required.
 - `visioned`: requires `GOOGLE_APPLICATION_CREDENTIALS` pointing to a GCP
   Vision service-account key (or `keys/gcp-vision.json` at repo root).
-- `beated`: requires Vertex AI ADC (`gcloud auth application-default login`)
-  and `GOOGLE_CLOUD_PROJECT`.
 - `scripted`: requires `OPENAI_API_KEY`.
 - `voiced`: requires `ELEVENLABS_API_KEY` (and optionally
   `ELEVENLABS_VOICE_ID`).

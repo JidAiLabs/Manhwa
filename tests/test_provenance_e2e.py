@@ -113,8 +113,7 @@ def test_script_edit_after_voice_approval_invalidates_voice_gate(tmp_path):
 def _pipeline_cfg(tmp_path):
     from studio.config import Config
     return replace(Config(sites={}, yolo_weights=tmp_path / "fake.pt",
-                          detect_backend="yolo", 
-                          beats_backend="ollama"),
+                          detect_backend="yolo"),
                   tts_backend="chatterbox")  # local backend: no ElevenLabs cred wall
 
 

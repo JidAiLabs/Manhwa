@@ -41,7 +41,7 @@ from typing import Any, Callable, Dict, List, Optional
 # tools/ is not a package; make sibling modules importable by name (the same
 # idiom gemini_narrative_pass.py uses to reach recap_style). recap_style is
 # lightweight (stdlib only) so a module-level import is safe; the heavier
-# gemini_narrative_pass / google-genai imports stay lazy inside main()'s
+# the gemini_narrative_pass import stays lazy inside main()'s
 # model-call builder so unit tests never pull them in.
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
@@ -773,7 +773,7 @@ TEASER_PROMPT = (
     "  - Keep it cinematic and propulsive; no meta, no 'panel'/'scene' talk.\n"
 )
 
-# genai response schema (UPPERCASE type enums; lowered for ollama's `format`).
+# response schema (UPPERCASE type enums; lowered for ollama's `format`).
 _TEASER_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
@@ -807,14 +807,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--out-dir", required=True,
                     help="synthetic teaser dir to materialize (dist/bundle_<id>/teaser)")
     # model backend (mirrors gemini_narrative_pass / story_group)
-    ap.add_argument("--backend", choices=["vertex", "ollama"], default="vertex")
-    ap.add_argument("--model", default="gemini-2.5-flash",
-                    help="Vertex Gemini model id (ignored when --backend ollama)")
-    ap.add_argument("--ollama-model", default="gemma4:26b",
-                    help="ollama model id; the ollama path uses THIS, not --model")
-    ap.add_argument("--project", default="")
-    ap.add_argument("--location", default="")
-    # cost guards (defaults mirror studio.toml [teaser])
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
+    ap.add_argument("--model", "--ollama-model", dest="model",
+                    default="gemma4:26b", help="ollama model id")
     ap.add_argument("--shortlist-n", type=int, default=4,
                     help="DEPRECATED: the montage selector ignores this (kept for "
                          "backward-compatible invocation)")
@@ -832,23 +828,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _build_model_call(args: argparse.Namespace):
-    """Construct the real Vertex/ollama model_call (lazy heavy imports)."""
+    """Construct the real ollama model_call (lazy heavy import)."""
     from gemini_narrative_pass import _call_model_with_backoff  # noqa: E402
 
-    if args.backend == "ollama":
-        client = None
-        model = args.ollama_model
-    else:
-        from google import genai  # noqa: E402
-        if not args.project or not args.location:
-            raise SystemExit("--project/--location are required for --backend vertex")
-        client = genai.Client(vertexai=True, project=args.project,
-                              location=args.location)
-        model = args.model
+    model = args.model
 
     def model_call(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         resp, _raw, _usage = _call_model_with_backoff(
-            client=client,
             model=model,
             system_instruction=TEASER_PROMPT,
             user_payload=payload,
@@ -857,7 +843,6 @@ def _build_model_call(args: argparse.Namespace):
             max_output_tokens=2400,
             temperature=0.3,
             backoff_max=60.0,
-            backend=args.backend,
         )
         return resp
 

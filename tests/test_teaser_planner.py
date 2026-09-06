@@ -328,7 +328,7 @@ def test_build_arg_parser_required_flags():
     assert args.series_id == 12 and args.chapter_dirs == ["/a", "/b"]
     assert p.parse_args(["--chapter-dirs", "/a", "--out-dir", "/o"]).series_id == 0
     # ollama path uses --ollama-model (NOT --model); default gemma4:26b
-    assert args.ollama_model == "gemma4:26b"
+    assert args.model == "gemma4:26b"
     # payoff tail is OFF by default — the power reveal is the hook, not a spoiler
     assert args.payoff_tail_frac == 0.0
     # --shortlist-n is still accepted (worker passes it) though the montage ignores it

@@ -12,10 +12,7 @@ Fixes:
 - Cap images per group (select lowest text_coverage panels first)
 - Incremental checkpoint writes (checkpoint-every)
 
-Requires:
-  pip install -U google-genai
-Auth:
-  gcloud auth application-default login
+Local-only: the writer runs on ollama (Gemma 4). No cloud SDK, no creds.
 """
 
 import argparse
@@ -26,10 +23,6 @@ import re
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
-
-from google import genai
-from google.genai import types
-from google.genai.errors import ClientError
 
 # Shared keep/redundant + bubble/intensity normalization (sibling tool module).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -211,16 +204,6 @@ _DIALOGUE_RULE = (
     "When a real line is short and iconic — a threat, a taunt, a name — prefer "
     "QUOTING it (clean sentence case, attributed) over paraphrasing."
 )
-
-
-def _usage_from_resp(resp: Any) -> Dict[str, int]:
-    """Extract exact (input, output, cached) token counts from a Gemini response."""
-    um = getattr(resp, "usage_metadata", None)
-    return {
-        "input": int(getattr(um, "prompt_token_count", 0) or 0),
-        "output": int(getattr(um, "candidates_token_count", 0) or 0),
-        "cached": int(getattr(um, "cached_content_token_count", 0) or 0),
-    }
 
 
 def load_json(path: str) -> Dict[str, Any]:
@@ -610,7 +593,7 @@ def _extract_json_value(text: str) -> Any:
     code under ollama's format-constrained decoding, and WRONG the moment a
     backend free-writes: a grouping response is a JSON ARRAY, so the slice
     glued the beat objects together without their brackets and never parsed.
-    Backend-agnostic by design (ollama / MLX shim / vertex raw fallback)."""
+    Tolerant of any ollama-side response shape (server or MLX shim)."""
     if not text:
         return None
     t = _THINK_BLOCK_RE.sub("", str(text))
@@ -635,20 +618,6 @@ def _extract_json_value(text: str) -> Any:
 def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
     v = _extract_json_value(text)
     return v if isinstance(v, dict) else None
-
-
-def _part_text(s: str) -> types.Part:
-    try:
-        return types.Part.from_text(text=s)
-    except TypeError:
-        return types.Part.from_text(s)
-
-
-def _part_image_jpeg(b: bytes) -> types.Part:
-    try:
-        return types.Part.from_bytes(bytes=b, mime_type="image/jpeg")
-    except TypeError:
-        return types.Part.from_bytes(data=b, mime_type="image/jpeg")
 
 
 def _schema_to_json_schema(s: Any) -> Any:
@@ -739,7 +708,6 @@ def _model_safe_image(image_path: Optional[str], max_h: Optional[int] = None
 
 def _call_model(
     *,
-    client: Optional[genai.Client],
     model: str,
     system_instruction: str,
     user_payload: Dict[str, Any],
@@ -747,107 +715,72 @@ def _call_model(
     response_schema: Dict[str, Any],
     max_output_tokens: int,
     temperature: float,
-    backend: str = "vertex",
 ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
-    if backend == "ollama":
-        # local open model (Gemma 4 et al.) via the Ollama server — same
-        # contract: system + INPUT_JSON + panel images -> schema'd JSON
-        import ollama
-        msg: Dict[str, Any] = {
-            "role": "user",
-            "content": "INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False),
-        }
-        images = [p for p in image_paths if p and os.path.exists(p)]
-        _img_tmps: List[str] = []
-        if images:
-            _cap = _images_height_cap(len(images))   # split the budget across a stacked group
-            _safe: List[str] = []
-            for _p in images:
-                _sp, _tmp = _model_safe_image(_p, _cap)
-                if _sp:
-                    _safe.append(_sp)
-                if _tmp:
-                    _img_tmps.append(_tmp)
-            msg["images"] = _safe
-        from ollama_compat import chat as _ollama_chat
-        # 16k thrashed gemma's SWA cache (full prompt re-processing every call ->
-        # ~32min wedge), so beats run at a small default (8k) that fits the typical
-        # ~1-7.5k prompt. An oversized group (many panels) can overflow it -> we
-        # catch the ollama context-exceed error and retry THAT call at a
-        # fit-to-prompt num_ctx (capped), so small groups stay fast and a big group
-        # never hard-fails the whole chapter. Both env-tunable.
-        ctx0 = int(os.environ.get("STUDIO_BEATS_NUM_CTX", "8192"))
-        ctx_max = int(os.environ.get("STUDIO_BEATS_NUM_CTX_MAX", "16384"))
-        _kw = dict(
-            model=model,
-            messages=[{"role": "system", "content": system_instruction}, msg],
-            format=_schema_to_json_schema(response_schema),
-            think=False,  # Gemma 4 thinks by default and burns the budget
-            options={"temperature": temperature,
-                     "num_predict": max_output_tokens,
-                     "num_ctx": ctx0},
-        )
-        try:
-            try:
-                resp = _ollama_chat(**_kw)
-            except Exception as e:
-                nb = _bumped_num_ctx(str(e), ctx0, max_output_tokens, ctx_max)
-                if nb is None:
-                    raise
-                print(f"[beats] prompt exceeds num_ctx {ctx0}; retry at num_ctx={nb}",
-                      file=sys.stderr)
-                _kw["options"]["num_ctx"] = nb
-                resp = _ollama_chat(**_kw)
-            raw = (resp.get("message") or {}).get("content") or ""
-            usage = {"input": int(resp.get("prompt_eval_count") or 0),
-                     "output": int(resp.get("eval_count") or 0), "cached": 0}
-            try:
-                return json.loads(raw), raw, usage
-            except Exception:
-                return _extract_json_value(raw), raw, usage
-        finally:
-            for _t in _img_tmps:
-                try:
-                    os.remove(_t)
-                except OSError:
-                    pass
-
-    parts: List[types.Part] = []
-    parts.append(_part_text("INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False)))
-
-    for p in image_paths:
-        if not p or not os.path.exists(p):
-            continue
-        with open(p, "rb") as f:
-            parts.append(_part_image_jpeg(f.read()))
-
-    resp = client.models.generate_content(
+    # local open model (Gemma 4 et al.) via the Ollama server — same
+    # contract: system + INPUT_JSON + panel images -> schema'd JSON
+    import ollama
+    msg: Dict[str, Any] = {
+        "role": "user",
+        "content": "INPUT_JSON:\n" + json.dumps(user_payload, ensure_ascii=False),
+    }
+    images = [p for p in image_paths if p and os.path.exists(p)]
+    _img_tmps: List[str] = []
+    if images:
+        _cap = _images_height_cap(len(images))   # split the budget across a stacked group
+        _safe: List[str] = []
+        for _p in images:
+            _sp, _tmp = _model_safe_image(_p, _cap)
+            if _sp:
+                _safe.append(_sp)
+            if _tmp:
+                _img_tmps.append(_tmp)
+        msg["images"] = _safe
+    from ollama_compat import chat as _ollama_chat
+    # 16k thrashed gemma's SWA cache (full prompt re-processing every call ->
+    # ~32min wedge), so beats run at a small default (8k) that fits the typical
+    # ~1-7.5k prompt. An oversized group (many panels) can overflow it -> we
+    # catch the ollama context-exceed error and retry THAT call at a
+    # fit-to-prompt num_ctx (capped), so small groups stay fast and a big group
+    # never hard-fails the whole chapter. Both env-tunable.
+    ctx0 = int(os.environ.get("STUDIO_BEATS_NUM_CTX", "8192"))
+    ctx_max = int(os.environ.get("STUDIO_BEATS_NUM_CTX_MAX", "16384"))
+    _kw = dict(
         model=model,
-        contents=[types.Content(role="user", parts=parts)],
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=temperature,
-            response_mime_type="application/json",
-            response_schema=response_schema,
-            max_output_tokens=max_output_tokens,
-        ),
+        messages=[{"role": "system", "content": system_instruction}, msg],
+        format=_schema_to_json_schema(response_schema),
+        think=False,  # Gemma 4 thinks by default and burns the budget
+        options={"temperature": temperature,
+                 "num_predict": max_output_tokens,
+                 "num_ctx": ctx0},
     )
-
-    usage = _usage_from_resp(resp)
-    parsed = getattr(resp, "parsed", None)
-    if isinstance(parsed, dict):
-        return parsed, (resp.text or ""), usage
-
-    raw = resp.text or ""
     try:
-        return json.loads(raw), raw, usage
-    except Exception:
-        return _extract_json_value(raw), raw, usage
+        try:
+            resp = _ollama_chat(**_kw)
+        except Exception as e:
+            nb = _bumped_num_ctx(str(e), ctx0, max_output_tokens, ctx_max)
+            if nb is None:
+                raise
+            print(f"[beats] prompt exceeds num_ctx {ctx0}; retry at num_ctx={nb}",
+                  file=sys.stderr)
+            _kw["options"]["num_ctx"] = nb
+            resp = _ollama_chat(**_kw)
+        raw = (resp.get("message") or {}).get("content") or ""
+        usage = {"input": int(resp.get("prompt_eval_count") or 0),
+                 "output": int(resp.get("eval_count") or 0), "cached": 0}
+        try:
+            return json.loads(raw), raw, usage
+        except Exception:
+            return _extract_json_value(raw), raw, usage
+    finally:
+        for _t in _img_tmps:
+            try:
+                os.remove(_t)
+            except OSError:
+                pass
 
 
-# Wall-clock bound on the 429 retry loop (only the vertex/gemini backend can 429;
-# ollama — the production default — never hits this). Generous enough for a
-# transient quota dip, bounded so it can't stall a lane forever.
+# Wall-clock bound on the transient-retry loop below: a persistently-down
+# ollama must fail the stage rather than retry-loop a lane forever.
 _MODEL_429_DEADLINE_SEC = int(os.environ.get("STUDIO_MODEL_429_DEADLINE_SEC", "900") or "900")
 
 
@@ -866,7 +799,6 @@ except Exception:
 
 def _call_model_with_backoff(
     *,
-    client: Optional[genai.Client],
     model: str,
     system_instruction: str,
     user_payload: Dict[str, Any],
@@ -875,7 +807,6 @@ def _call_model_with_backoff(
     max_output_tokens: int,
     temperature: float,
     backoff_max: float,
-    backend: str = "vertex",
 ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
     attempt = 0
     # BOUND the 429 retry: a quota cliff during a 300-chapter run must NOT loop
@@ -884,7 +815,6 @@ def _call_model_with_backoff(
     while True:
         try:
             return _call_model(
-                client=client,
                 model=model,
                 system_instruction=system_instruction,
                 user_payload=user_payload,
@@ -892,20 +822,7 @@ def _call_model_with_backoff(
                 response_schema=response_schema,
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
-                backend=backend,
             )
-        except ClientError as e:
-            msg = str(e)
-            if ("429" not in msg) and ("RESOURCE_EXHAUSTED" not in msg):
-                raise
-            if time.time() >= deadline:
-                print(f"[error] 429 RESOURCE_EXHAUSTED persisted > "
-                      f"{_MODEL_429_DEADLINE_SEC}s — giving up (stage fails).")
-                raise
-            sleep_s = min(backoff_max, (2 ** min(attempt, 6)) + random.random() * 0.8)
-            print(f"[warn] 429 RESOURCE_EXHAUSTED. sleeping {sleep_s:.1f}s then retrying...")
-            time.sleep(sleep_s)
-            attempt += 1
         except _TRANSIENT_LLM_EXC as e:
             # ollama dropped the connection mid-request (restart/crash/overload) —
             # transient. Retry with backoff, bounded by the same deadline so a
@@ -923,7 +840,6 @@ def _call_model_with_backoff(
 
 def _generate_beat_for_group(
     *,
-    client: Any,
     model: str,
     system_instruction: str,
     payload: Dict[str, Any],
@@ -933,7 +849,6 @@ def _generate_beat_for_group(
     retries: int,
     max_output_tokens: int,
     backoff_max: float,
-    backend: str = "vertex",
     usage: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run the model accept loop for one group. Returns a content-bearing beat
@@ -956,7 +871,6 @@ def _generate_beat_for_group(
 
     for _attempt in range(retries + 1):
         obj, raw, u = _call_model_with_backoff(
-            client=client,
             model=model,
             system_instruction=system_instruction,
             user_payload=payload,
@@ -965,7 +879,6 @@ def _generate_beat_for_group(
             max_output_tokens=max_output_tokens,
             temperature=0.2,
             backoff_max=backoff_max,
-            backend=backend,
         )
         _acc(u)
         raw_text = raw
@@ -997,7 +910,6 @@ def _generate_beat_for_group(
             "instruction": "Re-output the beat as VALID JSON matching the schema exactly. No extra text.",
         }
         obj2, raw2, u2 = _call_model_with_backoff(
-            client=client,
             model=model,
             system_instruction="You are a strict JSON formatter. Output valid JSON only.",
             user_payload=repair_payload,
@@ -1006,7 +918,6 @@ def _generate_beat_for_group(
             max_output_tokens=max_output_tokens,
             temperature=0.0,
             backoff_max=backoff_max,
-            backend=backend,
         )
         _acc(u2)
         raw_text = raw2
@@ -2095,15 +2006,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--vision-manifest", required=True)
     ap.add_argument("--out", required=True)
 
-    ap.add_argument("--project", default="",
-                    help="GCP project (required for --backend vertex)")
-    ap.add_argument("--location", default="",
-                    help="Vertex location (required for --backend vertex)")
-    ap.add_argument("--model", default="gemini-2.5-flash")
-    ap.add_argument("--backend", choices=["vertex", "ollama"], default="vertex",
-                    help="ollama = local open model (Gemma 4) via the Ollama "
-                         "server; no GCP creds, $0")
-    ap.add_argument("--ollama-model", default="gemma4:26b")
+    ap.add_argument("--model", "--ollama-model", dest="model",
+                    default="gemma4:26b")
+    ap.add_argument("--backend", choices=["ollama"], default="ollama",
+                    help="deprecated no-op: local ollama is the only backend")
 
     ap.add_argument("--min-sleep", type=float, default=1.2, help="Sleep between groups to avoid 429 bursts")
     ap.add_argument("--max-images-per-group", type=int, default=3, help="Cap images attached per group (0=none)")
@@ -2155,15 +2061,6 @@ def main() -> int:
     vision_by_file = _build_vision_map(vision_m)
     # system cards speak their OCR; the understanding never carries it
     merge_vision_ocr(u_by_file, vision_by_file)
-
-    if args.backend == "ollama":
-        client = None
-        args.model = args.ollama_model
-    else:
-        if not args.project or not args.location:
-            raise SystemExit("--project/--location are required for --backend vertex")
-        client = genai.Client(vertexai=True, project=args.project,
-                              location=args.location)
 
     system_body = (
         "You are a YouTube manhwa recap story editor.\n"
@@ -2529,7 +2426,6 @@ def main() -> int:
         img_paths = _select_images_for_group(payload, vision_by_file, args.max_images_per_group)
 
         beat = _generate_beat_for_group(
-            client=client,
             model=args.model,
             system_instruction=sys_g,
             payload=payload,
@@ -2539,7 +2435,6 @@ def main() -> int:
             retries=args.retries,
             max_output_tokens=args.max_output_tokens,
             backoff_max=args.backoff_max,
-            backend=args.backend,
             usage=usage,
         )
 
@@ -2615,12 +2510,12 @@ def main() -> int:
                 block = (_segment_repair_block(errors) if pin_prev is not None
                          else _prose_repair_block(errors))
                 return _generate_beat_for_group(
-                    client=client, model=args.model,
+                    model=args.model,
                     system_instruction=sys_g + block,
                     payload=payload, image_paths=img_paths,
                     beat_schema=schema_g, gid=gid, retries=0,
                     max_output_tokens=args.max_output_tokens,
-                    backoff_max=args.backoff_max, backend=args.backend,
+                    backoff_max=args.backoff_max,
                     usage=usage)
 
             def _derive(b: Dict[str, Any]):
