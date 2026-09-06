@@ -722,8 +722,23 @@ def test_expand_index_ranges_rejects_to_index_out_of_bounds():
     # (jobs 50-52: deterministic backends repeat it on every retry)
     expanded, issue = sg.expand_index_ranges([{"from_index": 0, "to_index": 4}], order)
     assert issue == "" and expanded[0]["scene_files"] == order
-    # anything PAST the fencepost still fails loudly
+    # PAST the fencepost too (widened 2026-09-06, ORV Ep101 job 1023): the
+    # chunked fallback's model returned [57,59] over a 58-panel chunk of 117
+    # panels — a start in bounds, an end two past it. The phantom tail names
+    # panels that don't exist, so clamping cannot mis-partition anything that
+    # does, and a deterministic backend repeats it on every retry.
     expanded, issue = sg.expand_index_ranges([{"from_index": 0, "to_index": 5}], order)
+    assert issue == "" and expanded[0]["scene_files"] == order
+    order58 = [f"p{i}" for i in range(58)]
+    expanded, issue = sg.expand_index_ranges(
+        [{"from_index": 0, "to_index": 56}, {"from_index": 57, "to_index": 59}], order58)
+    assert issue == "" and expanded[1]["scene_files"] == ["p57"]
+    # a START past the end is still not a clamp case: dropped as a phantom beat
+    expanded, issue = sg.expand_index_ranges(
+        [{"from_index": 0, "to_index": 3}, {"from_index": 4, "to_index": 6}], order)
+    assert issue == "" and len(expanded) == 1
+    # a negative start still fails loudly
+    expanded, issue = sg.expand_index_ranges([{"from_index": -1, "to_index": 2}], order)
     assert expanded == [] and "out of bounds" in issue
 
 

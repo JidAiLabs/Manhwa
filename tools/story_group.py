@@ -517,15 +517,23 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
         norm = {re.sub(r"[^a-z]", "", str(k).lower()): v for k, v in b.items()}
         fi = b.get("from_index", norm.get("fromindex"))
         ti = b.get("to_index", norm.get("toindex"))
-        # Fencepost clamp (2026-07-17, jobs 50-52): a range ending EXACTLY one
-        # past the last valid index is the classic exclusive-end/1-based slip,
-        # not a hallucinated range — clamp it instead of failing the chapter.
-        # Deterministic backends repeat the identical fencepost on every
-        # retry, so "re-ask and hope" can never clear this class. Anything
-        # further out of bounds still fails loudly below.
-        if (isinstance(ti, int) and not isinstance(ti, bool) and ti == n
+        # End-of-chunk clamp (2026-07-17, jobs 50-52; widened 2026-09-06, ORV
+        # Ep101 job 1023): a range that STARTS in bounds and ENDS past the last
+        # valid index is the classic exclusive-end/1-based slip — and, in the
+        # chunked fallback, the model mixing the chapter's panel count into a
+        # chunk-local range ([57,59] over a 58-panel chunk of 117). The
+        # phantom tail references panels that don't exist, so clamping it
+        # cannot mis-partition anything that does. Deterministic backends
+        # repeat the identical overshoot on every retry, so "re-ask and hope"
+        # can never clear this class. A range that starts past the end is a
+        # different animal (dropped below); an inverted or overlapping one
+        # still fails loudly.
+        if (isinstance(ti, int) and not isinstance(ti, bool) and ti >= n
                 and isinstance(fi, int) and not isinstance(fi, bool)
                 and 0 <= fi <= n):
+            if ti > n:
+                print(f"[story_group] beat {i} to_index {ti} runs past the "
+                      f"last panel ({n - 1}); clamped", file=sys.stderr)
             ti = n - 1
             if fi == n:
                 fi = n - 1
