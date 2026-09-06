@@ -231,6 +231,7 @@ class AsuraAdapter(SourceAdapter):
     """Native httpx+selectolax adapter for asurascans.com."""
 
     id = "asura"
+    domains = ("asurascans.com", "asuracomic.net", "asuratoon.com")
     capabilities = Capability.DOWNLOAD | Capability.LIST_CHAPTERS | Capability.SERIES_META
 
     def _fetch_series_page(self, series_url: str) -> HTMLParser:

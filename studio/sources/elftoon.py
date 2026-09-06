@@ -248,6 +248,7 @@ class ElftoonAdapter(SourceAdapter):
     """Native httpx+selectolax adapter for elftoon.com."""
 
     id = "elftoon"
+    domains = ("elftoon.com",)
     capabilities = Capability.DOWNLOAD | Capability.LIST_CHAPTERS | Capability.SERIES_META
 
     def _fetch_series_page(self, series_url: str) -> HTMLParser:

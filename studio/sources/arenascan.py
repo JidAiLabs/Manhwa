@@ -282,6 +282,7 @@ class ArenascanAdapter(SourceAdapter):
     """Native httpx+selectolax adapter for arenascan.com."""
 
     id = "arenascan"
+    domains = ("arenascan.com",)
     capabilities = (Capability.DOWNLOAD | Capability.LIST_CHAPTERS
                     | Capability.SERIES_META)
 

@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Flag, auto
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,10 @@ class SourceAdapter(ABC):
 
     id: str
     capabilities: Capability
+    #: Host suffixes this adapter owns ("asurascans.com"). `for_url` matches a
+    #: pasted URL against these so the SOURCE is derived from the link instead
+    #: of a dropdown default — see for_url() for why that matters.
+    domains: tuple = ()
 
     @abstractmethod
     def series_meta(self, series_url: str) -> SeriesMeta:
@@ -148,6 +153,30 @@ def register(cls: type[SourceAdapter]) -> type[SourceAdapter]:
     """
     REGISTRY[cls.id] = cls()
     return cls
+
+
+def for_url(url: str) -> "SourceAdapter | None":
+    """The adapter whose `domains` own *url*, else None.
+
+    The source used to come from a dropdown whose first option was selected
+    by default. When arenascan was added the list became alphabetical, so
+    arenascan sat first and silently captured every add where the operator
+    did not touch the picker: a webtoons.com and an asurascans.com URL were
+    both filed as arenascan, whose parser then found 0 chapters on them
+    (2026-09-06). A URL already names its site — read it from there, and let
+    the picker only override.
+    """
+    import studio.sources          # noqa: F401  (adapters self-register)
+    host = urlparse(str(url or "")).hostname or ""
+    host = host.lower().removeprefix("www.")
+    if not host:
+        return None
+    for adapter in REGISTRY.values():
+        for d in adapter.domains:
+            d = d.lower().removeprefix("www.")
+            if host == d or host.endswith("." + d):
+                return adapter
+    return None
 
 
 def get(adapter_id: str) -> SourceAdapter:

@@ -573,17 +573,21 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def runs_page(request: Request):
         return page("runs.html", request, jobs=jobs.runs_view(rcon()))
 
-    def _source_ids() -> list:
+    def _adapter_ids() -> list:
         """Registered adapter ids, read from the REGISTRY so the picker can
-        never drift from what the code can actually fetch.
-
-        arenascan shipped registered-but-UNPICKABLE: the dropdown was a
-        hardcoded 3-item list, so adding an arenascan URL silently fell back to
-        the first option (asura), whose parser matches "/chapter/" and found 0
-        of 168 chapters. The series looked added and was simply empty."""
+        never drift from what the code can actually fetch."""
         import studio.sources          # noqa: F401  (adapters self-register)
         from studio.sources.base import REGISTRY
         return sorted(REGISTRY)
+
+    def _source_ids() -> list:
+        """Picker options, 'auto' FIRST because a <select>'s first option is
+        the default: the source is read from the pasted URL unless the
+        operator deliberately overrides it. Two earlier bugs both came from
+        whichever adapter happened to sit at the top of this list capturing
+        every add — first asura (arenascan unpickable), then arenascan
+        (alphabetical). 'auto' is the only safe default."""
+        return ["auto"] + _adapter_ids()
 
     @app.get("/series", response_class=HTMLResponse)
     def series_page(request: Request, error: str = ""):
@@ -1011,10 +1015,32 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.post("/add-series-direct")
     def add_series_direct(source: str = Form(...), url: str = Form(...)):
-        """Manually add a manhwa by source + URL (e.g. asura, webtoon, elftoon)
-        — discovery runs in the background via an add_series job."""
+        """Manually add a manhwa by URL — the source comes from the LINK.
+
+        The picker used to decide, and its first option was selected by
+        default; when the list became alphabetical arenascan sat first and
+        silently captured every add (a webtoons.com and an asurascans.com URL
+        both filed as arenascan, 0 chapters found). A URL already names its
+        site, so 'auto' reads it, and an explicit pick that contradicts the
+        link is refused rather than producing an empty series."""
+        from studio.sources.base import for_url
+        source, url = source.strip(), url.strip()
+        detected = for_url(url)
+        if source in ("", "auto"):
+            if detected is None:
+                return RedirectResponse(
+                    "/series?error=" + quote_plus(
+                        f"no adapter handles that link — supported sites: "
+                        + ", ".join(_adapter_ids())), status_code=303)
+            source = detected.id
+        elif detected is not None and detected.id != source:
+            return RedirectResponse(
+                "/series?error=" + quote_plus(
+                    f"that link is {detected.id}, not {source} — leave the "
+                    "picker on 'auto' or choose the matching source"),
+                status_code=303)
         jobs.enqueue(con(), "add_series",
-                     payload={"source": source.strip(), "url": url.strip()})
+                     payload={"source": source, "url": url})
         return RedirectResponse("/series", status_code=303)
 
     @app.post("/jobs/{job_id}/cancel")

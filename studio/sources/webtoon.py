@@ -181,6 +181,7 @@ class WebtoonAdapter(SourceAdapter):
     """gallery-dl backed adapter for webtoons.com."""
 
     id = "webtoon"
+    domains = ("webtoons.com",)
     capabilities = Capability.DOWNLOAD | Capability.LIST_CHAPTERS | Capability.SERIES_META
 
     def search(self, title: str) -> list[tuple[str, str]]:
