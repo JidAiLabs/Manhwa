@@ -37,7 +37,6 @@ def _make_cfg(tmp_path: Path) -> Config:
         sites={},
         yolo_weights=tmp_path / "fake.pt",
         detect_backend="yolo",
-        gallerydl_sleep=0.0,
         # production uses local Gemma — grouped (now LLM: understand+story-group)
         # needs no cloud cred on this backend; the cred wall stays at beated.
         beats_backend="ollama",
@@ -437,7 +436,6 @@ class TestMissingCredential:
             sites={},
             yolo_weights=tmp_path / "fake.pt",
             detect_backend="yolo",
-            gallerydl_sleep=0.0,
             narration_source="legacy",
         )
 
@@ -739,7 +737,7 @@ def _beated_fixture(tmp_path, monkeypatch, *, marker: bool,
     stub = _tool_stub([ep])
     monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
     cfg = Config(sites={}, yolo_weights=tmp_path / "f.pt", detect_backend="yolo",
-                 gallerydl_sleep=0.0, punchup="cinematic", beats_backend="ollama",
+                 punchup="cinematic", beats_backend="ollama",
                  segmentation=segmentation)
     pipeline_mod._stage_beated(ep, cfg)
     return stub

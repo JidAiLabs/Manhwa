@@ -3345,10 +3345,6 @@ def main() -> int:
                          "system_box/system_ui) protects system-message panels "
                          "from the bubble gate/blanking; v3 doesn't fire on "
                          "plain text cards like the legacy model did")
-    ap.add_argument("--branding-dir",
-                    default=os.path.join(os.path.dirname(os.path.dirname(
-                        os.path.abspath(__file__))), "assets", "branding", "origin-power"),
-                    help="dir holding intro.wav / outro.wav (channel constants)")
     ap.add_argument("--device", default="mps")
     args = ap.parse_args()
 

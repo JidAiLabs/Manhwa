@@ -18,9 +18,6 @@ backend = "yolo"
 # art_only shown frame. Rollback = webtoon_panels_v3.pt (needs `reset --to detected`).
 yolo_weights = "assets/models/webtoon_panels_v4.pt"
 
-[gallerydl]
-sleep = 2.0
-
 [models]
 # LLM models per stage (cost-tunable). Swap to cheaper tiers freely; the
 # usage_cost logger reports exact tokens + $ per run so quality/cost is A/B-able.

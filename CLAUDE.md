@@ -123,7 +123,7 @@ Each stage consumes the prior stage's manifest(s). Run in this order:
 
 ## Conventions
 
-- **Backup files:** `*-BAK.py`, `*XXX.py`, `*X.py` (e.g. `scene_splitX.py`) are frozen snapshots. The canonical script is the plain name (`smart_cropper.py`, not `smart_cropper-BAK.py`). **Edit the plain file; never the suffixed copies.**
+- **No snapshot copies.** The 15 frozen `*-BAK.py` / `*XXX.py` / `*X.py` files were deleted 2026-09-06 (7,945 lines, 16.6% of `tools/`) — git already held every one, and nothing imported them. Don't reintroduce the convention: branch or tag instead of leaving a parallel copy that silently rots beside the canonical file.
 - **Manifests are the API.** When changing a stage's output schema, update every downstream consumer that reads that manifest. `segment_id` (`g####_p##`) must stay byte-identical across script_expander → elevenlabs → timeline_planner or audio/timeline alignment silently breaks.
 - **Resume + 429 safety:** the LLM stages (`gemini_*`, `script_expander`) support `--resume` and have exponential backoff with checkpoint writes. Prefer resuming over restarting on partial runs.
 - Most scripts set `ImageFile.LOAD_TRUNCATED_IMAGES = True` — webtoon downloads are often truncated; preserve this.

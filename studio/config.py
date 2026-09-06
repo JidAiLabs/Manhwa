@@ -15,7 +15,6 @@ class Config:
     sites: dict[str, SiteCfg]
     yolo_weights: Path
     detect_backend: str          # "yolo" | "gemini"
-    gallerydl_sleep: float
     beats_model: str = "gemini-2.5-flash"   # writer model (vertex id or ollama tag)
     beats_backend: str = "vertex"            # "vertex" | "ollama" (local Gemma)
     script_model: str = "gpt-4.1-mini"      # OpenAI model for the script stage
@@ -181,7 +180,6 @@ def load(path: Path | None = None) -> Config:
     data = tomllib.loads(p.read_text())
     sites = {k: SiteCfg(**v) for k, v in data.get("sources", {}).items()}
     d = data.get("detect", {})
-    g = data.get("gallerydl", {})
     m = data.get("models", {})
     t = data.get("tts", {})
     tr = data.get("teaser", {})
@@ -194,7 +192,6 @@ def load(path: Path | None = None) -> Config:
                       else REPO_ROOT / _w)(
             Path(d.get("yolo_weights", "")).expanduser()),
         detect_backend=d.get("backend", "yolo"),
-        gallerydl_sleep=float(g.get("sleep", 2.0)),
         beats_model=m.get("beats_model", "gemini-2.5-flash"),
         beats_backend=m.get("beats_backend", "vertex"),
         script_model=m.get("script_model", "gpt-4.1-mini"),

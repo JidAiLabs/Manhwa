@@ -720,7 +720,6 @@ def main():
     ap.add_argument("--out-dir", required=True, help="output shots directory")
     ap.add_argument("--max-shots", type=int, default=3)
     ap.add_argument("--text-pad", type=int, default=14)
-    ap.add_argument("--bubble-pad", type=int, default=18, help="reserved (not used)")
     ap.add_argument(
         "--band-width-ratio",
         type=float,
