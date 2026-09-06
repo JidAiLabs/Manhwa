@@ -1379,18 +1379,37 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
 # "Jang jang" / "The the" don't match either — only an exact-case name echo.
 _NAME_STUTTER_RE = re.compile(r"\b([A-Z][A-Za-z][A-Za-z'’\-]*)(?:\s+\1\b)+")
 
+# The same glitch one layer down, from SUBSTITUTION rather than sampling: the
+# identity gate rewrites an actor noun to a handle, and where the line already
+# carried a substituted handle the result doubles —
+# "the wounded the young man the young man looks up" (ORV Ep106 g0004_p10).
+# _NAME_STUTTER_RE cannot reach it: handles are lowercase and multi-word.
+# Anchored on a determiner so it collapses the handle class ("the young man",
+# "our protagonist") and CANNOT touch a legitimate repeat that starts
+# elsewhere ("come on come on"); >=2 words, so "had had" / "that that" / "no no"
+# are untouched too. Case-insensitive because the first copy may open a
+# sentence ("The young man the young man").
+_HANDLE_STUTTER_RE = re.compile(
+    r"\b((?:the|our|a|an)\s+[A-Za-z'’\-]+(?:\s+[A-Za-z'’\-]+){0,2})\s+\1\b",
+    re.IGNORECASE)
+
 
 def collapse_name_stutter(beats_obj) -> int:
-    """Collapse a degenerate repeated proper noun ('Jang Jang Jang' → 'Jang')
-    on every segment line. Deterministic, cast-agnostic (no name list — it keys
-    on the repetition itself). Returns the number of lines changed."""
+    """Collapse a degenerate repeat on every segment line: a proper noun
+    ('Jang Jang Jang' → 'Jang') from writer sampling, AND a doubled handle
+    phrase ('the young man the young man' → 'the young man') from identity
+    substitution. Deterministic and cast-agnostic — both key on the repetition
+    itself, no name list. Returns the number of lines changed."""
     changed = 0
     for b in (beats_obj or {}).get("beats") or []:
         segs = beat_segments(b)
         if not segs:
             continue
         lines = [s.get("line") or "" for s in segs]
-        new = [_NAME_STUTTER_RE.sub(lambda m: m.group(1), ln) for ln in lines]
+        new = [_HANDLE_STUTTER_RE.sub(
+                   lambda m: m.group(1),
+                   _NAME_STUTTER_RE.sub(lambda m: m.group(1), ln))
+               for ln in lines]
         if new != lines and all(x.strip() for x in new):
             write_segment_lines(b, new)
             changed += sum(1 for a, c in zip(lines, new) if a != c)

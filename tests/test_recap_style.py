@@ -1066,3 +1066,37 @@ def test_beat_with_a_null_line_is_not_restorable():
     assert not rs.beat_lines_usable(beat), (
         "a beat carrying a null line must read as unshippable, or the span-pin "
         "fallback restores it over the grounded pads")
+
+
+# ---- handle-substitution stutter -----------------------------------------
+
+def _collapse(line: str) -> str:
+    from tools.recap_style import collapse_name_stutter
+    beats = {"beats": [{"group_id": 1, "segments": [{"span": ["p.jpg"],
+                                                     "line": line}]}]}
+    collapse_name_stutter(beats)
+    return beats["beats"][0]["segments"][0]["line"]
+
+
+def test_doubled_handle_phrase_collapses():
+    """ORV Ep106 g0004_p10 shipped "the wounded the young man the young man
+    looks up". The identity gate rewrote an actor noun to a handle in a line
+    that already carried one, doubling it. _NAME_STUTTER_RE cannot reach this:
+    it is case-sensitive and capitalized-only, while handles are lowercase and
+    multi-word."""
+    out = _collapse("The wounded the young man the young man looks up with "
+                    "startled eyes.")
+    assert "the young man the young man" not in out
+    assert out.startswith("The wounded the young man looks up")
+
+
+def test_handle_collapse_keeps_legitimate_repetition():
+    """Anchored on a determiner and >=2 words, so real prose survives."""
+    for keep in ("Come on come on, he thinks.",
+                 "He had had enough.",
+                 "The man in the grey robe watches the dark-haired man."):
+        assert _collapse(keep) == keep, keep
+
+
+def test_proper_noun_stutter_still_collapses():
+    assert _collapse("Jang Jang Jang shouts.") == "Jang shouts."
