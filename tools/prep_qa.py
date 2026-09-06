@@ -1185,6 +1185,48 @@ def truncated_line_flags(beats_obj: Any) -> List[Dict[str, Any]]:
     return flags
 
 
+# A determiner or possessive with nothing to determine — "I was so focused on
+# using my and even forgot about Yuseung" (ORV Ep128 g0015, 2026-09-06): the
+# writer dropped the noun MID-sentence, so the clip is unspeakable even though
+# it ends correctly (ends_terminal only reads the last word, so truncated_line
+# never fires). "his and her towels" is legitimate English — a determiner after
+# the conjunction clears it.
+#   * only determiners with a DISTINCT standalone form ("mine", "ours",
+#     "theirs"), so they can never legitimately end a phrase. his/her/its are
+#     excluded: "he knows her, but…" and "the blade is his" are ordinary
+#     English, and including them flagged 60 lines across 135 real chapters,
+#     every one a false positive.
+#   * only before a conjunction, and only when no determiner follows it
+#     ("his and her towels" is fine) — a determiner before a comma is the
+#     pronoun case above, not a dropped noun.
+_DANGLING_DET_RE = re.compile(
+    r"\b(?:my|your|our|their|the|an?)\s+(?:and|or|but)\s+"
+    r"(?!(?:my|your|his|her|their|our|its|the|an?)\b)", re.I)
+
+
+def garbled_line_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+    """A voiced line broken MID-sentence by a missing noun. Sibling of
+    truncated_line, which owns lines that end wrong; this owns lines that end
+    fine but cannot be spoken. No deterministic repair exists — the noun is
+    gone and inventing one would invent facts — so this is a heal-only code."""
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    for b in beats_obj.get("beats") or []:
+        seg = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            line = s["line"]
+            # ends_terminal gate: a line that ALSO ends wrong is truncated_line's
+            if line and ends_terminal(line) and _DANGLING_DET_RE.search(line):
+                flags.append(_flag(
+                    "garbled_line", ERROR,
+                    f"narration has a dangling determiner (a missing noun): "
+                    f"{line[:80]!r} — unspeakable; re-narrate the group",
+                    scene=str((s["span"] or [""])[0]),
+                    segment_id=seg))
+    return flags
+
+
 def filename_in_narration_flags(beats_obj: Any) -> List[Dict[str, Any]]:
     """A VOICED line that names an image file ("It progresses through the
     series to conclude at p000032.jpg.") is pipeline bookkeeping read aloud —
@@ -3057,6 +3099,7 @@ def main() -> int:
     flags.extend(raw_caps_voiced_flags(script_obj))
     flags.extend(shot_description_flags(beats_obj))
     flags.extend(truncated_line_flags(beats_obj))
+    flags.extend(garbled_line_flags(beats_obj))
     flags.extend(filename_in_narration_flags(beats_obj))
     flags.extend(impact_marker_leak_flags(beats_obj))
     flags.extend(figures_leak_flags(beats_obj))

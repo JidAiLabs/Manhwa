@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tools import recap_style as rs
 
 
@@ -728,6 +730,45 @@ def test_repair_does_not_amputate_a_complete_clause_ending_on_a_function_word():
     assert (rs.repair_spoken_line(
         "But there is no mercy to be found, only the")
         == "But there is no mercy to be found.")
+
+
+@pytest.mark.parametrize("full,bare", [
+    # The RULE, in any naming order — a bare name token that also appears
+    # INSIDE a longer alias must never match half of it. Nothing here is
+    # series-specific; the first row is the real ORV regression, the rest
+    # prove the rule holds for any name shape.
+    ("Kim Dokja", "Dokja"),        # family name first (the real failure)
+    ("Dokja Kim", "Dokja"),        # given name first
+    ("John Carter", "Carter"),     # western order, family-name alias
+    ("Aria Silverwind", "Aria"),
+])
+def test_name_rationing_never_replaces_half_of_a_two_part_name(full, bare):
+    """Rationing used to build its pattern from ONE alias picked by LIST
+    ORDER. When a cast listed both a full name and the bare token inside it,
+    the bare token could win and match HALF the full name — ORV Ep128 g0016
+    shipped "Kim Dokja stares ahead" as "Kim our MC stares ahead". Every
+    proper alias is now tried longest-first, so a full name is consumed whole
+    whatever order the cast happens to list them in."""
+    other = full.replace(bare, "").strip()          # the half that was orphaned
+    cast = {"cast": [{"canonical_name": "our protagonist", "is_protagonist": True,
+                      # sorted() is what apply_series_cast emits — the order
+                      # that let a bare given name win in the real failure
+                      "aliases": sorted([bare, full])}]}
+    assert rs._proper_aliases(cast["cast"][0])[-1] == bare   # bare token LAST
+
+    beats = {"beats": [{"group_id": 16, "segments": [
+        {"span": ["p1.jpg"], "line": f"{full} stares ahead, thinking."}]}]}
+    assert rs.cap_protagonist_name(beats, cast, keep=0) == 1
+    line = beats["beats"][0]["segments"][0]["line"]
+    assert other not in line, f"orphaned half of the name: {line!r}"
+    assert bare not in line, line
+    assert line.split()[0].lower() in ("our", "the"), line   # whole name replaced
+
+    # the introduction (within `keep`) is left intact, both halves
+    beats2 = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["p1.jpg"], "line": f"{full} stares ahead, thinking."}]}]}
+    rs.cap_protagonist_name(beats2, cast, keep=3)
+    assert beats2["beats"][0]["segments"][0]["line"].startswith(full)
 
 
 def test_repair_amputates_a_long_never_terminal_stub_at_the_last_clause():

@@ -1235,15 +1235,29 @@ def analyze_recap_style(
 # pronoun is what makes this safe: a noun phrase drops into every grammatical
 # position, while he/him/his depends on role and "throwing he back" ships.
 
-def _proper_alias(member) -> str:
-    """The protagonist's real NAME from their aliases — a capitalised alias
-    that is not an epithet ('the kid', 'descendant'). '' when they have none,
-    in which case there is nothing to ration."""
+def _proper_aliases(member) -> List[str]:
+    """The protagonist's real NAMES from their aliases — capitalised aliases
+    that are not epithets ('the kid', 'descendant') — LONGEST FIRST.
+
+    Longest-first is load-bearing (ORV Ep128, 2026-09-06): the cast carried
+    both 'Kim Dokja' and the bare given name 'Dokja', and rationing built its
+    pattern from ONE alias picked by list order. The bare token won, matched
+    INSIDE the full name and replaced only that half — "Kim Dokja stares
+    ahead" became "Kim our MC stares ahead". Trying the longest alias first
+    consumes the whole name, whatever order the cast lists them in."""
+    out = []
     for a in (member.get("aliases") or []):
         a = str(a).strip()
         if a and a[0].isupper() and not a.lower().startswith(("the ", "a ", "an ")):
-            return a
-    return ""
+            out.append(a)
+    return sorted(out, key=lambda s: (-len(s), s.lower()))
+
+
+def _proper_alias(member) -> str:
+    """The protagonist's fullest real NAME; '' when they have none, in which
+    case there is nothing to ration."""
+    names = _proper_aliases(member)
+    return names[0] if names else ""
 
 
 # Titles that yield a clean 'the <title>' epithet from a proper name
@@ -1352,8 +1366,12 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
         return 0
     pool = (_protagonist_handles(_title_epithet(name, members, prot))
             if vary else [handle])
+    # EVERY proper alias, longest first, so a full name is consumed whole
+    # before a bare given name can match half of it (see _proper_aliases)
     combined = re.compile(
-        r"(?:(?P<name>\b" + re.escape(name) + r"\b)"
+        r"(?:(?P<name>\b(?:"
+        + "|".join(re.escape(n) for n in _proper_aliases(prot))
+        + r")\b)"
         r"|(?P<handle>\b(?:" + _PROT_HANDLE_ALT + r")\b))(?P<poss>'s)?", re.I)
     seen_name = 0
     rot = 0

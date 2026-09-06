@@ -1920,6 +1920,43 @@ def test_truncated_line_flags_quiet_on_terminal_lines():
     assert "truncated_line" in worker._CRITICAL_QA_CODES
 
 
+def test_garbled_line_flags_a_missing_noun_mid_sentence():
+    """ORV Ep128 g0015 (2026-09-06), the line verbatim: the writer dropped the
+    noun after 'my'. It ENDS correctly, so ends_terminal passes and
+    truncated_line never fires — but "using my and even forgot" cannot be
+    spoken. Sibling code: truncated_line owns lines that end wrong."""
+    beats = {"beats": [{"group_id": 15, "segments": [
+        {"span": ["p000070.jpg"],
+         "line": ("So, as I was saying... I'm sorry. I was practicing my "
+                  "skill. My gosh. I was so focused on using my and even "
+                  "forgot about Yuseung.")},
+        {"span": ["p000075.jpg"],
+         "line": "No one that has survived this long is ever average."},
+    ]}]}
+    fl = pq.garbled_line_flags(beats)
+    assert [f["code"] for f in fl] == ["garbled_line"]
+    assert fl[0]["severity"] == "ERROR"
+    assert fl[0]["segment_id"] == "g0015" and fl[0]["scene"] == "p000070.jpg"
+    from tools.narration_heal import HEALABLE
+    assert "garbled_line" in HEALABLE
+    import studio.worker as worker
+    assert "garbled_line" in worker._CRITICAL_QA_CODES
+
+
+def test_garbled_line_flags_quiet_on_legitimate_english():
+    beats = {"beats": [{"group_id": 1, "segments": [
+        # a determiner AFTER the conjunction is ordinary English
+        {"span": ["a.jpg"], "line": "He grabs his and her blades and runs."},
+        {"span": ["b.jpg"], "line": "The kid, the sword, and the oath remain."},
+        {"span": ["c.jpg"], "line": "She reaches for the door but stops."},
+        {"span": ["d.jpg"], "line": "Our guy, bleeding, still stands."},
+        # a line that also ENDS wrong belongs to truncated_line, not here
+        {"span": ["e.jpg"], "line": "He was so focused on using my and"},
+    ]}]}
+    assert pq.garbled_line_flags(beats) == []
+    assert [f["code"] for f in pq.truncated_line_flags(beats)] == ["truncated_line"]
+
+
 def test_display_meta_and_camera_pov_fire_shot_description_flags():
     # 2026-07-06 review classes B + D reach the healable ERROR through the
     # same single-authority detector

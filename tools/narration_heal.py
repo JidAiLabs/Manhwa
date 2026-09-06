@@ -63,6 +63,10 @@ HEALABLE = {
     # a voiced line stops mid-sentence ("...no mercy to be found, only the")
     # — a writer-truncated final sentence; a re-roll writes the full thought.
     "truncated_line",
+    # a line broken mid-sentence by a missing noun ("using my and even forgot")
+    # — ends correctly, so truncated_line never sees it; only a re-roll can
+    # restore the word (deleting around it would invent facts).
+    "garbled_line",
     # a line's actor-noun contradicts the span's cast-resolved figures ("the
     # assassin draws his steel" over Cheon's counter-draw) — the re-roll's
     # writer payload carries the per-panel `figures` ground truth the
@@ -119,6 +123,10 @@ def _note_for(code: str, detail: str) -> str:
         return ("This line STOPS MID-SENTENCE — the thought never ends. "
                 "Re-narrate it as a complete sentence that finishes the "
                 "thought and ends with terminal punctuation.")
+    if code == "garbled_line":
+        return ("This line has a determiner with no noun after it ('using my "
+                "and even forgot') — a word is MISSING mid-sentence. "
+                "Re-narrate it as a complete, speakable sentence.")
     if code == "shot_description":
         return ("This line describes the artwork or a visual effect (motion blur, "
                 "speed lines, 'is depicted') instead of the story — re-narrate the "

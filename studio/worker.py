@@ -356,6 +356,10 @@ _CRITICAL_QA_CODES = {
     # never-terminal tail deterministically and the heal re-writes the rest;
     # a survivor is unshippable — ORV Ep128 shipped one as "cosmetic".
     "truncated_line",
+    # a line broken mid-sentence by a missing noun ("using my and even
+    # forgot") — ends correctly so truncated_line never sees it, and no
+    # deterministic repair exists. Heal-then-block: unspeakable audio.
+    "garbled_line",
 }
 # DELIBERATELY NOT critical: "visual_loop". It looks like montage_degenerate's
 # sibling, but render_prep.cap_repeats_with_holds caps every NON-exempt panel at
