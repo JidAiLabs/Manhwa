@@ -530,7 +530,7 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
         # still fails loudly.
         if (isinstance(ti, int) and not isinstance(ti, bool) and ti >= n
                 and isinstance(fi, int) and not isinstance(fi, bool)
-                and 0 <= fi <= n):
+                and (0 <= fi < n or (fi == n and ti == n))):
             if ti > n:
                 print(f"[story_group] beat {i} to_index {ti} runs past the "
                       f"last panel ({n - 1}); clamped", file=sys.stderr)

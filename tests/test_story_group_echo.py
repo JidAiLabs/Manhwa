@@ -137,9 +137,15 @@ def test_expand_index_ranges_clamps_exclusive_end_fencepost():
     expanded, issue = sg.expand_index_ranges(beats, order)
     assert issue == ""
     assert expanded[-1]["scene_files"] == ["p4.jpg"]      # clamped to 4..4
-    # a fully out-of-range beat still fails loudly
+    # an end FURTHER past the last panel is clamped too (2026-09-06, ORV
+    # Ep101: [57,59] over a 58-panel chunk — the phantom tail names panels
+    # that don't exist, so it cannot mis-partition the ones that do)
     expanded, issue = sg.expand_index_ranges(
         [{"from_index": 0, "to_index": 9, "segment": "present"}], order)
+    assert issue == "" and expanded[0]["scene_files"] == order
+    # a negative start still fails loudly
+    expanded, issue = sg.expand_index_ranges(
+        [{"from_index": -1, "to_index": 2, "segment": "present"}], order)
     assert expanded == [] and "out of bounds" in issue
 
 
@@ -156,7 +162,10 @@ def test_expand_index_ranges_drops_spurious_appended_beat():
     assert issue == ""                            # no hard fail
     assert len(expanded) == 1                     # phantom dropped
     assert expanded[0]["scene_files"] == order[0:51]
-    # a beat starting IN bounds but ending past is NOT a phantom -> stays loud
+    # a beat starting IN bounds but ending past is NOT a phantom: since
+    # 2026-09-06 (ORV Ep101) it is clamped to the last real panel — the
+    # partition of real panels is unchanged and a deterministic backend
+    # would otherwise repeat the overshoot on every retry
     expanded, issue = sg.expand_index_ranges(
         [{"from_index": 40, "to_index": 99, "segment": "present"}], order)
-    assert expanded == [] and "out of bounds" in issue
+    assert issue == "" and expanded[0]["scene_files"] == order[40:52]

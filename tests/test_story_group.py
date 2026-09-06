@@ -832,9 +832,10 @@ def test_range_repair_retry_succeeds_after_range_specific_complaint(tmp_path, mo
         calls.append(kw["system_instruction"])
         good_chapter = {"logline": "A short chapter.", "premise": "Two panels happen."}
         if len(calls) == 1:
-            # to_index=5 is out of bounds for a 2-panel chapter (max valid index 1)
+            # an INVERTED range is malformed and never clamped (an end past the
+            # last panel is clamped since 2026-09-06 and needs no repair)
             return ({"chapter": good_chapter,
-                      "beats": [{"from_index": 0, "to_index": 5}]}, "BAD_RANGE_RAW", {})
+                      "beats": [{"from_index": 1, "to_index": 0}]}, "BAD_RANGE_RAW", {})
         return ({"chapter": good_chapter,
                   "beats": [{"from_index": 0, "to_index": 1, "segment": "present",
                              "arc_label": "both"}]}, "GOOD_RANGE_RAW", {})
