@@ -293,7 +293,7 @@ def test_actor_mismatch_fires_on_assassin_line_over_cheon_span():
     beats = _beats(("The assassin draws his steel.", ["p000010.jpg"]))
     flags = pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST)
     assert [f["code"] for f in flags] == ["actor_mismatch"]
-    assert flags[0]["severity"] == pq.ERROR
+    assert flags[0]["severity"] == pq.WARN     # report-only since 2026-09-07
     assert "assassin" in flags[0]["detail"]
 
 
@@ -322,13 +322,20 @@ def test_actor_mismatch_silent_on_unresolved_spans_and_missing_cast():
     assert pq.actor_mismatch_flags(beats, _UNDERSTOOD, {}) == []
 
 
-def test_actor_mismatch_is_a_healable_code():
+def test_actor_mismatch_is_report_only():
+    # 0/4 (2026-08-24) and 0/2 (2026-09-07) precision: every flag was the
+    # appearance oracle. A judgment code never blocks, never parks and —
+    # until a graded sample clears the blast-radius bar — never heals: a
+    # re-roll on a false positive rewrites a CORRECT line.
     import tools.narration_heal as nh
-    assert "actor_mismatch" in nh.HEALABLE
-    corr = nh.corrections_from_qa({"flags": [
-        {"code": "actor_mismatch", "severity": "ERROR",
-         "segment_id": "g0008", "detail": "line names 'assassin'"}]})
-    assert 8 in corr and "figures" in corr[8]
+    from studio.worker import _CRITICAL_QA_CODES, _WRITER_ARBITRATED_CODES
+    assert "actor_mismatch" not in nh.HEALABLE
+    assert "actor_mismatch" not in _CRITICAL_QA_CODES
+    assert "actor_mismatch" not in _WRITER_ARBITRATED_CODES
+    for sev in ("ERROR", "WARN"):
+        assert nh.corrections_from_qa({"flags": [
+            {"code": "actor_mismatch", "severity": sev,
+             "segment_id": "g0008", "detail": "line names 'assassin'"}]}) == {}
 
 
 # --- writer payload --------------------------------------------------------

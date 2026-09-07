@@ -67,16 +67,16 @@ HEALABLE = {
     # — ends correctly, so truncated_line never sees it; only a re-roll can
     # restore the word (deleting around it would invent facts).
     "garbled_line",
-    # a line's actor-noun contradicts the span's cast-resolved figures ("the
-    # assassin draws his steel" over Cheon's counter-draw) — the re-roll's
-    # writer payload carries the per-panel `figures` ground truth the
-    # original roll lacked. NOT worker-blocking yet (precision is measured
-    # on the first production run).
-    "actor_mismatch",
+    # NOT "actor_mismatch" (removed 2026-09-07): precision measured 0/4 and
+    # 0/2 — every flag was the appearance oracle, so a re-roll rewrote a
+    # correct line toward the oracle's error and burned a full heal cycle
+    # before the convergence guard. It re-enters only when a graded sample
+    # clears the bar in tools/qa_gate_blast_radius.py (>=0.80 precision over
+    # >=20 flags spanning >=2 titles). _note_for keeps its branch for that.
     # a line PLURALIZES its actor ("our guy and his assassins") over a span
     # whose every panel shows ONE person — the invented-companions class from
-    # the 2026-07-16 audit. Same posture as actor_mismatch: heal-target,
-    # NOT worker-blocking until precision is measured.
+    # the 2026-07-16 audit. Heal-target, NOT worker-blocking until precision
+    # is measured (actor_mismatch left this set on that measurement).
     "actor_count_mismatch",
     # a segment line past its span's word budget (escaped the writer
     # validator via its fallback path) — a re-roll with the explicit word

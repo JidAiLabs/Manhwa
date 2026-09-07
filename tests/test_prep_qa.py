@@ -289,8 +289,23 @@ def test_image_flags_visible_text_needs_glyph_look():
     import cv2
     cv2.line(img, (60, 80), (240, 180), (20, 20, 20), 12)
     flags = pq.image_flags("p000029.jpg", img, [(40, 60, 260, 200)], doc=False,
-                           dims_entry={"w": 300, "h": 400, "doc": False})
+                           dims_entry={"w": 300, "h": 400, "doc": False},
+                           kept_bubbles=False)   # husk: the check must RUN
     assert not any(f["code"] == "visible_text" for f in flags)
+
+
+def test_image_flags_visible_text_fires_as_warn():
+    # husk mode: readable glyphs in a detected box are reported for eyes
+    # only. SFX lettering on art and unbubbled captions score the same as a
+    # missed bubble (boxes are re-detected on the CLEANED frame), so this
+    # can never be an ERROR: 221 flags / 112 of 152 chapters, 58 of them
+    # <=8 glyphs — mostly "GRIT"/"SHAKE" painted on the art.
+    img, box = _bubble_panel(visible_text=True)
+    flags = pq.image_flags("p000030.jpg", img, [box], doc=False,
+                           dims_entry={"w": 300, "h": 400, "doc": False},
+                           kept_bubbles=False)
+    vt = [f for f in flags if f["code"] == "visible_text"]
+    assert len(vt) == 1 and vt[0]["severity"] == pq.WARN
 
 
 def test_image_flags_husk_borderline_is_warn():

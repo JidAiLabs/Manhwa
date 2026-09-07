@@ -322,15 +322,24 @@ def image_flags(
                                f"ghost_frac={ghost:.3f} — faint text "
                                "remnants inside a blanked bubble",
                                scene=name, segment_id=segment_id))
+        # WARN, never ERROR. prep_qa re-detects bubble boxes on the CLEANED
+        # frame, so SFX lettering painted on the art ("GRIT", "SHAKE") and
+        # an unbubbled caption — both left as drawn BY DESIGN (clean text in
+        # bubbles only, never inpaint) — score exactly like a bubble the
+        # blanker missed. Measured 2026-09-07: 221 flags across 112 of 152
+        # prepared chapters, 58 of them <=8 glyphs, every one parking
+        # autopilot; the owner reviewed the samples and ruled residual text
+        # part of the look. The glyph rule stays as a report-only signal.
         ink_hits = [st for _, st in stats
                     if st["white_frac"] >= 0.35 and st["area_frac"] >= 0.02
                     and st["ink_frac"] >= 0.05 and st["ink_glyphs"] >= 6]
         if ink_hits:
             top = max(ink_hits, key=lambda s: s["ink_frac"])
-            flags.append(_flag("visible_text", ERROR,
+            flags.append(_flag("visible_text", WARN,
                                f"ink_frac={top['ink_frac']:.3f} "
                                f"({top['ink_glyphs']} glyphs) — bubble text "
-                               "still readable (blanking missed it)",
+                               "readable inside a detected box (review only: SFX on art "
+                               "and unbubbled captions score the same)",
                                scene=name, segment_id=segment_id))
 
         # Round-2 E2 measurement net (WARN): a speech-shaped bubble on the
@@ -1654,8 +1663,8 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                          cast_obj: Any,
                          vitems: Optional[Dict[str, Any]] = None,
                          ) -> List[Dict[str, Any]]:
-    """CAST-GROUNDED actor gate (ERROR, heal-target, deliberately NOT in the
-    worker blocking set — the first production run measures its precision):
+    """CAST-GROUNDED actor gate (WARN, report-only, never in the worker
+    blocking set and no longer a heal-target — see the precision note):
     the round-2 vision review's dominant class (~6 findings) was identity
     misattribution — "the assassin draws his steel" over Prince Cheon's
     counter-draw (g0008_p06), the dying prince's eye narrated as "an
@@ -1669,9 +1678,13 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     payload's `figures` lines use, so QA and the writer can never disagree).
     Precision posture: subject-position-only nouns (late mentions are
     objects/off-panel references), spans with zero resolved figures are
-    skipped (no ground truth), ties resolve to unknown upstream. Healable:
-    the regenerated group's payload carries the figures lines the original
-    roll lacked. Silent without cast or understanding."""
+    skipped (no ground truth), ties resolve to unknown upstream.
+    Precision measured 0/4 (2026-08-24) and 0/2 (2026-09-07): every flag
+    was the appearance-keyword oracle (bearded!=goatee, tan!=white, a
+    description handle's "haired" read as a name), never the writer — so a
+    heal re-rolled a CORRECT line toward the oracle's own error. Report-
+    only until a graded sample clears the bar in
+    tools/qa_gate_blast_radius.py. Silent without cast or understanding."""
     from cast_identity import (actor_noun_map, group_member_names,
                                resolve_figures_by_file, shares_faction,
                                subject_actor_nouns, subject_person_count)
@@ -1737,11 +1750,11 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                                        ordered_bases, claimed):
                     continue
                 flags.append(_flag(
-                    "actor_mismatch", ERROR,
+                    "actor_mismatch", WARN,
                     f"line names '{noun}' as the actor but the span's "
                     f"resolved figures are {sorted(span_names)}: "
-                    f"{line[:80]!r} — re-narrate naming the actor from the "
-                    "panel's actual figures",
+                    f"{line[:80]!r} — review: an off-panel mention, or an "
+                    "oracle miss on a drawn figure",
                     scene=str((s["span"] or [""])[0]), segment_id=seg))
     return flags
 
