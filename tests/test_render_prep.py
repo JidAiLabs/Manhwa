@@ -1543,6 +1543,53 @@ def test_merge_consecutive_duplicate_narration_holds_static():
     assert tl[2]["cuts"][0]["motion"]["mode"] == "pan"
 
 
+def test_duplicate_narration_never_holds_over_a_system_card():
+    """ORV Ep133 g0002_p04 (chapter 135, 2026-09-07): the writer emitted the
+    SAME line for two consecutive segments, so this pass held the previous
+    image over the second — whose own art was a SYSTEM CARD. That unshowed an
+    in-world beat the pipeline guarantees is always displayed
+    (`system_card_unshown`) and left the stand-in on screen 14.4s
+    (`long_hold`), both BLOCKING and neither recoverable by a re-narration of
+    the held segment. The duplicate LINE is the upstream defect; the render
+    must keep the card."""
+    plan = {"timeline": [
+        {"segment_id": "g0001_p03", "tts_text": "A command rings out!",
+         "duration_sec": 7.2, "primary_scene_file": "p000006.jpg",
+         "cuts": [{"file": "p000006.jpg", "motion": {"mode": "pan"}}]},
+        {"segment_id": "g0002_p04", "tts_text": "A command rings out!",
+         "duration_sec": 7.2, "primary_scene_file": "p000007.jpg",
+         "cuts": [{"file": "p000007.jpg", "motion": {"mode": "kenburns"}}]},
+    ]}
+    tl = rp.merge_consecutive_duplicate_narration(
+        plan, skip_files={"p000007.jpg"}, max_hold_sec=10.0)["timeline"]
+    assert tl[1]["cuts"][0]["file"] == "p000007.jpg", "system card must be shown"
+    assert not tl[1]["cuts"][0].get("held")
+
+
+def test_duplicate_narration_refuses_a_hold_past_the_cap():
+    # the same repeated line over 3 segments would freeze one frame 12s; the
+    # cap-aware refusal keeps a segment's own art once the budget is spent.
+    # 4s each: p0 runs 4s of its own + 4s held = 8s (fits), a third would be
+    # 12s (over), so the run breaks exactly at the cap.
+    plan = {"timeline": [
+        {"segment_id": f"g{i}", "tts_text": "Silence falls.", "duration_sec": 4.0,
+         "primary_scene_file": f"p{i}.jpg",
+         "cuts": [{"file": f"p{i}.jpg", "motion": {"mode": "pan"}}]}
+        for i in range(3)
+    ]}
+    tl = rp.merge_consecutive_duplicate_narration(
+        plan, max_hold_sec=10.0)["timeline"]
+    assert tl[1]["cuts"][0]["file"] == "p0.jpg" and tl[1]["cuts"][0]["held"]
+    # 6 + 6 = 12s > 10s cap -> the third keeps its own art instead of freezing
+    assert tl[2]["cuts"][0]["file"] == "p2.jpg"
+    assert not tl[2]["cuts"][0].get("held")
+    # with no cap configured the legacy behaviour is unchanged
+    plan2 = {"timeline": [dict(it, cuts=[dict(c) for c in it["cuts"]])
+                          for it in plan["timeline"]]}
+    tl2 = rp.merge_consecutive_duplicate_narration(plan2)["timeline"]
+    assert tl2[2]["cuts"][0]["file"] == "p0.jpg" and tl2[2]["cuts"][0]["held"]
+
+
 def test_merge_consecutive_duplicate_narration_three_in_a_row():
     plan = {"timeline": [
         {"segment_id": "g1", "tts_text": "Silence.", "duration_sec": 2.0,

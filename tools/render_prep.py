@@ -3119,7 +3119,10 @@ def _norm_tts_text(text: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
-def merge_consecutive_duplicate_narration(plan: Dict[str, Any]) -> Dict[str, Any]:
+def merge_consecutive_duplicate_narration(
+    plan: Dict[str, Any], *, skip_files: Optional[set] = None,
+    max_hold_sec: float = 0.0,
+) -> Dict[str, Any]:
     """AGNOSTIC: two consecutive timeline segments carrying the SAME narration are
     one spoken line voiced over two panels (the p95/p96 'Ancestor...?' bug).
     Collapse each later duplicate to ONE static held cut of the FIRST segment's
@@ -3127,27 +3130,57 @@ def merge_consecutive_duplicate_narration(plan: Dict[str, Any]) -> Dict[str, Any
     animated panel, never a re-played pan. (The narration-level dedup upstream
     removes the duplicate at the source; this is the render-side safety net.)
     Branding items reset the run. Empty/whitespace narration never counts as a
-    duplicate."""
+    duplicate.
+
+    TWO REFUSALS, both blocking errors when this pass ignored them (ORV Ep133
+    g0002_p04, chapter 135): holding over a *skip_files* SYSTEM CARD unshows an
+    in-world beat the pipeline guarantees is always displayed
+    (`system_card_unshown`), and a hold that runs past *max_hold_sec* is the
+    `long_hold` stand-in block. In both cases the segment keeps its OWN art —
+    the duplicate LINE is the upstream defect, and the writer-side dedup/heal
+    is what must fix it; freezing the wrong frame only trades a repeated line
+    for two unrecoverable render-side blocks. Mirrors the cap-aware refusals in
+    the twin-fold and cross-segment passes above."""
+    skip = skip_files or set()
     prev_text: Optional[str] = None
     prev_img: Optional[str] = None
+    held_run = 0.0
     for it in (plan or {}).get("timeline") or []:
         if it.get("branding"):
-            prev_text, prev_img = None, None
+            prev_text, prev_img, held_run = None, None, 0.0
             continue
         text = _norm_tts_text(it.get("tts_text"))
         cuts = it.get("cuts") or []
         cur_img = str((cuts[-1].get("file") if cuts else
                        it.get("primary_scene_file")) or "")
         if text and text == prev_text and prev_img:
+            seg = str(it.get("segment_id") or "")
             dur = round(float(it.get("duration_sec") or 0.0), 4)
-            it["cuts"] = [{"file": prev_img, "start": 0.0, "dur": dur,
-                           "held": True, "motion": dict(_STATIC_MOTION)}]
-            # prev_text / prev_img unchanged so a 3rd identical line also holds
+            own = {str(c.get("file")) for c in cuts} | {cur_img}
+            if own & skip:
+                print(f"[dup-narration] {seg}: repeated line, but its own art "
+                      f"is a system card ({sorted(own & skip)}) — kept, not held")
+            elif max_hold_sec > 0 and held_run + dur > max_hold_sec:
+                print(f"[dup-narration] {seg}: repeated line, but holding "
+                      f"{prev_img} would reach {held_run + dur:.1f}s > "
+                      f"{max_hold_sec:.1f}s cap — kept own art {cur_img}")
+            else:
+                it["cuts"] = [{"file": prev_img, "start": 0.0, "dur": dur,
+                               "held": True, "motion": dict(_STATIC_MOTION)}]
+                held_run += dur
+                # prev_text / prev_img unchanged so a 3rd identical line holds too
+                continue
+            # refused: this segment shows its own art, so it becomes the run's
+            # new reference and the hold budget restarts from its duration
+            prev_text, held_run = text, dur
+            if cur_img:
+                prev_img = cur_img
         else:
             if text:
                 prev_text = text
             if cur_img:
                 prev_img = cur_img
+            held_run = round(float(it.get("duration_sec") or 0.0), 4)
     return plan
 
 
@@ -4292,7 +4325,9 @@ def main() -> int:
     # consecutive segments with the SAME narration -> hold the first image (the
     # p95/p96 dup); then collapse ANY consecutive same-image run (held or planned)
     # into ONE slow Ken Burns spanning the merged duration (audio/timing intact).
-    out_plan = merge_consecutive_duplicate_narration(out_plan)
+    out_plan = merge_consecutive_duplicate_narration(
+        out_plan, skip_files=system_files,
+        max_hold_sec=float(args.max_hold_sec))
     out_plan = merge_consecutive_same_image_cuts(out_plan)
 
     # FINAL shown-twin INVARIANT — after every pass above, before the plan is
