@@ -299,11 +299,20 @@ def image_flags(
         stats = [(b, box_interior_stats(img, b)) for b in boxes]
         blank_boxes = [b for b, st in stats if st["blank"]]
         blank_frac = rp.bubble_coverage((h, w), blank_boxes)
+        # WARN, never ERROR: a big blanked bubble is ordinary webtoon
+        # composition, not a defect — ORV Ep53 p18 is two characters in an
+        # alley under three normal speech balloons at blank_frac=0.37, and 71
+        # such flags stood across 49 of 150 prepared chapters, every one
+        # parking autopilot for a human who had nothing to fix. The panel that
+        # genuinely has no art left is caught by `husk`/`blank_crop` at ERROR;
+        # this one only measures how much of the frame the balloons cover.
+        # ERROR here also made the panel an auto-drop candidate
+        # (worker._VISUAL_DROPPABLE), i.e. deleting good art to satisfy a gate.
         if blank_frac >= 0.35:
-            flags.append(_flag("dead_box_leak", ERROR,
+            flags.append(_flag("dead_box_leak", WARN,
                                f"blank_box_frac={blank_frac:.2f} — blanked "
-                               "caption voids dominate the frame (should "
-                               "have been recropped or dropped)",
+                               "caption voids cover most of the frame; verify "
+                               "there is still art to look at",
                                scene=name, segment_id=segment_id))
         ghost = max([st["ghost_frac"] for _, st in stats
                      if st["blank"] and st["area_frac"] >= 0.02],
