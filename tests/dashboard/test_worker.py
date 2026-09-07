@@ -2464,3 +2464,43 @@ def test_heal_visual_drops_never_drops_visible_text(tmp_path):
     ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
     assert worker._heal_visual_drops(con, ch, ep, io.StringIO()) == set()
     assert not (ep / "auto_drops.json").exists()
+
+
+def test_h_prepare_final_verdict_outlives_a_stale_heal_row(tmp_path, monkeypatch):
+    """ORV Ep77: the heal loop's last scan wrote ok=0, then arbitration cleared
+    the code and the prepare ended clean — but latest_qa_ok read the stale row,
+    so the render gate and the re-scan sweep both saw "never green"."""
+    from studio.dashboard import gates
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, flags=[])
+    con.execute("INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
+                "meta_json) VALUES (5,'qa_scan',1.0,0,'{}')")      # stale heal row
+    con.commit()
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    assert gates.latest_qa_ok(con, 5) is True
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover'"
+                       ).fetchone()[0] == 1
+
+
+def test_h_prepare_blocking_verdict_outlives_a_stale_green_row(tmp_path, monkeypatch):
+    # the reverse: a heal scan ok=1 must not outlive a blocking final verdict
+    import json
+    from studio.dashboard import gates
+    con = _con(tmp_path)
+    ep = _autopilot_series(con, tmp_path, flags=[
+        {"code": "cut_gap", "severity": "ERROR"}])
+    con.execute("INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
+                "meta_json) VALUES (5,'qa_scan',1.0,1,'{}')")      # stale green
+    con.commit()
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jid = jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "failed"
+    assert gates.latest_qa_ok(con, 5) is False

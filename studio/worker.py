@@ -569,6 +569,24 @@ def _record_qa_scan(con: sqlite3.Connection, ch: Dict[str, Any],
     con.commit()
 
 
+def _sync_final_qa_row(con: sqlite3.Connection, ch: Dict[str, Any],
+                       verdict: QAVerdict) -> None:
+    """The heal loop's intermediate scans each write a qa_scan row; the FINAL
+    verdict is what the prepare ended on. When the newest row disagrees with
+    it, record the final verdict as the newest row. ORV Ep77 (job 1132): the
+    last heal cycle scanned ok=0, then writer-final arbitration cleared
+    impact_mismatch and the chapter shipped-eligible — but latest_qa_ok kept
+    reading the stale ok=0, so the render gate and the re-scan sweep both saw
+    "never green": a gate blocking its own remedy. The reverse (a heal scan
+    ok=1 outliving a blocking final verdict) would show a false green."""
+    row = con.execute(
+        "SELECT ok FROM stage_run WHERE chapter_id=? AND stage='qa_scan' "
+        "ORDER BY id DESC LIMIT 1", (ch["id"],)).fetchone()
+    if row is not None and bool(row[0]) == (not verdict.blocking):
+        return
+    _record_qa_scan(con, ch, verdict, started_at=time.time())
+
+
 def _autopilot_clean(con: sqlite3.Connection, ch: Dict[str, Any],
                      verdict: QAVerdict) -> bool:
     """Autopilot advances iff the verdict FROM THIS RUN (the object just built
@@ -1127,6 +1145,7 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     # cycles), so a missing/corrupt/stale report still fails closed here.
     verdict = _qa_verdict(ep, started_at=started_at,
                           blocking_codes=_CRITICAL_QA_CODES | stuck_visual)
+    _sync_final_qa_row(con, ch, verdict)
     if verdict.blocking:
         raise NonRetryableError(
             f"prep-QA has BLOCKING errors after auto-heal "
