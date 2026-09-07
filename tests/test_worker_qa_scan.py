@@ -35,7 +35,14 @@ def _scan_args(monkeypatch, *, semantic_heal: bool) -> list:
     monkeypatch.setattr(w, "_stamp_plan_sha", lambda ep, verdict: None)
     monkeypatch.setattr("studio.config.load", lambda: types.SimpleNamespace(
         max_same_image_hold_sec=10.0, semantic_heal=semantic_heal))
+    # a clear re-scan is autopilot's un-park trigger (2026-09-07); the stub
+    # DB has no series/approval tables, so record the call instead
+    advanced: list = []
+    monkeypatch.setattr(w, "_advance_after_prepare",
+                        lambda con, ch, verdict, auto_to, log:
+                        advanced.append(auto_to))
     w._h_qa_scan(_con(), {"chapter_id": 7}, io.StringIO())
+    assert advanced == [None]           # once, never with a bulk auto_to
     return seen
 
 

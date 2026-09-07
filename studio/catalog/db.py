@@ -113,7 +113,8 @@ def connect(path: Path | str) -> sqlite3.Connection:
         # per-series punch-up override: off|light|full (NULL = toml default)
         con.execute("ALTER TABLE series ADD COLUMN narration_style TEXT")
     if "autopilot" not in scols:
-        # manage-by-exception: spotless QA auto-advances voice/render gates
+        # manage-by-exception: QA with no blocking code auto-advances the
+        # voice/render gates (review codes ship, listed in the job log)
         con.execute("ALTER TABLE series ADD COLUMN autopilot INTEGER "
                     "NOT NULL DEFAULT 0")
     if "new_pending" not in scols:

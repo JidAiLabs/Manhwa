@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TextIO
 
@@ -292,8 +292,10 @@ STALE_CODES = {"beats_incomplete", "narration_stale", "fragment_dangle",
 # chrome_leak, filler_narration, shot_description, …) is a cosmetic/quality
 # nit: the heal tries to fix it (re-narration for prose codes, a panel drop
 # for _VISUAL_DROPPABLE ones like cross_dup), but if it can't, the chapter
-# still SHIPS with a WARN for review rather than hard-failing a whole recap +
-# hours of work over a quality nit. STUDIO_QA_NONBLOCKING (comma-separated env
+# still SHIPS — autopilot advances too (it keys on `blocking`, 2026-09-07) —
+# with the code listed in the job log and the qa_scan row (QAVerdict.review)
+# rather than hard-failing a whole recap + hours of work over a quality nit.
+# STUDIO_QA_NONBLOCKING (comma-separated env
 # var, see _effective_blocking) can demote any of these without a deploy —
 # e.g. a code proves noisy in production and needs silencing before the next
 # release fixes it properly.
@@ -369,7 +371,7 @@ _CRITICAL_QA_CODES = {
 # recurrence, not a lost-panel collapse. The genuine starvation case is already
 # caught by montage_degenerate (critical) and chunk_as_panel (critical).
 # Promoting visual_loop would false-block legit recurring cards while catching
-# nothing new. It stays ERROR (so autopilot parks it for a human) but does not
+# nothing new. It stays ERROR (so it lands in review) but does not
 # hard-block manual approval. (Verified via cap_repeats_with_holds, 2026-06-24.)
 
 
@@ -445,6 +447,11 @@ class QAVerdict:
     consumes the same way.
 
     ok:       True iff nothing in `blocking` remains — the gate should pass.
+    review:   codes − blocking: ERROR codes that SHIP and deserve eyes. The
+              autopilot advances past them (it keys on `blocking`, the same
+              set every other gate uses); they are logged and persisted in
+              the qa_scan row so the job log and the sweep can say what
+              shipped with flags.
     blocking: the subset of `codes` that must block (or {"qa_report_invalid"}
               if the report itself was missing/corrupt/stale).
     codes:    every ERROR-severity code in the report, blocking or not — for
@@ -457,6 +464,7 @@ class QAVerdict:
     codes: set
     report: dict | None
     reason: str
+    review: set = field(default_factory=set)
 
 
 def _error_codes_from_report(report: dict) -> set:
@@ -518,7 +526,7 @@ def _qa_verdict(ep: Path, *, started_at: float,
     blocking = codes & _effective_blocking(blocking_codes)
     blocking -= _qa_arbitrated(ep)   # writer-final, beats-sha-bound demotion
     return QAVerdict(ok=not blocking, blocking=blocking, codes=codes,
-                     report=report,
+                     report=report, review=codes - blocking,
                      reason="" if not blocking
                      else f"blocking QA codes: {sorted(blocking)}")
 
@@ -539,21 +547,49 @@ def _stamp_plan_sha(ep: Path, verdict: QAVerdict) -> "str | None":
     return None
 
 
+def _record_qa_scan(con: sqlite3.Connection, ch: Dict[str, Any],
+                    verdict: QAVerdict, *, started_at: float) -> None:
+    """The ONE qa_scan stage_run writer (the prepare/voiceover path and the
+    standalone re-scan used to carry two copies of this INSERT, which
+    _stamp_plan_sha's docstring already warned drift apart). `ok` gates the
+    render: 1 when no BLOCKING code remains — review codes ship. meta_json
+    carries the blocking/review sets so the sweep and the log can say what
+    shipped with flags; Python-side JSON keeps json_extract('$.plan_sha') in
+    _last_qa_plan_sha working."""
+    ep = Path(ch["ep_dir"] or "")
+    meta = {"series_id": ch["series_id"],
+            "plan_sha": _stamp_plan_sha(ep, verdict),
+            "blocking": sorted(verdict.blocking),
+            "review": sorted(verdict.review)}
+    con.execute(
+        "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
+        "meta_json) VALUES (?,?,?,?,?)",
+        (ch["id"], "qa_scan", round(time.time() - started_at, 2),
+         0 if verdict.blocking else 1, json.dumps(meta)))
+    con.commit()
+
+
 def _autopilot_clean(con: sqlite3.Connection, ch: Dict[str, Any],
                      verdict: QAVerdict) -> bool:
-    """Autopilot advances ONLY on a spotless report FROM THIS RUN (the verdict
-    just built in memory — never a fresh disk read, which could race a later
-    step that already overwrote the file): the series opted in, the verdict
-    is valid, zero ERRORs, and zero semantic narration_mismatch warnings.
-    Anything else waits for a human — manage by exception."""
+    """Autopilot advances iff the verdict FROM THIS RUN (the object just built
+    in memory — never a fresh disk read, which could race a later step that
+    already overwrote the file) is valid and has no BLOCKING code — the same
+    policy every other gate in this file enforces.
+
+    Until 2026-09-07 this keyed on `verdict.codes` (ANY error) plus a
+    narration_mismatch WARN, so a cosmetic code parked a chapter behind a
+    green badge with no page listing it: visible_text 221 flags / 112 of 152
+    prepared chapters, dead_box_leak 71 / 49, actor_mismatch 43 / 33 — none
+    blocking, all parking. Neither operator hatch (STUDIO_QA_NONBLOCKING,
+    qa_arbitration.json) could un-park, since both subtract from `blocking`
+    only. The judge WARN was a judgment code holding a chapter: not in
+    HEALABLE, so the park never triggered a heal — it only waited. Review
+    codes now ship, logged and persisted (QAVerdict.review)."""
     r = con.execute("SELECT autopilot FROM series WHERE id=?",
                     (ch["series_id"],)).fetchone()
     if not (r and r[0]):
         return False
-    if verdict.report is None or verdict.codes:
-        return False
-    flags = verdict.report.get("flags") or []
-    return not any(f.get("code") == "narration_mismatch" for f in flags)
+    return verdict.report is not None and not verdict.blocking
 
 
 def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
@@ -600,16 +636,7 @@ def _run_prep_and_qa(con: sqlite3.Connection, ch: Dict[str, Any],
     # rc is captured for the failure message only; the VERDICT (not the
     # exit code) is the gate: a crashed/skipped QA must never read as green.
     verdict = _qa_verdict(ep, started_at=t0)
-    plan_sha = _stamp_plan_sha(ep, verdict)
-    # qa_scan 'ok' gates the render — it's ok when no BLOCKING code remains;
-    # cosmetic ERRORs (fragment_dangle, caption_unvoiced, …) don't fail it.
-    con.execute(
-        "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
-        "meta_json) VALUES (?,?,?,?, json_object('series_id', ?, "
-        "'plan_sha', ?))",
-        (ch["id"], "qa_scan", round(time.time() - t0, 2),
-         0 if verdict.blocking else 1, ch["series_id"], plan_sha))
-    con.commit()
+    _record_qa_scan(con, ch, verdict, started_at=t0)
     if verdict.blocking and not heal_aware:
         reason_suffix = f" (reason: {verdict.reason})" if verdict.reason else ""
         raise NonRetryableError(
@@ -923,9 +950,14 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
 
 
 # QA ERROR codes that re-narration CAN'T fix — the panel itself is the problem
-# (blank/void crop, a leaked dead caption box, bubble text the blanker missed).
-# The last-resort heal DROPS those panels instead of failing the whole chapter.
-_VISUAL_DROPPABLE = {"blank_crop", "dead_box_leak", "visible_text", "ghost_text",
+# (blank/void crop, a husk, a near-duplicate). The last-resort heal DROPS those
+# panels instead of failing the whole chapter. NOT dead_box_leak / visible_text
+# / ghost_text (2026-09-07): all three are WARN — big blanked balloons, SFX
+# lettering on the art and an unbubbled caption are how a webtoon panel looks,
+# and the remedy this set names — deleting the panel — is worse than a readable
+# word. The selector below requires severity == "ERROR", so a WARN could never
+# match anyway; listing them was a lie about what the heal does.
+_VISUAL_DROPPABLE = {"blank_crop",
                      # a husk (art inpainted away to near-nothing) can't be fixed
                      # by re-narration — drop the panel + hold a real neighbour.
                      "husk",
@@ -977,7 +1009,7 @@ def _heal_visual_drops(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
     shown after the heal — i.e. the drop set was over the cap, or the drop was a
     no-op (the panel is the sole cut of a unique blank that render_prep can't
     remove). The caller MUST block on these: otherwise the chapter ships a
-    blank/leaked/visible-text panel under a green QA. When the heal SUCCEEDS the
+    blank/husk/duplicate panel under a green QA. When the heal SUCCEEDS the
     panel is no longer shown, so the flag is gone and this returns an empty set."""
     adp = ep / "auto_drops.json"
 
@@ -1089,7 +1121,7 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     # ONE final verdict against whatever's on disk now: visual-droppable codes
     # (blank_crop/dead_box_leak/visible_text) are normally cosmetic because the
     # heal REMOVES the panel — but when it couldn't (over the 25% cap, or a
-    # no-op drop on a sole-cut unique blank) the panel would ship blank/leaked,
+    # no-op drop on a sole-cut unique blank) the panel would ship blank,
     # so `stuck_visual` is unioned into this check's blocking set. `started_at`
     # predates every prep_qa run this handler triggered (initial + heal
     # cycles), so a missing/corrupt/stale report still fails closed here.
@@ -1099,9 +1131,9 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         raise NonRetryableError(
             f"prep-QA has BLOCKING errors after auto-heal "
             f"({sorted(verdict.blocking)}) — open the report in {ep}")
-    if verdict.codes:
+    if verdict.review:
         log.write("[qa] proceeding with non-blocking QA flags after heal "
-                  f"(cosmetic, flagged for review): {sorted(verdict.codes)}\n")
+                  f"(review — the chapter ships): {sorted(verdict.review)}\n")
     _advance_after_prepare(
         con, ch, verdict, (job.get("payload") or {}).get("auto_to"), log)
 
@@ -1132,8 +1164,9 @@ def _advance_after_prepare(con: sqlite3.Connection, ch: Dict[str, Any],
         jobs.enqueue(con, "voiceover", chapter_id=ch["id"],
                      payload={"auto_to": auto_to})
     elif _autopilot_clean(con, ch, verdict) and not voice_valid:
-        log.write("[autopilot] QA spotless → story auto-approved, "
-                  "voiceover queued\n")
+        log.write("[autopilot] QA clear of blocking codes (review: "
+                  f"{sorted(verdict.review) or 'none'}) → story "
+                  "auto-approved, voiceover queued\n")
         gates.ensure_approval(con, "voice", chapter_id=ch["id"],
                               ep_dir=ch["ep_dir"], note="autopilot")
         jobs.enqueue(con, "voiceover", chapter_id=ch["id"])
@@ -1325,7 +1358,8 @@ def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
         jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
                      payload={"branding": "both"})
     elif _autopilot_clean(con, ch, verdict) and not render_valid:
-        log.write("[autopilot] voiced QA spotless → render queued\n")
+        log.write("[autopilot] voiced QA clear of blocking codes (review: "
+                  f"{sorted(verdict.review) or 'none'}) → render queued\n")
         gates.ensure_approval(con, "render", chapter_id=ch["id"],
                               ep_dir=ch["ep_dir"], note="autopilot")
         jobs.enqueue(con, "render_segment", chapter_id=ch["id"],
@@ -1448,23 +1482,22 @@ def _h_qa_scan(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         qa_args.append("--semantic-heal")
     rc = _stream(qa_args, log)
     verdict = _qa_verdict(ep, started_at=started_at)
-    plan_sha = _stamp_plan_sha(ep, verdict)
-    con.execute(
-        "INSERT INTO stage_run (chapter_id, stage, duration_sec, ok, "
-        "meta_json) VALUES (?,?,?,?, json_object('series_id', ?, "
-        "'plan_sha', ?))",
-        (ch["id"], "qa_scan", round(time.time() - started_at, 2),
-         0 if verdict.blocking else 1, ch["series_id"], plan_sha))
-    con.commit()
-    cosmetic = verdict.codes - verdict.blocking
-    if cosmetic:
-        log.write("[qa] non-blocking QA flags on this scan (cosmetic, "
-                  f"flagged for review): {sorted(cosmetic)}\n")
+    _record_qa_scan(con, ch, verdict, started_at=started_at)
+    if verdict.review:
+        log.write("[qa] non-blocking QA flags on this scan (review — the "
+                  f"chapter ships): {sorted(verdict.review)}\n")
     if verdict.blocking:
         reason_suffix = f" (reason: {verdict.reason})" if verdict.reason else ""
         raise NonRetryableError(
             f"prep-QA found BLOCKING flags ({sorted(verdict.blocking)}) "
             f"(subprocess rc={rc}) — see report in {ep}{reason_suffix}")
+    # A clear re-scan is autopilot's trigger for a chapter parked by an older
+    # policy (nothing re-evaluates a parked chapter passively — this and the
+    # end of a full prepare are the only two events). Autopilot off, or nothing
+    # stale: a no-op by _advance_after_prepare's own contract; the bulk
+    # auto_to is never carried, so it cannot cross a gate a human did not opt
+    # into.
+    _advance_after_prepare(con, ch, verdict, None, log)
 
 
 def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],

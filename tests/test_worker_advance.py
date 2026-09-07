@@ -111,3 +111,16 @@ def test_bulk_request_is_the_story_approval(monkeypatch, auto_to):
     _shas(monkeypatch, voice="V1", render="R1")
     w._advance_after_prepare(con, _CH, _verdict(), auto_to, io.StringIO())
     assert _queued(con) == ["voiceover"]
+
+
+def test_review_only_verdict_still_advances(monkeypatch):
+    """2026-09-07: a cosmetic ERROR (visible_text) is review, not a park —
+    the advance keys on `blocking`, the set every other gate uses."""
+    con = _con()
+    _shas(monkeypatch, voice="V1", render="R1")
+    v = w.QAVerdict(ok=True, blocking=set(), codes={"visible_text"},
+                    report={"flags": [{"code": "visible_text",
+                                       "severity": "ERROR"}]},
+                    reason="", review={"visible_text"})
+    w._advance_after_prepare(con, _CH, v, None, io.StringIO())
+    assert _queued(con) == ["voiceover"]

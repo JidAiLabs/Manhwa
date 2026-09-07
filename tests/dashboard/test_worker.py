@@ -278,6 +278,7 @@ def test_env_demotes_blocking_code(tmp_path, monkeypatch):
     # demoted out of `blocking` but still visible in `codes` (heal/logging still
     # sees it -- the env hatch silences the GATE, not the signal).
     assert v.ok is True and v.blocking == set() and v.codes == {"cut_gap"}
+    assert v.review == {"cut_gap"}        # and it is exactly what ships for review
 
 
 def test_autopilot_uses_run_verdict_not_disk(tmp_path):
@@ -298,6 +299,14 @@ def test_autopilot_uses_run_verdict_not_disk(tmp_path):
         reason="x")
     (ep / "prep_qa.json").write_text(json.dumps({"flags": []}))   # disk clean
     assert worker._autopilot_clean(con, ch, dirty_verdict) is False
+
+    # review-only (ERROR codes, none blocking) ADVANCES since 2026-09-07 —
+    # autopilot keys on `blocking`, the same set every other gate uses
+    review_verdict = worker.QAVerdict(
+        ok=True, blocking=set(), codes={"visible_text"},
+        report={"flags": [{"code": "visible_text", "severity": "ERROR"}]},
+        reason="", review={"visible_text"})
+    assert worker._autopilot_clean(con, ch, review_verdict) is True
 
 
 def test_qa_stage_meta_records_plan_sha(tmp_path, monkeypatch):
@@ -640,7 +649,12 @@ def test_autopilot_voice_approval_stores_content_sha(tmp_path, monkeypatch):
     assert stored == gates.gate_sha("voice", ep)
 
 
-def test_autopilot_blocked_by_semantic_mismatch(tmp_path, monkeypatch):
+def test_autopilot_advances_past_judge_warn(tmp_path, monkeypatch):
+    """2026-09-07: narration_mismatch is an LLM-judge WARN with its own
+    false-positive suppressor and it is not in HEALABLE — so the park it used
+    to cause never triggered a heal, it only waited behind a green badge for a
+    look no page prompted. A judgment code must not block; a park is a block
+    with a friendlier name. It ships, listed in the report."""
     con = _con(tmp_path)
     _autopilot_series(con, tmp_path, flags=[
         {"code": "narration_mismatch", "severity": "WARN"}])
@@ -650,10 +664,33 @@ def test_autopilot_blocked_by_semantic_mismatch(tmp_path, monkeypatch):
     jobs.enqueue(con, "prepare", chapter_id=5)
     worker.run_once(con, handlers=worker.HANDLERS,
                     log_dir=str(tmp_path / "l"))
-    assert con.execute("SELECT COUNT(*) FROM approval WHERE chapter_id=5"
-                       ).fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE gate='voice' AND "
+                       "chapter_id=5 AND note='autopilot'").fetchone()[0] == 1
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover'"
-                       ).fetchone()[0] == 0
+                       ).fetchone()[0] == 1
+
+
+def test_autopilot_advances_past_review_only_error(tmp_path, monkeypatch):
+    """THE 2026-09-07 fix. visible_text at ERROR parked 112 of 152 prepared
+    chapters behind a green badge although it never blocked. Not in
+    _CRITICAL_QA_CODES, not healable, not droppable: it is review, and the
+    chapter ships with it named in the job log."""
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, flags=[
+        {"code": "visible_text", "severity": "ERROR", "scene": "p000031.jpg"}])
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jid = jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS,
+                    log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE gate='voice' AND "
+                       "chapter_id=5 AND note='autopilot'").fetchone()[0] == 1
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover'"
+                       ).fetchone()[0] == 1
+    log_file = con.execute("SELECT log_path FROM job WHERE id=?",
+                           (jid,)).fetchone()[0]
+    assert "review: ['visible_text']" in open(log_file).read()
 
 
 def test_autopilot_off_changes_nothing(tmp_path, monkeypatch):
@@ -1607,6 +1644,7 @@ def test_impact_mismatch_blocks_and_env_hatch_demotes(tmp_path, monkeypatch):
     v2 = worker._qa_verdict(tmp_path, started_at=started_at)
     assert v2.ok is True and v2.blocking == set()
     assert v2.codes == {"impact_mismatch"}     # hatch silences the gate, not the signal
+    assert v2.review == {"impact_mismatch"}    # …and the signal is what ships for review
 
 
 def test_regen_flagged_passes_understanding_to_the_writer(tmp_path, monkeypatch):
@@ -2300,3 +2338,129 @@ def test_chain_voice_gate_block_is_not_retried(tmp_path):
                              (jid,)).fetchone()
     assert state == "failed"
     assert "auto-retry" not in err, f"chain voice gate was retried: {err}"
+
+
+# ---- 2026-09-07: autopilot parks on `blocking` — the set every gate uses ----
+
+def test_autopilot_parks_only_on_blocking(tmp_path):
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, flags=[])
+    ch = {"id": 5, "series_id": 1}
+
+    def v(**kw):
+        base = dict(ok=True, blocking=set(), codes=set(),
+                    report={"flags": []}, reason="", review=set())
+        base.update(kw)
+        return worker.QAVerdict(**base)
+    assert worker._autopilot_clean(con, ch, v()) is True
+    assert worker._autopilot_clean(
+        con, ch, v(codes={"visible_text"}, review={"visible_text"})) is True
+    assert worker._autopilot_clean(
+        con, ch, v(ok=False, blocking={"cut_gap"}, codes={"cut_gap"})) is False
+    assert worker._autopilot_clean(con, ch, v(report=None)) is False
+    con.execute("UPDATE series SET autopilot=0 WHERE id=1")
+    assert worker._autopilot_clean(con, ch, v()) is False
+
+
+def test_env_hatch_unparks_autopilot(tmp_path, monkeypatch):
+    # STUDIO_QA_NONBLOCKING used to silence the gate but leave the chapter
+    # parked (the park read `codes`). Now the hatch is the whole story.
+    import json
+    con = _con(tmp_path)
+    ep = _autopilot_series(con, tmp_path, flags=[])
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "cut_gap", "severity": "ERROR"}]}))
+    ch = {"id": 5, "series_id": 1}
+    v = worker._qa_verdict(ep, started_at=time.time())
+    assert worker._autopilot_clean(con, ch, v) is False
+    monkeypatch.setenv("STUDIO_QA_NONBLOCKING", "cut_gap")
+    v = worker._qa_verdict(ep, started_at=time.time())
+    assert v.review == {"cut_gap"}
+    assert worker._autopilot_clean(con, ch, v) is True
+
+
+def test_arbitration_unparks_autopilot(tmp_path):
+    # same for the writer-final qa_arbitration.json marker
+    import io
+    import json
+    con = _con(tmp_path)
+    ep = _autopilot_series(con, tmp_path, flags=[])
+    (ep / "manifest.beats.json").write_text('{"beats": [1]}')
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "impact_mismatch", "severity": "ERROR"}]}))
+    ch = {"id": 5, "series_id": 1}
+    assert worker._autopilot_clean(
+        con, ch, worker._qa_verdict(ep, started_at=0)) is False
+    worker._write_qa_arbitration(ep, {"impact_mismatch"}, io.StringIO())
+    v = worker._qa_verdict(ep, started_at=0)
+    assert v.review == {"impact_mismatch"}
+    assert worker._autopilot_clean(con, ch, v) is True
+
+
+def test_qa_stage_meta_records_review(tmp_path, monkeypatch):
+    # the ONE qa_scan writer persists what shipped for review, and still the
+    # plan sha the render pin reads
+    import hashlib
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "visible_text", "severity": "ERROR"},
+        {"code": "ghost_text", "severity": "WARN"}]}))
+    (ep / "render.plan.clean.json").write_text('{"cuts": []}')
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    verdict = worker._run_prep_and_qa(con, ch, open(tmp_path / "l.txt", "w"))
+    assert verdict.ok is True and verdict.review == {"visible_text"}
+    row = con.execute(
+        "SELECT ok, json_extract(meta_json, '$.review'), "
+        "json_extract(meta_json, '$.blocking'), json_extract(meta_json, "
+        "'$.series_id') FROM stage_run WHERE chapter_id=5 AND stage='qa_scan' "
+        "ORDER BY id DESC LIMIT 1").fetchone()
+    assert row == (1, '["visible_text"]', '[]', 1)
+    assert worker._last_qa_plan_sha(con, 5) == hashlib.sha256(
+        (ep / "render.plan.clean.json").read_bytes()).hexdigest()
+
+
+def test_h_qa_scan_advances_parked_autopilot_chapter(tmp_path, monkeypatch):
+    """Nothing re-evaluates a parked chapter passively: a clear re-scan is the
+    event that un-parks one left behind by the old policy (the sweep enqueues
+    exactly this)."""
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, flags=[
+        {"code": "visible_text", "severity": "ERROR"}])
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    jid = jobs.enqueue(con, "qa_scan", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "done"
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE gate='voice' AND "
+                       "chapter_id=5 AND note='autopilot'").fetchone()[0] == 1
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover'"
+                       ).fetchone()[0] == 1
+
+
+def test_h_qa_scan_with_autopilot_off_advances_nothing(tmp_path, monkeypatch):
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, autopilot=0, flags=[
+        {"code": "visible_text", "severity": "ERROR"}])
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 0)
+    jobs.enqueue(con, "qa_scan", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    assert con.execute("SELECT COUNT(*) FROM approval WHERE chapter_id=5"
+                       ).fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='voiceover'"
+                       ).fetchone()[0] == 0
+
+
+def test_heal_visual_drops_never_drops_visible_text(tmp_path):
+    # a readable word is never a reason to delete a panel
+    import io
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"n_cuts": 20, "flags": [
+        {"code": "visible_text", "severity": "ERROR", "scene": "p000031.jpg"}]}))
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep)}
+    assert worker._heal_visual_drops(con, ch, ep, io.StringIO()) == set()
+    assert not (ep / "auto_drops.json").exists()

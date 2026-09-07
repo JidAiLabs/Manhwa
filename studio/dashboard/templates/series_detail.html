@@ -44,7 +44,7 @@
 <div class="row">
 <form class="inline" method="post" action="/series/{{ sid }}/autopilot">
 <button class="{{ 'green' if autopilot else 'ghost' }}">{{ '⚡ autopilot ON' if autopilot else 'autopilot OFF' }}</button></form>
-<span class="kv">{% if autopilot %}spotless QA (0 errors, 0 judge mismatches) auto-approves story → voiceover → render; flagged chapters stop and wait for you{% else %}every chapter waits for your manual story + voiceover approvals{% endif %}</span>
+<span class="kv">{% if autopilot %}QA with no blocking code auto-approves story → voiceover → render (review-only flags ship, listed in the job log); blocking codes stop and wait for you{% else %}every chapter waits for your manual story + voiceover approvals{% endif %}</span>
 </div>
 <div class="row">
 <form class="inline" method="post" action="/series/{{ sid }}/style">
