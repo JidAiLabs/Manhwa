@@ -261,6 +261,16 @@ def image_flags(
     # reveals the labeller didn't tag sys, the same way doc/sys cards are kept.
     _vt = vitem or {}
     _otxt = str(_vt.get("ocr_clean") or _vt.get("text") or "")
+    # The multimodal pass is the stronger witness for "is there art here".
+    # blank_crop/husk are pixel statistics: ORV Ep59 p000001 — one boot
+    # stepping in against black, understood as "a pair of feet in dark
+    # high-heeled boots" — read as std=10 black=0.98 art_score=0.002, i.e. a
+    # void, and would have been auto-DROPPED had it not owned a line. When the
+    # understanding saw a story subject, both codes are WARN (review, never a
+    # drop candidate); with nothing seen they stay ERROR — a real void.
+    seen_art = rp.story_visual_panel(_vt)
+    _seen = (f" (understanding saw: {str((_vt.get('subjects') or [''])[0])[:60]!r})"
+             if seen_art else "")
     has_text = (int(_vt.get("n_words") or 0) >= 3
                 or float(_vt.get("text_coverage") or 0.0) >= 0.05
                 or len(_otxt.split()) >= 3)
@@ -269,20 +279,25 @@ def image_flags(
                  or empty_field) and not has_text)):
         kind = "white" if white_frac >= black_frac else "black"
         flags.append(_flag(
-            "blank_crop", ERROR,
+            "blank_crop", WARN if seen_art else ERROR,
             f"shown crop is a near-empty {kind} void (std={std_full:.1f}, "
             f"bg={bg_frac:.2f}, white={white_frac:.2f}, black={black_frac:.2f}) — "
-            "not a real image; recrop or drop this panel",
+            + ("a dark composition, not a void" + _seen if seen_art else
+               "not a real image; recrop or drop this panel"),
             scene=name, segment_id=segment_id))
 
     if not doc and not sys:
         gray = img.mean(axis=2) if img.ndim == 3 else img
         art = rp.art_content_score(img, [])
         if art < min_art_score and not has_text:
-            sev = ERROR if art < 0.7 * min_art_score else WARN
+            sev = (WARN if seen_art
+                   else ERROR if art < 0.7 * min_art_score else WARN)
             flags.append(_flag("husk", sev,
                                f"art_score={art:.4f} < {min_art_score} — "
-                               + ("no art detail left after cleaning"
+                               + ("low pixel detail on a panel the "
+                                  "understanding read as art" + _seen
+                                  if seen_art else
+                                  "no art detail left after cleaning"
                                   if sev == ERROR else
                                   "borderline art detail, eyeball it"),
                                scene=name, segment_id=segment_id))

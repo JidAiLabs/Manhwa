@@ -2374,3 +2374,24 @@ def test_narration_null_is_healable_and_blocking():
            "write a real line" in nh._note_for("narration_null", "").lower()
     wsrc = (root / "studio" / "worker.py").read_text()
     assert '"narration_null",' in wsrc.split("_CRITICAL_QA_CODES = {")[1].split("}")[0]
+
+
+def test_dark_composition_with_a_seen_subject_is_warn_not_a_void():
+    # ORV Ep59 p000001: one boot stepping in against black. blank_crop/husk are
+    # pixel statistics and read it as a void (std=10, black=0.98, art=0.002);
+    # the multimodal pass saw "a pair of feet in dark high-heeled boots". The
+    # understanding is the stronger witness — WARN, never a drop candidate.
+    img = np.full((329, 800, 3), 3, dtype=np.uint8)
+    img[30:90, 470:530] = 40                                   # the boot
+    dims = {"w": 800, "h": 329, "doc": False}
+    seen = {"panel_kind": "story", "ocr_clean": "", "n_words": 0,
+            "subjects": ["a pair of feet in dark high-heeled boots"]}
+    sev = {f["code"]: f["severity"] for f in pq.image_flags(
+        "p000001.jpg", img, [], doc=False, dims_entry=dims, vitem=seen)}
+    assert sev.get("blank_crop") == pq.WARN and sev.get("husk") == pq.WARN
+    # the same pixels with NOTHING seen stay a hard error — a real void
+    sev = {f["code"]: f["severity"] for f in pq.image_flags(
+        "p000001.jpg", img, [], doc=False, dims_entry=dims,
+        vitem={"panel_kind": "story", "ocr_clean": "", "n_words": 0,
+               "subjects": []})}
+    assert sev.get("blank_crop") == pq.ERROR
