@@ -843,3 +843,34 @@ def test_actor_mismatch_skips_a_span_with_an_unresolved_person():
     # the same line over the fully-resolved panel is armed
     assert [f["code"] for f in pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST)] \
         == ["actor_mismatch"]
+
+
+def test_descriptive_handle_modifiers_are_never_identity():
+    # (iv) ORV Ep97 p49: "the brown-haired man" name-hit on `haired` (+10).
+    # Ep134 p44: "the small people" (an alias of "the soldiers") name-hit
+    # "a small scar". A descriptive handle is "<determiner> <how they look>
+    # <head>[ <prepositional tail>]": only the head / a person-role noun is
+    # identity. A proper name keeps every token.
+    def nt(name, aliases=()):
+        return ci._name_tokens({"canonical_name": name, "aliases": list(aliases)})
+    assert nt("the brown-haired man") == set()
+    assert nt("the silver-haired woman") == set()
+    assert nt("the woman with black hair") == set()
+    assert nt("the woman with the scar") == set()
+    assert nt("the small people") == set()
+    assert nt("the soldiers", ["the small people"]) == {"soldier"}
+    assert nt("the blonde companion") == {"companion"}
+    assert nt("the hooded leader") == {"leader"}
+    assert nt("Pildu Gong", ["Pildu"]) == {"pildu", "gong"}
+    # the nano fixture's noun map is unchanged, and carries no look-words
+    m = ci.actor_noun_map(CAST)
+    assert {"assassin", "prince", "cheon", "ancestor"} <= set(m)
+    assert not {"haired", "hair", "small", "blonde"} & set(m)
+    # hair words are appearance wherever they appear...
+    assert ci._is_appearance_word("haired") and ci._is_appearance_word("hair")
+    # ...so a look-alike handle cannot claim a differently-coloured figure by
+    # the word "haired" alone
+    cast = {"cast": [{"canonical_name": "the silver-haired woman", "aliases": [],
+                      "visual_description": "A woman with long flowing silver hair"}]}
+    assert ci.resolve_name("a brown-haired person in a dark shirt",
+                           ci.cast_profiles(cast))[0] == "unknown"
