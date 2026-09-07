@@ -95,9 +95,7 @@ _WORN = frozenset({"hood", "hooded", "mask", "masked", "veil", "veiled",
 
 
 def _is_appearance_word(t: str) -> bool:
-    # _HAIR is defined below; resolved at call time. "haired" in a handle
-    # ("the brown-haired man") used to be a +10 NAME hit (ORV Ep97 p49).
-    if t in _COLORS or t in _GARMENT or t in _WORN or t in _HAIR:
+    if t in _COLORS or t in _GARMENT or t in _WORN:
         return True
     return t.endswith("ed") and (t[:-2] in _GARMENT or t[:-2] in _WORN)
 
@@ -194,42 +192,11 @@ def _members(cast: Any) -> List[Dict[str, Any]]:
     return [m for m in (cast or []) if isinstance(m, dict)]
 
 
-# A DESCRIPTIVE handle is what cast_builder emits for an unnamed character
-# ("the brown-haired man", "the small people", "the blonde companion" —
-# cast_builder._DESCRIPTIVE_LEAD): "<determiner> <how they look> <head>",
-# optionally followed by a prepositional tail ("the woman with the scar").
-# The modifiers and the tail say how the person LOOKS, by construction —
-# only the head noun and any person/role noun are identity. ORV Ep134 p44:
-# "the small people" (an alias of "the soldiers") contributed the name token
-# `small`, which name-hit "a small scar on his forehead" (+10) and handed the
-# bald man's panel to the soldiers. A proper name keeps every token.
-_HANDLE_LEAD = frozenset({"the", "a", "an", "our", "their", "his", "her",
-                          "this", "that", "one", "some", "two", "three"})
-_HANDLE_TAIL = frozenset({"with", "in", "of", "on", "at", "from", "under",
-                          "behind", "wearing", "holding", "carrying", "who",
-                          "whose", "which"})
-
-
-def _identity_tokens_of(name: str) -> List[str]:
-    toks = _tokens(name)
-    if not toks or toks[0] not in _HANDLE_LEAD:
-        return toks                                   # a proper name
-    body = toks[1:]
-    for i, t in enumerate(body):
-        if t in _HANDLE_TAIL:
-            body = body[:i]
-            break
-    return [t for i, t in enumerate(body)
-            if t in _PERSONISH or i == len(body) - 1]
-
-
 def _name_tokens(member: Dict[str, Any]) -> Set[str]:
     """Identity NOUNS for one member: canonical_name + aliases, minus
     stopwords / generic person-words / generic descriptors.
 
-    A descriptive handle contributes only its head / role noun
-    (_identity_tokens_of, 2026-09-07). `id` words are deliberately
-    EXCLUDED (round-2 review, class C): ids are
+    `id` words are deliberately EXCLUDED (round-2 review, class C): ids are
     pipeline slugs (assassin_group, assassin_leader) whose structural parts
     ("group", "leader") are role/count descriptors, not identity evidence —
     "a group of villagers" must never hard-claim the assassins, and a line
@@ -238,9 +205,9 @@ def _name_tokens(member: Dict[str, Any]) -> Set[str]:
     prince, cheon, …); cast_builder's schema requires canonical_name
     non-empty, so no evidence is lost by dropping the id."""
     raw: List[str] = []
-    raw += _identity_tokens_of(member.get("canonical_name") or "")
+    raw += _tokens(member.get("canonical_name") or "")
     for a in member.get("aliases") or []:
-        raw += _identity_tokens_of(a)
+        raw += _tokens(a)
     return {t for t in raw
             if t not in _STOPWORDS and t not in _GENERIC_PERSON
             and t not in _GENERIC_DESCRIPTOR and not _is_appearance_word(t)
