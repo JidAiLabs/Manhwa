@@ -290,7 +290,10 @@ def _beats(*lines_spans):
 
 
 def test_actor_mismatch_fires_on_assassin_line_over_cheon_span():
-    beats = _beats(("The assassin draws his steel.", ["p000010.jpg"]))
+    # p000011 is OWNED by its own segment (1:1 panel->line), so the
+    # assassin drawn there is that segment's evidence, not this one's
+    beats = _beats(("The assassin draws his steel.", ["p000010.jpg"]),
+                   ("The rain keeps falling.", ["p000011.jpg"]))
     flags = pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST)
     assert [f["code"] for f in flags] == ["actor_mismatch"]
     assert flags[0]["severity"] == pq.WARN     # report-only since 2026-09-07
@@ -693,7 +696,8 @@ def test_actor_mismatch_silent_when_the_name_is_printed_on_the_panel():
     # the commenter ('TLS123') off the screen. The panel draws one body, so the
     # gate fired — but healing it would force the WRONG actor onto the line. A
     # name the panel SPELLS OUT is grounded, not misattributed.
-    beats = _beats(("The assassin draws his steel.", ["p000010.jpg"]))
+    beats = _beats(("The assassin draws his steel.", ["p000010.jpg"]),
+                   ("The rain keeps falling.", ["p000011.jpg"]))
     assert pq.actor_mismatch_flags(
         beats, _UNDERSTOOD, CAST,
         {"p000010.jpg": {"ocr_clean": "WANTED: THE ASSASSIN OF THE SOUTH"}}) == []
@@ -744,5 +748,98 @@ def test_actor_mismatch_evidence_window_covers_the_folded_panels():
     far = {f"p0000{n}.jpg": {"ocr_clean": ""} for n in range(10, 16)}
     far[f"p0000{10 + pq._FOLD_REACH + 1}.jpg"] = {
         "ocr_clean": "ASSASSIN99: THANK YOU"}
+    # (figures fold the same way since 2026-09-07 — keep this about OCR
+    # reach by giving the window no drawn assassin to find inside it)
+    far_u = {"panels": _UNDERSTOOD["panels"][:1]}
     assert [f["code"] for f in pq.actor_mismatch_flags(
-        lone, _UNDERSTOOD, CAST, far)] == ["actor_mismatch"]
+        lone, far_u, CAST, far)] == ["actor_mismatch"]
+
+
+# --- 2026-09-07: the by-construction window (ORV Ep97 p49 / Ep134 p44 audit) --
+# Both sampled production flags fired with the named actor DRAWN in frame; the
+# gate was comparing the line against an incomplete or mis-windowed figure set.
+# None of these fixes touches vocabulary — they cannot be title-tuned.
+
+_OWNED_NEIGHBOUR = ("The rain keeps falling.", ["p000011.jpg"])   # claims p000011
+
+
+def test_actor_mismatch_figures_fold_like_the_ocr_window_does():
+    # (i) The FIGURES window is the covered range plus the unclaimed (folded)
+    # neighbours — the same window _actor_noun_on_page reads. A one-panel span
+    # beside an unclaimed panel that draws the assassin is grounded...
+    lone = _beats(("The assassin draws his steel.", ["p000010.jpg"]))
+    assert pq.actor_mismatch_flags(lone, _UNDERSTOOD, CAST) == []
+    # ...and the window stops at a panel another segment owns.
+    owned = _beats(("The assassin draws his steel.", ["p000010.jpg"]),
+                   _OWNED_NEIGHBOUR)
+    assert [f["code"] for f in pq.actor_mismatch_flags(owned, _UNDERSTOOD, CAST)] \
+        == ["actor_mismatch"]
+    # Dialogue folds the same way: reported speech printed on the folded panel
+    # exonerates a speech-verb line the span-only check used to flag.
+    u = {"panels": [_UNDERSTOOD["panels"][0],
+                    {"scene_file": "p000011.jpg", "subjects": [],
+                     "dialogue": "Die, little prince!"}]}
+    shout = _beats(("The assassin shouts a threat.", ["p000010.jpg"]))
+    assert pq.actor_mismatch_flags(shout, u, CAST) == []
+
+
+def test_actor_mismatch_resolves_the_same_figures_the_writer_saw(monkeypatch):
+    # (ii) A character the ledger killed before a panel is excluded from that
+    # panel's figures for the WRITER (gemini_narrative_pass excluded_by_file).
+    # QA used to resolve it anyway, then flag the writer for not naming a dead
+    # man. Same dead sets, both sides — prep_qa binds the flat `cast_identity`
+    # module at call time, so that is the one to watch.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import cast_identity as ci_flat
+    import story_ledger as sl
+    ledger = {"events": [{"type": "death", "scene_file": "p000010.jpg",
+                          "subject": "unnamed assassin"}]}
+    files = [p["scene_file"] for p in _UNDERSTOOD["panels"]]
+    expected = sl.dead_sets_by_file(ledger, files)
+    assert expected == {"p000011.jpg": {"unnamed assassin"}}
+    seen = {}
+    real = ci_flat.resolve_figures_by_file
+
+    def spy(u, c, excluded_by_file=None):
+        seen["excluded"] = excluded_by_file
+        return real(u, c, excluded_by_file=excluded_by_file)
+    monkeypatch.setattr(ci_flat, "resolve_figures_by_file", spy)
+    beats = _beats(("The prince rips his hidden knife free.", ["p000010.jpg"]),
+                   _OWNED_NEIGHBOUR)
+    pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST, None, ledger)
+    assert seen["excluded"] == expected
+    pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST)
+    assert seen["excluded"] == {}                 # no ledger: nothing excluded
+
+
+def test_actor_mismatch_one_drawn_subject_grounds_a_multi_sentence_line():
+    # (iii) ORV Ep134 g0011: "The protagonist stares at his reflection,
+    # wondering if … Suyeong and Pildu …" fired TWICE. The subjects of a later
+    # sentence are mentions; the first sentence already names a drawn actor.
+    two = _beats(("The prince rips his knife free. The assassins are gone, "
+                  "he thinks.", ["p000010.jpg"]), _OWNED_NEIGHBOUR)
+    assert pq.actor_mismatch_flags(two, _UNDERSTOOD, CAST) == []
+    # control: no sentence names a drawn actor -> one flag for the one noun
+    control = _beats(("The assassins regroup. The rain keeps falling.",
+                      ["p000010.jpg"]), _OWNED_NEIGHBOUR)
+    assert [f["code"] for f in pq.actor_mismatch_flags(control, _UNDERSTOOD, CAST)] \
+        == ["actor_mismatch"]
+
+
+def test_actor_mismatch_skips_a_span_with_an_unresolved_person():
+    # (v) ORV Ep134 p44 (the unresolved bald man IS Pildu) and Ep97 p49 (the
+    # man in the "tan" jacket IS the protagonist): the gate fired against an
+    # INCOMPLETE figure set. `unknown` is recorded only for person-shaped
+    # subjects, so "someone here is unresolved" is a fact, not a guess.
+    stranger = "a bald old man with a long white beard"
+    assert ci.resolve_name(stranger, ci.cast_profiles(CAST))[0] == "unknown"
+    u = {"panels": [dict(_UNDERSTOOD["panels"][0],
+                         subjects=_UNDERSTOOD["panels"][0]["subjects"] + [stranger]),
+                    _UNDERSTOOD["panels"][1]]}
+    beats = _beats(("The ancestor stares into the mirror.", ["p000010.jpg"]),
+                   _OWNED_NEIGHBOUR)
+    assert pq.actor_mismatch_flags(beats, u, CAST) == []
+    # the same line over the fully-resolved panel is armed
+    assert [f["code"] for f in pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST)] \
+        == ["actor_mismatch"]

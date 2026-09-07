@@ -25,7 +25,10 @@ _VISION = {"items": [
     {"scene_file": "p000011.jpg", "ocr_clean": "", "subjects": [], "vision": {}},
 ]}
 
-ASSASSIN_OVER_PRINCE = _beats(("The assassin draws his steel.", ["p000010.jpg"]))
+# p000011 is OWNED by its own segment (1:1 panel->line) so the assassin drawn
+# there does not fold into the first span's figure window.
+ASSASSIN_OVER_PRINCE = _beats(("The assassin draws his steel.", ["p000010.jpg"]),
+                              ("The rain keeps falling.", ["p000011.jpg"]))
 CORRECT = _beats(("The prince rips his hidden knife free.", ["p000010.jpg"]))
 
 

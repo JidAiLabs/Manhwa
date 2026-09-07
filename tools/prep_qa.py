@@ -1659,9 +1659,23 @@ def _actor_noun_on_page(noun: str, span, vitems_by_base,
     return False
 
 
+def _ledger_dead_sets(ledger_obj: Any, understood_obj: Any) -> Dict[str, set]:
+    """The writer's per-panel dead set (gemini_narrative_pass), so QA resolves
+    the SAME figures the writer was shown: a ledger-killed look-alike that was
+    withheld from the writer must not count as a span figure here."""
+    if not ledger_obj:
+        return {}
+    from story_ledger import dead_sets_by_file
+    return dead_sets_by_file(ledger_obj, [
+        str(p.get("scene_file"))
+        for p in ((understood_obj or {}).get("panels") or [])
+        if isinstance(p, dict) and p.get("scene_file")])
+
+
 def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                          cast_obj: Any,
                          vitems: Optional[Dict[str, Any]] = None,
+                         ledger_obj: Any = None,
                          ) -> List[Dict[str, Any]]:
     """CAST-GROUNDED actor gate (WARN, report-only, never in the worker
     blocking set and no longer a heal-target — see the precision note):
@@ -1679,6 +1693,14 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     Precision posture: subject-position-only nouns (late mentions are
     objects/off-panel references), spans with zero resolved figures are
     skipped (no ground truth), ties resolve to unknown upstream.
+    Evidence window (2026-09-07): figures and dialogue are read over the
+    COVERED panel range plus folded neighbours (_covered_panels — the
+    window _actor_noun_on_page already used); a span is skipped while ANY
+    drawn person in it is unresolved (an incomplete figure set is not
+    ground truth — both ORV samples fired on exactly that); ONE resolved
+    subject grounds a multi-sentence line (a later sentence's subject is
+    a mention); and ledger-dead names are excluded per panel exactly as
+    the writer's `figures` were (_ledger_dead_sets).
     Precision measured 0/4 (2026-08-24) and 0/2 (2026-09-07): every flag
     was the appearance-keyword oracle (bearded!=goatee, tan!=white, a
     description handle's "haired" read as a name), never the writer — so a
@@ -1691,7 +1713,9 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     flags: List[Dict[str, Any]] = []
     noun_map = actor_noun_map(cast_obj)
     group_names = group_member_names(cast_obj)
-    figures = resolve_figures_by_file(understood_obj, cast_obj)
+    figures = resolve_figures_by_file(
+        understood_obj, cast_obj,
+        excluded_by_file=_ledger_dead_sets(ledger_obj, understood_obj))
     if not noun_map or not figures or not isinstance(beats_obj, dict):
         return flags
     fig_by_base = {_base_scene(os.path.basename(f)): v
@@ -1700,42 +1724,58 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                  for k, v in (vitems or {}).items()}
     # chapter panel order — the fold window below is a RANGE over it, widened
     # across the panels NO span claims (the folded ones)
-    ordered_bases = sorted(v_by_base)
-    claimed = {_base_scene(os.path.basename(str(fn)))
-               for b in (beats_obj.get("beats") or [])
-               for s in beat_segments(b) for fn in s["span"]}
     u_by_sf = {_base_scene(os.path.basename(str(p.get("scene_file") or ""))): p
                for p in ((understood_obj or {}).get("panels") or [])
                if isinstance(p, dict) and p.get("scene_file")}
+    ordered_bases = sorted(set(v_by_base) | set(u_by_sf))
+    claimed = {_base_scene(os.path.basename(str(fn)))
+               for b in (beats_obj.get("beats") or [])
+               for s in beat_segments(b) for fn in s["span"]}
     for b in beats_obj.get("beats") or []:
         seg = f"g{int(b.get('group_id') or 0):04d}"
         for s in beat_segments(b):
             line = s["line"]
             if not line:
                 continue
-            span_names = {f["name"]
-                          for fn in s["span"]
-                          for f in fig_by_base.get(_base_scene(fn), [])
+            # the COVERED range plus folded neighbours, not the shown span —
+            # the same window _actor_noun_on_page reads
+            covered = _covered_panels(s["span"], ordered_bases, claimed)
+            span_figs = [f for fn in covered for f in fig_by_base.get(fn, [])]
+            span_names = {f["name"] for f in span_figs
                           if f.get("name") and f["name"] != "unknown"}
             if not span_names:
+                continue
+            # An INCOMPLETE figure set is not ground truth either: the person
+            # the oracle could not resolve may be exactly whom the line names
+            # (ORV Ep134 p44: the unresolved bald man IS Pildu; Ep97 p49: the
+            # man in the "tan" jacket IS the protagonist). `unknown` is
+            # recorded only for person-shaped subjects, so this is by
+            # construction, not a guess.
+            if any(f.get("name") == "unknown" for f in span_figs):
                 continue
             # A panel whose text the narration is REPORTING (a taunt, an
             # order, a shout) can name a speaker who is not drawn in it —
             # a reaction shot of the listener is not a mismatch.
             span_has_dialogue = any(
-                str((u_by_sf.get(_base_scene(fn)) or {}).get("dialogue")
-                    or "").strip() for fn in s["span"])
-            for noun, members in subject_actor_nouns(line, noun_map):
-                if members & span_names:
-                    continue
+                str((u_by_sf.get(fn) or {}).get("dialogue") or "").strip()
+                for fn in covered)
+            hits = subject_actor_nouns(line, noun_map)
+            # ONE drawn subject grounds the whole line. A multi-sentence line
+            # whose first sentence names a drawn actor is not misattributed
+            # because a later sentence's subject is off-panel — that is a
+            # mention (Ep134 g0011 fired twice on "The protagonist stares…
+            # wondering if Suyeong and Pildu…").
+            if any(members & span_names for _n, members in hits):
+                continue
+            for noun, members in hits:
                 # A GROUP handle over a panel drawn as a CROWD has no
                 # per-individual ground truth to contradict: an appearance
                 # oracle built for individuals never resolves a collective
                 # subject string onto the group member (ch6 g0003/g0013).
                 if members and group_names and members <= group_names and any(
                         subject_person_count(str(sub)) > 1
-                        for fn in s["span"]
-                        for sub in ((u_by_sf.get(_base_scene(fn)) or {})
+                        for fn in covered
+                        for sub in ((u_by_sf.get(fn) or {})
                                     .get("subjects") or [])):
                     continue
                 # SAME FACTION: the oracle resolves an ambiguous look-alike to
@@ -3133,11 +3173,11 @@ def main() -> int:
     flags.extend(line_overlong_flags(beats_obj))
     flags.extend(narration_null_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
+    ledger_obj = _load_manifest("manifest.ledger.json")
     flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj,
-                                      vitems))
+                                      vitems, ledger_obj))
     flags.extend(actor_count_flags(beats_obj, understood_obj, cast_obj))
-    flags.extend(ledger_contradiction_flags(
-        beats_obj, _load_manifest("manifest.ledger.json"), cast_obj))
+    flags.extend(ledger_contradiction_flags(beats_obj, ledger_obj, cast_obj))
     flags.extend(cold_open_flags(beats_obj))
     flags.extend(phrase_echo_flags(beats_obj))
 
