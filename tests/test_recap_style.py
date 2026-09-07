@@ -792,6 +792,21 @@ def test_repair_amputates_a_long_never_terminal_stub_at_the_last_clause():
     # never-terminal but no separator to cut at -> unchanged (QA blocks it)
     assert (rs.repair_spoken_line("He walks into the risk of being banned from")
             == "He walks into the risk of being banned from")
+
+    # a COMPLETE SENTENCE already in the line is the honest cut: drop only the
+    # unfinished sentence after it. Cutting at the last comma instead threw
+    # away good sentences and could leave a fragment (2026-09-06 corpus).
+    assert rs.repair_spoken_line(
+        "Jihye Lee pants heavily, her skin slick with sweat as a sudden, "
+        "chilling realization takes hold. But...") == (
+        "Jihye Lee pants heavily, her skin slick with sweat as a sudden, "
+        "chilling realization takes hold.")
+    assert rs.repair_spoken_line(
+        "Junghyeok Yu dismisses the past, claiming he viewed the Ruler's "
+        "throne as a mere nuisance. He suggests our MC destroyed it to "
+        "block off the influence of the") == (
+        "Junghyeok Yu dismisses the past, claiming he viewed the Ruler's "
+        "throne as a mere nuisance.")
     # the comma inside a number is not a clause separator
     assert (rs.repair_spoken_line("He pays a total of 1,000 to the")
             == "He pays a total of 1,000 to the")
@@ -842,12 +857,10 @@ def test_possessive_followed_by_noun_is_terminal():
         assert not rs.is_spoken_fragment(ok), ok
 
 
-def test_article_preposition_conjunction_period_is_not_terminal():
+def test_article_and_conjunction_period_is_not_terminal():
     for bad in [
         "But there is no mercy to be found, only the.",
         "He reaches for the hilt and.",
-        "The strike was meant for.",
-        "She vanishes into the mist with.",
     ]:
         assert not rs.ends_terminal(bad), bad
     # the same words INSIDE a finished sentence stay terminal
@@ -857,6 +870,33 @@ def test_article_preposition_conjunction_period_is_not_terminal():
         "And with that, the hall goes silent.",
     ]:
         assert rs.ends_terminal(ok), ok
+
+
+def test_a_stranded_preposition_ends_a_sentence_perfectly_well():
+    """2026-09-06, measured on 134 prepared chapters: every line this rule
+    flagged for ending on to/with/of/for was CORRECT English, and the fragment
+    repair then amputated its real content ("…he might actually strike a deal
+    with." became "As Sangah looks upward amidst crackling electricity.").
+    Real truncations in the same corpus ended with NO punctuation at all
+    ("The Temptation of", "…starved for blood and"), so they are still caught
+    by the terminal-punctuation test above.
+
+    KNOWN TRADE-OFF: a truncation that stops on a preposition AND carries a
+    period ("The strike was meant for.") now reads as terminal. No shipped
+    chapter contained one; the QA/heal net is the backstop if that changes."""
+    for ok in [
+        "The dokkaebi aren't privy to that, and he knows it.",
+        "It is a constellation he might actually strike a deal with.",
+        "Let's go see what our regressor is up to.",
+        "Now that you know how it works, let's get this over and done with.",
+        # elliptical possessive: a bare name standing in for the thing owned
+        "He has a skill similar to Gilyeong's.",
+    ]:
+        assert rs.ends_terminal(ok), ok
+        assert rs.repair_spoken_line(ok) == ok, ok        # and never rewritten
+    # a DETERMINED possessive with no noun is still a truncation (round-2 E3)
+    assert not rs.ends_terminal(
+        "The blow sends blood splattering across an assassin's.")
 
 
 def test_mutation_endings_keep_exclamation_and_ellipsis_behavior():

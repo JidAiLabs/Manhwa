@@ -588,17 +588,32 @@ _FUNCTION_TAIL_WORDS = _NEVER_TERMINAL_TAIL | _MAYBE_TERMINAL_TAIL
 # period ("…the assassin's blade.") IS terminal — the word test looks only
 # at the LAST word. Scoped to bare-'.' endings so '!'/'?'/'…' lines (and
 # deliberate ellipsis trails) keep their existing behavior.
+# 2026-09-06: this list used to include of/with/to/for, which made
+# ends_terminal read ordinary English as truncation — a STRANDED PREPOSITION
+# ends a sentence perfectly well ("information the dokkaebi aren't privy to.",
+# "a constellation he might strike a deal with.", "what our regressor is up
+# to."). Six of eleven flagged lines across the corpus were correct sentences,
+# and the repair then amputated their real content. Only determiners and
+# coordinating conjunctions can never end a sentence.
 _NON_TERMINAL_ENDERS = frozenset({
-    "the", "a", "an", "of", "with", "and", "but", "to", "for",
+    "the", "a", "an", "and", "but", "or", "nor",
 })
 _POSSESSIVE_END_RE = re.compile(r"[A-Za-z]+(?:'s|s')$")
+# A possessive ends a sentence fine when it is ELLIPTICAL — a bare name
+# standing in for the thing owned ("a skill similar to Gilyeong's."). It is a
+# truncation only when a determiner introduced it and the noun never arrived
+# ("sends blood splattering across an assassin's."), which is the round-2 E3
+# case this test was built for.
+_DETERMINED_POSSESSIVE_RE = re.compile(
+    r"\b(?:a|an|the|my|your|his|her|its|our|their)\s+[A-Za-z]+(?:'s|s')$")
 
 
 def ends_terminal(text: str) -> bool:
     """True when the line ends a spoken thought: terminal punctuation
     (.!?…), allowing trailing closing quotes/brackets after it — unless the
-    final word before a bare period is a possessive or an article/
-    preposition/conjunction (a truncation mutation, round-2 E3)."""
+    final word before a bare period is a DETERMINED possessive or an
+    article/conjunction (a truncation mutation, round-2 E3). A stranded
+    preposition or an elliptical possessive ends a sentence perfectly well."""
     s = _TAG_RE.sub("", str(text or "")).strip()
     while s and s[-1] in _TRAILING_CLOSERS:
         s = s[:-1].rstrip()
@@ -608,7 +623,7 @@ def ends_terminal(text: str) -> bool:
         body = s.rstrip(".").rstrip()
         words = body.split()
         last_raw = words[-1] if words else ""
-        if _POSSESSIVE_END_RE.search(last_raw):
+        if _DETERMINED_POSSESSIVE_RE.search(body):
             return False
         if last_raw.strip(_TRAILING_CLOSERS).lower() in _NON_TERMINAL_ENDERS:
             return False
@@ -681,6 +696,18 @@ def repair_spoken_line(text: str) -> str:
             # With no separator to cut at, leave it: the truncated_line QA
             # flag blocks the chapter until a real re-write clears it.
             head = ""
+            # A complete sentence already in the line is the honest cut: drop
+            # ONLY the unfinished sentence after it. Cutting at the last comma
+            # instead threw away whole good sentences and could leave a
+            # fragment ("...realization takes hold. But..." -> "...as a
+            # sudden.") — the repair inventing a defect of its own.
+            m = re.match(r"^(.*[.!?][\"'”’»)\]]*)\s+\S.*$", s, re.S)
+            if m:
+                h = m.group(1).strip()
+                if len(h.split()) >= 4 and ends_terminal(h):
+                    s = h
+                    head = ""
+                    return (tag + s).strip()
             if last in _NEVER_TERMINAL_TAIL:
                 # ',;:' need a following space (not the comma in "1,000");
                 # an em/en dash is a separator with or without spaces
