@@ -838,7 +838,10 @@ def apply_post_punchup_backstop(
     # doesn't read as "our guy" every line — off-switch STUDIO_NARR_VARY_HANDLES=0
     # restores the legacy single-handle behaviour.
     _vary = os.environ.get("STUDIO_NARR_VARY_HANDLES", "1") != "0"
-    n_name = cap_protagonist_name(out, cast_obj or {"cast": []}, vary=_vary)
+    # the real name every Nth reference after the introduction (0 = never)
+    _every = int(os.environ.get("STUDIO_NARR_NAME_EVERY", "5") or 0)
+    n_name = cap_protagonist_name(out, cast_obj or {"cast": []}, vary=_vary,
+                                  name_every=_every)
     # LAST cleaner: kill any degenerate proper-noun stutter the writer/persona
     # rewrite left ("Jang Jang Jang" → "Jang"). Deterministic, cast-agnostic.
     n_stutter = collapse_name_stutter(out)

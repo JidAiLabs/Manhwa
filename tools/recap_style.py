@@ -1371,7 +1371,8 @@ def _strip_redundant_determiner(before: str, repl: str) -> str:
 
 
 def cap_protagonist_name(beats_obj, cast, keep: int = 3,
-                         handle: str = "our guy", vary: bool = True) -> int:
+                         handle: str = "our guy", vary: bool = True,
+                         name_every: int = 5) -> int:
     """Ration the protagonist's proper NAME to its first *keep* uses (the
     introduction), then give the tail VARIETY: each later protagonist
     reference — an over-cap name OR a generic handle the writer already wrote
@@ -1380,6 +1381,12 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
     of 'the prince' / 'the protagonist' / 'our MC'. Every option is a noun
     phrase, so the grammatical-safety property of the original single-handle
     design is preserved. vary=False restores the legacy always-*handle* behaviour.
+
+    *name_every* (owner, 2026-09-08: "keep the MC / the protagonist most of
+    the time, use the name time to time"): after the introduction every
+    name_every-th reference is the real name again; the handles fill the
+    rest. 0 = never the name after the introduction (the old rule).
+    Deterministic — the same input always yields the same lines.
 
     Returns the number of references rewritten."""
     members = cast.get("cast") if isinstance(cast, dict) else cast
@@ -1401,7 +1408,8 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
         + r")\b)"
         r"|(?P<handle>\b(?:" + _PROT_HANDLE_ALT + r")\b))(?P<poss>'s)?", re.I)
     seen_name = 0
-    rot = 0
+    rot = 0                 # every post-introduction reference
+    hrot = 0                # the handle rotation, independent of the name slots
     replaced = 0
     for b in (beats_obj or {}).get("beats") or []:
         segs = beat_segments(b)
@@ -1422,8 +1430,12 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
                     seen_name += 1
                     if seen_name <= keep:
                         continue                  # keep the introduction as-is
-                repl = pool[rot % len(pool)]
                 rot += 1
+                if name_every and rot % name_every == 0:
+                    repl = name                       # the name, time to time
+                else:
+                    repl = pool[hrot % len(pool)]
+                    hrot += 1
                 if repl.lower() == core.lower():
                     continue                      # already this handle — leave it
                 repl = _strip_redundant_determiner(line[:m.start()], repl)

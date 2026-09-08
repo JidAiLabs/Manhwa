@@ -1207,3 +1207,27 @@ def test_handle_collapse_keeps_legitimate_repetition():
 
 def test_proper_noun_stutter_still_collapses():
     assert _collapse("Jang Jang Jang shouts.") == "Jang shouts."
+
+
+def test_name_returns_time_to_time_after_the_introduction():
+    """Owner (2026-09-08): keep 'the MC / the protagonist' most of the time,
+    but let the real name back in now and then. Every name_every-th reference
+    after the introduction is the name; the handles fill the rest."""
+    import tools.recap_style as rs
+    B = {"beats": [
+        _beat(1, "Prince Cheon appears.", "Prince Cheon fights.",
+              "Prince Cheon wins."),
+        _beat(2, *[f"our guy acts {i}." for i in range(10)])]}
+    rs.cap_protagonist_name(B, _prot_cast(), keep=3, vary=True, name_every=5)
+    tail = _lines(B)[3:]
+    named = [i for i, l in enumerate(tail) if "Prince Cheon" in l]
+    assert named == [4, 9]                                   # the 5th and 10th
+    assert all("cheon" not in l.lower() for i, l in enumerate(tail)
+               if i not in named)
+    assert "the prince" in " ".join(tail).lower()            # handles still vary
+    # name_every=0: the old rule — never the name after the introduction
+    C = {"beats": [
+        _beat(1, "Prince Cheon a.", "Prince Cheon b.", "Prince Cheon c."),
+        _beat(2, *[f"our guy acts {i}." for i in range(10)])]}
+    rs.cap_protagonist_name(C, _prot_cast(), keep=3, vary=True, name_every=0)
+    assert all("Cheon" not in l for l in _lines(C)[3:])
