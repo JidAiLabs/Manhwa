@@ -157,6 +157,54 @@ def sanitize_cast_names(cast: Dict[str, Any], ocr_text: str):
     return cast, fixes
 
 
+# "Cadet 7", "Player 12", "Prisoner Number 406": a numbered designation of a
+# generic role. As an alias it turns the ordinary role word into the member's
+# name — nano ch11: "the cadets are paralyzed" read as the PROTAGONIST acting.
+_ROLE_NUMBER_RE = re.compile(
+    r"^(?:the\s+)?([a-z][a-z\-]*)\s+(?:no\.?\s*|number\s*|#\s*)?\d+$", re.I)
+
+
+def clean_aliases(cast: Dict[str, Any]):
+    """Two alias shapes that poison the actor-noun map (2026-09-08):
+
+    * an alias that is ANOTHER member's canonical name — ORV's protagonist
+      carried "Gillemium" while a real Gillemium exists, so a line about the
+      warrior was read as the protagonist acting (and could be rewritten to
+      him); an alias two members share is ambiguous and dropped from both.
+    * a numbered role designation (_ROLE_NUMBER_RE).
+
+    Runs after sanitize_cast_names and BEFORE apply_series_cast: the owner's
+    registry is authoritative and verbatim. Returns (cast, [(id, alias,
+    why), ...])."""
+    members = [m for m in ((cast or {}).get("cast") or []) if isinstance(m, dict)]
+    canon = {}
+    for i, m in enumerate(members):
+        canon.setdefault(str(m.get("canonical_name") or "").strip().lower(), i)
+    alias_owners: Dict[str, set] = {}
+    for i, m in enumerate(members):
+        for a in (m.get("aliases") or []):
+            alias_owners.setdefault(str(a).strip().lower(), set()).add(i)
+    dropped = []
+    for i, m in enumerate(members):
+        keep = []
+        for a in (m.get("aliases") or []):
+            al = str(a).strip()
+            low = al.lower()
+            if not low:
+                continue
+            owner = canon.get(low)
+            if owner is not None and owner != i:
+                dropped.append((m.get("id"), al, "another member's canonical name"))
+            elif len(alias_owners.get(low) or ()) > 1:
+                dropped.append((m.get("id"), al, "shared by two members"))
+            elif _ROLE_NUMBER_RE.match(low):
+                dropped.append((m.get("id"), al, "numbered role designation"))
+            else:
+                keep.append(al)
+        m["aliases"] = keep
+    return cast, dropped
+
+
 def recurring_figures(understood: Any, min_panels: int = 3) -> List[str]:
     """Recurring-figure candidate lines from the per-panel understanding —
     evidence-driven cast coverage (2026-07-20 story-state wave: the blue-sash
@@ -231,6 +279,10 @@ CAST_SCHEMA = {
                     "role": {"type": "STRING"},
                     "visual_description": {"type": "STRING"},
                     "is_protagonist": {"type": "BOOLEAN"},
+                    # false for an AI/system voice, a constellation shown as
+                    # text or light, a narrator — never drawn as a body. NOT
+                    # in `required`: older casts read as embodied.
+                    "embodied": {"type": "BOOLEAN"},
                 },
                 "required": ["id", "canonical_name", "role", "visual_description", "is_protagonist"],
             },
@@ -264,6 +316,9 @@ SYSTEM = (
     "  visual_description: appearance cues a downstream model can MATCH in a panel — age, hair,\n"
     "    clothing, weapon, distinctive features. Be concrete.\n"
     "  is_protagonist: true for the single main character the recap follows.\n"
+    "  embodied: true when the character is DRAWN as a body in the panels; false for an AI or\n"
+    "    system voice, a constellation or god that appears only as text or light, a narrator,\n"
+    "    or any entity that never appears as a drawn figure.\n"
     "Ignore anonymous crowds. Prefer 6-14 entries. Return ONLY JSON matching the schema."
 )
 
@@ -312,7 +367,7 @@ RECURRING_RULE = (
 
 
 _REGISTRY_FIELDS = ("canonical_name", "spoken_name", "visual_description",
-                    "not", "is_protagonist")
+                    "not", "is_protagonist", "embodied")
 
 
 def _name_keys(m: Dict[str, Any]) -> set:
@@ -480,6 +535,9 @@ def main() -> int:
         cast = json.loads(resp["message"]["content"])
     # names come from the page — replace invented proper names (nano ch1: "Alden")
     cast, name_fixes = sanitize_cast_names(cast, _page_words(items))
+    cast, alias_drops = clean_aliases(cast)
+    for cid, alias, why in alias_drops:
+        print(f"[cast] alias dropped from {cid}: {alias!r} ({why})")
     for cid, bad, good in name_fixes:
         print(f"[fix] cast {cid}: invented name {bad!r} (not in chapter OCR) -> {good!r}")
     if registry is not None:
