@@ -155,6 +155,37 @@ def _drop_shade_modifiers(toks: Sequence[str]) -> List[str]:
 
 _HAIR = frozenset({"hair", "haired"})
 
+# GENDER (2026-09-08): a closed class of English person-nouns and pronouns —
+# the same in every title, so nothing here is tuned to a corpus. The oracle
+# matched hair and clothing words but never the person-word, so "a woman with
+# black hair" resolved to the male protagonist (38 panels in one corpus diff)
+# and, on infinite-evolution, "a muscular young man with spiky teal hair"
+# became "the teal-haired woman". A subject and a profile of contradicting
+# gender can never be one person — unless a NAME token says so (a nameplate
+# outranks a description). Mixed or absent gender words on either side mean
+# "unknown" and never veto: "a man carrying a woman" describes two people.
+_FEMALE = frozenset({
+    "woman", "women", "girl", "girls", "lady", "ladies", "female", "she",
+    "her", "hers", "herself", "mother", "mom", "sister", "daughter", "wife",
+    "aunt", "grandmother", "queen", "princess", "goddess", "priestess", "nun",
+    "maid", "maiden", "waitress", "actress", "mistress", "bride", "widow",
+    "schoolgirl", "girlfriend"})
+_MALE = frozenset({
+    "man", "men", "boy", "boys", "guy", "guys", "male", "he", "him", "his",
+    "himself", "father", "dad", "brother", "son", "husband", "uncle",
+    "grandfather", "king", "prince", "god", "priest", "monk", "gentleman",
+    "gentlemen", "schoolboy", "boyfriend", "groom", "widower"})
+
+
+def _raw_words(text: str) -> List[str]:
+    return [w.lower() for w in _WORD_RE.findall(str(text or ""))]
+
+
+def _gender(words: Sequence[str]) -> Optional[str]:
+    ws = set(words)
+    f, m = bool(ws & _FEMALE), bool(ws & _MALE)
+    return "f" if f and not m else "m" if m and not f else None
+
 
 def _color_garment_pairs(toks: Sequence[str], window: int = 6
                          ) -> Set[Tuple[str, str]]:
@@ -190,6 +221,18 @@ def _members(cast: Any) -> List[Dict[str, Any]]:
     if isinstance(cast, dict):
         cast = cast.get("cast")
     return [m for m in (cast or []) if isinstance(m, dict)]
+
+
+def _embodied(member: Dict[str, Any]) -> bool:
+    """cast_builder's `embodied` flag (2026-09-08): False for an AI or system
+    voice (Nano), a constellation shown as text or light (Dionysus), a
+    narrator — anything never drawn as a body. Such a member can be a story
+    ACTOR (the ledger may attribute "Nano warns…" to it by name) but never a
+    drawn FIGURE, so it is excluded from resolve_figures and from the
+    actor-noun map the drawn-actor gates and the identity guard read. Legacy
+    casts without the field are embodied."""
+    v = member.get("embodied")
+    return v if isinstance(v, bool) else True
 
 
 def _name_tokens(member: Dict[str, Any]) -> Set[str]:
@@ -249,6 +292,9 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
         forbid = {_color_class(t) for t in _specific(_drop_shade_modifiers(ftoks))}
         role = str(m.get("role") or "").strip().lower()
         raw_name = [t.lower() for t in _WORD_RE.findall(name)]
+        gender_words = (_raw_words(m.get("visual_description") or "") + raw_name
+                        + [w for a in (m.get("aliases") or [])
+                           for w in _raw_words(str(a))])
         profiles.append({
             "name": name,
             "name_tokens": _name_tokens(m),
@@ -257,6 +303,8 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
             "hair": _hair_colors(toks),
             "forbid": forbid,
             "role": role,
+            "gender": _gender(gender_words),
+            "embodied": _embodied(m),
             # the FACTION member of a same-faction tie: role says so, or the
             # canonical name itself is plural ('the assassins') — cast_builder
             # often labels a group 'antagonist' instead of 'group'.
@@ -315,6 +363,10 @@ def _score(profile: Dict[str, Any], text: str) -> Tuple[float, List[str]]:
     for nt in name_hits:
         score += 10.0
         ev.append(nt)
+    if not name_hits:
+        sg, pg = _gender(_raw_words(text)), profile.get("gender")
+        if sg and pg and sg != pg:
+            return -100.0, ["gender-veto"]      # a woman is never the male lead
     forbidden = sorted((profile.get("forbid") or set()) & toks)
     if forbidden:
         # the owner says this member never shows these: appearance alone can
@@ -476,6 +528,8 @@ def resolve_figures(understanding: Optional[Dict[str, Any]],
     u = understanding or {}
     if excluded:
         profiles = [p for p in profiles if p["name"] not in excluded]
+    # a voice / text entity is never a drawn figure (see _embodied)
+    profiles = [p for p in profiles if p.get("embodied", True)]
     out: List[Dict[str, str]] = []
     seen: Set[str] = set()
 
@@ -557,6 +611,8 @@ def actor_noun_map(cast: Any) -> Dict[str, Set[str]]:
         name = str(m.get("canonical_name") or m.get("id") or "").strip()
         if not name:
             continue
+        if not _embodied(m):
+            continue          # never a drawn actor: nothing to mismatch or rewrite
         for t in _name_tokens(m):
             nouns.setdefault(t, set()).add(name)
     return nouns

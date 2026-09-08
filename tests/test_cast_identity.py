@@ -843,3 +843,56 @@ def test_actor_mismatch_skips_a_span_with_an_unresolved_person():
     # the same line over the fully-resolved panel is armed
     assert [f["code"] for f in pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST)] \
         == ["actor_mismatch"]
+
+
+# --- 2026-09-08: gender veto + embodied ----------------------------------------
+
+_TWO = {"cast": [
+    {"id": "protagonist", "canonical_name": "our protagonist", "role": "protagonist",
+     "is_protagonist": True, "aliases": ["Dokja Kim"],
+     "visual_description": "A young man with short dark hair, wearing a long "
+                           "white coat over a black shirt."},
+    {"id": "sangah", "canonical_name": "Sangah", "role": "ally",
+     "is_protagonist": False, "aliases": [],
+     "visual_description": "A woman with long brown hair, wearing a dark "
+                           "tactical jacket."},
+]}
+
+
+def test_gender_veto_a_woman_never_resolves_to_a_man():
+    # the corpus diff of 2026-09-07: "the woman with black hair" -> our
+    # protagonist x38. Black hair + white coat IS his look — but she is a woman.
+    prof = ci.cast_profiles(_TWO)
+    assert [p["gender"] for p in prof] == ["m", "f"]
+    name, ev = ci.resolve_name("a woman with black hair wearing a white coat", prof)
+    assert name != "our protagonist"
+    assert ci.resolve_name("a young man with black hair wearing a white coat",
+                           prof)[0] == "our protagonist"
+    # a neutral person-word never vetoes
+    assert ci.resolve_name("a person with black hair wearing a white coat",
+                           prof)[0] == "our protagonist"
+    # a NAME on the page outranks a description's gender word
+    assert ci.resolve_name("a woman, Dokja, in a white coat", prof)[0] == "our protagonist"
+    # two people in one subject string: mixed gender words, no veto
+    _s, ev2 = ci._score(prof[0], "a man and a woman in white coats")
+    assert "gender-veto" not in ev2
+    # the veto is symmetric
+    assert ci.resolve_name("a young man with long brown hair in a dark tactical "
+                           "jacket", prof)[0] != "Sangah"
+
+
+def test_non_embodied_member_is_never_a_figure_nor_an_actor_noun():
+    cast = {"cast": _TWO["cast"] + [
+        {"id": "nano", "canonical_name": "Nano", "role": "ally",
+         "is_protagonist": False, "aliases": [], "embodied": False,
+         "visual_description": "An advanced AI system integrated into the "
+                               "protagonist's body."}]}
+    prof = ci.cast_profiles(cast)
+    figs = ci.resolve_figures({"subjects": ["a young man with short dark hair "
+                                            "in a white coat"],
+                               "description": "Nano warns him about the guards."},
+                              prof)
+    assert [f["name"] for f in figs] == ["our protagonist"]   # Nano is not drawn
+    assert "nano" not in ci.actor_noun_map(cast)             # never a drawn actor
+    assert ci.resolve_name("Nano", prof)[0] == "Nano"        # but a story actor by name
+    assert all(p["embodied"] for p in ci.cast_profiles(_TWO))  # legacy default
