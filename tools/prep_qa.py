@@ -183,6 +183,40 @@ def box_interior_stats(img: np.ndarray,
     return st
 
 
+def _has_internal_gutter(img_bgr: "np.ndarray", min_part_px: int = 400) -> bool:
+    """True when the crop contains a GUTTER: a blank band (white OR black —
+    panels_to_scenes._row_blank_edge counts both) with at least *min_part_px*
+    of non-blank rows on BOTH sides. That is what separates two stacked
+    panels; a fade to black at a crop's end or a blank margin separates
+    nothing (ORV Ep172 p33 fades to black for its last third). Same scanner
+    and thresholds as the materializer that split crops on gutters upstream,
+    so the gate and the splitter cannot disagree."""
+    from PIL import Image
+    from panels_to_scenes import GutterParams, _row_blank_edge
+    gp = GutterParams()
+    if img_bgr.ndim == 3:
+        pil = Image.fromarray(img_bgr[:, :, ::-1])
+    else:
+        pil = Image.fromarray(img_bgr)
+    blank, edge, scale = _row_blank_edge(pil, max_w=420)
+    good = (blank >= gp.blank_thr) & (edge <= gp.edge_max)
+    min_run = max(3, int(round(gp.min_run_px * scale)))
+    min_part = max(3, int(round(min_part_px * scale)))
+    n, i = len(good), 0
+    while i < n:
+        if not good[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and good[j]:
+            j += 1
+        if j - i >= min_run:
+            if int((~good[:i]).sum()) >= min_part and int((~good[j:]).sum()) >= min_part:
+                return True
+        i = j
+    return False
+
+
 def image_flags(
     name: str,
     img: np.ndarray,
@@ -220,16 +254,28 @@ def image_flags(
     # re-assembled two chunk slices into one contiguous panel — so it is exempt;
     # every non-reconciled panel is still gated.
     if h > 8000 and not reconciled:
-        # a "panel" taller than ~8k px is really a whole stitch chunk that the
-        # detector failed to segment — a column of panels rendered as one thin
-        # strip (ch28/ch38). No legit single panel is this tall (clean-corpus max
-        # ~5.2k px), so this is a BLOCKING integrity failure, not a style note:
-        # re-stitch + re-detect (the height-capped stitcher + re-tile guard).
-        flags.append(_flag("chunk_as_panel", ERROR,
-                           f"crop is {h}px tall (h/w={h / max(1, w):.1f}) — a whole "
-                           "stitch chunk, not a panel; detection under-segmented "
-                           "this region",
-                           scene=name, segment_id=segment_id))
+        # A "panel" taller than ~8k px MAY be a whole stitch chunk the detector
+        # failed to segment — a column of panels rendered as one thin strip
+        # (nano ch28/ch38). But height alone was calibrated on one title (nano
+        # clean-corpus max ~5.2k): ORV draws 8.5–9.5k px single splashes (Ep172
+        # p33 a maw over a glowing orb, Ep177 p97 a lightning bolt down to a
+        # struck figure) and both were BLOCKED as under-segmentation. A column
+        # of panels has GUTTERS between them — blank bands with art on both
+        # sides — and panels_to_scenes' own row scanner can see them; a splash
+        # has none (it survived that very splitter). Gutter evidence blocks;
+        # a continuous splash is review: the renderer pans it.
+        if _has_internal_gutter(img):
+            flags.append(_flag("chunk_as_panel", ERROR,
+                               f"crop is {h}px tall (h/w={h / max(1, w):.1f}) with an "
+                               "internal gutter — a whole stitch chunk, not a "
+                               "panel; detection under-segmented this region",
+                               scene=name, segment_id=segment_id))
+        else:
+            flags.append(_flag("tall_splash", WARN,
+                               f"crop is {h}px tall (h/w={h / max(1, w):.1f}) with NO "
+                               "internal gutter — one continuous splash; the "
+                               "renderer pans it, verify the travel speed",
+                               scene=name, segment_id=segment_id))
     elif h >= 6 * max(1, w):
         flags.append(_flag("extreme_tall", INFO,
                            f"aspect h/w={h / max(1, w):.1f} — scroll shot; "

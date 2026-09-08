@@ -204,11 +204,23 @@ def test_blank_crop_keeps_text_on_white_card():
     assert "blank_crop" in bcodes
 
 
+def _stacked_chunk(n=4, part=2170, gutter=120, w=800):
+    """What a whole stitch chunk looks like: panels separated by white gutters."""
+    band = np.full((gutter, w, 3), 255, dtype=np.uint8)
+    parts = []
+    for i in range(n):
+        parts.append(_art(part, w))
+        if i < n - 1:
+            parts.append(band)
+    return np.vstack(parts)
+
+
 def test_chunk_as_panel_blocks_a_whole_chunk():
-    # ch28/ch38: a ~9000px crop is a whole stitch chunk the detector failed to
-    # segment -> BLOCKING ERROR (no legit panel is this tall; clean max ~5.2k).
-    flags = pq.image_flags("p000005.jpg", _art(9000, 800), [], doc=True,
-                           dims_entry={"w": 800, "h": 9000})
+    # ch28/ch38: a ~9000px crop with GUTTERS between its panels is a whole
+    # stitch chunk the detector failed to segment -> BLOCKING ERROR.
+    img = _stacked_chunk()
+    flags = pq.image_flags("p000005.jpg", img, [], doc=True,
+                           dims_entry={"w": 800, "h": img.shape[0]})
     assert any(f["code"] == "chunk_as_panel" and f["severity"] == "ERROR"
                for f in flags)
 
@@ -223,17 +235,35 @@ def test_tall_legit_panel_is_not_chunk_as_panel():
 def test_reconciled_tall_panel_is_exempt_from_chunk_as_panel():
     # a correctly reassembled seam panel is tall BY DESIGN (spec §5.1) -> the
     # reconciled marker exempts it from the h>8000 chunk_as_panel gate.
-    flags = pq.image_flags("p000007.jpg", _art(9000, 800), [], doc=True,
-                           reconciled=True, dims_entry={"w": 800, "h": 9000})
+    img = _stacked_chunk()
+    flags = pq.image_flags("p000007.jpg", img, [], doc=True,
+                           reconciled=True, dims_entry={"w": 800, "h": img.shape[0]})
     assert not any(f["code"] == "chunk_as_panel" for f in flags)
 
 
 def test_non_reconciled_tall_panel_still_blocks():
     # negative control: same tall crop with NO marker is still a BLOCKING ERROR.
-    flags = pq.image_flags("p000008.jpg", _art(9000, 800), [], doc=True,
-                           dims_entry={"w": 800, "h": 9000})
+    img = _stacked_chunk()
+    flags = pq.image_flags("p000008.jpg", img, [], doc=True,
+                           dims_entry={"w": 800, "h": img.shape[0]})
     assert any(f["code"] == "chunk_as_panel" and f["severity"] == "ERROR"
                for f in flags)
+
+
+def test_tall_splash_without_a_gutter_is_review_not_a_block():
+    # ORV Ep172 p33 / Ep177 p97: 8.5–9.5k px single continuous splashes were
+    # blocked as "a whole stitch chunk" on height alone. No gutter -> WARN.
+    img = _art(9000, 800)
+    codes = {f["code"]: f["severity"] for f in pq.image_flags(
+        "p000033.jpg", img, [], doc=True, dims_entry={"w": 800, "h": 9000})}
+    assert "chunk_as_panel" not in codes and codes.get("tall_splash") == pq.WARN
+    # a splash that FADES TO BLACK for its last third (Ep172): black rows are
+    # "blank" to the scanner, but a gutter needs art on BOTH sides
+    fade = np.vstack([_art(5500, 800), np.full((3500, 800, 3), 5, dtype=np.uint8)])
+    codes = {f["code"]: f["severity"] for f in pq.image_flags(
+        "p000034.jpg", fade, [], doc=True, dims_entry={"w": 800, "h": 9000})}
+    assert "chunk_as_panel" not in codes and codes.get("tall_splash") == pq.WARN
+    assert pq._has_internal_gutter(_stacked_chunk()) and not pq._has_internal_gutter(fade)
 
 
 def test_valid_image_is_not_blank_crop():
