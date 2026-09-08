@@ -82,7 +82,15 @@ _GARMENT = frozenset({
 _COLORS = frozenset({
     "white", "black", "gray", "red", "blue", "green", "purple", "brown",
     "dark", "light", "pale", "crimson", "golden", "yellow", "silver",
+    "blonde", "blond",
 })
+# HAIR light class (2026-09-08): blonde / golden / silver / grey / white /
+# pale are one class OF HAIR — the cast writes "blonde", the vision pass
+# "light-colored". Queen Mirabad's every panel used to resolve only through
+# her alias "the blonde woman" as a +10 NAME token; once handle look-words
+# stopped being names she vanished, because `blonde` was not a colour here.
+_HAIR_LIGHT = frozenset({"blonde", "blond", "golden", "yellow", "silver",
+                         "gray", "grey", "white", "pale", "light"})
 
 # worn-item words (and their -ed adjectives) that describe APPEARANCE, not
 # identity, when they appear inside a cast NAME ("the hooded leader", "the
@@ -95,7 +103,7 @@ _WORN = frozenset({"hood", "hooded", "mask", "masked", "veil", "veiled",
 
 
 def _is_appearance_word(t: str) -> bool:
-    if t in _COLORS or t in _GARMENT or t in _WORN:
+    if t in _COLORS or t in _GARMENT or t in _WORN or t in _HAIR:
         return True
     return t.endswith("ed") and (t[:-2] in _GARMENT or t[:-2] in _WORN)
 
@@ -177,6 +185,14 @@ _MALE = frozenset({
     "gentlemen", "schoolboy", "boyfriend", "groom", "widower"})
 
 
+# the subset of the gender classes that is a pronoun or a bare person-noun —
+# never an identity token (a title like prince/queen/goddess is)
+_PRONOUN_PERSON = frozenset({
+    "he", "him", "his", "himself", "she", "her", "hers", "herself", "man",
+    "men", "woman", "women", "boy", "boys", "girl", "girls", "guy", "guys",
+    "lady", "ladies", "male", "female", "gentleman", "gentlemen"})
+
+
 def _raw_words(text: str) -> List[str]:
     return [w.lower() for w in _WORD_RE.findall(str(text or ""))]
 
@@ -213,6 +229,8 @@ def _hair_colors(toks: Sequence[str], window: int = 4) -> Set[str]:
             for c in toks[max(0, i - window):i]:
                 if c in _COLORS:
                     out.add(_color_class(c))
+    if out & _HAIR_LIGHT:
+        out.add("light")
     return out
 
 
@@ -235,6 +253,39 @@ def _embodied(member: Dict[str, Any]) -> bool:
     return v if isinstance(v, bool) else True
 
 
+# A DESCRIPTIVE handle is what cast_builder emits for an unnamed character
+# ("the brown-haired man", "the small people", "the blonde companion" —
+# cast_builder._DESCRIPTIVE_LEAD): "<determiner> <how they look> <head>",
+# optionally with a prepositional tail ("the woman with the scar"). The
+# modifiers and the tail say how the person LOOKS, by construction — only the
+# head noun and any person/role noun are identity. ORV Ep134: "the small
+# people" (alias of "the soldiers") name-hit "a small scar" (+10); Ep97: "the
+# brown-haired man" name-hit on `haired`; infinite-evolution: "the teal-haired
+# woman" claimed every teal-haired MAN through `teal`, past the gender veto.
+# First landed 2026-09-07 and reverted the same day: without the gender veto
+# the accidental +10 had been the only thing keeping female handles ahead of
+# the male lead. With the veto (2026-09-08) the measured flips are the handles
+# losing MEN they never should have had. A proper name keeps every token.
+_HANDLE_LEAD = frozenset({"the", "a", "an", "our", "their", "his", "her",
+                          "this", "that", "one", "some", "two", "three"})
+_HANDLE_TAIL = frozenset({"with", "in", "of", "on", "at", "from", "under",
+                          "behind", "wearing", "holding", "carrying", "who",
+                          "whose", "which"})
+
+
+def _identity_tokens_of(name: str) -> List[str]:
+    toks = _tokens(name)
+    if not toks or toks[0] not in _HANDLE_LEAD:
+        return toks                                   # a proper name
+    body = toks[1:]
+    for i, t in enumerate(body):
+        if t in _HANDLE_TAIL:
+            body = body[:i]
+            break
+    return [t for i, t in enumerate(body)
+            if t in _PERSONISH or i == len(body) - 1]
+
+
 def _name_tokens(member: Dict[str, Any]) -> Set[str]:
     """Identity NOUNS for one member: canonical_name + aliases, minus
     stopwords / generic person-words / generic descriptors.
@@ -248,12 +299,16 @@ def _name_tokens(member: Dict[str, Any]) -> Set[str]:
     prince, cheon, …); cast_builder's schema requires canonical_name
     non-empty, so no evidence is lost by dropping the id."""
     raw: List[str] = []
-    raw += _tokens(member.get("canonical_name") or "")
+    raw += _identity_tokens_of(member.get("canonical_name") or "")
     for a in member.get("aliases") or []:
-        raw += _tokens(a)
+        raw += _identity_tokens_of(a)
+    # pronouns and bare gendered person-nouns are never identity: the alias
+    # "the people he rescued" made `he` a name token and "He realizes…" hit
+    # four members. Titles (prince, queen, goddess) ARE identity and stay.
     return {t for t in raw
             if t not in _STOPWORDS and t not in _GENERIC_PERSON
             and t not in _GENERIC_DESCRIPTOR and not _is_appearance_word(t)
+            and t not in _PRONOUN_PERSON
             and len(t) > 1}
 
 

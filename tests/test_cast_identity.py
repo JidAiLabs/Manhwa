@@ -896,3 +896,52 @@ def test_non_embodied_member_is_never_a_figure_nor_an_actor_noun():
     assert "nano" not in ci.actor_noun_map(cast)             # never a drawn actor
     assert ci.resolve_name("Nano", prof)[0] == "Nano"        # but a story actor by name
     assert all(p["embodied"] for p in ci.cast_profiles(_TWO))  # legacy default
+
+
+def test_pronouns_and_gender_words_are_never_name_tokens():
+    # ORV Ep69 g0027: the alias "the people he rescued" made `he` a name token
+    # and the line "He realizes…" hit four cast members at once.
+    m = {"canonical_name": "our protagonist",
+         "aliases": ["the man who rescued us", "the people he rescued", "Mr. Kim"]}
+    toks = ci._name_tokens(m)
+    assert not toks & {"he", "man", "his", "her", "she", "woman"}
+    assert "rescued" in toks and "kim" in toks
+
+
+def test_descriptive_handle_modifiers_are_never_identity():
+    # (iv), re-landed on top of the gender veto. "the small people" (alias of
+    # "the soldiers") name-hit "a small scar"; "the brown-haired man" name-hit
+    # `haired`; "the teal-haired woman" claimed every teal-haired MAN via `teal`.
+    def nt(name, aliases=()):
+        return ci._name_tokens({"canonical_name": name, "aliases": list(aliases)})
+    assert nt("the brown-haired man") == set()
+    assert nt("the teal-haired woman") == set()
+    assert nt("the woman with black hair") == set()
+    assert nt("the woman with the scar") == set()
+    assert nt("the small people") == set()
+    assert nt("the soldiers", ["the small people"]) == {"soldier"}
+    assert nt("the blonde companion") == {"companion"}
+    assert nt("the hooded leader") == {"leader"}
+    assert nt("Pildu Gong", ["Pildu"]) == {"pildu", "gong"}
+    m = ci.actor_noun_map(CAST)                      # the nano fixture is unchanged
+    assert {"assassin", "prince", "cheon", "ancestor"} <= set(m)
+    assert not {"haired", "hair", "small", "blonde", "teal"} & set(m)
+    # with the veto in place a handle cannot claim the other gender by a look-word
+    cast = {"cast": [{"canonical_name": "the teal-haired woman", "aliases": [],
+                      "visual_description": "A woman with spiky teal hair"}]}
+    assert ci.resolve_name("a muscular young man with spiky teal hair",
+                           ci.cast_profiles(cast))[0] == "unknown"
+
+
+def test_hair_light_class_blonde_silver_and_light_are_one_hair_colour():
+    q = {"cast": [{"canonical_name": "Queen Mirabad", "aliases": ["the blonde woman"],
+                   "visual_description": "A figure with long blonde hair and wide "
+                                         "eyes, wearing a white fur-covered garment."}]}
+    prof = ci.cast_profiles(q)
+    assert "blonde" not in prof[0]["name_tokens"]          # a look-word, not a name
+    assert ci.resolve_name("a woman with long blonde hair and a white furry cloak",
+                           prof)[0] == "Queen Mirabad"
+    assert ci.resolve_name("a person with light-colored hair in a white fur mantle",
+                           prof)[0] == "Queen Mirabad"       # blonde ~ light
+    assert ci.resolve_name("a woman with long black hair in a dark coat",
+                           prof)[0] == "unknown"             # hair + colour clash
