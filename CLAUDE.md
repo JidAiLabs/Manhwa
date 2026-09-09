@@ -27,7 +27,17 @@ $V -m studio fetch <series_id> --chapters 1                    # download → on
 $V -m studio run   <series_id> --chapters 1                    # drive the pipeline (resumable)
 $V -m studio qa    <series_id> --chapters 1                    # scene↔narration QA report (HTML)
 $V -m studio status [series_id]                                # chapter status table
+$V -m studio refresh-facts <series_id> --chapters 1            # re-read the chapter
+                                                               # (story pass + ledger),
+                                                               # narration untouched
 ```
+
+- **`refresh-facts`** is the repair for a chapter the writer narrated from WRONG
+  facts (a death the ledger never anchored, or anchored at the caption that only
+  announces it). A rewind cannot do it: `--to grouped` re-rolls the whole chapter,
+  `--to scripted` keeps the same wrong facts. After it, a prepare's prep_qa flags
+  exactly the groups the new facts contradict and the heal re-narrates only those.
+  Also a worker job type (`refresh_facts`, gpu lane) for sweeps.
 
 - **Catalog** (`studio/catalog/`, `studio.db`): per-chapter status state machine, resumable + idempotent:
   `discovered → downloaded → stitched → detected → scened → visioned → grouped → beated → scripted → voiced → planned`
