@@ -277,6 +277,7 @@ def _ledger_args(ep_dir: Path, cfg: Config) -> list[str]:
     return ["--understood", str(p["understood"]),
             "--groups", str(p["groups"]),
             "--cast", str(p["cast"]),
+            "--vision", str(p["vision"]),
             "--chapter-story", str(ep_dir / "manifest.chapter_story.json"),
             "--out", str(ep_dir / "manifest.ledger.json"),
             "--model", cfg.beats_model]

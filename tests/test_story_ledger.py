@@ -1125,6 +1125,36 @@ def test_a_flashback_shot_shows_the_dead_alive_on_purpose():
     assert led["flashback_files"] == ["p1.jpg"]
 
 
+def test_vision_ocr_decides_which_panels_speak():
+    """The understanding's `dialogue` is empty on ~80% of panels that DO carry
+    OCR (457 with text, 92 reaching `dialogue` over 601 panels). Without the
+    vision manifest those panels look wordless, so extend_over_silent swallows
+    them into the previous event and the speaker of the swallowed line is lost.
+    """
+    u = {"panels": [{"scene_file": f"p{i:06d}.jpg", "subjects": [],
+                     "dialogue": ""} for i in range(1, 7)]}
+    vis = {"items": [{"scene_file": "/abs/p000003.jpg",
+                      "ocr_clean": "GOODBYE, CAPTAIN."}]}
+    ordered = [f"p{i:06d}.jpg" for i in range(1, 7)]
+
+    # without vision every panel reads as silent, so the span walks back the
+    # full max_back=4 and swallows p3 -- the line spoken there loses its owner
+    bare = sl.speech_by_panel(u)
+    assert sl.extend_over_silent(["p000005.jpg"], ordered, bare, set()) == [
+        f"p{i:06d}.jpg" for i in range(1, 6)]
+
+    # with vision, p3 speaks: it owns its own line and stops the extension
+    spoken = sl.speech_by_panel(u, vis)
+    assert spoken["p000003.jpg"] == "GOODBYE, CAPTAIN."
+    assert sl.extend_over_silent(["p000005.jpg"], ordered, spoken, set()) == [
+        "p000004.jpg", "p000005.jpg"]
+
+    # a panel the understanding already transcribed is left alone
+    u2 = {"panels": [{"scene_file": "p000003.jpg", "subjects": [],
+                      "dialogue": "kept verbatim"}]}
+    assert sl.speech_by_panel(u2, vis)["p000003.jpg"] == "kept verbatim"
+
+
 def test_a_death_never_precedes_the_victims_own_last_act():
     """The rule in one line: the model may say a character is killed; it does
     not get to say when. ORV Ep107 answered p000002, then p000006, while she

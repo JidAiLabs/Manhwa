@@ -601,6 +601,27 @@ def _is_silent(text: Any) -> bool:
     return len(re.findall(r"[A-Za-z0-9]", str(text or ""))) < 3
 
 
+def speech_by_panel(understood: Any, vision: Any = None) -> Dict[str, str]:
+    """Per panel: what the page actually SAYS.
+
+    The understanding's `dialogue` field is sparse — measured over 601 panels,
+    457 carry OCR text and only 92 of those reach `dialogue`. extend_over_silent
+    reads this map to decide where an event's span must STOP, so without the
+    vision OCR ~80% of speaking panels look wordless and get swallowed into the
+    previous event's span. ORV Ep107: the Beast Lord's warning swallowed
+    p015-p019 and the next event swallowed p020-p023, so her "GOODBYE, CAPTAIN"
+    at p024 was never her own event and her death anchored 5 panels early.
+    Vision is the authority on whether a panel has words; the understanding
+    only fills in when vision is absent (older callers pass no manifest)."""
+    out = {str(p["scene_file"]): str(p.get("dialogue") or "")
+           for p in _panels(understood)}
+    for it in ((vision or {}).get("items") or []):
+        fn = str(it.get("scene_file") or "").split("/")[-1]
+        if fn in out and _is_silent(out[fn]):
+            out[fn] = str(it.get("ocr_clean") or "")
+    return out
+
+
 def extend_over_silent(span: List[str], ordered: List[str],
                        dialogue: Dict[str, Any],
                        anchored: Set[str], max_back: int = 4) -> List[str]:
@@ -638,7 +659,7 @@ def extend_over_silent(span: List[str], ordered: List[str],
 def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                              understood: Any,
                              profiles: List[Dict[str, Any]],
-                             log=print) -> tuple:
+                             log=print, vision: Any = None) -> tuple:
     """(raw_events, raw_overrides) derived DETERMINISTICALLY from the
     whole-chapter story pass — no model call here.
 
@@ -676,8 +697,7 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
 
     # STEP 2 — walk the events for panel attribution, and anchor each death to
     # the panel where the story says it happens.
-    dialogue = {str(p["scene_file"]): p.get("dialogue")
-                for p in _panels(understood)}
+    dialogue = speech_by_panel(understood, vision)
     raw_spans = [_panel_range(ev.get("panels"), ordered)
                  for ev in ((story or {}).get("events") or [])
                  if isinstance(ev, dict)]
@@ -790,7 +810,8 @@ def dead_sets_by_file(ledger: Any, ordered_files: List[str]
 
 def build_ledger(understood: Any, groups_m: Any, cast: Any,
                  arbitrate_fn=None, log=print,
-                 chapter_story: Any = None) -> Dict[str, Any]:
+                 chapter_story: Any = None,
+                 vision: Any = None) -> Dict[str, Any]:
     """The whole pipeline minus I/O — injectable arbitrate_fn for tests.
 
     When *chapter_story* is present (tools/story_pass.py), its events are the
@@ -805,7 +826,8 @@ def build_ledger(understood: Any, groups_m: Any, cast: Any,
     overrides_applied = 0
     if chapter_story:
         raw_events, raw_overrides = facts_from_chapter_story(
-            chapter_story, entities, understood, profiles, log=log)
+            chapter_story, entities, understood, profiles, log=log,
+            vision=vision)
         events = normalize_events(raw_events, entities, understood,
                                   profiles=profiles, log=log)
         overrides_applied = apply_overrides(panel_actions, raw_overrides,
@@ -860,6 +882,9 @@ def main() -> int:
     ap.add_argument("--understood", required=True)
     ap.add_argument("--groups", required=True)
     ap.add_argument("--cast", required=True)
+    ap.add_argument("--vision", default="",
+                    help="manifest.vision.json — the authority on which "
+                         "panels carry words (see speech_by_panel)")
     ap.add_argument("--chapter-story", default="",
                     help="manifest.chapter_story.json (story_pass). When "
                          "present its events ARE the facts and no model call "
@@ -883,11 +908,15 @@ def main() -> int:
     story = (_load(args.chapter_story)
              if args.chapter_story and os.path.exists(args.chapter_story)
              else None)
+    vision = (_load(args.vision)
+              if args.vision and os.path.exists(args.vision) else None)
     ledger = build_ledger(understood, groups_m, cast, arbitrate_fn=_arb,
-                          chapter_story=story)
+                          chapter_story=story, vision=vision)
     inputs = [args.understood, args.groups, args.cast]
     if story is not None:
         inputs.append(args.chapter_story)
+    if vision is not None:
+        inputs.append(args.vision)
     write_manifest(args.out, ledger, inputs=tuple(inputs),
                    tool="story_ledger",
                    extra_meta={"model": args.model, "backend": args.backend})
