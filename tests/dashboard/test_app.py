@@ -1235,3 +1235,50 @@ def test_render_approval_guard_still_refuses_bad_qa(client):
     assert r.status_code == 303 and "error=" in r.headers["location"]
     assert con.execute("SELECT COUNT(*) FROM job WHERE chapter_id=78 AND "
                        "type='render_segment'").fetchone()[0] == 0
+
+
+def test_videos_page_is_scoped_to_the_selected_manhwa(client, monkeypatch, tmp_path):
+    """Owner (2026-09-09): everything about ONE manhwa when selected — its
+    videos with the generated title/description/pinned comment inline, its
+    thumbnail + teaser state, and the rendered episodes not yet in a video."""
+    import json
+    import studio.dashboard.app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)          # hermetic dist/
+    c, con = client
+    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
+                "added_at) VALUES (2,'webtoon','https://w.example/orv','orv',"
+                "'Omniscient Reader','t')")
+    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
+                "status, updated_at, season) VALUES (2,1,2,'Chapter 2',"
+                "'https://asura.example/nano/ch2','rendered','t',1)")
+    con.execute("UPDATE chapter SET status='rendered' WHERE id=1")
+    con.commit()
+    r = c.post("/bundles", data={"series_id": 1, "num_from": 1, "num_to": 1},
+               follow_redirects=False)
+    assert r.status_code == 303
+    bid = con.execute("SELECT id FROM bundle").fetchone()[0]
+    d = tmp_path / "dist" / f"bundle_{bid}"
+    d.mkdir(parents=True)
+    (d / "publish_meta.json").write_text(json.dumps({
+        "title": "He Read The Ending First",
+        "description": "A reader wakes inside the novel.\n#manhwa",
+        "pinned_comment": "Official: Nano Machine (link)",
+        "hooks": ["READER|PLAYER"], "hashtags": ["#manhwa"]}))
+    (tmp_path / "dist" / "series_1").mkdir(parents=True)
+    (tmp_path / "dist" / "series_1" / "thumbnail_yt.jpg").write_bytes(b"jpg")
+
+    page = c.get("/videos?series_id=1").text
+    assert "Videos of Nano Machine" in page
+    assert "He Read The Ending First" in page
+    assert "A reader wakes inside the novel." in page          # description inline
+    assert "Official: Nano Machine (link)" in page             # pinned comment
+    assert "READER|PLAYER" in page                             # hooks
+    assert "/thumb/series/1" in page and "awaits approval" in page
+    assert "1 rendered episode(s) not yet in a video: Chapter 2" in page
+    # the other manhwa sees none of it
+    other = c.get("/videos?series_id=2").text
+    assert "Videos of Omniscient Reader" in other
+    assert "He Read The Ending First" not in other
+    assert "no videos yet for this manhwa" in other
+    # no param -> the first manhwa
+    assert "Videos of Nano Machine" in c.get("/videos").text

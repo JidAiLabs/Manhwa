@@ -2,15 +2,28 @@
 <h2>Videos <small>— a video is one or more episode segments concatenated; the title + description are generated automatically, and the debut video also gets the channel intro teaser</small></h2>
 {% if error %}<div class="row"><span class="b warn">⚠ {{ error }}</span></div>{% endif %}
 
-<h2>Create a new video</h2>
+<h2>Manhwa</h2>
 <div class="row">
 <select name="series_id" style="max-width:24em"
-        hx-get="/partials/bundle-form" hx-trigger="change"
-        hx-target="#bundleform"
-        title="pick the manhwa — the episode dropdowns below fill with its chapters that aren't already in a video">
+        onchange="location.href='/videos?series_id='+this.value"
+        title="pick the manhwa — this whole page shows only that manhwa: its videos, thumbnail, teaser and the episodes ready to bundle">
 {% for s in form.series %}<option value="{{ s.id }}"{% if s.id == form.series_id %} selected{% endif %}>{{ s.title }}</option>{% endfor %}
 </select>
 </div>
+{% if series.id %}
+<div class="row" style="align-items:flex-start;gap:18px">
+{% if series.thumb_exists %}<img src="/thumb/series/{{ series.id }}?v={{ series.thumb_v }}" alt="series thumbnail" style="max-width:280px;border:1px solid var(--line);border-radius:8px">{% endif %}
+<div>
+<div><b>{{ series.title }}</b></div>
+<div class="kv" style="margin-top:6px">thumbnail: {% if not series.thumb_exists %}<span class="b warn">none yet</span>{% elif series.thumb_approved %}<span class="b ok">approved ✓</span>{% else %}<span class="b warn">awaits approval</span>{% endif %}
+ · intro teaser: {% if series.teaser_state=='approved' %}<span class="b ok">approved ✓</span>{% elif series.teaser_state=='planned' %}<span class="b warn">awaits review</span>{% elif series.teaser_state=='declined' %}declined{% else %}none yet{% endif %}
+ · <a href="/series/{{ series.id }}" style="color:var(--acc)">manage thumbnail + teaser ↗</a></div>
+<div class="kv" style="margin-top:6px">{{ series.pool|length }} rendered episode(s) not yet in a video{% if series.pool %}: {% for ch in series.pool %}{{ ch.label }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</div>
+</div>
+</div>
+{% endif %}
+
+<h2 style="margin-top:20px">Create a new video</h2>
 <div id="bundleform">
 {% with series_id=form.series_id, options=form.options, first=form.first %}
 {% include "partials/bundle_form.html" %}
@@ -18,14 +31,21 @@
 </div>
 <div class="note">Only <b>rendered</b> episodes appear here (a video is a concat of finished episode videos). Pick any range you like — episodes already in a video stay selectable and are marked <i>already in a video</i>, so you can re-use them deliberately. The first video for a manhwa includes the intro teaser.</div>
 
-<h2 style="margin-top:24px">Your videos</h2>
+<h2 style="margin-top:24px">Videos of {{ series.title or 'this manhwa' }} <small>— {{ bundles|length }} video(s); the title, description, pinned comment and hooks are generated automatically (↻ title regenerates them)</small></h2>
+{% if not bundles %}<div class="note">no videos yet for this manhwa — create one above from its rendered episodes</div>{% endif %}
 <table>
 <tr><th>video</th><th title="the concatenated running time (episodes + teaser + outro)">runtime</th>
 <th title="how many episode segments are rendered and ready to concatenate">segments</th>
 <th>state</th><th title="the cold-open hook prepended to the debut video">intro teaser</th><th></th></tr>
 {% for b in bundles %}
 <tr>
-<td><b>{{ b.title or ('video #' ~ b.id) }}</b>{% if b.span %}<div class="kv">episodes {{ b.span }}</div>{% endif %}</td>
+<td><b>{{ b.title or ('video #' ~ b.id) }}</b>{% if b.span %}<div class="kv">episodes {{ b.span }}</div>{% endif %}
+{% if b.meta and b.meta.description %}<details style="margin-top:6px"><summary class="kv" style="cursor:pointer">description · pinned comment · hooks</summary>
+<div style="white-space:pre-wrap;max-width:60em;margin:6px 0"><b>Description</b><br>{{ b.meta.description }}</div>
+{% if b.meta.pinned_comment %}<div style="white-space:pre-wrap;max-width:60em;margin:6px 0"><b>Pinned comment</b><br>{{ b.meta.pinned_comment }}</div>{% endif %}
+{% if b.meta.hooks %}<div class="kv"><b>Hooks</b>: {{ b.meta.hooks|join(' · ') }}</div>{% endif %}
+{% if b.meta.hashtags %}<div class="kv">{{ b.meta.hashtags|join(' ') }}</div>{% endif %}
+</details>{% else %}<div class="kv" style="margin-top:4px">title + description not generated yet — press ↻ title</div>{% endif %}</td>
 <td class="kv">≈ {{ b.runtime }}</td>
 <td><span class="bar"><i style="width:{{ (100*b.ready//b.total) if b.total else 0 }}%"></i></span>
 <span class="kv">{{ b.ready }}/{{ b.total }}</span></td>

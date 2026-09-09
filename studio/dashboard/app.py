@@ -775,12 +775,21 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     video_stale_detail=video_stale_detail)
 
     @app.get("/videos", response_class=HTMLResponse)
-    def videos_page(request: Request):
+    def videos_page(request: Request, series_id: Optional[int] = None):
+        """ONE manhwa at a time (owner, 2026-09-09: "I want to see everything
+        about that specific manhwa when selected"): the page is scoped to
+        the selected series — its videos with the generated title,
+        description, pinned comment and hooks inline, its thumbnail and
+        teaser state, and the rendered episodes not yet in a video. The
+        dropdown navigates (?series_id=) so every block agrees."""
         c = rcon()
+        sids = [r[0] for r in c.execute("SELECT id FROM series ORDER BY id")]
+        sid = series_id if series_id in sids else (sids[0] if sids else None)
         rows = []
-        for r in c.execute("SELECT id, series_id, title, kind, season_no, "
-                           "state, output_path, teaser_state FROM bundle "
-                           "ORDER BY id"):
+        brows = c.execute("SELECT id, series_id, title, kind, season_no, "
+                          "state, output_path, teaser_state FROM bundle "
+                          "WHERE series_id=? ORDER BY id", (sid,)).fetchall() if sid else []
+        for r in brows:
             b = dict(zip(("id", "series_id", "title", "kind", "season_no",
                           "state", "output_path", "teaser_state"), r))
 
@@ -820,12 +829,16 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                 and Path(b["output_path"]).exists()
                 and tf.stat().st_mtime > Path(b["output_path"]).stat().st_mtime)
             auto = ""
+            meta: Dict[str, Any] = {}
             mp = REPO / "dist" / f"bundle_{b['id']}" / "publish_meta.json"
             if mp.exists():
                 try:
-                    auto = str(json.loads(mp.read_text()).get("title") or "")
+                    meta = json.loads(mp.read_text()) or {}
+                    auto = str(meta.get("title") or "")
                 except Exception:
-                    auto = ""
+                    meta, auto = {}, ""
+            b["meta"] = {k: meta.get(k) for k in ("description", "pinned_comment",
+                                                     "hooks", "hashtags", "synopsis")}
             chs = bundles.bundle_chapters(c, b["id"])
             span = c.execute(
                 "SELECT MIN(number), MAX(number) FROM chapter WHERE id IN "
@@ -843,12 +856,22 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                          "SELECT MIN(id) FROM bundle WHERE series_id=?",
                          (b["series_id"],)).fetchone()[0]))
             rows.append(b)
-        # first series' form is rendered inline; changing the dropdown swaps it
-        first_sid = c.execute("SELECT id FROM series ORDER BY id "
-                              "LIMIT 1").fetchone()
-        form = _bundle_form_ctx(c, first_sid[0]) if first_sid else {
+        form = _bundle_form_ctx(c, sid) if sid else {
             "series_id": None, "options": [], "first": True, "series": []}
+        series_ctx: Dict[str, Any] = {"id": sid}
+        if sid:
+            srow = c.execute("SELECT title, teaser_state FROM series WHERE id=?",
+                             (sid,)).fetchone()
+            thumb = REPO / "dist" / f"series_{sid}" / "thumbnail_yt.jpg"
+            series_ctx.update(
+                title=(srow[0] if srow else ""),
+                teaser_state=(srow[1] if srow else "none"),
+                thumb_exists=thumb.exists(),
+                thumb_v=int(thumb.stat().st_mtime) if thumb.exists() else 0,
+                thumb_approved=gates.thumbnail_approved(c, sid),
+                pool=bundles.unbundled_chapters(c, sid))
         return page("videos.html", request, bundles=rows, form=form,
+                    series=series_ctx,
                     error=request.query_params.get("error", ""))
 
     @app.get("/discovery", response_class=HTMLResponse)
