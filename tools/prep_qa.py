@@ -1889,6 +1889,8 @@ def ledger_contradiction_flags(beats_obj: Any, ledger_obj: Any,
         for m in members:
             ev = death_ev.get(m)
             if ev:
+                if ev.get("before_chapter"):
+                    return " (dead before this chapter began)"
                 q = str(ev.get("evidence_quote") or "").strip()
                 sf = str(ev.get("scene_file") or "")
                 return f" (killed at {sf}: \"{q}\")" if q else f" (killed at {sf})"

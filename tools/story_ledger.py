@@ -353,7 +353,12 @@ def normalize_events(raw: Any, entities: List[Dict[str, Any]],
         out.append({"type": etype, "scene_file": sf, "subject": subj,
                     "detail": str(ev.get("detail") or "").strip()[:300],
                     "evidence_quote":
-                        str(ev.get("evidence_quote") or "").strip()[:200]})
+                        str(ev.get("evidence_quote") or "").strip()[:200],
+                    # WHERE this came from and how it propagates. The rebuild
+                    # is strict, so a flag not carried here is a flag lost.
+                    "anchor_source": str(ev.get("anchor_source") or "event"),
+                    "before_chapter": bool(ev.get("before_chapter")),
+                    "lingers": bool(ev.get("lingers"))})
     return out
 
 
@@ -457,6 +462,9 @@ def build_beat_facts(groups: List[Dict[str, Any]],
     facts: Dict[str, Dict[str, Any]] = {}
     for g in groups:
         gid = int(g.get("shot_id") or 0)
+        # A flashback shows the dead alive on purpose. story_group already
+        # tags every shot; nothing in the death chain used to read it.
+        flashback = str(g.get("segment") or "present") != "present"
         files = [str(f) for f in (g.get("scene_files") or [])]
         idxs = [order[f] for f in files if f in order]
         start = min(idxs) if idxs else -1
@@ -482,7 +490,12 @@ def build_beat_facts(groups: List[Dict[str, Any]],
                 actions.append(f"{f}: {s}{mark}")
         dead_before = sorted({ev["subject"] for ev in events
                               if ev["type"] == "death"
-                              and 0 <= _ev_index(ev) < start})
+                              # a soul/ghost/returned lead keeps acting
+                              and not ev.get("lingers")
+                              and (ev.get("before_chapter")
+                                   or 0 <= _ev_index(ev) < start)})
+        if flashback:
+            dead_before = []
         alive = all_names - set(dead_before)
         banned: List[str] = []
         for d in dead_before:
@@ -645,19 +658,29 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
     # `fate`. That is the ONLY death authority: a character dies when their own
     # fate says so, never because some event sentence contains the word "kill"
     # (a villain's threat is not a death).
-    dead: Dict[str, str] = {}
+    # (sp_v2) `dies_at` is the story's own answer to WHERE, and it also
+    # ESTABLISHES the death: "eradicate the Beast Lord" is a kill that no
+    # English verb list reads, and 29 of 36 deaths never reached the ledger
+    # because of that. The fate only has to not contradict it.
+    dead: Dict[str, Dict[str, Any]] = {}
     for c in ((story or {}).get("cast") or []):
         if not isinstance(c, dict):
             continue
         fate = str(c.get("fate") or "")
-        if not is_completed_death(fate):
+        dies_at = str(c.get("dies_at") or "").strip().lower()
+        if dies_at and _SURVIVES_RE.search(fate):
+            log(f"[ledger] {c.get('name')!r} has dies_at {dies_at!r} but the "
+                f"fate says they live ({fate[:50]!r}) — ignoring dies_at")
+            dies_at = ""
+        if not (is_completed_death(fate) or dies_at):
             continue
         who, _e = resolve_name(str(c.get("name") or ""), profiles)
         if who == "unknown":
             log(f"[ledger] {c.get('name')!r} is {fate[:50]!r} but matches no "
                 "entity — that death cannot propagate")
             continue
-        dead[who] = fate
+        dead[who] = {"fate": fate, "dies_at": dies_at,
+                     "lingers": str(c.get("after_death") or "") == "present"}
 
     # STEP 2 — walk the events for panel attribution, and anchor each death to
     # the panel where the story says it happens.
@@ -669,6 +692,7 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
     anchored = {f for s in raw_spans for f in s}
     order = {f: i for i, f in enumerate(ordered)}
     last_act: Dict[str, int] = {}        # entity -> index of its last ACTING panel
+    death_quote: Dict[str, str] = {}     # entity -> the line that proves it
     for ev in ((story or {}).get("events") or []):
         if not isinstance(ev, dict):
             continue
@@ -707,12 +731,50 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
         # A death is recorded ONLY when the fate sheet already says this
         # character died AND this event describes the killing actually
         # happening. Both gates must pass; either alone was the old bug.
+        if target in dead and str(ev.get("evidence") or "").strip():
+            if is_completed_death(does) or target not in death_quote:
+                death_quote[target] = str(ev["evidence"])[:200]
         if (target in dead and is_completed_death(does)
                 and not any(e["subject"] == target for e in events)):
             events.append({"type": "death", "scene_file": span[-1],
-                           "subject": target,
-                           "detail": f"{does[:150]} (fate: {dead[target][:60]})",
+                           "subject": target, "anchor_source": "event",
+                           "lingers": dead[target]["lingers"],
+                           "detail": f"{does[:150]} "
+                                     f"(fate: {dead[target]['fate'][:60]})",
                            "evidence_quote": str(ev.get("evidence") or "")[:200]})
+
+    # STEP 2b — WHERE the story says it happened beats inferring it from the
+    # killing sentence's English. This is the whole point of sp_v2: it records
+    # a death whose verb no regex reads, and it moves an anchor the events put
+    # on a caption that merely ANNOUNCES the death.
+    for who, info in dead.items():
+        dies_at = info["dies_at"]
+        if not dies_at:
+            continue
+        before = dies_at == "before"
+        if before:
+            span = ordered[:1]
+        else:
+            span = _panel_range(dies_at, ordered)
+            if not span:
+                log(f"[ledger] dies_at {dies_at!r} for {who!r} is not a panel "
+                    "of this chapter — falling back to event inference")
+                continue
+        if not span:
+            continue
+        e = next((x for x in events
+                  if x["type"] == "death" and x["subject"] == who), None)
+        if e is None:
+            e = {"type": "death", "subject": who,
+                 "evidence_quote": death_quote.get(who, "")}
+            events.append(e)
+        e["scene_file"] = span[-1]
+        e["anchor_source"] = "before" if before else "dies_at"
+        e["before_chapter"] = before
+        e["lingers"] = info["lingers"]
+        e["detail"] = (f"dead before this chapter (fate: {info['fate'][:60]})"
+                       if before else
+                       f"dies_at {span[-1]} (fate: {info['fate'][:60]})")
 
     # A death cannot precede the victim's LAST ACTION in this same story
     # record. Webtoons announce a death before it happens — ORV Ep107 opens
@@ -729,16 +791,23 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
             continue
         i_death = order.get(str(e["scene_file"]), -1)
         i_last = last_act.get(e["subject"], -1)
-        if i_last > i_death:
+        if i_last > i_death and e.get("anchor_source", "event") != "event":
+            # The story named the panel; a later acting event is the story
+            # disagreeing with itself (or a soul that keeps acting).
+            log(f"[ledger] {e['subject']!r} dies at {e['scene_file']} per the "
+                f"cast sheet but the story still has them acting at "
+                f"{ordered[i_last]} — keeping the story's panel")
+        elif i_last > i_death:
             log(f"[ledger] death of {e['subject']!r} moved {e['scene_file']} -> "
                 f"{ordered[i_last]}: the story has them acting through "
                 f"{ordered[i_last]} (final words are not a resurrection)")
             e["scene_file"] = ordered[i_last]
 
-    for who, fate in dead.items():
+    for who, info in dead.items():
         if not any(e["subject"] == who for e in events):
-            log(f"[ledger] {who!r} is {fate[:50]!r} per the cast sheet but no "
-                "event anchors that death to a panel — it will NOT propagate")
+            log(f"[ledger] {who!r} is {info['fate'][:50]!r} per the cast sheet "
+                "but no event anchors that death to a panel — it will NOT "
+                "propagate")
     return events, overrides
 
 
@@ -748,12 +817,17 @@ def dead_sets_by_file(ledger: Any, ordered_files: List[str]
     sets cast_identity.resolve_figures_by_file takes so a killed look-alike
     (the leader) stops claiming later panels. {} keys are omitted."""
     order = {str(f): i for i, f in enumerate(ordered_files)}
+    flashback = set((ledger or {}).get("flashback_files") or [])
     deaths = sorted(
-        (order[str(ev.get("scene_file"))], str(ev.get("subject")))
+        (-1 if ev.get("before_chapter") else order[str(ev.get("scene_file"))],
+         str(ev.get("subject")))
         for ev in ((ledger or {}).get("events") or [])
-        if ev.get("type") == "death" and str(ev.get("scene_file")) in order)
+        if ev.get("type") == "death" and not ev.get("lingers")
+        and str(ev.get("scene_file")) in order)
     out: Dict[str, Set[str]] = {}
     for f, i in order.items():
+        if f in flashback:      # the dead are alive on screen here, on purpose
+            continue
         dead = {s for di, s in deaths if di < i}
         if dead:
             out[f] = dead
@@ -815,6 +889,10 @@ def build_ledger(understood: Any, groups_m: Any, cast: Any,
         "entities": entities,
         "panel_actions": panel_actions,
         "events": events,
+        "flashback_files": sorted(
+            {str(f) for g in groups
+             if str(g.get("segment") or "present") != "present"
+             for f in (g.get("scene_files") or [])}),
         "beat_facts": build_beat_facts(groups, events, panel_actions,
                                        entities, understood),
         "stats": {"overrides_applied": overrides_applied,

@@ -1092,3 +1092,172 @@ def test_death_is_anchored_no_earlier_than_the_victims_last_action():
     ev2, _ = sl.facts_from_chapter_story(dict(story, events=[kill]), ents, u, profs,
                                          log=lambda _m: None)
     assert [e["scene_file"] for e in ev2 if e["type"] == "death"] == ["p000003.jpg"]
+
+
+# ---- sp_v2: the story names the death panel (dies_at / after_death) ----------
+
+def _ents_profs():
+    ents = sl.build_entities(_U12, CAST)
+    return ents, sl.entity_profiles(ents)
+
+
+def _story(fate, dies_at, after_death="", events=None, name="the assassins"):
+    return {"cast": [{"name": name, "role": "antagonist", "fate": fate,
+                      "dies_at": dies_at, "after_death": after_death}],
+            "events": events or []}
+
+
+def test_dies_at_records_a_death_whose_verb_no_regex_reads():
+    """ORV Ep107 run 2: the kill was phrased 'eradicate the Beast Lord' and
+    the ledger recorded NO death at all — she acted 20 panels after her own
+    death scene and the chapter shipped. The story's own panel settles it."""
+    ents, profs = _ents_profs()
+    story = _story("eradicated by Prince Cheon", "p000038.jpg", "absent",
+                   [{"panels": "p000036-p000037", "actor": "Prince Cheon",
+                     "does": "eradicates the assassin",
+                     "target": "the assassins",
+                     "evidence": "HE WIPED THEM OUT"}])
+    assert sl.is_completed_death("eradicated by Prince Cheon") is False
+    ev, _ov = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                          log=lambda _m: None)
+    deaths = [e for e in ev if e["type"] == "death"]
+    assert len(deaths) == 1
+    assert deaths[0]["scene_file"] == "p000038.jpg"
+    assert deaths[0]["anchor_source"] == "dies_at"
+    assert deaths[0]["evidence_quote"] == "HE WIPED THEM OUT"
+    assert deaths[0]["lingers"] is False
+
+
+def test_dies_at_overrides_the_event_anchor():
+    ents, profs = _ents_profs()
+    story = _story("Killed by Prince Cheon", "p000038.jpg", "absent",
+                   [{"panels": "p000030-p000031", "actor": "Prince Cheon",
+                     "does": "kills an assassin", "target": "the assassins",
+                     "evidence": "q"}])
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=lambda _m: None)
+    assert [e["scene_file"] for e in ev if e["type"] == "death"] == [
+        "p000038.jpg"]
+    dead = sl.dead_sets_by_file({"events": ev}, _ORDERED)
+    assert "p000038.jpg" not in dead
+    assert dead["p000039.jpg"] == {"the assassins"}
+
+
+def test_dies_at_is_ignored_when_the_fate_says_they_live():
+    ents, profs = _ents_profs()
+    logs = []
+    story = _story("Alive; retreats after the fight", "p000038.jpg", "absent")
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=logs.append)
+    assert [e for e in ev if e["type"] == "death"] == []
+    assert any("ignoring dies_at" in m for m in logs)
+
+
+def test_an_unresolvable_dies_at_falls_back_to_event_inference():
+    ents, profs = _ents_profs()
+    logs = []
+    story = _story("Killed by Prince Cheon", "p999999.jpg", "absent",
+                   [{"panels": "p000030-p000031", "actor": "Prince Cheon",
+                     "does": "kills an assassin", "target": "the assassins",
+                     "evidence": "q"}])
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=logs.append)
+    d = [e for e in ev if e["type"] == "death"]
+    assert [e["scene_file"] for e in d] == ["p000031.jpg"]
+    assert d[0]["anchor_source"] == "event"
+    assert any("is not a panel of this chapter" in m for m in logs)
+
+
+def test_a_death_before_the_chapter_is_dead_from_the_first_panel():
+    """'reveals that Jihye died during a naval battle' anchored the death at
+    the line that RECALLS it, so she was alive for the first half."""
+    ents, profs = _ents_profs()
+    story = _story("killed long before this chapter; only recalled here",
+                   "before", "absent", name="the leader")
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=lambda _m: None)
+    assert len(ev) == 1 and ev[0]["before_chapter"] is True
+    assert ev[0]["anchor_source"] == "before"
+    dead = sl.dead_sets_by_file({"events": ev}, _ORDERED)
+    assert dead["p000030.jpg"] == {"unnamed assassin"}       # panel 0 too
+    groups = [{"shot_id": 1, "scene_files": ["p000030.jpg"]}]
+    facts = sl.build_beat_facts(groups, ev, [], ents, _U12)
+    assert facts["g0001"]["dead_by_now"] == ["unnamed assassin"]
+    # ...and the flag says so instead of "killed at p000030.jpg"
+    led = {"events": ev, "beat_facts": facts}
+    flags = pq.ledger_contradiction_flags(
+        _beats(("The leader lunges again.", ["p000030.jpg"], 1)), led, CAST)
+    assert [f["code"] for f in flags] == ["dead_actor"]
+    assert "dead before this chapter began" in flags[0]["detail"]
+
+
+def test_a_lingering_soul_is_recorded_but_never_bans_its_own_name():
+    """ORV kills and returns its lead as a soul (Ep164/Ep193). 'Dead forever
+    after panel X' is too strong when the story says he keeps acting."""
+    ents, profs = _ents_profs()
+    story = _story("killed, but walks on as a soul", "p000034.jpg", "present",
+                   name="the leader")
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=lambda _m: None)
+    assert len(ev) == 1 and ev[0]["lingers"] is True         # still RECORDED
+    assert sl.dead_sets_by_file({"events": ev}, _ORDERED) == {}
+    facts = sl.build_beat_facts(
+        [{"shot_id": 1, "scene_files": ["p000036.jpg"]}], ev, [], ents, _U12)
+    assert facts["g0001"]["dead_by_now"] == []
+    assert facts["g0001"]["banned_handles"] == []
+
+
+def test_a_flashback_shot_shows_the_dead_alive_on_purpose():
+    ents, profs = _ents_profs()
+    story = _story("Killed by Prince Cheon", "p000031.jpg", "absent",
+                   name="the leader")
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=lambda _m: None)
+    groups = [{"shot_id": 1, "scene_files": ["p000036.jpg"],
+               "segment": "flashback"},
+              {"shot_id": 2, "scene_files": ["p000037.jpg"]}]
+    facts = sl.build_beat_facts(groups, ev, [], ents, _U12)
+    assert facts["g0001"]["dead_by_now"] == []               # flashback
+    assert facts["g0002"]["dead_by_now"] == ["unnamed assassin"]
+    dead = sl.dead_sets_by_file(
+        {"events": ev, "flashback_files": ["p000036.jpg"]}, _ORDERED)
+    assert "p000036.jpg" not in dead                         # oracle exempt too
+    assert dead["p000037.jpg"] == {"unnamed assassin"}
+    # build_ledger publishes the set the oracle needs
+    led = sl.build_ledger(UNDERSTOOD,
+                          {"shots": [{"shot_id": 8, "scene_files": ["p1.jpg"],
+                                      "segment": "flashback"},
+                                     {"shot_id": 9, "scene_files": ["p2.jpg"]}]},
+                          CAST, arbitrate_fn=_arb_kill)
+    assert led["flashback_files"] == ["p1.jpg"]
+
+
+def test_the_last_action_clamp_never_moves_a_story_named_panel():
+    ents, profs = _ents_profs()
+    logs = []
+    story = _story("Killed by Prince Cheon", "p000034.jpg", "absent",
+                   [{"panels": "p000030-p000031", "actor": "Prince Cheon",
+                     "does": "kills an assassin", "target": "the assassins",
+                     "evidence": "q"},
+                    {"panels": "p000038", "actor": "the assassins",
+                     "does": "gasps a final warning", "target": "Prince Cheon",
+                     "evidence": "q2"}])
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=logs.append)
+    assert [e["scene_file"] for e in ev if e["type"] == "death"] == [
+        "p000034.jpg"]
+    assert any("keeping the story's panel" in m for m in logs)
+
+
+def test_normalize_events_carries_the_anchor_flags():
+    ents, _ = _ents_profs()
+    base = {"type": "death", "scene_file": "p000034.jpg",
+            "subject": "the assassins", "detail": "d", "evidence_quote": "q"}
+    out = sl.normalize_events(
+        [dict(base, anchor_source="dies_at", before_chapter=True,
+              lingers=True)], ents, _U12, log=lambda _m: None)
+    assert (out[0]["anchor_source"], out[0]["before_chapter"],
+            out[0]["lingers"]) == ("dies_at", True, True)
+    old = sl.normalize_events([base], ents, _U12, log=lambda _m: None)
+    assert (old[0]["anchor_source"], old[0]["before_chapter"],
+            old[0]["lingers"]) == ("event", False, False)
