@@ -785,23 +785,31 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
     # on p19–p24. Anchoring the death at p6 made dead_actor block her own
     # final words and put her in one beat's `present` AND `dead_by_now`.
     # Final words are not a resurrection: the death moves to the last panel
-    # the story has her acting on.
+    # the story has her acting on. This holds for a story-named `dies_at`
+    # too — sp_v2 asked and the model still answered p000006, because the
+    # transcript is OCR only and that panel's text is thick with "die".
+    # story_pass._contradictions re-asks when an answer kills someone before
+    # their own last act; this clamp is the floor for when it does not
+    # converge. Only `lingers` (after_death: present) is exempt.
     for e in events:
         if e["type"] != "death":
             continue
         i_death = order.get(str(e["scene_file"]), -1)
         i_last = last_act.get(e["subject"], -1)
-        if i_last > i_death and e.get("anchor_source", "event") != "event":
-            # The story named the panel; a later acting event is the story
-            # disagreeing with itself (or a soul that keeps acting).
-            log(f"[ledger] {e['subject']!r} dies at {e['scene_file']} per the "
-                f"cast sheet but the story still has them acting at "
-                f"{ordered[i_last]} — keeping the story's panel")
-        elif i_last > i_death:
-            log(f"[ledger] death of {e['subject']!r} moved {e['scene_file']} -> "
-                f"{ordered[i_last]}: the story has them acting through "
-                f"{ordered[i_last]} (final words are not a resurrection)")
-            e["scene_file"] = ordered[i_last]
+        if i_last <= i_death:
+            continue
+        if e.get("lingers"):
+            # after_death == 'present' — acting after dying IS the story
+            # (ORV kills its lead and returns him as a soul).
+            log(f"[ledger] {e['subject']!r} acts at {ordered[i_last]} after "
+                f"dying at {e['scene_file']} — after_death is 'present', "
+                f"keeping the story's panel")
+            continue
+        log(f"[ledger] death of {e['subject']!r} moved {e['scene_file']} -> "
+            f"{ordered[i_last]}: the story has them acting through "
+            f"{ordered[i_last]} (final words are not a resurrection"
+            f"; {e.get('anchor_source', 'event')} anchor)")
+        e["scene_file"] = ordered[i_last]
 
     for who, info in dead.items():
         if not any(e["subject"] == who for e in events):
