@@ -433,10 +433,12 @@ def cmd_refresh_facts(args: argparse.Namespace) -> int:
         if not ch.ep_dir:
             print(f"  ch{ch.number}: no ep_dir recorded — run fetch first.")
             continue
-        if ch.status in ("voiced", "planned", "rendered"):
-            # the beats would change under an approved voiceover
-            print(f"  ch{ch.number} (id {ch.id}): status={ch.status} — run "
-                  "'reset --to scripted' first, then refresh-facts.")
+        finished = ch.status in ("voiced", "planned", "rendered")
+        if finished and args.enqueue:
+            # rebuilding the RECORD is harmless; re-narrating under a finished
+            # voiceover is not — that needs a deliberate 'reset --to scripted'
+            print(f"  ch{ch.number} (id {ch.id}): status={ch.status} — "
+                  "refusing --enqueue; run 'reset --to scripted' first.")
             continue
         print(f"  ch{ch.number} (id {ch.id}): refreshing facts in {ch.ep_dir}")
         try:
@@ -449,6 +451,10 @@ def cmd_refresh_facts(args: argparse.Namespace) -> int:
                            + (" lingers" if lingers else "")
                            for who, panel, src, lingers in out["deaths"])
         print(f"    ledger rebuilt; deaths: {deaths or 'none'}")
+        if finished:
+            print(f"    NOTE: ch{ch.number} is already {ch.status} — the "
+                  "record is repaired, the shipped narration is not. Run "
+                  "'death_audit.py --contradictions' to see what it violates.")
         if args.enqueue:
             from studio.dashboard import jobs as _jobs
             jid = _jobs.enqueue(con, "prepare", series_id=args.series_id,
