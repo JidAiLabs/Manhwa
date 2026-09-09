@@ -881,3 +881,74 @@ def test_max_scene_height_reads_tallest(tmp_path):
     Image.new("RGB", (789, 900)).save(d / "p3.jpg")
     assert _max_scene_height(d) == 4600
     assert _max_scene_height(tmp_path / "nope") == 0   # missing dir -> 0
+
+
+# ---------------------------------------------------------------------------
+# refresh-facts: re-read the chapter, keep the narration
+# ---------------------------------------------------------------------------
+
+def _beated_ep(tmp_path: Path, story_version: str = "sp_v1") -> Path:
+    import json
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    for name in ("manifest.vision.json", "manifest.panels.understood.json",
+                 "manifest.groups.json", "manifest.cast.json",
+                 "manifest.beats.json"):
+        (ep / name).write_text("{}")
+    (ep / "manifest.chapter_story.json").write_text(
+        json.dumps({"_meta": {"prompt_version": story_version}}))
+    (ep / "manifest.ledger.json").write_text(json.dumps({"events": [
+        {"type": "death", "subject": "Beast Lord", "scene_file": "p000024.jpg",
+         "anchor_source": "dies_at", "lingers": False},
+        {"type": "reveal", "subject": "x", "scene_file": "p1.jpg"}]}))
+    return ep
+
+
+def _cfg() -> Config:
+    return Config(sites={}, yolo_weights=Path("f.pt"), detect_backend="yolo",
+                  beats_model="gemma4:26b")
+
+
+def test_refresh_facts_rereads_an_old_story_and_reports_the_deaths(
+        tmp_path, monkeypatch):
+    from studio import pipeline as pl
+    ep = _beated_ep(tmp_path, story_version="sp_v1")
+    calls = []
+    monkeypatch.setattr(pl, "_run_tool", lambda s, a: calls.append((s, a)))
+    out = pl.refresh_facts(ep, _cfg())
+    assert [c[0] for c in calls] == ["story_pass.py", "story_ledger.py"]
+    assert out["deaths"] == [("Beast Lord", "p000024.jpg", "dies_at", False)]
+    # the narration is NOT touched
+    assert "gemini_narrative_pass.py" not in [c[0] for c in calls]
+
+
+def test_refresh_facts_keeps_a_current_story_unless_forced(tmp_path, monkeypatch):
+    import tools.story_pass as sp
+    from studio import pipeline as pl
+    ep = _beated_ep(tmp_path, story_version=sp.PROMPT_VERSION)
+    calls = []
+    monkeypatch.setattr(pl, "_run_tool", lambda s, a: calls.append((s, a)))
+    pl.refresh_facts(ep, _cfg())
+    assert [c[0] for c in calls] == ["story_ledger.py"]      # no model call
+    calls.clear()
+    pl.refresh_facts(ep, _cfg(), force=True)
+    assert [c[0] for c in calls] == ["story_pass.py", "story_ledger.py"]
+
+
+def test_refresh_facts_needs_a_beated_chapter(tmp_path, monkeypatch):
+    from studio import pipeline as pl
+    ep = _beated_ep(tmp_path)
+    (ep / "manifest.cast.json").unlink()
+    monkeypatch.setattr(pl, "_run_tool", lambda s, a: None)
+    with pytest.raises(FileNotFoundError, match="manifest.cast.json"):
+        pl.refresh_facts(ep, _cfg())
+
+
+def test_refresh_facts_argv_is_the_beated_stages_own(tmp_path):
+    from studio import pipeline as pl
+    ep = _beated_ep(tmp_path)
+    story = pl._story_pass_args(ep, _cfg())
+    assert story[story.index("--out") + 1].endswith("manifest.chapter_story.json")
+    led = pl._ledger_args(ep, _cfg())
+    assert led[led.index("--chapter-story") + 1] == story[story.index("--out") + 1]
+    assert led[led.index("--out") + 1].endswith("manifest.ledger.json")

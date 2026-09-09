@@ -1900,6 +1900,29 @@ def _h_refresh(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
         raise RuntimeError(f"refresh exited {rc}")
 
 
+def _h_refresh_facts(con: sqlite3.Connection, job: Dict[str, Any],
+                     log: TextIO) -> None:
+    """Re-read one chapter and rebuild its ledger, narration untouched
+    (studio refresh-facts). The rollout path for sp_v2 across chapters whose
+    story was written before the story pass named the death panel.
+
+    gpu lane: it IS a gemma call, and the chapter lease keeps it off the same
+    chapter's prepare. No record_stage — it produces no stage artifact."""
+    ch = _chapter(con, job["chapter_id"])
+    payload = job["payload"] or {}
+    cmd = [PY, "-m", "studio", "refresh-facts", str(ch["series_id"]),
+           "--chapters", str(ch["number"])]
+    if payload.get("force"):
+        cmd.append("--force")
+    rc = _stream(cmd, log, env=_series_env(con, ch["series_id"]))
+    if rc != 0:
+        raise RuntimeError(f"refresh-facts exited {rc}")
+    if payload.get("then_prepare"):
+        jid = jobs.enqueue(con, "prepare", series_id=ch["series_id"],
+                           chapter_id=ch["id"], priority=2)
+        log.write(f"[refresh-facts] prepare queued as job {jid}\n")
+
+
 def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
                     log: TextIO) -> None:
     """BUNDLE (video) metadata: arc title + description + Parts (YouTube-chapter
@@ -2006,6 +2029,7 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
     "concat": _h_concat,
     "plan_teaser": _h_teaser,
     "refresh": _h_refresh,
+    "refresh_facts": _h_refresh_facts,
 }
 
 

@@ -37,6 +37,8 @@ LANES = {
     # NOT beside a chapter prepare. They are infrequent (once per debut / per
     # series), so sharing the gpu queue costs a brief wait, never an OOM.
     "plan_teaser": "gpu", "series_thumbnail": "gpu", "publish_meta": "gpu",
+    # re-reading a chapter for its facts is one gemma call: same lane
+    "refresh_facts": "gpu",
     # --- qwen TTS: its own lane, OVERLAPS a gemma prepare ---
     "voiceover": "tts",
     # --- CPU / ffmpeg / remotion: no local model ---
@@ -545,7 +547,8 @@ _JOB_LABEL = {
     "prepare": "preparing", "voiceover": "voicing", "render_segment": "rendering",
     "qa_scan": "QA scan", "plan_teaser": "teaser", "series_thumbnail": "thumbnail",
     "publish_meta": "meta", "concat": "concat", "branding_segments": "branding",
-    "refresh": "refresh", "add_series": "add-series", "discovery_scan": "scan",
+    "refresh": "refresh", "refresh_facts": "refreshing facts",
+    "add_series": "add-series", "discovery_scan": "scan",
     "chain": "chaining",
 }
 

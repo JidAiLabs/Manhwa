@@ -11,6 +11,7 @@ does nothing).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -263,6 +264,66 @@ def _stage_grouped(ep_dir: Path, cfg: Config) -> None:
                "--out", str(p["groups"])] + backend)
 
 
+def _story_pass_args(ep_dir: Path, cfg: Config) -> list[str]:
+    p = _ep_paths(ep_dir)
+    return ["--vision-manifest", str(p["vision"]),
+            "--understood", str(p["understood"]),
+            "--out", str(ep_dir / "manifest.chapter_story.json"),
+            "--model", cfg.beats_model]
+
+
+def _ledger_args(ep_dir: Path, cfg: Config) -> list[str]:
+    p = _ep_paths(ep_dir)
+    return ["--understood", str(p["understood"]),
+            "--groups", str(p["groups"]),
+            "--cast", str(p["cast"]),
+            "--chapter-story", str(ep_dir / "manifest.chapter_story.json"),
+            "--out", str(ep_dir / "manifest.ledger.json"),
+            "--model", cfg.beats_model]
+
+
+def refresh_facts(ep_dir: Path, cfg: Config, *, force: bool = False) -> dict:
+    """Re-read the chapter (story pass) and rebuild the ledger — WITHOUT
+    touching the narration. The repair path for a chapter whose facts were
+    wrong when the writer ran: the beats stay, prep_qa's dead_actor/role_stale
+    flag whatever the new facts contradict, and the heal re-narrates only
+    those groups. Deliberately not a rewind: --to grouped would re-roll the
+    whole chapter, --to scripted alone re-uses the same wrong facts.
+
+    Skips the model call when the story is already at the current prompt
+    version (unless *force*). Raises before the ledger if the story pass
+    fails — story_pass writes atomically, so the old story survives."""
+    tools_dir = str(Path(__file__).resolve().parent.parent / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import story_pass                    # PROMPT_VERSION only
+    p = _ep_paths(ep_dir)
+    for key in ("vision", "understood", "groups", "cast"):
+        if not p[key].exists():
+            raise FileNotFoundError(f"{p[key].name} is missing — "
+                                    "refresh-facts needs a beated chapter")
+    story = ep_dir / "manifest.chapter_story.json"
+    version = ""
+    if story.exists():
+        try:
+            version = str((json.loads(story.read_text()).get("_meta") or {})
+                          .get("prompt_version") or "")
+        except Exception:
+            version = ""
+    if force or version != story_pass.PROMPT_VERSION:
+        _run_tool("story_pass.py", _story_pass_args(ep_dir, cfg))
+    else:
+        print(f"[refresh] story is already {version} -> keeping it "
+              "(--force to re-read the chapter)")
+    _run_tool("story_ledger.py", _ledger_args(ep_dir, cfg))
+    led = json.loads((ep_dir / "manifest.ledger.json").read_text())
+    deaths = [(str(e.get("subject")), str(e.get("scene_file")),
+               str(e.get("anchor_source") or "event"), bool(e.get("lingers")))
+              for e in (led.get("events") or []) if e.get("type") == "death"]
+    return {"story": story, "ledger": ep_dir / "manifest.ledger.json",
+            "deaths": deaths}
+
+
 def _stage_beated(ep_dir: Path, cfg: Config) -> None:
     p = _ep_paths(ep_dir)
     # keep-base: reuse the EXISTING beats' exact wording as the grounded base
@@ -294,10 +355,7 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                        and _artifact_is_stale(ep_dir,
                                               "manifest.chapter_story.json"))
         if not chapter_story.exists() or story_stale:
-            story_args = ["--vision-manifest", str(p["vision"]),
-                          "--understood", str(p["understood"]),
-                          "--out", str(chapter_story),
-                          "--model", cfg.beats_model]
+            story_args = _story_pass_args(ep_dir, cfg)
             try:
                 _run_tool("story_pass.py", story_args)
             except Exception as e:      # never block the chapter on it
@@ -345,13 +403,7 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         ledger_stale = (ledger.exists()
                         and _artifact_is_stale(ep_dir, "manifest.ledger.json"))
         if not ledger.exists() or ledger_stale:
-            ledger_args = ["--understood", str(p["understood"]),
-                           "--groups", str(p["groups"]),
-                           "--cast", str(p["cast"]),
-                           "--chapter-story", str(chapter_story),
-                           "--out", str(ledger),
-                           "--model", cfg.beats_model]
-            _run_tool("story_ledger.py", ledger_args)
+            _run_tool("story_ledger.py", _ledger_args(ep_dir, cfg))
         beats_args = ["--groups-manifest", str(p["groups"]),
                       "--vision-manifest", str(p["vision"]),
                       "--out", str(p["beats"]),

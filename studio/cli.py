@@ -407,6 +407,57 @@ def cmd_reset(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: refresh-facts
+# ---------------------------------------------------------------------------
+
+def cmd_refresh_facts(args: argparse.Namespace) -> int:
+    """Re-read the chapter and rebuild its fact record — narration untouched.
+
+    The repair for a chapter the writer narrated from WRONG facts (a death the
+    ledger never anchored, or anchored at the caption that only announces it).
+    A rewind cannot do this: --to grouped re-rolls the whole chapter, --to
+    scripted keeps the same wrong facts. Afterwards a prepare's prep_qa flags
+    exactly the groups the new facts contradict and the heal re-narrates only
+    those."""
+    from studio import pipeline
+
+    cfg = studio_config.load()
+    con = _open_db()
+    chapters = repo.list_chapters(con, args.series_id)
+    selected = parse_chapter_selector(args.chapters, chapters)
+    if not selected:
+        print("No chapters match the selector.")
+        return 0
+    rc = 0
+    for ch in selected:
+        if not ch.ep_dir:
+            print(f"  ch{ch.number}: no ep_dir recorded — run fetch first.")
+            continue
+        if ch.status in ("voiced", "planned", "rendered"):
+            # the beats would change under an approved voiceover
+            print(f"  ch{ch.number} (id {ch.id}): status={ch.status} — run "
+                  "'reset --to scripted' first, then refresh-facts.")
+            continue
+        print(f"  ch{ch.number} (id {ch.id}): refreshing facts in {ch.ep_dir}")
+        try:
+            out = pipeline.refresh_facts(Path(ch.ep_dir), cfg, force=args.force)
+        except Exception as e:
+            print(f"    FAILED: {e}")
+            rc = 1
+            continue
+        deaths = ", ".join(f"{who}@{panel} [{src}]"
+                           + (" lingers" if lingers else "")
+                           for who, panel, src, lingers in out["deaths"])
+        print(f"    ledger rebuilt; deaths: {deaths or 'none'}")
+        if args.enqueue:
+            from studio.dashboard import jobs as _jobs
+            jid = _jobs.enqueue(con, "prepare", series_id=args.series_id,
+                                chapter_id=ch.id, priority=1)
+            print(f"    prepare queued as job {jid}")
+    return rc
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: status
 # ---------------------------------------------------------------------------
 
@@ -508,6 +559,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reset.add_argument("--enqueue", action="store_true",
                          help="queue a front-priority prepare after the rewind")
 
+    p_rf = sub.add_parser(
+        "refresh-facts",
+        help="Re-read the chapter (story pass) + rebuild the ledger, leaving "
+             "the narration in place — the repair for wrong chapter facts")
+    p_rf.add_argument("series_id", type=int)
+    p_rf.add_argument("--chapters", required=True,
+                      help="Chapter selector: N, N-M, or 'new'")
+    p_rf.add_argument("--force", action="store_true",
+                      help="re-read even when the story is already at the "
+                           "current prompt version")
+    p_rf.add_argument("--enqueue", action="store_true",
+                      help="queue a front-priority prepare afterwards")
+
     p_status = sub.add_parser("status", help="Show chapter status table")
     p_status.add_argument("series_id", type=int, nargs="?", default=None)
 
@@ -549,6 +613,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "status":     cmd_status,
         "qa":         cmd_qa,
         "refresh":    cmd_refresh,
+        "refresh-facts": cmd_refresh_facts,
         "dashboard":  cmd_dashboard,
         "worker":     cmd_worker,
     }
