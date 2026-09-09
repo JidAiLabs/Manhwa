@@ -667,6 +667,8 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                  for ev in ((story or {}).get("events") or [])
                  if isinstance(ev, dict)]
     anchored = {f for s in raw_spans for f in s}
+    order = {f: i for i, f in enumerate(ordered)}
+    last_act: Dict[str, int] = {}        # entity -> index of its last ACTING panel
     for ev in ((story or {}).get("events") or []):
         if not isinstance(ev, dict):
             continue
@@ -684,6 +686,8 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                 f"over silent panel(s): {does[:50]!r}")
         actor, _a = resolve_name(str(ev.get("actor") or ""), profiles)
         target, _t = resolve_name(str(ev.get("target") or ""), profiles)
+        if actor != "unknown":
+            last_act[actor] = max(last_act.get(actor, -1), order[span[-1]])
         # direction: every panel in the span gets the story's attribution
         if actor != "unknown" or target != "unknown":
             for fn in span:
@@ -709,6 +713,27 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                            "subject": target,
                            "detail": f"{does[:150]} (fate: {dead[target][:60]})",
                            "evidence_quote": str(ev.get("evidence") or "")[:200]})
+
+    # A death cannot precede the victim's LAST ACTION in this same story
+    # record. Webtoons announce a death before it happens — ORV Ep107 opens
+    # with the caption "a Beast Lord usually doesn't die from a wound like
+    # that, but she was up against flames of hell" (p2–p6) and the story pass
+    # duly records "killed the Beast Lord" there; the same story pass then has
+    # her "warn the Captain about the Demon of the Horizon and say goodbye"
+    # on p19–p24. Anchoring the death at p6 made dead_actor block her own
+    # final words and put her in one beat's `present` AND `dead_by_now`.
+    # Final words are not a resurrection: the death moves to the last panel
+    # the story has her acting on.
+    for e in events:
+        if e["type"] != "death":
+            continue
+        i_death = order.get(str(e["scene_file"]), -1)
+        i_last = last_act.get(e["subject"], -1)
+        if i_last > i_death:
+            log(f"[ledger] death of {e['subject']!r} moved {e['scene_file']} -> "
+                f"{ordered[i_last]}: the story has them acting through "
+                f"{ordered[i_last]} (final words are not a resurrection)")
+            e["scene_file"] = ordered[i_last]
 
     for who, fate in dead.items():
         if not any(e["subject"] == who for e in events):

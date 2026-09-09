@@ -1019,3 +1019,35 @@ def test_first_person_dialogue_is_flagged_for_the_writer():
     sig = {s["scene_file"]: s for s in payload["scenes_signals"]}
     assert "first-person" in sig["p1.jpg"]["dialogue_voice"]
     assert "dialogue_voice" not in sig["p2.jpg"]      # third person: untouched
+
+
+def test_death_is_anchored_no_earlier_than_the_victims_last_action():
+    """ORV Ep107: the chapter OPENS with a caption announcing the Beast Lord's
+    death; the story pass records the kill there (p2–p6) and, later, her final
+    warning to the Captain (p19–p24). Anchoring the death at the caption made
+    dead_actor block her own last words. A death moves to the last panel the
+    story has the victim acting on; without a later action it stays put."""
+    u = {"panels": [{"scene_file": f"p{i:06d}.jpg", "subjects": [], "dialogue": ""}
+                    for i in range(1, 11)]}
+    ents = sl.build_entities(u, CAST)
+    profs = sl.entity_profiles(ents)
+    kill = {"panels": "p000002-p000003", "actor": "Prince Cheon",
+            "does": "kills an assassin", "target": "the assassins", "evidence": "q"}
+    last_words = {"panels": "p000007-p000008", "actor": "the assassins",
+                  "does": "gasps a final warning to the prince",
+                  "target": "Prince Cheon", "evidence": "q2"}
+    story = {"cast": [{"name": "the assassins", "role": "antagonist",
+                       "fate": "Killed by Prince Cheon"}],
+             "events": [kill, last_words]}
+    logs = []
+    ev, _ov = sl.facts_from_chapter_story(story, ents, u, profs, log=logs.append)
+    deaths = [e for e in ev if e["type"] == "death"]
+    assert len(deaths) == 1 and deaths[0]["scene_file"] == "p000008.jpg"
+    assert any("final words are not a resurrection" in m for m in logs)
+    # dead_sets_by_file follows the moved anchor: dead only AFTER p8
+    dead = sl.dead_sets_by_file({"events": ev}, [p["scene_file"] for p in u["panels"]])
+    assert "p000008.jpg" not in dead and dead.get("p000009.jpg") == {"the assassins"}
+    # control: no later action -> the kill event's own panel, as before
+    ev2, _ = sl.facts_from_chapter_story(dict(story, events=[kill]), ents, u, profs,
+                                         log=lambda _m: None)
+    assert [e["scene_file"] for e in ev2 if e["type"] == "death"] == ["p000003.jpg"]
