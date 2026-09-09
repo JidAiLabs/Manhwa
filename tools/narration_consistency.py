@@ -213,7 +213,17 @@ def is_nullish_line(text: Any) -> bool:
 # defects, while 'Meanwhile.' and 'Not right.' are legitimate. That is why this
 # tests pronounceability and NOT word count -- a length floor would have
 # rejected a real transition line.
-_SPEAKABLE_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+#
+# A run of letters is not automatically a WORD, though. ORV Ep207 p000001 is a
+# `system` panel whose OCR came back as the scrap "NT."; that rode into the
+# narration verbatim, became segment g0001_p00 on its own, and "Nt" satisfied
+# a bare [A-Za-z]{2,}. mlx-audio returned no wav three times, the adapter wrote
+# a silence placeholder, and the blocking audio_failed stopped the chapter at
+# the SPEAKER again. Every pronounceable English word carries a vowel, so that
+# is the test. Re-measured over the whole 12,202-segment corpus: requiring one
+# rejects exactly ONE additional line -- 'Nt.' itself -- and keeps 'So.',
+# 'Meanwhile.' and 'Not right.'.
+_SPEAKABLE_WORD_RE = re.compile(r"(?=[A-Za-z]*[AEIOUYaeiouy])[A-Za-z]{2,}")
 
 
 def is_unvoiceable_line(text: Any) -> bool:

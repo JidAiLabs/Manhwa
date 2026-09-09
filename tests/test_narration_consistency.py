@@ -144,9 +144,26 @@ def test_branding_and_silent_segments_ignored():
 from tools.narration_consistency import is_unvoiceable_line, is_nullish_line
 
 
-def test_unvoiceable_catches_the_two_real_corpus_defects():
+def test_unvoiceable_catches_the_real_corpus_defects():
     assert is_unvoiceable_line("G.")      # ORV Ep64 g0029_p11 -> 0.14s of audio
     assert is_unvoiceable_line("''.")     # ORV Ep86
+
+
+def test_a_letter_run_without_a_vowel_is_not_a_word():
+    """ORV Ep207 p000001 is a `system` panel whose OCR read "NT.". It rode into
+    the narration verbatim, became a segment of its own, and satisfied a bare
+    [A-Za-z]{2,} -- so mlx-audio was asked to say "Nt", returned no wav three
+    times, and the silence placeholder blocked the chapter at the speaker."""
+    assert is_unvoiceable_line("Nt.")
+    # the mood tag is stripped upstream -- tts_index recorded source_text
+    # "[tense] Nt." but sent_text "Nt.", so this predicate only ever sees the
+    # bare line and must NOT be asked to look through a tag
+    # a lone vowel is still not a word
+    assert is_unvoiceable_line("a.")
+    # ... but two letters WITH a vowel are: this is the line the length floor
+    # this predicate deliberately avoids would have thrown away
+    assert not is_unvoiceable_line("So.")
+    assert not is_unvoiceable_line("It ends.")
 
 
 def test_unvoiceable_still_catches_stringified_nulls():
