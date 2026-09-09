@@ -7,7 +7,7 @@ import math
 import os
 import re
 import sys
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 _TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TOOLS_DIR not in sys.path:
@@ -539,14 +539,33 @@ def beat_overshoot(beat: Mapping[str, Any]) -> int:
     return segments_overshoot(beat_segments(beat))
 
 
-def beat_lines_usable(beat: Mapping[str, Any]) -> bool:
+def beat_lines_usable(beat: Mapping[str, Any], *,
+                      dead_names: Optional[Iterable[str]] = None,
+                      noun_map: Optional[Mapping[str, Any]] = None) -> bool:
     """True when every line of a beat is shippable (see usable_narration_line).
-    Reads segments when present, else the joined narration."""
+    Reads segments when present, else the joined narration.
+
+    With *dead_names* + *noun_map* the floor also covers VALIDITY against the
+    chapter record: a line whose subject is a character the ledger says is
+    already dead is not shippable, however well written. Without that, every
+    revert guard happily restored the exact line the heal was fired to remove
+    (dead_actor then blocks, the corrections repeat, the chapter parks).
+    The predicate is prep_qa's own, so this floor and that gate agree."""
     segs = (beat or {}).get("segments") or []
     lines = [s.get("line") for s in segs if isinstance(s, dict)]
     if not lines:
         lines = [(beat or {}).get("narration")]
-    return all(usable_narration_line(ln) for ln in lines)
+    if not all(usable_narration_line(ln) for ln in lines):
+        return False
+    if not dead_names or not noun_map:
+        return True
+    from cast_identity import subject_actor_nouns   # prep_qa's own predicate
+    dead = set(dead_names)
+    for ln in lines:
+        for _noun, members in subject_actor_nouns(str(ln or ""), noun_map):
+            if members and members <= dead:
+                return False
+    return True
 
 
 def _words(text: str) -> List[str]:

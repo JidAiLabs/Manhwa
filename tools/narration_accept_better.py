@@ -87,6 +87,8 @@ def gate_beats(old_beats: List[Dict[str, Any]],
                new_beats: List[Dict[str, Any]],
                judge: Callable[[Dict[str, Any], Dict[str, Any]], str],
                caption_gap: Optional[Callable[[Dict[str, Any]], int]] = None,
+               dead_for: Optional[Callable[[Dict[str, Any]], set]] = None,
+               noun_map: Optional[Dict[str, Any]] = None,
                ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Return (accepted_beats, decisions). For every group the heal rewrote, ask
     `judge(old_beat, new_beat) -> verdict`; keep the new beat only when
@@ -101,15 +103,22 @@ def gate_beats(old_beats: List[Dict[str, Any]],
         if ob is None or _norm(nb.get("narration")) == _norm(ob.get("narration")):
             accepted.append(nb)
             continue
-        if not beat_lines_usable(ob):
+        dead = dead_for(ob) if dead_for else None
+        floor = ("old_unshippable" if not beat_lines_usable(ob)
+                 else "old_dead_actor" if (dead and not beat_lines_usable(
+                     ob, dead_names=dead, noun_map=noun_map))
+                 else "")
+        if floor:
             # "strictly better" is a TASTE rule and must never overrule
             # VALIDITY: the judge scores grounding + writing, so it happily
             # returns A_better for an incumbent that names an image file or
             # echoes a mood tag — categorically unshippable text the heal was
             # invoked to remove (nano ch1 g0026, reverted three runs running).
-            # Anything the writer produced beats a line that cannot ship.
+            # Anything the writer produced beats a line that cannot ship —
+            # and a line acting a character the ledger has already killed
+            # cannot ship either, however well it is written.
             decisions.append({
-                "group_id": gid, "verdict": "old_unshippable", "kept": "new",
+                "group_id": gid, "verdict": floor, "kept": "new",
                 "old": _norm(ob.get("narration"))[:120],
                 "new": _norm(nb.get("narration"))[:120],
             })
@@ -220,6 +229,31 @@ def make_caption_gap(vision_manifest: str):
     return caption_gap
 
 
+def make_dead_for(vision_manifest: str):
+    """(dead_for, noun_map) from the chapter's ledger + cast, or (None, None).
+    Found beside the vision manifest, exactly like make_caption_gap — so the
+    heal's argv does not change."""
+    d = os.path.dirname(vision_manifest or "")
+    lp = os.path.join(d, "manifest.ledger.json")
+    cp = os.path.join(d, "manifest.cast.json")
+    if not (vision_manifest and os.path.exists(lp) and os.path.exists(cp)):
+        return None, None
+    try:
+        from cast_identity import actor_noun_map
+        with open(lp, encoding="utf-8") as f:
+            beat_facts = (json.load(f).get("beat_facts") or {})
+        with open(cp, encoding="utf-8") as f:
+            noun_map = actor_noun_map(json.load(f))
+    except Exception:
+        return None, None
+
+    def dead_for(beat: Dict[str, Any]) -> set:
+        gid = f"g{int(beat.get('group_id') or 0):04d}"
+        return set((beat_facts.get(gid) or {}).get("dead_by_now") or [])
+
+    return dead_for, noun_map
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--old", required=True)
@@ -251,9 +285,11 @@ def main() -> int:
         return parsed
 
     judge = _make_judge(call_fn, args.scenes_dir)
+    dead_for, noun_map = make_dead_for(args.vision_manifest)
     accepted, decisions = gate_beats(
         old_beats, new_beats, judge,
-        caption_gap=make_caption_gap(args.vision_manifest))
+        caption_gap=make_caption_gap(args.vision_manifest),
+        dead_for=dead_for, noun_map=noun_map)
     out_doc = dict(new_doc)
     out_doc["beats"] = accepted
     with open(args.out, "w", encoding="utf-8") as f:

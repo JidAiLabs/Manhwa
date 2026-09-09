@@ -190,3 +190,68 @@ def test_caption_floor_is_silent_when_the_old_line_already_covers_it():
     accepted, decisions = ab.gate_beats(
         old, new, judge=lambda o, n: "A_better", caption_gap=lambda b: 0)
     assert decisions[0]["verdict"] == "A_better"                   # judge ruled
+
+
+# ---- validity floor: a dead character cannot act ----------------------------
+
+_CAST = {"cast": [
+    {"id": "beast_lord", "canonical_name": "Beast Lord", "role": "antagonist",
+     "aliases": ["the beast"], "visual_description": "a woman with long dark hair"},
+    {"id": "captain", "canonical_name": "the Captain", "role": "ally",
+     "aliases": [], "visual_description": "a man in a heavy coat"},
+]}
+
+
+def _dead_beats(line_old, line_new, gid=10):
+    old = [{"group_id": gid, "narration": line_old,
+            "segments": [{"span": ["p000043.jpg"], "line": line_old}]}]
+    new = [{"group_id": gid, "narration": line_new,
+            "segments": [{"span": ["p000043.jpg"], "line": line_new}]}]
+    return old, new
+
+
+def test_the_judge_can_never_restore_a_line_the_ledger_says_is_impossible():
+    """ORV Ep107's shape: the heal removes the dead Beast Lord from a line,
+    the judge calls the incumbent equivalent and puts her back, prep_qa flags
+    dead_actor again, the corrections repeat and the chapter parks."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
+    from cast_identity import actor_noun_map
+    old, new = _dead_beats("The beast lunges at the Captain again.",
+                           "The Captain turns to the empty ridge.")
+    noun_map = actor_noun_map(_CAST)
+    accepted, decisions = ab.gate_beats(
+        old, new, judge=lambda o, n: "A_better",
+        dead_for=lambda b: {"Beast Lord"}, noun_map=noun_map)
+    assert accepted[0]["narration"].startswith("The Captain turns")
+    assert decisions[0]["verdict"] == "old_dead_actor"
+    assert decisions[0]["kept"] == "new"
+    # ...and with nobody dead the incumbent still wins on taste, as before
+    accepted2, decisions2 = ab.gate_beats(
+        old, new, judge=lambda o, n: "A_better",
+        dead_for=lambda b: set(), noun_map=noun_map)
+    assert accepted2[0]["narration"].startswith("The beast lunges")
+    assert decisions2[0]["kept"] == "old"
+
+
+def test_the_floor_is_silent_without_a_ledger():
+    old, new = _dead_beats("The beast lunges at the Captain again.",
+                           "The Captain turns to the empty ridge.")
+    accepted, decisions = ab.gate_beats(old, new, judge=lambda o, n: "A_better")
+    assert accepted[0]["narration"].startswith("The beast lunges")
+    assert decisions[0]["kept"] == "old"
+    assert ab.make_dead_for("") == (None, None)
+    assert ab.make_dead_for("/nope/manifest.vision.json") == (None, None)
+
+
+def test_make_dead_for_reads_the_ledger_beside_the_vision_manifest(tmp_path):
+    import json
+    (tmp_path / "manifest.vision.json").write_text("{}")
+    (tmp_path / "manifest.cast.json").write_text(json.dumps(_CAST))
+    (tmp_path / "manifest.ledger.json").write_text(json.dumps(
+        {"beat_facts": {"g0010": {"dead_by_now": ["Beast Lord"]},
+                        "g0011": {"dead_by_now": []}}}))
+    dead_for, noun_map = ab.make_dead_for(str(tmp_path / "manifest.vision.json"))
+    assert dead_for({"group_id": 10}) == {"Beast Lord"}
+    assert dead_for({"group_id": 11}) == set()
+    assert noun_map                      # the same map prep_qa's gate fires on

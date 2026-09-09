@@ -2325,6 +2325,15 @@ def main() -> int:
         actor_nouns = actor_noun_map(cast_list)
         protagonist_names = _prot_names(cast_list)
         spoken_map = _spoken_names(cast_list)
+    def _dead_at(gid: int) -> set:
+        """Who the chapter record has already killed by this beat — the floor
+        every restore guard below needs, or it hands back the exact line the
+        heal was fired to remove."""
+        if not ledger_m:
+            return set()
+        facts = (ledger_m.get("beat_facts") or {}).get(f"g{gid:04d}") or {}
+        return set(facts.get("dead_by_now") or [])
+
     story_block = _build_story_block(args.story)
     system_body = system_body.replace("{CAST_BLOCK}", cast_block)
     system_body = system_body.replace("{STORY_SPINE}", story_block)
@@ -2597,7 +2606,8 @@ def main() -> int:
         # bookkeeping. A grounded pad beats a file name every time.
         if pin_prev is not None:
             if beat.pop("_segments_fallback", False):
-                if beat_lines_usable(pin_prev):
+                if beat_lines_usable(pin_prev, dead_names=_dead_at(gid),
+                                     noun_map=actor_nouns):
                     print(f"[segments] span-pin g{gid:04d}: regen fell back to "
                           "pads — kept previous lines")
                     beat = pin_prev
@@ -2615,14 +2625,17 @@ def main() -> int:
                 # UNPINNED corrections (unvoiced episode): a re-split rewrite
                 # is welcome, but pads must never replace real lines — the
                 # same poisoning family the pin guards against.
-                if beat_lines_usable(prev0):
+                if beat_lines_usable(prev0, dead_names=_dead_at(gid),
+                                     noun_map=actor_nouns):
                     print(f"[segments] corrections g{gid:04d}: regen fell back "
                           "to pads — kept previous lines")
                     beat = prev0
                 else:
                     print(f"[segments] corrections g{gid:04d}: previous lines "
                           "are unshippable — kept the grounded pads")
-            elif (still_long and prev0 is not None and beat_lines_usable(prev0)
+            elif (still_long and prev0 is not None
+                  and beat_lines_usable(prev0, dead_names=_dead_at(gid),
+                                        noun_map=actor_nouns)
                   and beat_overshoot(prev0)
                   <= beat_overshoot(beat)):
                 # the adopted repair is only worth taking while it is the
