@@ -143,3 +143,15 @@ def test_dag_equivalence_stale_edge_flags_like_legacy(tmp_path):
     stale = [i for i in issues if i["code"] == "stale_manifest"]
     assert [i["file"] for i in stale] == ["manifest.beats.json"]
     assert "manifest.groups.json" in stale[0]["detail"]
+
+
+def test_a_facts_refresh_does_not_stale_the_narration_it_repairs():
+    """refresh-facts re-rolls story+ledger under finished beats. Those two
+    edges were the only ones that fired there — and stale_manifest BLOCKS, so
+    they parked the chapter the refresh exists to repair. Neither edge has a
+    true positive on the normal path (one stage writes all four)."""
+    d = deps.dag()
+    assert "manifest.chapter_story.json" not in d["manifest.cast.json"][1]
+    assert "manifest.ledger.json" not in d["manifest.beats.json"][1]
+    # the rewind delete-lists are stage-derived, so they are untouched
+    assert "manifest.cast.json" in deps.artifacts_beyond("grouped")

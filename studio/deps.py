@@ -72,10 +72,16 @@ ARTIFACTS: Dict[str, A] = {
                                                  "manifest.vision.json"),
                                          # recurring-figure coverage: a cast
                                          # built before understanding existed
-                                         # must rebuild once it does; and the
-                                         # story pass supplies its names
-                                         optional=("manifest.panels.understood.json",
-                                                   "manifest.chapter_story.json")),
+                                         # must rebuild once it does.
+                                         # NO chapter_story edge: story, cast,
+                                         # ledger and the writer all run in one
+                                         # stage, so it never fires on the
+                                         # normal path — it fires only when the
+                                         # facts are refreshed under finished
+                                         # narration (refresh-facts), where a
+                                         # blocking stale_manifest would park
+                                         # the chapter it is meant to repair.
+                                         optional=("manifest.panels.understood.json",)),
     # story-state ledger (2026-07-20): chapter fact record (entities, action
     # attribution, deaths/role transitions) built between cast and the writer.
     # NOT required yet — older chapters predate it; flip once the fleet has
@@ -85,10 +91,13 @@ ARTIFACTS: Dict[str, A] = {
                                                  "manifest.groups.json",
                                                  "manifest.cast.json"),
                                          optional=("manifest.chapter_story.json",)),
+    # NO ledger edge, for the reason above: the writer stamps beats with
+    # (groups, cast) only, so it was an MTIME edge that a facts refresh trips
+    # by construction. The ledger<->narration relation is checked SEMANTICALLY
+    # by prep_qa's dead_actor/role_stale, which is the check that matters.
     "manifest.beats.json":             A(stage="beated", required=True,
                                          inputs=("manifest.groups.json",),
-                                         optional=("manifest.cast.json",
-                                                   "manifest.ledger.json")),
+                                         optional=("manifest.cast.json",)),
     "manifest.script.json":            A(stage="scripted", required=True,
                                          inputs=("manifest.beats.json",)),
     "manifest.sanitize.json":          A(stage="scripted",

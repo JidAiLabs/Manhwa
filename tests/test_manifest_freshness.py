@@ -467,3 +467,26 @@ def test_corrupt_manifest_flagged(tmp_path):
     (tmp_path / "manifest.vision.json").write_bytes(b"{}")         # healthy
     issues = mf.verify_chapter(str(tmp_path), status="visioned")
     assert issues == []
+
+
+def test_refreshed_story_and_ledger_do_not_stale_the_finished_narration(tmp_path):
+    """refresh-facts re-rolls story+ledger long after beats/cast were written.
+    The writer stamps beats with (groups, cast) only, so the old ledger edge
+    was pure mtime — and stale_manifest BLOCKS, so a refreshed chapter parked
+    forever behind the very repair it was given."""
+    base = 1_000_000.0
+    for i, name in enumerate(["manifest.vision.json",
+                              "manifest.panels.understood.json",
+                              "manifest.groups.json",
+                              "manifest.chapter_story.json",
+                              "manifest.cast.json",
+                              "manifest.ledger.json",
+                              "manifest.beats.json",
+                              "manifest.script.json",
+                              "render.plan.clean.json"]):
+        _touch(tmp_path / name, base + i)
+    assert mf.verify_chapter(str(tmp_path), status="prepped") == []
+    # ...now the facts are refreshed under the finished narration
+    _touch(tmp_path / "manifest.chapter_story.json", base + 100)
+    _touch(tmp_path / "manifest.ledger.json", base + 101)
+    assert mf.verify_chapter(str(tmp_path), status="prepped") == []
