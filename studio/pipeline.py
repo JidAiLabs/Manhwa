@@ -283,7 +283,8 @@ def _ledger_args(ep_dir: Path, cfg: Config) -> list[str]:
             "--model", cfg.beats_model]
 
 
-def refresh_facts(ep_dir: Path, cfg: Config, *, force: bool = False) -> dict:
+def refresh_facts(ep_dir: Path, cfg: Config, *, force: bool = False,
+                  ledger_only: bool = False) -> dict:
     """Re-read the chapter (story pass) and rebuild the ledger — WITHOUT
     touching the narration. The repair path for a chapter whose facts were
     wrong when the writer ran: the beats stay, prep_qa's dead_actor/role_stale
@@ -293,7 +294,12 @@ def refresh_facts(ep_dir: Path, cfg: Config, *, force: bool = False) -> dict:
 
     Skips the model call when the story is already at the current prompt
     version (unless *force*). Raises before the ledger if the story pass
-    fails — story_pass writes atomically, so the old story survives."""
+    fails — story_pass writes atomically, so the old story survives.
+
+    *ledger_only* rebuilds from the story ALREADY on disk: no model call, no
+    re-roll, so the anchors are exactly what a dry run predicted. This is the
+    mode for applying a ledger rule change to shipped chapters — a re-read
+    would also re-roll who-said-what, which is the part that varies."""
     tools_dir = str(Path(__file__).resolve().parent.parent / "tools")
     if tools_dir not in sys.path:
         sys.path.insert(0, tools_dir)
@@ -311,7 +317,13 @@ def refresh_facts(ep_dir: Path, cfg: Config, *, force: bool = False) -> dict:
                           .get("prompt_version") or "")
         except Exception:
             version = ""
-    if force or version != story_pass.PROMPT_VERSION:
+    if ledger_only:
+        if not story.exists():
+            raise FileNotFoundError(
+                "manifest.chapter_story.json is missing — --ledger-only "
+                "rebuilds from the story on disk")
+        print(f"[refresh] ledger-only: keeping the {version or '?'} story")
+    elif force or version != story_pass.PROMPT_VERSION:
         _run_tool("story_pass.py", _story_pass_args(ep_dir, cfg))
     else:
         print(f"[refresh] story is already {version} -> keeping it "

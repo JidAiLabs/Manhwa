@@ -442,7 +442,9 @@ def cmd_refresh_facts(args: argparse.Namespace) -> int:
             continue
         print(f"  ch{ch.number} (id {ch.id}): refreshing facts in {ch.ep_dir}")
         try:
-            out = pipeline.refresh_facts(Path(ch.ep_dir), cfg, force=args.force)
+            out = pipeline.refresh_facts(Path(ch.ep_dir), cfg,
+                                         force=args.force,
+                                         ledger_only=args.ledger_only)
         except Exception as e:
             print(f"    FAILED: {e}")
             rc = 1
@@ -574,6 +576,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rf.add_argument("--force", action="store_true",
                       help="re-read even when the story is already at the "
                            "current prompt version")
+    p_rf.add_argument("--ledger-only", action="store_true",
+                      help="rebuild the ledger from the story already on "
+                           "disk — no model call, no re-roll, so the anchors "
+                           "match a dry run exactly")
     p_rf.add_argument("--enqueue", action="store_true",
                       help="queue a front-priority prepare afterwards")
 

@@ -608,9 +608,11 @@ def speech_by_panel(understood: Any, vision: Any = None) -> Dict[str, str]:
     457 carry OCR text and only 92 of those reach `dialogue`. extend_over_silent
     reads this map to decide where an event's span must STOP, so without the
     vision OCR ~80% of speaking panels look wordless and get swallowed into the
-    previous event's span. ORV Ep107: the Beast Lord's warning swallowed
-    p015-p019 and the next event swallowed p020-p023, so her "GOODBYE, CAPTAIN"
-    at p024 was never her own event and her death anchored 5 panels early.
+    previous event's span and gets that event's actor/target stamped on it —
+    245 panels across 32 chapters, measured. It does NOT move death anchors:
+    the extension widens a span BACKWARD while last_act reads span[-1], so an
+    anchor cannot move. (ORV Ep107's Beast Lord anchors at p019 because the
+    story pass gave her p020-p024 lines to the Captain, not because of this.)
     Vision is the authority on whether a panel has words; the understanding
     only fills in when vision is absent (older callers pass no manifest)."""
     out = {str(p["scene_file"]): str(p.get("dialogue") or "")

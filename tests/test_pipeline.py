@@ -935,6 +935,23 @@ def test_refresh_facts_keeps_a_current_story_unless_forced(tmp_path, monkeypatch
     assert [c[0] for c in calls] == ["story_pass.py", "story_ledger.py"]
 
 
+def test_refresh_facts_ledger_only_never_rerolls_the_story(tmp_path, monkeypatch):
+    """Applying a ledger rule change to shipped chapters must not re-read the
+    chapter: a re-roll also re-rolls who-said-what, which is the part that
+    varies between runs."""
+    from studio import pipeline as pl
+    ep = _beated_ep(tmp_path, story_version="sp_v1")     # stale on purpose
+    calls = []
+    monkeypatch.setattr(pl, "_run_tool", lambda s, a: calls.append(s))
+    out = pl.refresh_facts(ep, _cfg(), ledger_only=True)
+    assert calls == ["story_ledger.py"]
+    assert out["deaths"] == [("Beast Lord", "p000024.jpg", "last_act")]
+    # force does not override it
+    calls.clear()
+    pl.refresh_facts(ep, _cfg(), force=True, ledger_only=True)
+    assert calls == ["story_ledger.py"]
+
+
 def test_refresh_facts_needs_a_beated_chapter(tmp_path, monkeypatch):
     from studio import pipeline as pl
     ep = _beated_ep(tmp_path)
