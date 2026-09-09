@@ -761,13 +761,19 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
     # and killed HIM instead) because it was being asked for a fact the source
     # does not contain. What the chapter DOES contain is her last line.
     #
-    # So: a character whose fate says killed stops acting after the last panel
-    # the story attributes to them — as an ACTOR where it ever has them act,
-    # else the last panel that names them at all. Never named = they were
-    # already dead when the chapter opened. A soul who keeps acting needs no
-    # special case: their last action is late, so their anchor is late.
+    # So: a character whose fate says killed stops acting after the LAST PANEL
+    # THE STORY NAMES THEM ON, whether they are acting or being acted upon.
+    # Preferring their last ACTION was wrong: a death is usually narrated in
+    # the passive, so the panel that states it names the victim as a target.
+    # Ep52 has "Dokja Kim reveals..." at p013 and "System confirms Dokja Kim
+    # has died" at p082-p085 — anchoring on the action killed the protagonist
+    # 70 panels early. Ep127 is the same shape (attacks at p018, "defeats
+    # Maruyama Kenichi in battle" at p057-p071).
+    # Never named at all = already dead when the chapter opened. A soul who
+    # keeps acting needs no special case: its last mention is late, so its
+    # anchor is late.
     for who, fate in sorted(dead.items()):
-        i = last_act.get(who, last_seen.get(who, -1))
+        i = last_seen.get(who, -1)
         if i < 0:
             # Fail OPEN. We know they die, not when — and a gate that cannot
             # tell must not block ([[gates-must-not-block-their-own-remedy]]).
@@ -775,7 +781,8 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                 "story never places them on a panel — that death will NOT "
                 "propagate")
             continue
-        src = "last_act" if who in last_act else "named"
+        # the label says WHICH signal placed it: acting is the stronger read
+        src = "last_act" if last_act.get(who, -1) == i else "named"
         events.append({"type": "death", "subject": who, "anchor_source": src,
                        "before_chapter": False, "scene_file": ordered[i],
                        "evidence_quote": death_quote.get(who, ""),

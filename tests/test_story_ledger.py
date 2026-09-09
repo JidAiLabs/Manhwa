@@ -1155,6 +1155,36 @@ def test_vision_ocr_decides_which_panels_speak():
     assert sl.speech_by_panel(u2, vis)["p000003.jpg"] == "kept verbatim"
 
 
+def test_a_death_narrated_in_the_passive_still_places_the_anchor():
+    """ORV Ep52: the protagonist ACTS at p013 and the System states his death
+    at p082-p085, where he is the TARGET. Anchoring on his last action killed
+    him 70 panels early. The anchor is the last panel that NAMES him."""
+    ents, profs = _ents_profs()
+    story = _story("killed", events=[
+        {"panels": "p000031", "actor": "the assassins",
+         "does": "reveals what they know", "target": "Prince Cheon",
+         "evidence": "q"},
+        {"panels": "p000039-p000040", "actor": "System",
+         "does": "confirms the death of", "target": "the assassins",
+         "evidence": "q2"}])
+    logs = []
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=logs.append)
+    deaths = [e for e in ev if e["type"] == "death"]
+    assert [(e["scene_file"], e["anchor_source"]) for e in deaths] == [
+        ("p000040.jpg", "named")]
+    # and the stronger label is kept when the last mention IS them acting
+    ev2, _ = sl.facts_from_chapter_story(
+        _story("killed", events=[
+            {"panels": "p000031", "actor": "Prince Cheon", "does": "kills",
+             "target": "the assassins", "evidence": "q"},
+            {"panels": "p000038", "actor": "the assassins",
+             "does": "gasps", "target": "Prince Cheon", "evidence": "q2"}]),
+        ents, _U12, profs, log=lambda _m: None)
+    assert [(e["scene_file"], e["anchor_source"]) for e in ev2] == [
+        ("p000038.jpg", "last_act")]
+
+
 def test_a_death_never_precedes_the_victims_own_last_act():
     """The rule in one line: the model may say a character is killed; it does
     not get to say when. ORV Ep107 answered p000002, then p000006, while she
