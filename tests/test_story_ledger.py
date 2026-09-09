@@ -479,6 +479,47 @@ def test_build_story_normalizes_and_refuses_an_empty_answer():
             pass
 
 
+def test_build_story_carries_the_death_panel_and_after_death():
+    out = sp.build_story("t", lambda _p: {
+        "synopsis": "s",
+        "cast": [
+            {"name": "Beast Lord", "role": "boss", "fate": "killed",
+             "dies_at": " P000024.JPG ", "after_death": "ABSENT",
+             "stray": "dropped"},
+            {"name": "Kim Dokja", "role": "protagonist", "fate": "dies, returns",
+             "dies_at": "p000031.jpg", "after_death": "present"},
+            {"name": "Jihye", "role": "ally", "fate": "recalled",
+             "dies_at": "before", "after_death": "nonsense"},
+            {"name": "Yoo Joonghyuk", "role": "ally", "fate": "alive"},
+        ],
+        "events": [{"panels": "p1", "actor": "a", "does": "d", "target": "t",
+                    "evidence": "e"}]})
+    by = {c["name"]: c for c in out["cast"]}
+    assert by["Beast Lord"]["dies_at"] == "p000024.jpg"      # lower-cased
+    assert by["Beast Lord"]["after_death"] == "absent"
+    assert "stray" not in by["Beast Lord"]
+    assert by["Kim Dokja"]["after_death"] == "present"
+    assert by["Jihye"]["dies_at"] == "before"
+    assert by["Jihye"]["after_death"] == ""                  # enum enforced
+    assert by["Yoo Joonghyuk"]["dies_at"] == ""              # empty for the living
+    assert by["Yoo Joonghyuk"]["after_death"] == ""
+    long = sp.build_story("t", lambda _p: {
+        "synopsis": "s", "events": [],
+        "cast": [{"name": "X", "role": "r", "fate": "killed",
+                  "dies_at": "p" * 40}]})
+    assert len(long["cast"][0]["dies_at"]) == 20             # capped
+
+
+def test_a_killed_fate_without_a_panel_is_what_triggers_the_re_ask():
+    killed = [{"name": "Beast Lord", "fate": "killed by the Captain",
+               "dies_at": ""}]
+    assert sp._killed_without_panel(killed) == ["Beast Lord"]
+    assert sp._killed_without_panel(
+        [dict(killed[0], dies_at="p000024.jpg")]) == []
+    assert sp._killed_without_panel(
+        [{"name": "A", "fate": "alive; flees", "dies_at": ""}]) == []
+
+
 # ---- story -> ledger derivation (no model call) ------------------------------
 
 _ORDERED = [f"p{i:06d}.jpg" for i in range(30, 42)]

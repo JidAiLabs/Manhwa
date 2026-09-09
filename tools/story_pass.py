@@ -45,7 +45,7 @@ if _TD not in sys.path:
 from manifest_io import write_manifest  # noqa: E402
 
 # Bump when the prompt/schema changes materially (stamped into the manifest).
-PROMPT_VERSION = "sp_v1"
+PROMPT_VERSION = "sp_v2"
 
 STORY_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
@@ -57,6 +57,9 @@ STORY_SCHEMA: Dict[str, Any] = {
                 "name": {"type": "STRING"},
                 "role": {"type": "STRING"},
                 "fate": {"type": "STRING"},
+                "dies_at": {"type": "STRING"},
+                "after_death": {"type": "STRING",
+                                "enum": ["", "present", "absent"]},
             },
             "required": ["name", "role", "fate"]}},
         "events": {"type": "ARRAY", "items": {
@@ -90,7 +93,18 @@ SYSTEM = (
     "handle); role = their part in the story; fate = what has happened to "
     "them BY THE END of this chapter (alive, killed, wounded, fled, "
     "unknown). Be exact about who dies — a character who dies must say so, "
-    "and a character who survives must not.\n"
+    "and a character who survives must not. Include EVERY character who dies "
+    "in this chapter, even one who appears once.\n"
+    "    dies_at: for a character who dies, the ONE panel id copied from the "
+    "transcript (e.g. 'p000024.jpg') on which they die or are last seen "
+    "alive — the moment itself, which may be a wordless '(no text)' panel. A "
+    "caption, a taunt, or a later line that ANNOUNCES or RECALLS the death is "
+    "NOT the moment. If they were already dead when the chapter began "
+    "(recalled, revealed, mourned), write 'before'. Leave empty for the "
+    "living.\n"
+    "    after_death: 'present' if the character keeps appearing or acting "
+    "after dying — as a soul, ghost, memory, voice, or by returning — else "
+    "'absent'. Leave empty for the living.\n"
     "  events: the chapter's KEY events in order. For each: panels (the "
     "panel range, e.g. 'p000036-p000037'), the ACTOR, what they DO, the "
     "TARGET, and the verbatim dialogue line that proves it. Be especially "
@@ -129,6 +143,11 @@ def build_transcript(vision: Any, understood: Any = None,
     return "\n".join(lines)
 
 
+def _after_death(v: Any) -> str:
+    s = str(v or "").strip().lower()
+    return s if s in ("present", "absent") else ""
+
+
 def build_story(transcript: str, call_fn) -> Dict[str, Any]:
     """Pure-ish: one call, normalized output. Raises on an unusable answer —
     the caller decides whether that is fatal (the pipeline treats a missing
@@ -139,7 +158,9 @@ def build_story(transcript: str, call_fn) -> Dict[str, Any]:
     synopsis = str(raw.get("synopsis") or "").strip()
     cast = [{"name": str(c.get("name") or "").strip(),
              "role": str(c.get("role") or "").strip(),
-             "fate": str(c.get("fate") or "").strip()}
+             "fate": str(c.get("fate") or "").strip(),
+             "dies_at": str(c.get("dies_at") or "").strip().lower()[:20],
+             "after_death": _after_death(c.get("after_death"))}
             for c in (raw.get("cast") or []) if isinstance(c, dict)
             and str(c.get("name") or "").strip()]
     events = [{"panels": str(e.get("panels") or "").strip(),
@@ -174,9 +195,15 @@ def _ollama_call(model: str, num_ctx: int):
                   messages=[{"role": "user", "content": prompt}],
                   format=schema,
                   options={"temperature": 0.2, "num_ctx": num_ctx,
-                           "num_predict": 2200})
+                           "num_predict": 3000})
         return json.loads(r["message"]["content"])
     return _call
+
+
+def _killed_without_panel(cast: List[Dict[str, Any]]) -> List[str]:
+    from story_ledger import is_completed_death  # local: heavy import chain
+    return [c["name"] for c in cast
+            if not c.get("dies_at") and is_completed_death(c.get("fate") or "")]
 
 
 def main() -> int:
@@ -215,11 +242,19 @@ def main() -> int:
     for attempt in range(1, args.retries + 1):
         try:
             story = build_story(transcript, call)
-            break
         except Exception as e:
             print(f"[story] attempt {attempt}/{args.retries} unusable: {e}")
             if attempt == args.retries:
                 raise
+            continue
+        # WHERE matters as much as WHO: a fate that says "killed" with no
+        # dies_at leaves the ledger back on verb-guessing. One re-ask (the
+        # call is cheap and non-deterministic); then take what we get.
+        missing = _killed_without_panel(story["cast"])
+        if missing and attempt < args.retries:
+            print(f"[story] {missing} killed but dies_at is empty — re-asking")
+            continue
+        break
     assert story is not None
 
     inputs = [args.vision_manifest]
@@ -232,7 +267,12 @@ def main() -> int:
     print(f"[ok] wrote={args.out} cast={len(story['cast'])} "
           f"events={len(story['events'])}")
     for c in story["cast"]:
-        print(f"  - {c['name']} [{c['role']}] fate={c['fate']}")
+        extra = ""
+        if c.get("dies_at"):
+            extra += f" dies_at={c['dies_at']}"
+        if c.get("after_death"):
+            extra += f" after_death={c['after_death']}"
+        print(f"  - {c['name']} [{c['role']}] fate={c['fate']}{extra}")
     return 0
 
 
