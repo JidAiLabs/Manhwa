@@ -899,7 +899,7 @@ def _beated_ep(tmp_path: Path, story_version: str = "sp_v1") -> Path:
         json.dumps({"_meta": {"prompt_version": story_version}}))
     (ep / "manifest.ledger.json").write_text(json.dumps({"events": [
         {"type": "death", "subject": "Beast Lord", "scene_file": "p000024.jpg",
-         "anchor_source": "dies_at", "lingers": False},
+         "anchor_source": "last_act"},
         {"type": "reveal", "subject": "x", "scene_file": "p1.jpg"}]}))
     return ep
 
@@ -917,7 +917,7 @@ def test_refresh_facts_rereads_an_old_story_and_reports_the_deaths(
     monkeypatch.setattr(pl, "_run_tool", lambda s, a: calls.append((s, a)))
     out = pl.refresh_facts(ep, _cfg())
     assert [c[0] for c in calls] == ["story_pass.py", "story_ledger.py"]
-    assert out["deaths"] == [("Beast Lord", "p000024.jpg", "dies_at", False)]
+    assert out["deaths"] == [("Beast Lord", "p000024.jpg", "last_act")]
     # the narration is NOT touched
     assert "gemini_narrative_pass.py" not in [c[0] for c in calls]
 

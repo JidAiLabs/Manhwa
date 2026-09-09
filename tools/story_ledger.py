@@ -357,8 +357,7 @@ def normalize_events(raw: Any, entities: List[Dict[str, Any]],
                     # WHERE this came from and how it propagates. The rebuild
                     # is strict, so a flag not carried here is a flag lost.
                     "anchor_source": str(ev.get("anchor_source") or "event"),
-                    "before_chapter": bool(ev.get("before_chapter")),
-                    "lingers": bool(ev.get("lingers"))})
+                    "before_chapter": bool(ev.get("before_chapter"))})
     return out
 
 
@@ -490,8 +489,6 @@ def build_beat_facts(groups: List[Dict[str, Any]],
                 actions.append(f"{f}: {s}{mark}")
         dead_before = sorted({ev["subject"] for ev in events
                               if ev["type"] == "death"
-                              # a soul/ghost/returned lead keeps acting
-                              and not ev.get("lingers")
                               and (ev.get("before_chapter")
                                    or 0 <= _ev_index(ev) < start)})
         if flashback:
@@ -658,29 +655,24 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
     # `fate`. That is the ONLY death authority: a character dies when their own
     # fate says so, never because some event sentence contains the word "kill"
     # (a villain's threat is not a death).
-    # (sp_v2) `dies_at` is the story's own answer to WHERE, and it also
-    # ESTABLISHES the death: "eradicate the Beast Lord" is a kill that no
-    # English verb list reads, and 29 of 36 deaths never reached the ledger
-    # because of that. The fate only has to not contradict it.
-    dead: Dict[str, Dict[str, Any]] = {}
+    # It is also the only death authority we ASK for. A model that is asked to
+    # volunteer a death panel will fill one in for a character it has just
+    # described as ARRESTED. A recount over 207 chapters found 36 killed fates
+    # under this strict gate and 0 that only a loose keyword scan would catch,
+    # so the fate gate is already complete by itself.
+    dead: Dict[str, str] = {}
     for c in ((story or {}).get("cast") or []):
         if not isinstance(c, dict):
             continue
         fate = str(c.get("fate") or "")
-        dies_at = str(c.get("dies_at") or "").strip().lower()
-        if dies_at and _SURVIVES_RE.search(fate):
-            log(f"[ledger] {c.get('name')!r} has dies_at {dies_at!r} but the "
-                f"fate says they live ({fate[:50]!r}) — ignoring dies_at")
-            dies_at = ""
-        if not (is_completed_death(fate) or dies_at):
+        if not is_completed_death(fate):
             continue
         who, _e = resolve_name(str(c.get("name") or ""), profiles)
         if who == "unknown":
             log(f"[ledger] {c.get('name')!r} is {fate[:50]!r} but matches no "
                 "entity — that death cannot propagate")
             continue
-        dead[who] = {"fate": fate, "dies_at": dies_at,
-                     "lingers": str(c.get("after_death") or "") == "present"}
+        dead[who] = fate
 
     # STEP 2 — walk the events for panel attribution, and anchor each death to
     # the panel where the story says it happens.
@@ -692,6 +684,7 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
     anchored = {f for s in raw_spans for f in s}
     order = {f: i for i, f in enumerate(ordered)}
     last_act: Dict[str, int] = {}        # entity -> index of its last ACTING panel
+    last_seen: Dict[str, int] = {}       # entity -> last panel that names it at all
     death_quote: Dict[str, str] = {}     # entity -> the line that proves it
     for ev in ((story or {}).get("events") or []):
         if not isinstance(ev, dict):
@@ -712,6 +705,9 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
         target, _t = resolve_name(str(ev.get("target") or ""), profiles)
         if actor != "unknown":
             last_act[actor] = max(last_act.get(actor, -1), order[span[-1]])
+            last_seen[actor] = max(last_seen.get(actor, -1), order[span[-1]])
+        if target != "unknown":
+            last_seen[target] = max(last_seen.get(target, -1), order[span[-1]])
         # direction: every panel in the span gets the story's attribution
         if actor != "unknown" or target != "unknown":
             for fn in span:
@@ -728,94 +724,44 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                     "verb": does[:120],
                     "reason": f"chapter story: {does[:80]} | "
                               f"{str(ev.get('evidence') or '')[:80]}"})
-        # A death is recorded ONLY when the fate sheet already says this
-        # character died AND this event describes the killing actually
-        # happening. Both gates must pass; either alone was the old bug.
+        # The killing line is the death's EVIDENCE. It is not its location:
+        # "flames of hell that eradicate all evil" is a caption explaining why
+        # she is dying, printed 20 panels before she stops speaking.
         if target in dead and str(ev.get("evidence") or "").strip():
             if is_completed_death(does) or target not in death_quote:
                 death_quote[target] = str(ev["evidence"])[:200]
-        if (target in dead and is_completed_death(does)
-                and not any(e["subject"] == target for e in events)):
-            events.append({"type": "death", "scene_file": span[-1],
-                           "subject": target, "anchor_source": "event",
-                           "lingers": dead[target]["lingers"],
-                           "detail": f"{does[:150]} "
-                                     f"(fate: {dead[target]['fate'][:60]})",
-                           "evidence_quote": str(ev.get("evidence") or "")[:200]})
 
-    # STEP 2b — WHERE the story says it happened beats inferring it from the
-    # killing sentence's English. This is the whole point of sp_v2: it records
-    # a death whose verb no regex reads, and it moves an anchor the events put
-    # on a caption that merely ANNOUNCES the death.
-    for who, info in dead.items():
-        dies_at = info["dies_at"]
-        if not dies_at:
-            continue
-        before = dies_at == "before"
-        if before:
-            span = ordered[:1]
-        else:
-            span = _panel_range(dies_at, ordered)
-            if not span:
-                log(f"[ledger] dies_at {dies_at!r} for {who!r} is not a panel "
-                    "of this chapter — falling back to event inference")
-                continue
-        if not span:
-            continue
-        e = next((x for x in events
-                  if x["type"] == "death" and x["subject"] == who), None)
-        if e is None:
-            e = {"type": "death", "subject": who,
-                 "evidence_quote": death_quote.get(who, "")}
-            events.append(e)
-        e["scene_file"] = span[-1]
-        e["anchor_source"] = "before" if before else "dies_at"
-        e["before_chapter"] = before
-        e["lingers"] = info["lingers"]
-        e["detail"] = (f"dead before this chapter (fate: {info['fate'][:60]})"
-                       if before else
-                       f"dies_at {span[-1]} (fate: {info['fate'][:60]})")
-
-    # A death cannot precede the victim's LAST ACTION in this same story
-    # record. Webtoons announce a death before it happens — ORV Ep107 opens
-    # with the caption "a Beast Lord usually doesn't die from a wound like
-    # that, but she was up against flames of hell" (p2–p6) and the story pass
-    # duly records "killed the Beast Lord" there; the same story pass then has
-    # her "warn the Captain about the Demon of the Horizon and say goodbye"
-    # on p19–p24. Anchoring the death at p6 made dead_actor block her own
-    # final words and put her in one beat's `present` AND `dead_by_now`.
-    # Final words are not a resurrection: the death moves to the last panel
-    # the story has her acting on. This holds for a story-named `dies_at`
-    # too — sp_v2 asked and the model still answered p000006, because the
-    # transcript is OCR only and that panel's text is thick with "die".
-    # story_pass._contradictions re-asks when an answer kills someone before
-    # their own last act; this clamp is the floor for when it does not
-    # converge. Only `lingers` (after_death: present) is exempt.
-    for e in events:
-        if e["type"] != "death":
-            continue
-        i_death = order.get(str(e["scene_file"]), -1)
-        i_last = last_act.get(e["subject"], -1)
-        if i_last <= i_death:
-            continue
-        if e.get("lingers"):
-            # after_death == 'present' — acting after dying IS the story
-            # (ORV kills its lead and returns him as a soul).
-            log(f"[ledger] {e['subject']!r} acts at {ordered[i_last]} after "
-                f"dying at {e['scene_file']} — after_death is 'present', "
-                f"keeping the story's panel")
-            continue
-        log(f"[ledger] death of {e['subject']!r} moved {e['scene_file']} -> "
-            f"{ordered[i_last]}: the story has them acting through "
-            f"{ordered[i_last]} (final words are not a resurrection"
-            f"; {e.get('anchor_source', 'event')} anchor)")
-        e["scene_file"] = ordered[i_last]
-
-    for who, info in dead.items():
-        if not any(e["subject"] == who for e in events):
-            log(f"[ledger] {who!r} is {info['fate'][:50]!r} per the cast sheet "
-                "but no event anchors that death to a panel — it will NOT "
+    # STEP 2b — WHERE. The chapter never states a death panel. ORV Ep107 has a
+    # caption explaining why the Beast Lord is dying, her goodbye to the
+    # Captain, and someone telling her to rest; no line says she IS dead.
+    # Asking the model for the panel gave a different wrong answer every roll
+    # (p000002, then p000006, and once it moved her dialogue onto the Captain
+    # and killed HIM instead) because it was being asked for a fact the source
+    # does not contain. What the chapter DOES contain is her last line.
+    #
+    # So: a character whose fate says killed stops acting after the last panel
+    # the story attributes to them — as an ACTOR where it ever has them act,
+    # else the last panel that names them at all. Never named = they were
+    # already dead when the chapter opened. A soul who keeps acting needs no
+    # special case: their last action is late, so their anchor is late.
+    for who, fate in sorted(dead.items()):
+        i = last_act.get(who, last_seen.get(who, -1))
+        if i < 0:
+            # Fail OPEN. We know they die, not when — and a gate that cannot
+            # tell must not block ([[gates-must-not-block-their-own-remedy]]).
+            log(f"[ledger] {who!r} is {fate[:50]!r} per the cast sheet but the "
+                "story never places them on a panel — that death will NOT "
                 "propagate")
+            continue
+        src = "last_act" if who in last_act else "named"
+        events.append({"type": "death", "subject": who, "anchor_source": src,
+                       "before_chapter": False, "scene_file": ordered[i],
+                       "evidence_quote": death_quote.get(who, ""),
+                       "detail": f"last seen at {ordered[i]} "
+                                 f"(fate: {fate[:60]})"})
+        log(f"[ledger] {who!r} is {fate[:40]!r} — anchored at "
+            f"{ordered[i]} [{src}]")
+
     return events, overrides
 
 
@@ -830,7 +776,7 @@ def dead_sets_by_file(ledger: Any, ordered_files: List[str]
         (-1 if ev.get("before_chapter") else order[str(ev.get("scene_file"))],
          str(ev.get("subject")))
         for ev in ((ledger or {}).get("events") or [])
-        if ev.get("type") == "death" and not ev.get("lingers")
+        if ev.get("type") == "death"
         and str(ev.get("scene_file")) in order)
     out: Dict[str, Set[str]] = {}
     for f, i in order.items():

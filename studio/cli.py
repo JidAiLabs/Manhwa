@@ -448,8 +448,7 @@ def cmd_refresh_facts(args: argparse.Namespace) -> int:
             rc = 1
             continue
         deaths = ", ".join(f"{who}@{panel} [{src}]"
-                           + (" lingers" if lingers else "")
-                           for who, panel, src, lingers in out["deaths"])
+                           for who, panel, src in out["deaths"])
         print(f"    ledger rebuilt; deaths: {deaths or 'none'}")
         if finished:
             print(f"    NOTE: ch{ch.number} is already {ch.status} — the "

@@ -318,7 +318,7 @@ def refresh_facts(ep_dir: Path, cfg: Config, *, force: bool = False) -> dict:
     _run_tool("story_ledger.py", _ledger_args(ep_dir, cfg))
     led = json.loads((ep_dir / "manifest.ledger.json").read_text())
     deaths = [(str(e.get("subject")), str(e.get("scene_file")),
-               str(e.get("anchor_source") or "event"), bool(e.get("lingers")))
+               str(e.get("anchor_source") or "event"))
               for e in (led.get("events") or []) if e.get("type") == "death"]
     return {"story": story, "ledger": ep_dir / "manifest.ledger.json",
             "deaths": deaths}

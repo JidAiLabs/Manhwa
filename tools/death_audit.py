@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/death_audit.py — does the fact record actually know who died, and where?
 
-Measured on the Mini before sp_v2 (207 chapters with a story + a ledger):
+Measured on the Mini before the fix (207 chapters with a story + a ledger):
 36 cast fates said "killed", the ledger anchored 7. The other 29 deaths never
 reached anything — the anchor came from regex-reading the killing event's
 English, and "is stabbed in the stomach", "Sends Namwoon to hell", "eradicate
@@ -10,8 +10,13 @@ mostly inert, and the two anchors that DID land sat on the caption that merely
 announces the death.
 
 Run it before and after a refresh-facts sweep. Read the anchored/killed ratio
-and the anchor-source histogram: `dies_at` means the story named the panel,
-`event` means we are still guessing from a sentence.
+and the anchor-source histogram:
+  last_act — the chapter has the victim ACTING, and the death sits on their
+             last such panel. This is the good case.
+  named    — the chapter only ever mentions them (as someone else's target),
+             so the anchor is that mention. Weaker; check it.
+A killed fate with no anchor at all is listed too: the story never placed the
+character on a panel, so the death deliberately does not propagate.
 
   python tools/death_audit.py                     # every title under ongoing/
   python tools/death_audit.py --series omniscient-reader --chapters 100-200
@@ -65,21 +70,16 @@ def audit_chapter(ep_dir: str, *, contradictions: bool = False) -> Dict[str, Any
         if not isinstance(c, dict):
             continue
         fate = str(c.get("fate") or "")
-        dies_at = str(c.get("dies_at") or "").strip().lower()
-        if not (is_completed_death(fate) or dies_at):
+        if not is_completed_death(fate):
             continue
         name = str(c.get("name") or "")
         who, _e = resolve_name(name, profiles)
         ev = deaths.get(who) if who != "unknown" else None
         rows.append({
-            "name": name, "fate": fate, "dies_at": dies_at,
-            "after_death": str(c.get("after_death") or ""),
-            "resolved": who,
+            "name": name, "fate": fate, "resolved": who,
             "anchored_at": str(ev.get("scene_file")) if ev else "",
             "anchor_source": (str(ev.get("anchor_source") or "event")
                               if ev else ""),
-            "before_chapter": bool(ev.get("before_chapter")) if ev else False,
-            "lingers": bool(ev.get("lingers")) if ev else False,
         })
     out = {
         "ep_dir": ep_dir,
@@ -107,17 +107,18 @@ def _contradictions(ep_dir: str, led: Dict[str, Any]) -> List[str]:
 
 
 def _fmt(rec: Dict[str, Any]) -> str:
-    """One line per killed character that is NOT cleanly anchored."""
+    """One line per killed character that is NOT cleanly anchored. 'named'
+    means the chapter never has them ACT — only mentions them — so the anchor
+    is the weaker of the two signals."""
     lines = []
     for r in rec["killed"]:
-        if r["anchored_at"] and r["anchor_source"] != "event":
+        if r["anchor_source"] == "last_act":
             continue
         why = ("matches no entity" if r["resolved"] == "unknown"
-               else "NOT anchored" if not r["anchored_at"]
-               else f"anchored at {r['anchored_at']} by event inference")
-        lines.append(f"    {r['name']!r}: {why}"
-                     + (f" (dies_at={r['dies_at']})" if r["dies_at"] else "")
-                     + f" fate={r['fate'][:60]!r}")
+               else "NOT anchored — the story never places them on a panel"
+               if not r["anchored_at"]
+               else f"anchored at {r['anchored_at']} by mention only")
+        lines.append(f"    {r['name']!r}: {why} fate={r['fate'][:60]!r}")
     return "\n".join(lines)
 
 
@@ -156,7 +157,7 @@ def main() -> int:
             continue
         t = by_title.setdefault(title, {
             "chapters": 0, "killed": 0, "anchored": 0, "unresolved": 0,
-            "lingers": 0, "sources": Counter(), "versions": Counter(),
+            "sources": Counter(), "versions": Counter(),
             "contradicted": []})
         t["chapters"] += 1
         t["versions"][rec["prompt_version"]] += 1
@@ -166,15 +167,11 @@ def main() -> int:
                 t["unresolved"] += 1
             if r["anchored_at"]:
                 t["anchored"] += 1
-                t["sources"][
-                    "before" if r["before_chapter"] else r["anchor_source"]] += 1
-            if r["lingers"]:
-                t["lingers"] += 1
+                t["sources"][r["anchor_source"]] += 1
         if rec.get("contradictions"):
             t["contradicted"].append(
                 (os.path.basename(ep), Counter(rec["contradictions"])))
-        if any(not r["anchored_at"] or r["anchor_source"] == "event"
-               for r in rec["killed"]):
+        if any(r["anchor_source"] != "last_act" for r in rec["killed"]):
             bad.append(rec)
 
     for title, t in sorted(by_title.items()):
@@ -182,7 +179,7 @@ def main() -> int:
         print(f"{title}: {t['chapters']} chapter(s), {t['killed']} killed, "
               f"{t['anchored']} anchored ({ratio:.0%})")
         print(f"  anchor source: {dict(t['sources']) or '{}'}"
-              f"  lingers={t['lingers']}  matches-no-entity={t['unresolved']}")
+              f"  matches-no-entity={t['unresolved']}")
         print(f"  story prompt_version: {dict(t['versions'])}")
         for ep_name, codes in t["contradicted"]:
             print(f"  CONTRADICTED {ep_name}: {dict(codes)} — the shipped "

@@ -29,25 +29,36 @@ def _chapter(tmp_path: Path, name: str, cast, events, version="sp_v2") -> Path:
     return ep
 
 
-def test_a_dies_at_anchor_counts_as_anchored_and_names_its_source(tmp_path):
+def test_a_last_act_anchor_is_the_clean_case(tmp_path):
     ep = _chapter(
         tmp_path, "Episode_107",
-        [{"name": "Beast Lord", "role": "antagonist", "fate": "eradicated",
-          "dies_at": "p000024.jpg", "after_death": "absent"}],
+        [{"name": "Beast Lord", "role": "antagonist", "fate": "killed"}],
         [{"type": "death", "subject": "Beast Lord",
-          "scene_file": "p000024.jpg", "anchor_source": "dies_at"}])
+          "scene_file": "p000024.jpg", "anchor_source": "last_act"}])
     rec = da.audit_chapter(str(ep))
-    assert rec["number"] == 107.0 and rec["prompt_version"] == "sp_v2"
-    assert len(rec["killed"]) == 1                  # counted despite the verb
-    assert rec["killed"][0]["anchor_source"] == "dies_at"
+    assert rec["number"] == 107.0
+    assert len(rec["killed"]) == 1
+    assert rec["killed"][0]["anchor_source"] == "last_act"
     assert rec["killed"][0]["anchored_at"] == "p000024.jpg"
+    assert da._fmt(rec) == ""            # cleanly anchored: nothing to report
+
+
+def test_a_mention_only_anchor_is_flagged_as_the_weaker_signal(tmp_path):
+    """'named' = the chapter never has them act, so the anchor is whatever
+    panel last mentioned them. Worth a human look."""
+    ep = _chapter(
+        tmp_path, "Episode_108",
+        [{"name": "Beast Lord", "role": "antagonist", "fate": "killed"}],
+        [{"type": "death", "subject": "Beast Lord",
+          "scene_file": "p000006.jpg", "anchor_source": "named"}])
+    assert "by mention only" in da._fmt(da.audit_chapter(str(ep)))
 
 
 def test_an_unanchored_death_is_the_thing_being_measured(tmp_path):
     ep = _chapter(
         tmp_path, "Episode_49",
         [{"name": "Beast Lord", "role": "antagonist",
-          "fate": "killed by the Captain", "dies_at": "", "after_death": ""}],
+          "fate": "killed by the Captain"}],
         [], version="sp_v1")
     rec = da.audit_chapter(str(ep))
     assert rec["killed"][0]["anchored_at"] == ""
@@ -58,7 +69,7 @@ def test_a_name_the_ledger_cannot_resolve_is_reported_separately(tmp_path):
     ep = _chapter(
         tmp_path, "Episode_50",
         [{"name": "Maruyama and Amano", "role": "x", "fate": "killed",
-          "dies_at": "", "after_death": ""}], [])
+          }], [])
     rec = da.audit_chapter(str(ep))
     assert rec["killed"][0]["resolved"] == "unknown"
     assert "matches no entity" in da._fmt(rec)
@@ -74,9 +85,9 @@ def test_contradictions_read_the_shipped_narration_with_no_model_call(tmp_path):
     ep = _chapter(
         tmp_path, "Episode_108",
         [{"name": "Beast Lord", "role": "antagonist", "fate": "killed",
-          "dies_at": "p000024.jpg", "after_death": "absent"}],
+          }],
         [{"type": "death", "subject": "Beast Lord",
-          "scene_file": "p000024.jpg", "anchor_source": "dies_at"}])
+          "scene_file": "p000024.jpg", "anchor_source": "last_act"}])
     led = json.loads((ep / "manifest.ledger.json").read_text())
     led["beat_facts"] = {"g0013": {"dead_by_now": ["Beast Lord"]}}
     (ep / "manifest.ledger.json").write_text(json.dumps(led))
