@@ -46,7 +46,7 @@ if _TD not in sys.path:
 from manifest_io import write_manifest  # noqa: E402
 
 # Bump when the prompt/schema changes materially (stamped into the manifest).
-PROMPT_VERSION = "sp_v3"
+PROMPT_VERSION = "sp_v4"
 
 STORY_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
@@ -58,6 +58,8 @@ STORY_SCHEMA: Dict[str, Any] = {
                 "name": {"type": "STRING"},
                 "role": {"type": "STRING"},
                 "fate": {"type": "STRING"},
+                "gender": {"type": "STRING",
+                           "enum": ["", "male", "female"]},
             },
             "required": ["name", "role", "fate"]}},
         "events": {"type": "ARRAY", "items": {
@@ -93,6 +95,10 @@ SYSTEM = (
     "unknown). Be exact about who dies — a character who dies must say so, "
     "and a character who survives must not. Include EVERY character who dies "
     "in this chapter, even one who appears once.\n"
+    "    gender: 'male' or 'female' ONLY when the chapter's own words show it "
+    "-- a pronoun used for them, a form of address ('sir', 'my lady'), or a "
+    "gendered noun. Leave it EMPTY when the text does not say; never guess "
+    "from a name or a role.\n"
     "  events: the chapter's KEY events in order. For each: panels (the "
     "panel range, e.g. 'p000036-p000037'), the ACTOR, what they DO, the "
     "TARGET, and the verbatim dialogue line that proves it. Be especially "
@@ -131,6 +137,16 @@ def build_transcript(vision: Any, understood: Any = None,
     return "\n".join(lines)
 
 
+def _gender(v: Any) -> str:
+    """The chapter says it or it stays empty. ORV Ep107's Beast Lord is drawn
+    with long hair and described neutrally ("a figure ... their torso"), so
+    cast_identity._gender found nothing and the writer defaulted to "he" --
+    while the chapter's own caption reads "but SHE was up against flames of
+    hell". A pronoun in the text is evidence; a name or a role is not."""
+    g = str(v or "").strip().lower()
+    return g if g in ("male", "female") else ""
+
+
 def build_story(transcript: str, call_fn) -> Dict[str, Any]:
     """Pure-ish: one call, normalized output. Raises on an unusable answer —
     the caller decides whether that is fatal (the pipeline treats a missing
@@ -141,7 +157,8 @@ def build_story(transcript: str, call_fn) -> Dict[str, Any]:
     synopsis = str(raw.get("synopsis") or "").strip()
     cast = [{"name": str(c.get("name") or "").strip(),
              "role": str(c.get("role") or "").strip(),
-             "fate": str(c.get("fate") or "").strip()}
+             "fate": str(c.get("fate") or "").strip(),
+             "gender": _gender(c.get("gender"))}
             for c in (raw.get("cast") or []) if isinstance(c, dict)
             and str(c.get("name") or "").strip()]
     events = [{"panels": str(e.get("panels") or "").strip(),
@@ -236,7 +253,8 @@ def main() -> int:
     print(f"[ok] wrote={args.out} cast={len(story['cast'])} "
           f"events={len(story['events'])}")
     for c in story["cast"]:
-        print(f"  - {c['name']} [{c['role']}] fate={c['fate']}")
+        g = f" gender={c['gender']}" if c.get("gender") else ""
+        print(f"  - {c['name']} [{c['role']}] fate={c['fate']}{g}")
     return 0
 
 

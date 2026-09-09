@@ -428,6 +428,40 @@ def _series_cast_block(registry: Any) -> str:
     return SERIES_CAST_RULE.replace("{CAST}", "\n".join(lines)) if lines else ""
 
 
+def stamp_story_gender(cast: Any, story_chars: Any) -> int:
+    """Copy each character's gender from the chapter's TEXT onto the cast.
+
+    The drawing does not carry it and the description often will not either:
+    ORV Ep107's Beast Lord is "a figure with long, flowing dark hair ... on
+    THEIR torso", so cast_identity._gender found nothing, the gender veto went
+    inert, and the narration called her "he" for a whole chapter — while the
+    chapter's own caption reads "but SHE was up against flames of hell".
+
+    The story pass reads that text, so it answers this; nothing here guesses.
+    An existing value (a registry lock) always wins."""
+    members = cast.get("cast") if isinstance(cast, dict) else cast
+    by_name: Dict[str, str] = {}
+    for c in (story_chars or []):
+        if not isinstance(c, dict):
+            continue
+        g = str(c.get("gender") or "").strip().lower()
+        nm = str(c.get("name") or "").strip().casefold()
+        if g in ("male", "female") and nm:
+            by_name[nm] = g
+    n = 0
+    for m in (members or []):
+        if not isinstance(m, dict) or m.get("gender"):
+            continue
+        for key in ([str(m.get("canonical_name") or "")]
+                    + [str(a) for a in (m.get("aliases") or [])]):
+            g = by_name.get(key.strip().casefold())
+            if g:
+                m["gender"] = g
+                n += 1
+                break
+    return n
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--groups-manifest", required=True)
@@ -462,6 +496,7 @@ def main() -> int:
     ocr = _all_ocr(items)
 
     story_block = ""
+    chars: List[Dict[str, Any]] = []
     if args.chapter_story and os.path.exists(args.chapter_story):
         try:
             chars = (_load(args.chapter_story).get("cast") or [])
@@ -545,6 +580,10 @@ def main() -> int:
         # survive (sanitize would have replaced it with a handle)
         cast, n_locked = apply_series_cast(cast, registry)
         print(f"[series] {n_locked} cast member(s) locked from {args.series_cast}")
+    n_gender = stamp_story_gender(cast, chars)
+    if n_gender:
+        print(f"[cast] gender read from the chapter's own words: {n_gender} "
+              "member(s)")
     inputs = [args.groups_manifest, args.vision_manifest]
     if args.understood and os.path.exists(args.understood):
         inputs.append(args.understood)

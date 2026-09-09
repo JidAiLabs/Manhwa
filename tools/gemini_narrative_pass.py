@@ -293,7 +293,9 @@ def _build_cast_block(cast_path: str) -> str:
         "this cast. Where an entry shows 'SAY: ...', speak THOSE words — the "
         "name before it is an internal label for telling look-alikes apart and "
         "must never be read aloud (a viewer should hear 'one of the assassins', "
-        "never 'the Assassin Member'):"
+        "never 'the Assassin Member'). [male]/[female] is the gender the "
+        "chapter's own words establish — use those pronouns and never guess "
+        "one that is not marked:"
     ]
     for c in cast:
         name = c.get("canonical_name") or c.get("id") or "?"
@@ -309,7 +311,14 @@ def _build_cast_block(cast_path: str) -> str:
         tag = f" (aka {aliases})" if aliases else ""
         say = (f" — SAY: {spoken}"
                if spoken and spoken.lower() != name.lower() else "")
-        lines.append(f"  - {name} ({role}){tag}{say}: {desc}")
+        # The art does not say it and the description often will not either
+        # ("a figure ... their torso"), so without this the writer defaults to
+        # "he": ORV Ep107's Beast Lord was narrated as a man for a whole
+        # chapter while the caption on p2 reads "but SHE was up against flames
+        # of hell". Only stated when the chapter's own words established it.
+        g = str(c.get("gender") or "").strip().lower()
+        gtag = f" [{g}]" if g in ("male", "female") else ""
+        lines.append(f"  - {name} ({role}){tag}{gtag}{say}: {desc}")
     lines.append("")  # trailing blank so it reads cleanly before the next section
     return "\n".join(lines) + "\n"
 

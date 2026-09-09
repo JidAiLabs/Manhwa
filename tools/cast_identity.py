@@ -358,7 +358,15 @@ def cast_profiles(cast: Any) -> List[Dict[str, Any]]:
             "hair": _hair_colors(toks),
             "forbid": forbid,
             "role": role,
-            "gender": _gender(gender_words),
+            # an explicit field (the chapter's own pronoun, via
+            # cast_builder.stamp_story_gender, or an owner registry lock)
+            # OUTRANKS reading the description: a neutral description
+            # ("a figure ... their torso") derives nothing, which is exactly
+            # how ORV Ep107's Beast Lord slipped the veto and got narrated
+            # as "he".
+            "gender": (str(m.get("gender") or "").strip().lower()
+                       if str(m.get("gender") or "").strip().lower()
+                       in ("male", "female") else _gender(gender_words)),
             "embodied": _embodied(m),
             # the FACTION member of a same-faction tie: role says so, or the
             # canonical name itself is plural ('the assassins') — cast_builder

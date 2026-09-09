@@ -479,18 +479,24 @@ def test_build_story_normalizes_and_refuses_an_empty_answer():
             pass
 
 
-def test_build_story_keeps_only_name_role_fate():
-    """sp_v3 stopped asking WHERE. The chapter never states a death panel, and
-    a model asked for one invents it — see the ledger's STEP 2b."""
+def test_build_story_keeps_only_name_role_fate_and_gender():
+    """sp_v3 stopped asking WHERE — the chapter never states a death panel and
+    a model asked for one invents it (see the ledger's STEP 2b). sp_v4 DOES
+    ask gender, because that one IS in the chapter's words."""
     out = sp.build_story("t", lambda _p: {
         "synopsis": "s",
         "cast": [{"name": " Beast Lord ", "role": "boss", "fate": "killed",
-                  "dies_at": "p000006.jpg", "stray": "dropped"},
+                  "gender": "FEMALE", "dies_at": "p000006.jpg",
+                  "stray": "dropped"},
+                 {"name": "X", "role": "r", "fate": "alive",
+                  "gender": "probably a man"},
                  {"name": "", "role": "r", "fate": "alive"}],
         "events": [{"panels": "p1", "actor": "a", "does": "d", "target": "t",
                     "evidence": "e"}]})
-    assert out["cast"] == [{"name": "Beast Lord", "role": "boss",
-                            "fate": "killed"}]
+    assert out["cast"] == [
+        {"name": "Beast Lord", "role": "boss", "fate": "killed",
+         "gender": "female"},                       # normalised, extras dropped
+        {"name": "X", "role": "r", "fate": "alive", "gender": ""}]  # not an enum
 
 
 # ---- story -> ledger derivation (no model call) ------------------------------
