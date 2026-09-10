@@ -1199,3 +1199,35 @@ def test_caption_solo_isolated_by_segment_still_folds_cross_segment():
     merged = sg.merge_caption_solos(lead, {"c1"})
     assert [s["scene_files"] for s in merged] == [["c1", "p1"]]
     assert [s["shot_id"] for s in merged] == [1]
+
+
+def test_a_beat_lying_entirely_past_the_end_is_dropped_not_clamped():
+    """ORV Ep222: 61 panels (0..60). The model returned a clean sequential
+    partition PLUS a phantom beat 14 [61,61]. The end-of-chunk clamp matched
+    it (fi == n and ti == n), pulled BOTH ends back to 60, and that
+    "overlapped" beat 13's real end at 60 — so the guard refused and three
+    identical retries failed. The DROP path right below the clamp was written
+    for exactly this shape; the clamp was stealing it."""
+    from tools.story_group import expand_index_ranges
+    order = ["p%06d.jpg" % i for i in range(61)]
+    pairs = [(0, 1), (2, 9), (10, 13), (14, 15), (16, 22), (23, 29), (30, 33),
+             (34, 41), (42, 46), (47, 50), (51, 53), (54, 56), (57, 58), (59, 60)]
+    beats = [{"from_index": a, "to_index": b, "segment": "present"}
+             for a, b in pairs]
+    beats.append({"from_index": 61, "to_index": 61, "segment": "present"})
+
+    expanded, err = expand_index_ranges(beats, order)
+    assert err == ""
+    assert len(expanded) == len(pairs)                      # phantom dropped
+    assert sum(len(b["scene_files"]) for b in expanded) == 61   # nothing lost
+
+    # a GENUINE fencepost slip (starts in bounds, ends past) is still clamped
+    one, err2 = expand_index_ranges(
+        [{"from_index": 0, "to_index": 61, "segment": "present"}], order)
+    assert err2 == "" and len(one[0]["scene_files"]) == 61
+
+    # a real overlap must still fail loudly
+    _, err3 = expand_index_ranges(
+        [{"from_index": 0, "to_index": 5, "segment": "present"},
+         {"from_index": 3, "to_index": 9, "segment": "present"}], order)
+    assert "overlaps or precedes" in err3

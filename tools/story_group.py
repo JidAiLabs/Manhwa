@@ -528,9 +528,17 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
         # can never clear this class. A range that starts past the end is a
         # different animal (dropped below); an inverted or overlapping one
         # still fails loudly.
+        # `fi == n` is NOT a fencepost slip — it is a beat lying entirely past
+        # the last panel, which the DROP below was written for. Clamping it
+        # here stole that case and manufactured the collision it then died on:
+        # ORV Ep222 (61 panels, 0..60) came back with a clean sequential
+        # partition plus a phantom beat 14 [61,61]; both ends clamped to 60,
+        # which "overlaps" beat 13's real end at 60, and the chapter failed
+        # three identical retries. The clamp now only takes a range that
+        # STARTS in bounds.
         if (isinstance(ti, int) and not isinstance(ti, bool) and ti >= n
                 and isinstance(fi, int) and not isinstance(fi, bool)
-                and (0 <= fi < n or (fi == n and ti == n))):
+                and 0 <= fi < n):
             if ti > n:
                 print(f"[story_group] beat {i} to_index {ti} runs past the "
                       f"last panel ({n - 1}); clamped", file=sys.stderr)
