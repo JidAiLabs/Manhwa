@@ -1698,3 +1698,26 @@ def test_merge_stamps_the_printed_layout_alongside_the_flat_text():
             {"t": "KING", "bbox": [0.26, 0.40, 0.35, 0.42]}]}}})
     assert u["p1.jpg"]["ocr_layout"] == "NAME: DOKJA\nMODIFIER: KING"
     assert u["p1.jpg"]["ocr_clean"] == "NAME: DOKJA KIM MODIFIER: KING"
+
+
+def test_card_names_come_back_with_the_registry_casing():
+    """A card is printed in ALL CAPS, so speaking it lower-cases every name.
+    The cast already holds the correct casing and the writer already loads
+    it, so the names are simply put back."""
+    cast = [{"canonical_name": "Dokja Kim", "aliases": ["Kim Dokja"]},
+            {"canonical_name": "The Fourth Wall", "aliases": []}]
+    pc = gnp.proper_case_from_cast(cast)
+    assert pc["dokja"] == "Dokja" and pc["wall"] == "Wall"
+    # a handle starting with an article must not teach the map to capitalize
+    # every "the" in the card's own prose
+    assert "the" not in pc
+    out = gnp._speak_card(
+        "<CHARACTER PROFILE>\nNAME: DOKJA KIM\n"
+        "MODIFIER: THE UGLIEST KING\nSKILL: THE FOURTH WALL", pc)
+    assert "Name: Dokja Kim." in out
+    assert "the ugliest king" in out          # article left alone
+    assert "The Fourth Wall" in out           # multi-word name restored
+
+
+def test_speak_card_without_a_cast_is_unchanged():
+    assert gnp._speak_card("NAME: DOKJA KIM") == "Name: dokja kim."

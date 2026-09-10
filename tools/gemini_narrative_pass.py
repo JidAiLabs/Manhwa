@@ -1202,9 +1202,51 @@ _CARD_CLOSE_RE = re.compile(r"\s*[\]>\u203a\u3009]\s*")
 
 
 _CARD_LABEL_MAX_WORDS = 4
+# a handle like "The Fourth Wall" or "Lady of the Sleeping Broca" would
+# otherwise teach the map to capitalize every article in the card's prose
+_NAME_STOPWORDS = {"the", "a", "an", "of", "and", "or", "in", "on", "at",
+                   "to", "for", "with", "from", "who", "that"}
 
 
-def _speak_card(text: str) -> str:
+def proper_case_from_cast(cast_list: Any) -> Dict[str, str]:
+    """{lowercase word -> the cast's own casing}, e.g. "dokja" -> "Dokja".
+
+    A card is printed in ALL CAPS, so speaking it means lower-casing — which
+    also flattened every name in it ("name: dokja kim"). The registry already
+    holds the correct casing and the writer already loads the cast, so the
+    names can simply be put back."""
+    out: Dict[str, str] = {}
+    for c in (cast_list or []):
+        if not isinstance(c, dict):
+            continue
+        for nm in ([str(c.get("canonical_name") or "")]
+                   + [str(a) for a in (c.get("aliases") or [])]):
+            for w in nm.split():
+                if w.lower() in _NAME_STOPWORDS:
+                    continue          # "The Fourth Wall" must not capitalize
+                if w[:1].isupper() and len(re.sub(r"[^A-Za-z]", "", w)) >= 2:
+                    out.setdefault(w.lower(), w)
+            # the WHOLE handle too, so a name that opens with an article
+            # ("The Fourth Wall") keeps its capital without teaching the map
+            # to capitalize every "the" in the card's prose
+            if " " in nm.strip() and len(nm.strip()) > 3:
+                out.setdefault(nm.strip().lower(), nm.strip())
+    return out
+
+
+def _restore_proper_case(text: str, proper_case: Any) -> str:
+    if not proper_case:
+        return text
+    t = str(text or "")
+    # whole handles first (longest wins), then any remaining single names
+    for ph in sorted((k for k in proper_case if " " in k), key=len, reverse=True):
+        t = re.sub(r"\b" + re.escape(ph) + r"\b", proper_case[ph], t,
+                   flags=re.IGNORECASE)
+    return re.sub(r"[A-Za-z][A-Za-z'\u2019\-]*",
+                  lambda m: proper_case.get(m.group(0).lower(), m.group(0)), t)
+
+
+def _speak_card(text: str, proper_case: Any = None) -> str:
     """The card's own words, spoken: its printed lines become sentences.
 
     Each line is cleaned on its own, so a per-line watermark stamp is stripped
@@ -1230,7 +1272,9 @@ def _speak_card(text: str) -> str:
     parts = []
     for c in merged:
         c = (c[:1].upper() + c[1:].lower()).rstrip(" :;,-\u2013\u2014")
+        c = _restore_proper_case(c, proper_case)
         if c:
+            c = c[:1].upper() + c[1:]        # the sentence still opens capital
             parts.append(c if c.endswith((".", "!", "?")) else c + ".")
     return " ".join(parts)
 
@@ -1276,7 +1320,7 @@ def ocr_looks_clipped(text: str, min_clipped: int = 2) -> bool:
     return False
 
 
-def system_card_line(f, understand_by_file, line):
+def system_card_line(f, understand_by_file, line, proper_case=None):
     """The line to voice on solo system panel *f*: the model's line when it
     voices the card (shares content, doesn't describe it), else the card's own
     text (understanding dialogue / OCR), sentence-cased. No card text -> the
@@ -1304,10 +1348,12 @@ def system_card_line(f, understand_by_file, line):
     # speak the PRINTED lines when we have them: the card's own line breaks
     # are its punctuation, and the flat `ocr_clean` has thrown them away
     layout = str(u.get("ocr_layout") or "").strip()
-    return _speak_card(layout if (layout and not dialogue) else card)
+    return _speak_card(layout if (layout and not dialogue) else card,
+                       proper_case)
 
 
-def auto_repair_segments(segs, surviving, kinds, understand_by_file=None):
+def auto_repair_segments(segs, surviving, kinds, understand_by_file=None,
+                         proper_case=None):
     """Deterministic STRUCTURAL repair before validation — the model's prose
     is never rewritten, only spans are adjusted (real ch1: wholesale singleton
     fallback threw away whole beats of good narration over one bad span):
@@ -1364,7 +1410,8 @@ def auto_repair_segments(segs, surviving, kinds, understand_by_file=None):
     for s in out:
         span = list(s.get("span") or [])
         if len(span) == 1 and str(kinds.get(span[0]) or "").lower() == "system":
-            s["line"] = system_card_line(span[0], understand_by_file, s.get("line"))
+            s["line"] = system_card_line(span[0], understand_by_file,
+                                         s.get("line"), proper_case)
     return out
 
 
@@ -1878,7 +1925,8 @@ def page_text_for(files, vision_by_file, u_by_file) -> Dict[str, str]:
 def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                            reask_fn=None, allow_flow_nudge=True,
                            derive_fn=None, allow_span_align=True,
-                           echo_of=None, page_text_by_file=None):
+                           echo_of=None, page_text_by_file=None,
+                           proper_case=None):
     """Adaptive mode: normalize + validate the model's segments; on failure do
     ONE repair re-ask (reask_fn(errors) -> repaired beat or None); still failing
     -> fall back to align_panel_narration singleton spans (never block the
@@ -1908,7 +1956,8 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
     echo_of = echo_of or {}
 
     def _norm(raw_segs):
-        repaired = auto_repair_segments(raw_segs, surviving, kinds, u_by_file)
+        repaired = auto_repair_segments(raw_segs, surviving, kinds, u_by_file,
+                                        proper_case)
         return glue_echo_spans(repaired, echo_of, surviving)
 
     def _check(s):
@@ -2396,6 +2445,9 @@ def main() -> int:
     # Same cast list (loaded once) feeds the per-beat token resolver, which scrubs
     # any bracketed cast token the model copied into the final narration.
     cast_list = _load_cast_list(args.cast)
+    # the registry already holds each name's correct casing; a spoken
+    # system card is lower-cased from ALL CAPS, so put the names back
+    card_proper_case = proper_case_from_cast(cast_list)
     # Round-2 identity fix: deterministic panel→cast FIGURE resolution at the
     # writer seam (cast exists only from the beated stage — AFTER understanding
     # — so resolution happens at read time, tools/cast_identity.py; prep_qa's
@@ -2679,6 +2731,7 @@ def main() -> int:
 
             finalize_adaptive_beat(
                 beat, surviving, kinds, u_by_file, gid,
+                proper_case=card_proper_case,
                 page_text_by_file=page_text_for(
                     surviving, vision_by_file, u_by_file),
                 reask_fn=None if beat.get("error") else _reask,
