@@ -1389,9 +1389,9 @@ def _strip_redundant_determiner(before: str, repl: str) -> str:
     return repl
 
 
-def cap_protagonist_name(beats_obj, cast, keep: int = 3,
+def cap_protagonist_name(beats_obj, cast, keep: int = 1,
                          handle: str = "our guy", vary: bool = True,
-                         name_every: int = 5) -> int:
+                         name_every: int = 0) -> int:
     """Ration the protagonist's proper NAME to its first *keep* uses (the
     introduction), then give the tail VARIETY: each later protagonist
     reference — an over-cap name OR a generic handle the writer already wrote
@@ -1401,11 +1401,18 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 3,
     phrase, so the grammatical-safety property of the original single-handle
     design is preserved. vary=False restores the legacy always-*handle* behaviour.
 
-    *name_every* (owner, 2026-09-08: "keep the MC / the protagonist most of
-    the time, use the name time to time"): after the introduction every
-    name_every-th reference is the real name again; the handles fill the
-    rest. 0 = never the name after the introduction (the old rule).
-    Deterministic — the same input always yields the same lines.
+    *name_every*: after the introduction every name_every-th reference is the
+    real name again; the handles fill the rest. 0 = never the name after the
+    introduction. Deterministic — the same input always yields the same lines.
+
+    Owner policy, 2026-09-11 (SUPERSEDES the 2026-09-08 "use the name time to
+    time" setting of keep=3/name_every=5): the name is used ONCE, and every
+    later reference is a handle. ORV Ep234 shipped 5 name uses in 50 lines —
+    3 introduction + 2 every-5th slots — which is what those defaults produce.
+    keep=1/name_every=0 also fixes a side effect: with three introduction
+    slots the writer's own inconsistent ordering survived, so the same
+    chapter carried BOTH "Kim Dokja" and "Dokja Kim". Both knobs stay
+    env-tunable (STUDIO_NARR_NAME_KEEP / STUDIO_NARR_NAME_EVERY).
 
     Returns the number of references rewritten."""
     members = cast.get("cast") if isinstance(cast, dict) else cast

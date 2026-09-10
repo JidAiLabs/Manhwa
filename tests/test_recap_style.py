@@ -1231,3 +1231,33 @@ def test_name_returns_time_to_time_after_the_introduction():
         _beat(2, *[f"our guy acts {i}." for i in range(10)])]}
     rs.cap_protagonist_name(C, _prot_cast(), keep=3, vary=True, name_every=0)
     assert all("Cheon" not in l for l in _lines(C)[3:])
+
+
+def test_the_protagonist_name_is_used_once_then_handles():
+    """Owner policy 2026-09-11, superseding the 2026-09-08 keep=3/name_every=5
+    ("use the name time to time"): the name appears ONCE and every later
+    reference is a handle. ORV Ep234 shipped 5 name uses in 50 lines — 3
+    introduction slots plus 2 every-5th slots — and, because three
+    introduction slots survive verbatim, the writer's own inconsistent
+    ordering shipped too: the same chapter carried BOTH "Kim Dokja" and
+    "Dokja Kim"."""
+    import re
+    from tools.recap_style import cap_protagonist_name
+    cast = {"cast": [{"canonical_name": "our protagonist", "is_protagonist": True,
+                      "aliases": ["Kim Dokja", "Dokja Kim", "Dokja"]}]}
+    lines = ["Kim Dokja steps onto the platform.",
+             "Dokja Kim reads the message.",
+             "Kim Dokja answers the dokkaebi.",
+             "Dokja Kim draws the blade.",
+             "Kim Dokja walks away."]
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["p%d.jpg" % i], "line": ln} for i, ln in enumerate(lines)]}]}
+
+    cap_protagonist_name(beats, cast)
+    out = " ".join(s["line"] for s in beats["beats"][0]["segments"])
+    assert len(re.findall(r"\bDokja\b", out, re.I)) == 1     # exactly once
+    # the tail is handles, and they vary rather than repeating one phrase
+    tail = out.split(".", 1)[1]
+    assert "Dokja" not in tail
+    assert len({h for h in ("our MC", "the protagonist", "our guy", "our boy")
+                if h.lower() in tail.lower()}) >= 1
