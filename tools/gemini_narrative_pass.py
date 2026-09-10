@@ -2830,7 +2830,10 @@ def main() -> int:
             rw = enforce_actor_handles(beat, figures_by_file, actor_nouns,
                                        protagonist_names,
                                        ledger=ledger_m or None,
-                                       spoken=spoken_map)
+                                       spoken=spoken_map,
+                                       kinds={f: str((u.get("panel_kind") or ""))
+                                              for f, u in (u_by_file or {}).items()
+                                              if isinstance(u, dict)})
             if rw:
                 beat["actor_rewrites"] = rw
                 for msg in rw:

@@ -945,3 +945,38 @@ def test_hair_light_class_blonde_silver_and_light_are_one_hair_colour():
                            prof)[0] == "Queen Mirabad"       # blonde ~ light
     assert ci.resolve_name("a woman with long black hair in a dark coat",
                            prof)[0] == "unknown"             # hair + colour clash
+
+
+# ---- a system card is text on a screen, not a claim about who is drawn ------
+
+def test_identity_gate_leaves_a_system_cards_printed_name_alone():
+    """ORV Ep210 p000001 prints "NAME: DOKJA KIM". No figure resolves on a
+    window, so the gate rewrote each name token to an evidence handle and the
+    card read "Name: the blue digital the blue digital." — the real beat
+    carried actor_rewrites ["'dokja' -> 'the blue digital'", "'kim' -> ...].
+    Every rule in the gate is about who a panel SHOWS; a card shows nobody.
+    """
+    from tools.identity_gate import enforce_actor_handles
+    figs = {"p1.jpg": [{"name": "unknown",
+                        "evidence": "a blue digital system window"}]}
+    noun_map = {"dokja": {"our protagonist"}, "kim": {"our protagonist"}}
+    line = "Name: Dokja Kim. Supporting constellation: none."
+
+    def run(kinds):
+        beat = {"group_id": 1,
+                "segments": [{"span": ["p1.jpg"], "line": line}]}
+        rw = enforce_actor_handles(beat, figs, noun_map, {"our protagonist"},
+                                   kinds=kinds)
+        return beat["segments"][0]["line"], rw
+
+    card, rw_card = run({"p1.jpg": "system"})
+    assert card == line and rw_card == []          # printed name survives
+
+    # a STORY panel is still gated: naming someone the panel does not show
+    # is exactly what this guard exists to catch
+    story, rw_story = run({"p1.jpg": "story"})
+    assert story != line and rw_story
+
+    # and with no kinds at all, behaviour is unchanged (older callers)
+    legacy, rw_legacy = run(None)
+    assert (legacy, rw_legacy) == (story, rw_story)

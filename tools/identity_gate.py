@@ -98,7 +98,7 @@ def _figure_handle(name: str, spoken: Optional[Dict[str, str]] = None) -> str:
 
 
 def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
-                          ledger=None, spoken=None):
+                          ledger=None, spoken=None, kinds=None):
     """Deterministic identity gate (2026-07-16 wave): a line may claim the
     protagonist ('our guy'/'our protagonist'/a protagonist name-noun) ONLY
     when the span's cast_identity-resolved figures include the protagonist;
@@ -143,6 +143,15 @@ def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
         if not line:
             continue
         span = s["span"] or []
+        # A SYSTEM CARD is text on a screen, not a claim about who is drawn.
+        # ORV Ep210 p000001 prints "NAME: DOKJA KIM"; no figure resolves on a
+        # window, so the zero-figure rule below re-pointed the protagonist's
+        # printed name to an evidence handle and the card read "Name: the blue
+        # digital." Every rule here is about who a panel SHOWS, and a card
+        # shows nobody -- so a span that is only cards is left alone.
+        if span and kinds and all(
+                str((kinds or {}).get(fn) or "") == "system" for fn in span):
+            continue
         span_figs = [f for fn in span
                      for f in (figures_by_file.get(fn) or [])]
         # living entities the ledger says ACT in this span (tie-breaker)

@@ -831,7 +831,10 @@ def apply_post_punchup_backstop(
             for b in out.get("beats") or []:
                 n_actor += len(enforce_actor_handles(
                     b, figures_by_file, noun_map, prot, ledger=ledger,
-                    spoken=spoken))
+                    spoken=spoken,
+                    kinds={f: str((u.get("panel_kind") or ""))
+                           for f, u in (understood_by_file or {}).items()
+                           if isinstance(u, dict)}))
     # Deterministic name budget, LAST: the prompt rule moved naming from 20%
     # of lines to 13% and stalled there; the cap lands it exactly. It also
     # VARIES the post-cap handle ('the prince'/'our guy'/'our boy') so the tail
