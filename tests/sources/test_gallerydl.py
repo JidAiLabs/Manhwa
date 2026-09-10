@@ -161,3 +161,26 @@ def test_run_download_raises_runtime_error_on_other_failure(tmp_path):
     with patch("subprocess.run", return_value=mock_result):
         with pytest.raises(RuntimeError):
             run_download("https://example.com/ch1", tmp_path)
+
+
+def test_download_asks_gallery_dl_for_images_only():
+    """ORV Ep220 enumerates 138 .jpg pages plus "221-00-bgm.mp4" (the episode
+    has background music). gallery-dl routes an mp4 through its ytdl
+    downloader, that needs yt-dlp, and the single failure made it exit 4 — so
+    the whole fetch failed and the episode directory came back EMPTY over
+    three retries, for a file we discard anyway."""
+    from studio.sources import gallerydl as g
+
+    # the filter is derived from the set the collector keeps, so they cannot drift
+    for suffix in g._IMAGE_SUFFIXES:
+        assert repr(suffix.lstrip(".")) in g._IMAGE_FILTER
+    assert "mp4" not in g._IMAGE_FILTER
+    # a missing extension must not blow the expression up
+    assert "(extension or '')" in g._IMAGE_FILTER
+
+    with patch.object(g.subprocess, "run") as run:
+        run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        g.run_download("https://example.test/x", Path("/tmp/x"))
+    argv = run.call_args[0][0]
+    assert "--filter" in argv
+    assert argv[argv.index("--filter") + 1] == g._IMAGE_FILTER

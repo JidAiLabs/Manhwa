@@ -36,6 +36,16 @@ _GDL_CMD = [sys.executable, "-m", "gallery_dl"]
 _EXTRACTOR_ERROR_PHRASES = ("no suitable extractor", "unsupported url")
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
+# We keep ONLY images (see the collector below), so gallery-dl must not even
+# attempt anything else. ORV Ep220 carries background music: the episode
+# enumerates 138 .jpg pages plus "221-00-bgm.mp4", gallery-dl routes an mp4
+# through its ytdl downloader, that needs yt-dlp (not installed and not
+# wanted), the one failure makes gallery-dl exit 4, and the whole fetch is
+# treated as failed — the episode directory came back EMPTY over three
+# retries. Derived from _IMAGE_SUFFIXES so the two can never drift.
+_IMAGE_FILTER = "(extension or '').lower() in ({})".format(
+    ", ".join(repr(suffix.lstrip(".")) for suffix in sorted(_IMAGE_SUFFIXES)))
+
 
 # ---------------------------------------------------------------------------
 # Subprocess helpers
@@ -87,6 +97,7 @@ def run_download(url: str, tmp_dir: Path, sleep: float = 2.0) -> None:
                 *_GDL_CMD,
                 "--dest", str(tmp_dir),
                 "--sleep", str(sleep),
+                "--filter", _IMAGE_FILTER,
                 "--write-metadata",
                 url,
             ],
