@@ -1721,3 +1721,26 @@ def test_card_names_come_back_with_the_registry_casing():
 
 def test_speak_card_without_a_cast_is_unchanged():
     assert gnp._speak_card("NAME: DOKJA KIM") == "Name: dokja kim."
+
+
+def test_a_ladder_rung_with_no_speakable_word_is_skipped():
+    """panel_understand writes its "no action here" as the two-character
+    string "''" — truthy, and not a shot phrase, so it won the action->
+    description ladder and the real description behind it was never reached.
+    ORV Ep217 p000008 (a system panel with zero OCR) got "''." as its whole
+    narration line and parked the chapter on a narration_null no heal could
+    clear: the pad is deterministic, so every cycle produced it again.
+    Measured 817 panels across 217 chapters, all with a usable description.
+    """
+    u = {"action": "''",
+         "description": "A blue digital screen displays capitalized text.",
+         "subjects": [], "setting": ""}
+    assert gnp._non_camera_description(u) == u["description"]
+    assert gnp._grounded_pad_line("p1.jpg", {"p1.jpg": u}) == u["description"]
+    # a real action still wins the ladder, as before
+    real = dict(u, action="the screen flickers")
+    assert gnp._non_camera_description(real) == "the screen flickers"
+    # and an unspeakable subject is not offered either
+    only_junk = {"action": "''", "description": "", "subjects": ["''", "1?"],
+                 "setting": ""}
+    assert gnp._non_camera_description(only_junk) == ""

@@ -499,12 +499,22 @@ def _non_camera_description(understood: Optional[Dict[str, Any]]) -> str:
     subjects = [str(s).strip() for s in (u.get("subjects") or []) if str(s).strip()]
     setting = str(u.get("setting") or "").strip()
     # 1) the concrete action, then 2) a non-camera description.
+    # A rung with no SPEAKABLE word is not a signal, however non-empty it is:
+    # panel_understand writes its "no action here" as the two-character string
+    # "''", which is truthy and is not a shot phrase, so it won this ladder and
+    # the real description behind it was never reached. ORV Ep217 p000008 is a
+    # system panel with zero OCR, so that "''" became its whole narration line
+    # and parked the chapter on a narration_null no heal could clear — the pad
+    # is deterministic, so all four cycles produced it again. Measured: 817
+    # panels across 217 chapters, every one with a usable description behind
+    # the null rung, feeding BOTH this pad and the writer's own input.
     for c in (action, desc):
-        if c and not is_shot_description(c):
+        if c and not is_unvoiceable_line(c) and not is_shot_description(c):
             return c
     # 3) the named subjects (dropping any that themselves read as a shot phrase),
     # 4) enriched with a non-camera setting into a neutral summary.
-    clean_subjects = [s for s in subjects if not is_shot_description(s)]
+    clean_subjects = [s for s in subjects
+                      if not is_shot_description(s) and not is_unvoiceable_line(s)]
     if clean_subjects:
         summary = ", ".join(clean_subjects)
         if setting and not is_shot_description(setting):
@@ -1329,6 +1339,18 @@ def system_card_line(f, understand_by_file, line, proper_case=None):
     dialogue = clean_card_text(u.get("dialogue") or "")
     card = dialogue or clean_card_text(u.get("ocr_clean") or "")
     if not card:
+        # No card text at all (ORV Ep217 p000008: text_coverage 0.0, zero OCR
+        # words). The writer is told to give every panel a line, to give a
+        # system card its own sentence, and to SAY the card rather than
+        # describe it — with nothing to say, the only output satisfying all
+        # three is quoting nothing, and "''." came out. narration_null then
+        # blocks and no heal can clear it, because re-narrating cannot invent
+        # text that is not on the page. The ban on describing has to yield
+        # here: a grounded description is the one thing always available.
+        if is_unvoiceable_line(line):
+            pad = _grounded_pad_line(f, understand_by_file)
+            if pad and not is_unvoiceable_line(pad):
+                return pad
         return line
     ln = str(line or "").strip()
     # A line that cannot be SPOKEN never counts as the writer voicing the card.
