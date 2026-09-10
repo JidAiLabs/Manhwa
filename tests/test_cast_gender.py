@@ -71,3 +71,55 @@ def test_the_writer_is_told_the_gender_it_must_not_guess(tmp_path):
     # an unmarked member is left unmarked -- the writer must never be handed a
     # guessed gender, which is the whole failure this fixes
     assert "[" not in lines["Stranger"].split(":", 1)[0]
+
+
+# ---- the page's own pronouns (deterministic, no model) ----------------------
+
+def test_gender_is_read_off_the_same_ocr_line():
+    """ORV Ep107 p000002 names her AND uses the pronoun in one line, so this
+    needs no coreference. Asking the story pass instead resolved 13% of the
+    corpus and missed her; this resolves 26% and gets her."""
+    cast = {"cast": [{"canonical_name": "Beast Lord", "aliases": []}]}
+    n = cb.gender_from_ocr_pronouns(cast, [
+        {"ocr_clean": "A BEAST LORD USUALLY DOESN'T DIE FROM A WOUND LIKE "
+                      "THAT, BUT SHE WAS UP AGAINST FLAMES OF HELL."}])
+    assert n == 1 and cast["cast"][0]["gender"] == "female"
+
+
+def test_a_line_naming_two_members_casts_no_vote():
+    """The pronoun has more than one candidate, so it proves nothing."""
+    cast = {"cast": [{"canonical_name": "Beast Lord", "aliases": []},
+                     {"canonical_name": "Captain", "aliases": []}]}
+    assert cb.gender_from_ocr_pronouns(cast, [
+        {"ocr_clean": "THE CAPTAIN AND THE BEAST LORD SPEAK; SHE NODS."}]) == 0
+    assert all("gender" not in m for m in cast["cast"])
+
+
+def test_an_unambiguous_gendered_noun_in_the_name_vetoes_the_vote():
+    """The three measured corpus errors were all this shape -- 'Lady Hwa' ->
+    male, 'King of Beauty' -> female, 'unnamed mother' -> male."""
+    cast = {"cast": [{"canonical_name": "Lady Hwa", "aliases": []}]}
+    assert cb.gender_from_ocr_pronouns(
+        cast, [{"ocr_clean": "LADY HWA, HE IS ALREADY GONE."}]) == 0
+    assert "gender" not in cast["cast"][0]
+
+
+def test_lord_is_not_a_vetoing_noun():
+    """'lord' is deliberately absent from the veto list: the Beast Lord is a
+    woman, so including it would break the one case this exists for."""
+    cast = {"cast": [{"canonical_name": "Beast Lord", "aliases": []}]}
+    cb.gender_from_ocr_pronouns(cast, [{"ocr_clean": "THE BEAST LORD? SHE FELL."}])
+    assert cast["cast"][0]["gender"] == "female"
+
+
+def test_a_disagreeing_page_and_an_owner_lock_both_win():
+    cast = {"cast": [{"canonical_name": "Yuseung", "aliases": []},
+                     {"canonical_name": "Locked", "aliases": [],
+                      "gender": "male"}]}
+    n = cb.gender_from_ocr_pronouns(cast, [
+        {"ocr_clean": "YUSEUNG RAISES HIS BLADE."},     # male
+        {"ocr_clean": "YUSEUNG TURNS, AND SHE RUNS."},  # female -> disagreement
+        {"ocr_clean": "LOCKED, SHE SAID."}])            # lock must survive
+    assert n == 0
+    assert "gender" not in cast["cast"][0]
+    assert cast["cast"][1]["gender"] == "male"

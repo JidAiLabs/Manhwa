@@ -428,6 +428,78 @@ def _series_cast_block(registry: Any) -> str:
     return SERIES_CAST_RULE.replace("{CAST}", "\n".join(lines)) if lines else ""
 
 
+_FEM_PRONOUN = re.compile(r"\b(she|her|hers|herself)\b", re.I)
+_MAL_PRONOUN = re.compile(r"\b(he|him|his|himself)\b", re.I)
+# Names carrying an UNAMBIGUOUS gendered noun, used only to veto a pronoun vote
+# that contradicts them. `lord` is deliberately ABSENT: ORV's Beast Lord is a
+# woman, and she is the whole reason this exists -- a name-noun rule that
+# included it would break the one case it was built for.
+_FEM_NOUN = re.compile(r"\b(lady|woman|mother|queen|goddess|girl|sister|madam"
+                       r"|empress|princess|daughter|wife)\b", re.I)
+_MAL_NOUN = re.compile(r"\b(man|father|king|god|boy|brother|sir|emperor"
+                       r"|prince|son|husband)\b", re.I)
+# descriptive handles whose gender already comes from the description
+_GENERIC_HANDLES = {"our protagonist", "the man", "the woman",
+                    "the constellations"}
+
+
+def gender_from_ocr_pronouns(cast: Any, items: Any) -> int:
+    """Read each character's gender off the page's own pronouns.
+
+    The chapter says it out loud -- ORV Ep107 p000002 is "A BEAST LORD USUALLY
+    DOESN'T DIE FROM A WOUND LIKE THAT, BUT SHE WAS UP AGAINST FLAMES OF HELL"
+    -- and the name and the pronoun sit in the SAME line, so this needs no
+    coreference and no model. Asking the story pass for it instead resolved 13%
+    of the corpus and missed the Beast Lord outright; this resolves 26%
+    (295/1137) and gets her.
+
+    Counted only when a line names exactly ONE cast member and uses pronouns of
+    exactly one gender, and only when every such line agrees. A vote an
+    unambiguous gendered noun in the name contradicts is dropped -- that veto
+    is what removes the three measured errors ('Lady Hwa' -> male, 'King of
+    Beauty' -> female, 'unnamed mother' -> male). An existing value (an owner
+    registry lock) always wins."""
+    members = cast.get("cast") if isinstance(cast, dict) else cast
+    keys: Dict[str, List[str]] = {}
+    for m in (members or []):
+        if not isinstance(m, dict):
+            continue
+        n = str(m.get("canonical_name") or "").strip()
+        if len(n) > 3 and n.lower() not in _GENERIC_HANDLES:
+            keys[n] = [n] + [str(a) for a in (m.get("aliases") or [])
+                             if len(str(a)) > 3]
+    if not keys:
+        return 0
+    pats = {n: [re.compile(r"\b" + re.escape(k) + r"\b", re.I) for k in ks]
+            for n, ks in keys.items()}
+    votes: Dict[str, set] = {n: set() for n in keys}
+    for it in (items or []):
+        line = " ".join(str((it or {}).get("ocr_clean") or "").split())
+        if not line:
+            continue
+        named = [n for n, ps in pats.items() if any(p.search(line) for p in ps)]
+        if len(named) != 1:
+            continue                      # ambiguous: the pronoun has options
+        fem, mal = bool(_FEM_PRONOUN.search(line)), bool(_MAL_PRONOUN.search(line))
+        if fem ^ mal:
+            votes[named[0]].add("female" if fem else "male")
+    n_set = 0
+    for m in (members or []):
+        if not isinstance(m, dict) or m.get("gender"):
+            continue
+        name = str(m.get("canonical_name") or "").strip()
+        v = votes.get(name) or set()
+        if len(v) != 1:
+            continue                      # no evidence, or the page disagrees
+        g = v.pop()
+        if (g == "male" and _FEM_NOUN.search(name)) or \
+           (g == "female" and _MAL_NOUN.search(name)):
+            continue                      # the name itself says otherwise
+        m["gender"] = g
+        n_set += 1
+    return n_set
+
+
 def stamp_story_gender(cast: Any, story_chars: Any) -> int:
     """Copy each character's gender from the chapter's TEXT onto the cast.
 
@@ -580,10 +652,13 @@ def main() -> int:
         # survive (sanitize would have replaced it with a handle)
         cast, n_locked = apply_series_cast(cast, registry)
         print(f"[series] {n_locked} cast member(s) locked from {args.series_cast}")
-    n_gender = stamp_story_gender(cast, chars)
-    if n_gender:
-        print(f"[cast] gender read from the chapter's own words: {n_gender} "
-              "member(s)")
+    # the page's own pronouns first (deterministic), the story pass only for
+    # what they leave empty -- measured 26% vs 13% coverage
+    n_ocr = gender_from_ocr_pronouns(cast, items)
+    n_story = stamp_story_gender(cast, chars)
+    if n_ocr or n_story:
+        print(f"[cast] gender: {n_ocr} from the page's pronouns, "
+              f"{n_story} from the chapter story")
     inputs = [args.groups_manifest, args.vision_manifest]
     if args.understood and os.path.exists(args.understood):
         inputs.append(args.understood)
