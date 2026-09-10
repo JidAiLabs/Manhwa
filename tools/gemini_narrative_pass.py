@@ -233,6 +233,44 @@ def _build_vision_map(vision_manifest: Dict[str, Any]) -> Dict[str, Dict[str, An
     return {it.get("scene_file"): it for it in items if it.get("scene_file")}
 
 
+def ocr_lines_from_words(words: Any) -> List[str]:
+    """The card's PRINTED LINES, rebuilt from each word's box.
+
+    A system card is drawn one field per line, so the line breaks are its
+    punctuation — but `ocr_clean` is a flattened string and throws that away,
+    which is why a profile card read as one breathless run ("name: dokja kim
+    supporting constellation: none modifier: ..."). The geometry is already in
+    manifest.vision.json (`vision.ocr_words`, each with a normalized bbox), so
+    the split needs no guessing about where a value ends: words sharing a
+    vertical band are one line, ordered left to right.
+    """
+    ws = []
+    for w in (words or []):
+        box = (w or {}).get("bbox")
+        t = str((w or {}).get("t") or "").strip()
+        if t and isinstance(box, (list, tuple)) and len(box) == 4:
+            _x0, y0, _x1, y1 = [float(v) for v in box]
+            ws.append((({"t": t, "x": _x0, "yc": (y0 + y1) / 2.0,
+                         "h": abs(y1 - y0)})))
+    if not ws:
+        return []
+    ws.sort(key=lambda w: (w["yc"], w["x"]))
+    heights = sorted(w["h"] for w in ws)
+    # half a line-height keeps a slightly-tilted row together without
+    # swallowing the row beneath it
+    tol = max(heights[len(heights) // 2] * 0.6, 0.004)
+    rows, cur = [], [ws[0]]
+    for w in ws[1:]:
+        if abs(w["yc"] - cur[-1]["yc"]) <= tol:
+            cur.append(w)
+        else:
+            rows.append(cur)
+            cur = [w]
+    rows.append(cur)
+    return [" ".join(x["t"] for x in sorted(row, key=lambda w: w["x"]))
+            for row in rows]
+
+
 def merge_vision_ocr(u_by_file: Dict[str, Any],
                      vision_by_file: Dict[str, Any]) -> Dict[str, Any]:
     """Carry each panel's `ocr_clean` from the VISION manifest into the
@@ -255,9 +293,15 @@ def merge_vision_ocr(u_by_file: Dict[str, Any],
             continue
         if str(u.get("ocr_clean") or "").strip():
             continue
-        ocr = str(((vision_by_file or {}).get(f) or {}).get("ocr_clean") or "").strip()
+        v = (vision_by_file or {}).get(f) or {}
+        ocr = str(v.get("ocr_clean") or "").strip()
         if ocr:
             u["ocr_clean"] = ocr
+        # the card's PRINTED lines, kept alongside the flat text: _speak_card
+        # turns each into its own sentence (see ocr_lines_from_words)
+        lines = ocr_lines_from_words(((v.get("vision") or {}).get("ocr_words")))
+        if lines and not u.get("ocr_layout"):
+            u["ocr_layout"] = "\n".join(lines)
     return u_by_file
 
 
@@ -1157,18 +1201,34 @@ def clean_card_text(text: str) -> str:
 _CARD_CLOSE_RE = re.compile(r"\s*[\]>\u203a\u3009]\s*")
 
 
-def _speak_card(text: str) -> str:
-    """The card's own words, spoken: its drawn line breaks become sentences.
+_CARD_LABEL_MAX_WORDS = 4
 
-    Each boxed line is cleaned on its own, so a per-line watermark stamp is
-    stripped where it actually sits and a label's trailing colon does not end
-    up as ":." in the middle of the narration.
+
+def _speak_card(text: str) -> str:
+    """The card's own words, spoken: its printed lines become sentences.
+
+    Each line is cleaned on its own, so a per-line watermark stamp is stripped
+    where it sits and a label's trailing colon does not end up as ":." mid
+    narration. A line that carries no speakable word at all (a "10X" scan
+    watermark, a stray "1?") is dropped rather than voiced, and a line ending
+    in ':' is a LABEL whose value is the next line, so the two are joined.
     """
+    raw = [clean_card_text(_CARD_STAMP_RE.sub("", ln).strip())
+           for ln in _CARD_CLOSE_RE.sub("\n", str(text or "")).split("\n")]
+    kept = [ln for ln in raw if ln and not is_unvoiceable_line(ln)]
+    merged: List[str] = []
+    for ln in kept:
+        prev = merged[-1].rstrip() if merged else ""
+        # a LABEL is short ("PERSONAL ATTRIBUTE:"); a system sentence that
+        # happens to end in a colon is not, and joining those glued two
+        # separate cards into one ("...defeated the demon marquis reinheit:
+        # you have received 150,000 coins")
+        if prev.endswith(":") and len(prev.split()) <= _CARD_LABEL_MAX_WORDS:
+            merged[-1] = prev + " " + ln
+        else:
+            merged.append(ln)
     parts = []
-    for raw in _CARD_CLOSE_RE.sub("\n", str(text or "")).split("\n"):
-        c = clean_card_text(_CARD_STAMP_RE.sub("", raw).strip())
-        if not c:
-            continue
+    for c in merged:
         c = (c[:1].upper() + c[1:].lower()).rstrip(" :;,-\u2013\u2014")
         if c:
             parts.append(c if c.endswith((".", "!", "?")) else c + ".")
@@ -1241,7 +1301,10 @@ def system_card_line(f, understand_by_file, line):
         # abandoned w… drive th planet p… to extin"); the writer's line,
         # even a description, is the lesser evil
         return line
-    return _speak_card(card)
+    # speak the PRINTED lines when we have them: the card's own line breaks
+    # are its punctuation, and the flat `ocr_clean` has thrown them away
+    layout = str(u.get("ocr_layout") or "").strip()
+    return _speak_card(layout if (layout and not dialogue) else card)
 
 
 def auto_repair_segments(segs, surviving, kinds, understand_by_file=None):

@@ -1663,3 +1663,38 @@ def test_a_cards_drawn_delimiters_become_sentences():
                    "You have received 150,000 coins.")
     assert ":." not in out and "10x" not in out.lower()   # no stamp, no ":."
     assert gnp._speak_card(_PROFILE_CARD).startswith("Character profile.")
+
+
+def test_printed_lines_are_rebuilt_from_word_boxes():
+    """A card is drawn one field per line and `ocr_clean` flattens that away.
+    The geometry is already in vision.ocr_words, so the split needs no guess
+    about where a value ends and the next label begins."""
+    words = [{"t": "NAME:", "bbox": [0.10, 0.30, 0.20, 0.32]},
+             {"t": "DOKJA", "bbox": [0.25, 0.30, 0.35, 0.32]},
+             {"t": "KIM", "bbox": [0.36, 0.301, 0.45, 0.321]},   # same row
+             {"t": "MODIFIER:", "bbox": [0.10, 0.40, 0.25, 0.42]},
+             {"t": "KING", "bbox": [0.26, 0.40, 0.35, 0.42]}]
+    assert gnp.ocr_lines_from_words(words) == ["NAME: DOKJA KIM",
+                                               "MODIFIER: KING"]
+    assert gnp.ocr_lines_from_words([]) == []
+
+
+def test_speak_card_drops_unspeakable_lines_and_joins_a_label_to_its_value():
+    out = gnp._speak_card("10X\nCHARACTER PROFILE\nNAME: DOKJA KIM\n"
+                          "PERSONAL ATTRIBUTE:\nEIGHT LIVES\n1?")
+    assert out == ("Character profile. Name: dokja kim. "
+                   "Personal attribute: eight lives.")
+    assert "10x" not in out and "1?" not in out       # watermark / OCR noise
+
+
+def test_merge_stamps_the_printed_layout_alongside_the_flat_text():
+    u = {"p1.jpg": {"scene_file": "p1.jpg"}}
+    gnp.merge_vision_ocr(u, {"p1.jpg": {
+        "ocr_clean": "NAME: DOKJA KIM MODIFIER: KING",
+        "vision": {"ocr_words": [
+            {"t": "NAME:", "bbox": [0.1, 0.30, 0.2, 0.32]},
+            {"t": "DOKJA", "bbox": [0.25, 0.30, 0.35, 0.32]},
+            {"t": "MODIFIER:", "bbox": [0.1, 0.40, 0.25, 0.42]},
+            {"t": "KING", "bbox": [0.26, 0.40, 0.35, 0.42]}]}}})
+    assert u["p1.jpg"]["ocr_layout"] == "NAME: DOKJA\nMODIFIER: KING"
+    assert u["p1.jpg"]["ocr_clean"] == "NAME: DOKJA KIM MODIFIER: KING"
