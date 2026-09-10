@@ -1622,3 +1622,44 @@ def test_card_that_is_only_markup_falls_back_to_the_given_line():
     from tools.gemini_narrative_pass import system_card_line
     u = {"p.jpg": {"panel_kind": "system", "dialogue": "", "ocr_clean": "[ ] <>"}}
     assert system_card_line("p.jpg", u, "A real line.") == "A real line."
+
+
+# ORV Ep210 g0001 (p000001.jpg) parked a chapter on a blocking narration_null
+# that four heal cycles could not clear. The card text was NOT missing this
+# time -- merge_vision_ocr (370a81c) had shipped four days earlier. The card
+# reads "NAME: DOKJA KIM SUPPORTING CONSTELLATION: NONE", the writer emitted
+# just "None.", and that single word shares "none" WITH THE CARD -- so the
+# "did the writer voice the card?" overlap test accepted it and returned it
+# unchanged. A line that cannot be spoken is never a voicing.
+_PROFILE_CARD = ("10X <CHARACTER PROFILE> NAME: DOKJA KIM "
+                 "SUPPORTING CONSTELLATION: NONE")
+
+
+def _card_u(card):
+    u = {"p1.jpg": {"scene_file": "p1.jpg", "panel_kind": "system",
+                    "dialogue": ""}}
+    gnp.merge_vision_ocr(u, {"p1.jpg": {"ocr_clean": card}})
+    return u
+
+
+def test_a_one_word_echo_of_a_card_field_is_not_voicing_the_card():
+    out = gnp.system_card_line("p1.jpg", _card_u(_PROFILE_CARD), "None.")
+    from tools.recap_style import is_nullish_line
+    assert not is_nullish_line(out)
+    assert "dokja kim" in out.lower()        # the card, read out
+
+
+def test_a_real_voicing_of_the_card_is_still_kept():
+    line = "The profile lists Dokja Kim with no supporting constellation."
+    assert gnp.system_card_line("p1.jpg", _card_u(_PROFILE_CARD), line) == line
+
+
+def test_a_cards_drawn_delimiters_become_sentences():
+    """The brackets ARE the card's punctuation -- replacing them with spaces
+    ran every printed line together into one breathless sentence."""
+    out = gnp._speak_card("[YOU HAVE DEFEATED THE DEMON MARQUIS REINHEIT:] "
+                          "10X [YOU HAVE RECEIVED 150,000 COINS]")
+    assert out == ("You have defeated the demon marquis reinheit. "
+                   "You have received 150,000 coins.")
+    assert ":." not in out and "10x" not in out.lower()   # no stamp, no ":."
+    assert gnp._speak_card(_PROFILE_CARD).startswith("Character profile.")

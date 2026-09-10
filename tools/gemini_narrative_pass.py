@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scene_selection import normalize_scene_selection  # noqa: E402
 from usage_cost import UsageAccumulator  # noqa: E402
 from manifest_io import write_manifest  # noqa: E402
+from narration_consistency import is_unvoiceable_line  # noqa: E402
 from narration_safe_rules import SAFE_NARRATION_RULES  # noqa: E402
 from niche_modules import register_block  # noqa: E402
 from recap_style import (  # noqa: E402
@@ -1148,12 +1149,30 @@ def clean_card_text(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+# A card is DRAWN as separate boxed lines, and those brackets are its
+# punctuation. clean_card_text replaces them with spaces, which ran every
+# printed line of a card together into one breathless sentence
+# ("Character profile name: dokja kim supporting constellation: none").
+# A CLOSING delimiter ends a printed line, so it becomes a sentence break.
+_CARD_CLOSE_RE = re.compile(r"\s*[\]>\u203a\u3009]\s*")
+
+
 def _speak_card(text: str) -> str:
-    t = clean_card_text(text)
-    if not t:
-        return t
-    t = t[:1].upper() + t[1:].lower()
-    return t if t.endswith((".", "!", "?")) else t + "."
+    """The card's own words, spoken: its drawn line breaks become sentences.
+
+    Each boxed line is cleaned on its own, so a per-line watermark stamp is
+    stripped where it actually sits and a label's trailing colon does not end
+    up as ":." in the middle of the narration.
+    """
+    parts = []
+    for raw in _CARD_CLOSE_RE.sub("\n", str(text or "")).split("\n"):
+        c = clean_card_text(_CARD_STAMP_RE.sub("", raw).strip())
+        if not c:
+            continue
+        c = (c[:1].upper() + c[1:].lower()).rstrip(" :;,-\u2013\u2014")
+        if c:
+            parts.append(c if c.endswith((".", "!", "?")) else c + ".")
+    return " ".join(parts)
 
 
 def _card_words(text: str):
@@ -1208,7 +1227,13 @@ def system_card_line(f, understand_by_file, line):
     if not card:
         return line
     ln = str(line or "").strip()
-    if ln and not _CARD_DESC_RE.search(ln) and (_card_words(ln) & _card_words(card)):
+    # A line that cannot be SPOKEN never counts as the writer voicing the card.
+    # ORV Ep210's profile panel reads "NAME: DOKJA KIM SUPPORTING CONSTELLATION:
+    # NONE" and the writer emitted just "None." -- which shares the word "none"
+    # with the card, so the overlap test below accepted it as a voicing and
+    # returned it unchanged through all four heal cycles.
+    if ln and not is_unvoiceable_line(ln) and not _CARD_DESC_RE.search(ln) \
+            and (_card_words(ln) & _card_words(card)):
         return ln
     if not dialogue and ocr_looks_clipped(card):
         # the model's transcription is absent and the OCR is of a clipped
