@@ -1065,6 +1065,65 @@ def test_sfs_basenames_accepted_from_full_paths():
     assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg"], ["p3.jpg"]]
 
 
+# ---- diag: WHICH condition made an answer unusable (2026-09-13) -------------
+# 214 production fallbacks shipped behind one generic line; nothing said whether
+# the model tagged a caption, misspelled a file, or wrote no sentences at all.
+
+def _sfs_diag(sentences, files=tuple(FILES), kinds=None):
+    d = {}
+    out = gnp.segments_from_sentences(sentences, list(files), kinds or KINDS,
+                                      U_BY_FILE, diag=d)
+    return out, d
+
+
+def test_sfs_diag_names_the_unresolvable_tags():
+    out, d = _sfs_diag([{"text": "Tags nobody knows.",
+                         "panels": ["zzz.jpg", "panel 2", "zzz.jpg"]}])
+    assert out is None
+    assert d["reason"] == "no_story_tags"
+    assert d["unresolved"] == ["zzz.jpg", "panel 2"]     # ordered, unique
+    assert d["n_sentences"] == 1 and d["n_tagged"] == 0
+
+
+def test_sfs_diag_names_each_none_condition():
+    assert _sfs_diag([])[1]["reason"] == "no_sentences"
+    assert _sfs_diag(["a bare string is not a sentence."])[1]["reason"] \
+        == "no_sentences"
+    assert _sfs_diag([{"text": "x.", "panels": ["p1.jpg"]}],
+                     files=())[1]["reason"] == "no_files"
+    files5 = [f"q{i}.jpg" for i in range(1, 6)]
+    assert _sfs_diag([{"text": "Everything happens at once.",
+                       "panels": files5}], files=files5,
+                     kinds={f: "story" for f in files5})[1]["reason"] \
+        == "lone_mega_sentence"
+    assert _sfs_diag([{"text": "Two cards in one breath.",
+                       "panels": ["p1.jpg", "p2.jpg"]}],
+                     kinds={f: "system" for f in FILES})[1]["reason"] \
+        == "no_system_line"
+
+
+def test_sfs_diag_stays_empty_on_a_usable_answer():
+    out, d = _sfs_diag([{"text": "He runs the bridge.", "panels": ["p1.jpg"]},
+                        {"text": "Steel waits.", "panels": ["p2.jpg", "p3.jpg"]}])
+    assert out and d == {}
+
+
+def test_prose_repair_block_names_the_bad_tags_and_the_legal_files():
+    block = gnp._prose_repair_block(
+        ["the answer carried no usable narration shape"],
+        taggable=["p1.jpg", "p3.jpg"],
+        diag={"reason": "no_story_tags", "unresolved": ["p2.jpg", "panel 1"]})
+    assert "NARRATION REPAIR" in block
+    assert "p2.jpg" in block and "panel 1" in block
+    assert "The ONLY valid 'panels' values are: p1.jpg, p3.jpg" in block
+
+
+def test_prose_repair_block_without_context_keeps_the_generic_note():
+    block = gnp._prose_repair_block(["some validator error"])
+    assert "NARRATION REPAIR" in block and "some validator error" in block
+    assert "ONLY valid" not in block
+
+
 # ---- prose-first schema + prompt --------------------------------------------
 
 def test_beat_schema_prose_has_narration_and_sentences():
@@ -1237,6 +1296,81 @@ def test_corrections_unvoiced_fallback_still_keeps_previous_lines(
     assert [s["span"] for s in beat["segments"]] == [
         ["p1.jpg", "p2.jpg"], ["p3.jpg"]]                # previous beat kept
     assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
+
+
+# ---- a fallback beat is visible: logged WHY, persisted, counted (2026-09-13) --
+# Before this a padded beat was indistinguishable in manifest.beats.json from one
+# the model wrote, and no QA code could see it: 214 shipped silently.
+
+_NO_TAGS_BEAT = dict(_PROSE_MODEL_BEAT, sentences=[
+    {"text": "A fine passage with no tags at all.", "panels": []}])
+
+
+def test_main_unusable_answer_logs_the_reason_and_the_bad_tags(
+        tmp_path, monkeypatch, capsys):
+    bad = dict(_PROSE_MODEL_BEAT, sentences=[
+        {"text": "The caption says it all.", "panels": ["p2.jpg"]},
+        {"text": "He answers nobody.", "panels": ["p000099.jpg"]}])
+    _run_main(tmp_path, monkeypatch, [bad, bad], caption_files=("p2.jpg",))
+    log = capsys.readouterr().out
+    assert "[segments] g0007: unusable sentences — reason=no_story_tags" in log
+    assert "caption-hidden=1, unknown=1" in log
+    assert "fallback beat g0007 -> singleton spans" in log   # line unchanged
+
+
+def test_main_repair_reask_names_the_slip_and_the_legal_files(
+        tmp_path, monkeypatch):
+    bad = dict(_PROSE_MODEL_BEAT, sentences=[
+        {"text": "He answers nobody.", "panels": ["p000099.jpg"]}])
+    _, calls = _run_main(tmp_path, monkeypatch, [bad, _PROSE_MODEL_BEAT])
+    sysi = calls[1]["system_instruction"]
+    assert "p000099.jpg" in sysi
+    assert "The ONLY valid 'panels' values are: p1.jpg, p2.jpg, p3.jpg" in sysi
+
+
+def test_main_fallback_beat_persists_marker_and_counter(tmp_path, monkeypatch):
+    out, _ = _run_main(tmp_path, monkeypatch, [_NO_TAGS_BEAT, _NO_TAGS_BEAT])
+    beat = out["beats"][0]
+    assert beat["segments_fallback"] is True
+    assert beat["segments_fallback_reason"].startswith(
+        "the answer carried no usable narration shape")
+    assert out["stats"]["segments_fallbacks"] == 1
+    assert "_segments_fallback" not in beat               # private flags popped
+    assert "_segments_fallback_reason" not in beat
+
+
+def test_main_healthy_beat_carries_no_fallback_marker(tmp_path, monkeypatch):
+    out, _ = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT])
+    assert "segments_fallback" not in out["beats"][0]
+    assert out["stats"]["segments_fallbacks"] == 0
+
+
+def test_corrections_restored_previous_beat_is_not_marked_fallback(
+        tmp_path, monkeypatch):
+    no_tags = {
+        "beat_title": "Opening", "what_happens": "He crosses the hall.",
+        "narration": "A passage with no tags.",
+        "sentences": [{"text": "A passage with no tags.", "panels": []}],
+        "scene_selection": [],
+    }
+    out, _ = _run_corrections(tmp_path, monkeypatch, [no_tags, no_tags],
+                              _prev_segments_beat(), voiced=False)
+    beat = out["beats"][0]
+    assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
+    assert "segments_fallback" not in beat               # what SHIPPED is real
+    assert out["stats"]["segments_fallbacks"] == 0
+
+
+def test_corrections_pinned_restore_is_not_marked_fallback(tmp_path,
+                                                           monkeypatch):
+    shapeless = {"beat_title": "Opening", "what_happens": "He crosses.",
+                 "narration": "No segments here.", "scene_selection": []}
+    out, _ = _run_corrections(tmp_path, monkeypatch, [shapeless, shapeless],
+                              _prev_segments_beat(), voiced=True)
+    beat = out["beats"][0]
+    assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
+    assert "segments_fallback" not in beat
+    assert out["stats"]["segments_fallbacks"] == 0
 
 
 # ---------------------------------------------------------------------------

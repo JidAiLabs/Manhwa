@@ -1458,7 +1458,8 @@ def auto_repair_segments(segs, surviving, kinds, understand_by_file=None,
     return out
 
 
-def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
+def segments_from_sentences(sentences, surviving, kinds, u_by_file=None,
+                            diag=None):
     """Prose-first (2026-07-03): derive adaptive segments from a beat written
     as ONE connected passage plus panel-tagged sentences. The model authors
     prose — the grouped-era deliverable — and ALL span structure is computed
@@ -1477,10 +1478,24 @@ def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
         the overflow rides the NEXT sentence's span (pads only at the tail).
     Returns None when nothing usable came back — no story-panel tags, or one
     lone sentence claiming more story panels than a span may hold — so the
-    caller re-asks, then falls back. Pure; never mutates its inputs."""
+    caller re-asks, then falls back. Pure; never mutates its inputs.
+
+    *diag*, when a dict, is filled ONLY on a None return, with WHY: the
+    reason (no_files / no_sentences / no_story_tags / no_system_line /
+    lone_mega_sentence), sentence + tagged counts, and the tags that named no
+    panel of this beat (ordered, unique, first 8) — the one signal that says
+    whether the model slipped on the bookkeeping or wrote no split at all."""
+    unresolved: List[str] = []
+
+    def _none(reason: str, n_sentences: int = 0, n_tagged: int = 0):
+        if diag is not None:
+            diag.update(reason=reason, n_sentences=n_sentences,
+                        n_tagged=n_tagged, unresolved=unresolved[:8])
+        return None
+
     files = [f for f in (surviving or []) if f]
     if not files:
-        return None
+        return _none("no_files")
     kinds = kinds or {}
     idx = {f: i for i, f in enumerate(files)}
     is_sys = [str(kinds.get(f) or "").lower() == "system" for f in files]
@@ -1495,8 +1510,11 @@ def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
             continue
         story_tags, sys_tags = set(), set()
         for p in (s.get("panels") or []):
-            j = idx.get(os.path.basename(str(p or "").strip()))
+            name = os.path.basename(str(p or "").strip())
+            j = idx.get(name)
             if j is None:
+                if name and name not in unresolved:
+                    unresolved.append(name)
                 continue
             (sys_tags if is_sys[j] else story_tags).add(j)
         sents.append({"text": text, "tags": sorted(story_tags),
@@ -1529,7 +1547,7 @@ def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
             rejoined.append(s)
     sents = rejoined
     if not sents:
-        return None
+        return _none("no_sentences")
 
     # a sentence tagging EXACTLY one system card (and no story panel) IS that
     # card's line; it takes no further part in the prose folding
@@ -1543,13 +1561,13 @@ def segments_from_sentences(sentences, surviving, kinds, u_by_file=None):
 
     tagged = [s for s in body if s["tags"]]
     if n_story and not tagged:
-        return None
+        return _none("no_story_tags", len(sents), len(tagged))
     if not n_story and not sys_line:
-        return None
+        return _none("no_system_line", len(sents), len(tagged))
     if len(tagged) == 1 and n_story > SPAN_CAP:
         # one lone sentence would own EVERY story panel — beyond what a span
         # may hold, and pads would eat the beat. Re-ask for a real split.
-        return None
+        return _none("lone_mega_sentence", len(sents), len(tagged))
 
     # ownership: earliest tagger wins; then owners never regress
     owner: List[Optional[int]] = [None] * len(files)
@@ -1888,12 +1906,36 @@ def _segment_repair_block(errors: List[str]) -> str:
           "its span's word budget.\n")
 
 
-def _prose_repair_block(errors: List[str]) -> str:
+def _prose_repair_block(errors: List[str], taggable: Optional[List[str]] = None,
+                        diag: Optional[Dict[str, Any]] = None) -> str:
     """Repair re-ask for the prose-first shape: the derived segments (or the
-    tagging itself) failed — ask for a fresh passage + tagged sentences."""
+    tagging itself) failed — ask for a fresh passage + tagged sentences.
+
+    The generic note alone told the model "no valid panel-tagged sentences"
+    without saying WHICH slip it made or which files were legal, so the one
+    retry repeated the slip and the beat went to pads. *diag* (from
+    segments_from_sentences) names the slip; *taggable* is the allowlist."""
+    notes = list(errors)
+    d = diag or {}
+    bad = d.get("unresolved") or []
+    if bad:
+        notes.append("these 'panels' tags are not panels of this beat: "
+                     + ", ".join(bad[:3]) + " — a caption's words go into the "
+                     "sentence of the nearest drawn panel; tag THAT panel")
+    elif d.get("reason") == "no_story_tags":
+        notes.append("no sentence tagged a drawn panel")
+    elif d.get("reason") == "no_sentences":
+        notes.append("'sentences' came back empty — split the passage into "
+                     "tagged sentences")
+    elif d.get("reason") == "lone_mega_sentence":
+        notes.append("one sentence claimed every panel — split the passage so "
+                     "2-4 sentences share them")
+    allow = (f"\nThe ONLY valid 'panels' values are: {', '.join(taggable)}."
+             if taggable else "")
     return (
         "\n\nNARRATION REPAIR — your previous answer could not be used:\n  - "
-        + "\n  - ".join(errors)
+        + "\n  - ".join(notes)
+        + allow
         + "\nRe-write the beat fixing EXACTLY these problems: one connected "
           "'narration' passage, then the SAME passage split into 'sentences' "
           "in order, each tagged with the 1-4 CONSECUTIVE scene_file(s) it "
@@ -2082,6 +2124,7 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         # span comparison alone can't tell fallback pads from a real rewrite
         # (this poisoned 6 healed ch1 beats with "The moment holds.").
         beat["_segments_fallback"] = True
+        beat["_segments_fallback_reason"] = str(errors[0])
     if not errors and allow_span_align:
         # ONE-PANEL OFFSET post-pass (2026-07-06 review, dominant class): fix
         # a line leading/lagging its art by one panel by shifting span
@@ -2595,6 +2638,7 @@ def main() -> int:
     beats_out: List[Dict[str, Any]] = []
     parse_errors = 0
     regenerated = 0
+    segments_fallbacks = 0
     usage = UsageAccumulator(args.model)
 
     def write_checkpoint() -> None:
@@ -2603,7 +2647,8 @@ def main() -> int:
             "source_vision_manifest": os.path.abspath(args.vision_manifest),
             "model": args.model,
             "count_beats": len(beats_out),
-            "stats": {"parse_errors": parse_errors, "regenerated": regenerated},
+            "stats": {"parse_errors": parse_errors, "regenerated": regenerated,
+                      "segments_fallbacks": segments_fallbacks},
             "beats": sorted(beats_out, key=lambda x: int(x.get("group_id") or 0)),
         }
         dump_json(args.out, tmp_obj)
@@ -2753,9 +2798,13 @@ def main() -> int:
             kinds = {f: str(((u_by_file.get(f) or {}).get("panel_kind")) or "")
                      for f in surviving}
 
+            # why the LAST derive failed — the repair re-ask names that slip
+            last_diag: Dict[str, Any] = {}
+
             def _reask(errors: List[str]) -> Optional[Dict[str, Any]]:
                 block = (_segment_repair_block(errors) if pin_prev is not None
-                         else _prose_repair_block(errors))
+                         else _prose_repair_block(errors, taggable=surviving,
+                                                  diag=last_diag))
                 return _generate_beat_for_group(
                     model=args.model,
                     system_instruction=sys_g + block,
@@ -2768,9 +2817,28 @@ def main() -> int:
             def _derive(b: Dict[str, Any]):
                 # prose tags win when present; a pinned regen's answer (or a
                 # legacy manifest) still counts via its native segments
+                d: Dict[str, Any] = {}
                 segs = segments_from_sentences(
-                    b.get("sentences"), surviving, kinds, u_by_file)
-                return segs if segs is not None else beat_segments(b)
+                    b.get("sentences"), surviving, kinds, u_by_file, diag=d)
+                if segs is not None:
+                    return segs
+                native = beat_segments(b)
+                if not native:
+                    # Neither shape is usable: say WHY. caption-hidden = the
+                    # model tagged a real frame that is not shown; unknown = a
+                    # name that is no panel at all (misspelled / invented).
+                    last_diag.clear()
+                    last_diag.update(d)
+                    bad = d.get("unresolved") or []
+                    hidden = sum(1 for t in bad if t in all_files)
+                    print(f"[segments] g{gid:04d}: unusable sentences — "
+                          f"reason={d.get('reason')} "
+                          f"sentences={d.get('n_sentences', 0)} "
+                          f"tagged={d.get('n_tagged', 0)} "
+                          f"unresolved={len(bad)} (caption-hidden={hidden}, "
+                          f"unknown={len(bad) - hidden})"
+                          + (f" e.g. {', '.join(bad[:3])}" if bad else ""))
+                return native
 
             finalize_adaptive_beat(
                 beat, surviving, kinds, u_by_file, gid,
@@ -2797,6 +2865,11 @@ def main() -> int:
         # nano ch1 g0026 ("The sequence begins with p000110.jpg.") survived
         # three heals because every regen that fell back restored the
         # bookkeeping. A grounded pad beats a file name every time.
+        # A fallback beat must be VISIBLE downstream: nothing in the manifest
+        # or QA could tell pads from prose (214 shipped silently). Remember the
+        # fallback object here; it is marked below only if it is what ships.
+        fell_back_reason = str(beat.pop("_segments_fallback_reason", "") or "")
+        fell_back_beat = beat if beat.get("_segments_fallback") else None
         if pin_prev is not None:
             if beat.pop("_segments_fallback", False):
                 if beat_lines_usable(pin_prev, dead_names=_dead_at(gid),
@@ -2837,6 +2910,12 @@ def main() -> int:
                 print(f"[segments] corrections g{gid:04d}: repair is not "
                       "shorter than the previous line — kept previous")
                 beat = prev0
+
+        # a restored previous beat is real prose — marking it would be a lie
+        if fell_back_beat is not None and beat is fell_back_beat:
+            beat["segments_fallback"] = True
+            beat["segments_fallback_reason"] = fell_back_reason[:160]
+            segments_fallbacks += 1
 
         # FINAL length backstop: whatever version won above — a regen, grounded
         # pads, or a RESTORED previous beat — still has to fit the cap. The trim
@@ -2915,6 +2994,7 @@ def main() -> int:
             "identity_reveals_neutralized": identity_reveals_neutralized,
             "spoken_fragments_repaired": spoken_fragments_repaired,
             "consecutive_dups_merged": consecutive_dups_merged,
+            "segments_fallbacks": segments_fallbacks,
             "usage": {
                 "calls": usage.calls,
                 "input_tokens": usage.input_tokens,
