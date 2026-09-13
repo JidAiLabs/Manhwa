@@ -1033,8 +1033,22 @@ def _select_images_for_group(
     return img_paths[:max_images]
 
 
-def build_beat_schema(segmentation: str = "adaptive") -> dict:
+# Per-group tag enum on/off (the writer's A/B lever; production rollback is a
+# git revert). Default ON — see build_beat_schema(taggable=).
+_TAG_ENUM = os.environ.get("STUDIO_BEATS_TAG_ENUM", "1") != "0"
+
+
+def build_beat_schema(segmentation: str = "adaptive",
+                      taggable: Optional[List[str]] = None) -> dict:
     """Return the Gemini response schema for a narrative beat.
+
+    taggable (prose / adaptive only): the group's SHOWN files. The tag arrays
+    (sentences[].panels, segments[].span) then accept ONLY these values, so a
+    caption frame, "panel 2" or a misspelled file is un-emittable at decode
+    time. A bare-STRING tag let gemma slip ~1 call in 100, and every slip sent
+    the whole beat to pads. Probe 2026-09-13 (ollama 0.31.1, gemma4:26b, 3
+    images): the enum held against a prompt ORDERING a caption tag, and a
+    decoy-only enum forced the decoy — the grammar enforces it, not the prompt.
 
     adaptive: narration comes back as `segments` — ordered {span, line}
     passages whose spans partition the group's scene_files (the shape a
@@ -1148,7 +1162,30 @@ def build_beat_schema(segmentation: str = "adaptive") -> dict:
         }
         schema["required"] = ["segments" if k == "panel_narration" else k
                               for k in schema["required"]]
+    files = [f for f in (taggable or []) if f]
+    if files and segmentation != "per_panel":
+        # never an EMPTY enum — that is an unsatisfiable grammar, not a limit
+        props = schema["properties"]
+        tag = (props["sentences"]["items"]["properties"]["panels"]
+               if "sentences" in props
+               else props["segments"]["items"]["properties"]["span"])
+        tag["items"] = {"type": "STRING", "enum": files}
     return schema
+
+
+def shown_partition(all_files: List[str],
+                    u_by_file: Dict[str, Any]) -> List[str]:
+    """The group's SHOWN panels — the partition every span rule is keyed on.
+
+    Caption-only panels (panel_kind 'caption') are TEXT, not visuals: the
+    writer SEES them in the payload and weaves their words in, but they never
+    own a shown slot (after bubble-cleaning they are blank, so at render they
+    junk-drop and HOLD a neighbour — the 13.8s held-eye g0017). A rare
+    all-caption group keeps its panels so something shows."""
+    vis = [f for f in all_files
+           if str((u_by_file.get(f) or {}).get("panel_kind")
+                  or "").lower() != "caption"]
+    return vis if vis else list(all_files)
 
 
 def _grounded_pad_line(f, understand_by_file):
@@ -2715,6 +2752,18 @@ def main() -> int:
                 for b in beats_out[-2:] if b.get("narration")]
         if prev:
             payload["previous_narration"] = prev
+        # The SHOWN partition, decided BEFORE the call: the grammar's tag enum
+        # and every span rule after the call read this one list, so the model
+        # cannot emit a tag the deterministic layer would silently drop.
+        all_files = [f for f in payload["scene_files"] if f]
+        if args.segmentation == "per_panel":
+            surviving = all_files
+        else:
+            surviving = shown_partition(all_files, u_by_file)
+            if _TAG_ENUM:
+                schema_g = build_beat_schema(
+                    "adaptive" if pin_prev is not None else "prose",
+                    taggable=surviving)
         img_paths = _select_images_for_group(payload, vision_by_file, args.max_images_per_group)
 
         beat = _generate_beat_for_group(
@@ -2757,8 +2806,6 @@ def main() -> int:
         if beat.get("narration"):
             beat["narration"] = _resolve_cast_tokens(beat["narration"], cast_list)
 
-        all_files = [f for f in (beat.get("scene_files")
-                                 or payload["scene_files"]) if f]
         if args.segmentation == "per_panel":
             surviving = all_files          # legacy escape hatch: byte-compatible
             # Normalize panel_narration: exactly one line per surviving scene_file.
@@ -2785,10 +2832,8 @@ def main() -> int:
             # segment (the caption's words survive; its blank frame does not).
             # Guard: never empty the beat — a rare all-caption group keeps its
             # panels so something shows.
-            _vis = [f for f in all_files
-                    if str((u_by_file.get(f) or {}).get("panel_kind")
-                            or "").lower() != "caption"]
-            surviving = _vis if _vis else all_files
+            # `surviving` = shown_partition(), computed BEFORE the model call
+            # so the grammar's tag enum and this partition are the same list
             beat["scene_files"] = surviving
             # Adaptive flow segments: validate the model's spans; ONE repair
             # re-ask with the exact errors; still failing -> singleton fallback

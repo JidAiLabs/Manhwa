@@ -350,15 +350,17 @@ def test_adaptive_prompt_criteria_and_bans():
 # ---------------------------------------------------------------------------
 
 def _write_manifests(tmp_path, files=tuple(FILES), system_files=(),
-                     caption_files=()):
+                     caption_files=(), shots=None):
     def _kind(f):
         if f in system_files:
             return "system"
         if f in caption_files:
             return "caption"
         return "story"
-    groups = {"shots": [{"shot_id": 7, "scene_files": list(files),
-                         "arc_label": "opening", "intensity": "tense"}]}
+    shots = shots or [{"shot_id": 7, "scene_files": list(files),
+                       "arc_label": "opening", "intensity": "tense"}]
+    files = [f for s in shots for f in s["scene_files"]]
+    groups = {"shots": shots}
     vision = {"items": [{"scene_file": f, "ocr_clean": "", "vision": {}}
                         for f in files]}
     understood = {"panels": [
@@ -377,10 +379,11 @@ def _write_manifests(tmp_path, files=tuple(FILES), system_files=(),
 
 
 def _run_main(tmp_path, monkeypatch, responses, extra_argv=(),
-              caption_files=()):
+              caption_files=(), shots=None):
     """Drive gnp.main() with a stubbed model that returns `responses` in order
     (the last response repeats if the tool asks again)."""
-    g, v, u = _write_manifests(tmp_path, caption_files=caption_files)
+    g, v, u = _write_manifests(tmp_path, caption_files=caption_files,
+                               shots=shots)
     out = tmp_path / "beats.json"
     calls = []
 
@@ -1371,6 +1374,147 @@ def test_corrections_pinned_restore_is_not_marked_fallback(tmp_path,
     assert [s["line"] for s in beat["segments"]] == [PREV_FLOW, PREV_SOLO]
     assert "segments_fallback" not in beat
     assert out["stats"]["segments_fallbacks"] == 0
+
+
+# ---- per-group grammar: a tag outside the shown panels is un-emittable -------
+# The writer already decodes against a JSON schema, but sentences[].panels was a
+# bare STRING: gemma could emit a caption frame, "panel 2" or a misspelled file,
+# and the beat went to pads (~1% of calls). Probe 2026-09-13 on the Mini (ollama
+# 0.31.1, gemma4:26b, 3 images): with an enum the tags held even when the prompt
+# ORDERED a caption tag, and a decoy-only enum forced the decoy — the grammar
+# enforces it, not the prompt.
+
+def _panels_items(schema):
+    return (schema["properties"]["sentences"]["items"]["properties"]
+            ["panels"]["items"])
+
+
+def _prose_enum(call):
+    return _panels_items(call["response_schema"]).get("enum")
+
+
+def test_prose_schema_enum_is_the_taggable_files():
+    schema = gnp.build_beat_schema("prose", taggable=["p1.jpg", "p3.jpg"])
+    assert _panels_items(schema) == {"type": "STRING",
+                                     "enum": ["p1.jpg", "p3.jpg"]}
+    assert list(schema["properties"])[-1] == "sentences"   # still authored last
+    assert "enum" not in json.dumps(gnp.build_beat_schema("prose"))
+
+
+def test_adaptive_schema_enum_is_on_span_items():
+    schema = gnp.build_beat_schema("adaptive", taggable=["p1.jpg", "p2.jpg"])
+    span = schema["properties"]["segments"]["items"]["properties"]["span"]
+    assert span["items"] == {"type": "STRING", "enum": ["p1.jpg", "p2.jpg"]}
+
+
+def test_per_panel_schema_ignores_taggable():
+    assert json.dumps(gnp.build_beat_schema("per_panel", taggable=["p1.jpg"])) \
+        == json.dumps(gnp.build_beat_schema("per_panel"))
+
+
+def test_an_empty_taggable_list_adds_no_enum():
+    # an empty enum is an unsatisfiable grammar, never a valid constraint
+    assert "enum" not in _panels_items(
+        gnp.build_beat_schema("prose", taggable=[]))
+
+
+def test_taggable_schema_differs_from_base_only_at_the_enum():
+    def flat(o, path=""):
+        if isinstance(o, dict):
+            out = {}
+            for k, v in o.items():
+                out.update(flat(v, f"{path}/{k}"))
+            return out
+        return {path: json.dumps(o)}
+
+    for mode, arr, key in (("prose", "sentences", "panels"),
+                           ("adaptive", "segments", "span")):
+        base = flat(gnp.build_beat_schema(mode))
+        spec = flat(gnp.build_beat_schema(mode, taggable=["p1.jpg"]))
+        diff = {p for p in set(base) | set(spec) if base.get(p) != spec.get(p)}
+        assert diff == {f"/properties/{arr}/items/properties/{key}/items/enum"}
+
+
+def test_taggable_schemas_share_no_objects():
+    a = gnp.build_beat_schema("prose", taggable=["p1.jpg"])
+    b = gnp.build_beat_schema("prose", taggable=["p9.jpg"])
+    assert _panels_items(a)["enum"] == ["p1.jpg"]
+    assert _panels_items(b)["enum"] == ["p9.jpg"]
+    assert _panels_items(a) is not _panels_items(b)
+
+
+def test_schema_to_json_schema_keeps_the_enum():
+    js = gnp._schema_to_json_schema(
+        gnp.build_beat_schema("prose", taggable=["p1.jpg"]))
+    items = js["properties"]["sentences"]["items"]["properties"]["panels"]["items"]
+    assert items == {"type": "string", "enum": ["p1.jpg"]}
+    assert list(js["properties"])[-1] == "sentences"
+
+
+def test_shown_partition_excludes_caption_frames():
+    u = {"a.jpg": {"panel_kind": "story"}, "b.jpg": {"panel_kind": "caption"},
+         "c.jpg": {"panel_kind": "system"}}
+    assert gnp.shown_partition(["a.jpg", "b.jpg", "c.jpg"], u) == \
+        ["a.jpg", "c.jpg"]
+    assert gnp.shown_partition(["b.jpg"], u) == ["b.jpg"]   # all-caption group
+    assert gnp.shown_partition(["a.jpg", "b.jpg"], {}) == ["a.jpg", "b.jpg"]
+
+
+def test_main_prose_enum_is_the_groups_shown_panels(tmp_path, monkeypatch):
+    out, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT],
+                           caption_files=("p2.jpg",))
+    assert _prose_enum(calls[0]) == ["p1.jpg", "p3.jpg"]
+    assert out["beats"][0]["scene_files"] == ["p1.jpg", "p3.jpg"]
+
+
+def test_main_each_group_gets_its_own_enum(tmp_path, monkeypatch):
+    # a schema shared across groups would force group 8 to emit group 7's files
+    shots = [{"shot_id": 7, "scene_files": ["p1.jpg", "p2.jpg"],
+              "arc_label": "opening", "intensity": "tense"},
+             {"shot_id": 8, "scene_files": ["p3.jpg", "p4.jpg"],
+              "arc_label": "opening", "intensity": "tense"}]
+    both = dict(_PROSE_MODEL_BEAT, sentences=[
+        {"text": "He wakes in the ward.", "panels": ["p1.jpg", "p3.jpg"]},
+        {"text": "The medic scolds him.", "panels": ["p2.jpg", "p4.jpg"]}])
+    _, calls = _run_main(tmp_path, monkeypatch, [both], shots=shots)
+    assert _prose_enum(calls[0]) == ["p1.jpg", "p2.jpg"]
+    assert _prose_enum(calls[-1]) == ["p3.jpg", "p4.jpg"]
+
+
+def test_main_repair_reask_keeps_the_groups_enum(tmp_path, monkeypatch):
+    _, calls = _run_main(tmp_path, monkeypatch,
+                         [_NO_TAGS_BEAT, _PROSE_MODEL_BEAT])
+    assert len(calls) == 2
+    assert calls[1]["response_schema"] == calls[0]["response_schema"]
+    assert _prose_enum(calls[1]) == FILES
+
+
+def test_main_all_caption_group_keeps_every_panel_taggable(tmp_path,
+                                                           monkeypatch):
+    _, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT],
+                         caption_files=tuple(FILES))
+    assert _prose_enum(calls[0]) == FILES
+
+
+def test_corrections_pinned_regen_enum_is_on_span_items(tmp_path, monkeypatch):
+    _, calls = _run_corrections(tmp_path, monkeypatch, [dict(_GOOD_MODEL_BEAT)],
+                                _prev_segments_beat())
+    span = calls[0]["response_schema"]["properties"]["segments"]["items"][
+        "properties"]["span"]
+    assert span["items"]["enum"] == FILES
+
+
+def test_main_per_panel_schema_has_no_enum(tmp_path, monkeypatch):
+    _, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT],
+                         extra_argv=("--segmentation", "per_panel"))
+    assert "enum" not in json.dumps(calls[0]["response_schema"])
+
+
+def test_main_tag_enum_kill_switch_restores_free_strings(tmp_path,
+                                                         monkeypatch):
+    monkeypatch.setattr(gnp, "_TAG_ENUM", False)
+    _, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT])
+    assert _prose_enum(calls[0]) is None
 
 
 # ---------------------------------------------------------------------------
