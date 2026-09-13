@@ -900,7 +900,13 @@ def _heal_to_green(con: sqlite3.Connection, ch: Dict[str, Any], ep: Path,
         # exactly as it was, another identical re-narration won't help — stop
         # early and log the stuck codes instead of burning the remaining cycles.
         cur_error_codes = _qa_error_codes(ep)
-        if prev_error_codes is not None and cur_error_codes == prev_error_codes:
+        # Only meaningful when there ARE errors. A WARN-only chapter has an
+        # EMPTY error set every cycle, so this guard matched [] == [] on cycle 2
+        # every single time and capped WARN-driven heals at ONE roll (80 of 437
+        # prepare logs on the Mini stopped here, 2026-09-13). Guard 2 below is
+        # the one written for WARN corrections — let it make the call.
+        if (cur_error_codes and prev_error_codes is not None
+                and cur_error_codes == prev_error_codes):
             log.write(f"[heal] no progress (ERROR set unchanged: "
                       f"{sorted(cur_error_codes)}) -> stopping early\n")
             stuck = True

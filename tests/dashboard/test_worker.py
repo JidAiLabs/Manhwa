@@ -574,6 +574,54 @@ def test_heal_to_green_stops_early_when_error_set_repeats(tmp_path, monkeypatch)
     assert regen == [1]
 
 
+def _run_warn_only_heal(tmp_path, monkeypatch, corrections):
+    """Heal loop over a chapter whose QA has WARNs but ZERO ERRORs; *corrections*
+    is the per-cycle sequence narration_heal writes."""
+    import json
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path)
+    (ep / "prep_qa.json").write_text(json.dumps({"flags": [
+        {"code": "grounding_weak", "severity": "WARN",
+         "segment_id": "g0001_p00", "detail": "invents a big boss"}]}))
+    ch = {"id": 5, "series_id": 1, "ep_dir": str(ep), "number": 1}
+    seq = list(corrections)
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        if "narration_heal.py" in s:
+            json.dump(seq.pop(0) if seq else corrections[-1],
+                      open(cmd[cmd.index("--out") + 1], "w"))
+        return 0
+
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    monkeypatch.setattr(worker, "_beats_cfg", _heal_cfg)
+    monkeypatch.setattr(worker, "_series_env", lambda c, sid: None)
+    regen = []
+    monkeypatch.setattr(worker, "_regen_flagged", lambda *a, **k: regen.append(1))
+    monkeypatch.setattr(worker, "_run_prep_and_qa", lambda *a, **k: set())
+    worker._heal_to_green(con, ch, ep, open(tmp_path / "log.txt", "w"))
+    return regen
+
+
+def test_heal_to_green_warn_only_is_not_stopped_by_the_error_set_guard(
+        tmp_path, monkeypatch):
+    """A chapter with only WARNs has an EMPTY error set every cycle. That is not
+    evidence of no progress, so the loop must keep re-rolling while the
+    corrections keep changing (the 2026-09-13 one-roll cap)."""
+    assert worker._HEAL_MAX >= 2
+    regen = _run_warn_only_heal(tmp_path, monkeypatch, [
+        {"1": "fix note %d" % i} for i in range(worker._HEAL_MAX)])
+    assert regen == [1] * worker._HEAL_MAX
+
+
+def test_heal_to_green_warn_only_still_stops_on_identical_corrections(
+        tmp_path, monkeypatch):
+    """...and the corrections-treadmill guard still ends it the cycle the same
+    re-narration is re-issued, so WARNs can never burn the whole cap."""
+    regen = _run_warn_only_heal(tmp_path, monkeypatch, [{"1": "same note"}])
+    assert regen == [1]
+
+
 # ---- autopilot: spotless QA advances without human clicks -------------------
 
 def _autopilot_series(con, tmp_path, *, autopilot=1, flags=()):
