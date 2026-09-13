@@ -1170,6 +1170,12 @@ def build_beat_schema(segmentation: str = "adaptive",
                if "sentences" in props
                else props["segments"]["items"]["properties"]["span"])
         tag["items"] = {"type": "STRING", "enum": files}
+        # BOUNDED: an unbounded enum array lets a temp-0 decode repeat one legal
+        # file forever — the text-only JSON-formatter repair did exactly that
+        # (replayed 2026-09-14: 1200 tokens of "p000021.jpg", unparseable). A
+        # sentence/span never needs more tags than the group has panels, and
+        # ollama 0.31.1 enforces maxItems (the same replay then parsed cleanly).
+        tag["maxItems"] = len(files)
     return schema
 
 

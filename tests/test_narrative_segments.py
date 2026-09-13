@@ -1397,6 +1397,11 @@ def test_prose_schema_enum_is_the_taggable_files():
     schema = gnp.build_beat_schema("prose", taggable=["p1.jpg", "p3.jpg"])
     assert _panels_items(schema) == {"type": "STRING",
                                      "enum": ["p1.jpg", "p3.jpg"]}
+    # BOUNDED: an unbounded enum array let the temp-0 JSON-formatter repair
+    # repeat one legal file until num_predict ran out (replayed 2026-09-14:
+    # 1200 tokens of "p000021.jpg", unparseable). maxItems stopped it.
+    assert schema["properties"]["sentences"]["items"]["properties"][
+        "panels"]["maxItems"] == 2
     assert list(schema["properties"])[-1] == "sentences"   # still authored last
     assert "enum" not in json.dumps(gnp.build_beat_schema("prose"))
 
@@ -1405,6 +1410,7 @@ def test_adaptive_schema_enum_is_on_span_items():
     schema = gnp.build_beat_schema("adaptive", taggable=["p1.jpg", "p2.jpg"])
     span = schema["properties"]["segments"]["items"]["properties"]["span"]
     assert span["items"] == {"type": "STRING", "enum": ["p1.jpg", "p2.jpg"]}
+    assert span["maxItems"] == 2
 
 
 def test_per_panel_schema_ignores_taggable():
@@ -1418,7 +1424,7 @@ def test_an_empty_taggable_list_adds_no_enum():
         gnp.build_beat_schema("prose", taggable=[]))
 
 
-def test_taggable_schema_differs_from_base_only_at_the_enum():
+def test_taggable_schema_differs_from_base_only_at_the_tag_constraint():
     def flat(o, path=""):
         if isinstance(o, dict):
             out = {}
@@ -1432,7 +1438,8 @@ def test_taggable_schema_differs_from_base_only_at_the_enum():
         base = flat(gnp.build_beat_schema(mode))
         spec = flat(gnp.build_beat_schema(mode, taggable=["p1.jpg"]))
         diff = {p for p in set(base) | set(spec) if base.get(p) != spec.get(p)}
-        assert diff == {f"/properties/{arr}/items/properties/{key}/items/enum"}
+        assert diff == {f"/properties/{arr}/items/properties/{key}/items/enum",
+                        f"/properties/{arr}/items/properties/{key}/maxItems"}
 
 
 def test_taggable_schemas_share_no_objects():
@@ -1448,6 +1455,8 @@ def test_schema_to_json_schema_keeps_the_enum():
         gnp.build_beat_schema("prose", taggable=["p1.jpg"]))
     items = js["properties"]["sentences"]["items"]["properties"]["panels"]["items"]
     assert items == {"type": "string", "enum": ["p1.jpg"]}
+    assert js["properties"]["sentences"]["items"]["properties"]["panels"][
+        "maxItems"] == 1
     assert list(js["properties"])[-1] == "sentences"
 
 
