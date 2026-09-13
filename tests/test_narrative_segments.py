@@ -1517,6 +1517,50 @@ def test_main_tag_enum_kill_switch_restores_free_strings(tmp_path,
     assert _prose_enum(calls[0]) is None
 
 
+# ---- what the model SEES matches what it may emit (2026-09-13) --------------
+# The payload listed every group file (captions included) while the prompt said
+# both "tag every scene_file" and "weave a caption into the nearest drawn
+# panel": the instruction contradicted the partition the tags are checked
+# against. The allowlist and the rule now say the same thing as the grammar.
+
+def test_main_payload_lists_the_taggable_panels(tmp_path, monkeypatch):
+    _, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT],
+                         caption_files=("p2.jpg",))
+    assert calls[0]["user_payload"]["taggable_panels"] == ["p1.jpg", "p3.jpg"]
+    # the caption frame stays in the payload's panels — its words still weave
+    assert "p2.jpg" in calls[0]["user_payload"]["scene_files"]
+
+
+def test_corrections_pinned_payload_lists_the_taggable_panels(tmp_path,
+                                                              monkeypatch):
+    _, calls = _run_corrections(tmp_path, monkeypatch, [dict(_GOOD_MODEL_BEAT)],
+                                _prev_segments_beat())
+    assert calls[0]["user_payload"]["taggable_panels"] == FILES
+
+
+def test_main_per_panel_payload_has_no_taggable_panels(tmp_path, monkeypatch):
+    _, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT],
+                         extra_argv=("--segmentation", "per_panel"))
+    assert "taggable_panels" not in calls[0]["user_payload"]
+
+
+def test_prose_prompt_tags_only_taggable_panels_never_a_caption():
+    text = gnp._PROSE_NARRATION_INSTRUCTION
+    assert "chosen ONLY from INPUT_JSON.taggable_panels" in text
+    assert "Tag every taggable panel under some sentence" in text
+    assert "never tag the caption itself" in text
+    assert "Tag every scene_file" not in text            # the contradiction
+
+
+def test_adaptive_prompt_spans_come_from_taggable_panels():
+    text = gnp._ADAPTIVE_NARRATION_INSTRUCTION
+    assert "CONSECUTIVE panels from INPUT_JSON.taggable_panels" in text
+    assert "Every taggable panel appears in EXACTLY ONE span" in text
+    assert "caption frame" in text
+    for pin in ("FLOW", "SOLO", "BANNED", "WORD BUDGET", "segments"):
+        assert pin in text                                # existing pins hold
+
+
 # ---------------------------------------------------------------------------
 # sentence-integrity rejoin (2026-07-06 review, class C): a model "sentence"
 # with no terminal punctuation is HALF a sentence — fold the next one back in

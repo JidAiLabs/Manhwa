@@ -2227,9 +2227,10 @@ _ADAPTIVE_NARRATION_INSTRUCTION = (
     "scene shows…' are BANNED — name people (cast or persona handles) and "
     "narrate stakes, momentum, consequence.\n"
     "Write 'segments': an ORDERED list of {span, line}. A span = 1-4 "
-    "CONSECUTIVE scene_files; its line is voiced as ONE clip over those "
-    "panels. Every scene_file appears in EXACTLY ONE span, in order — never "
-    "skip, repeat, or reorder.\n"
+    "CONSECUTIVE panels from INPUT_JSON.taggable_panels; its line is voiced "
+    "as ONE clip over those panels. Every taggable panel appears in EXACTLY "
+    "ONE span, in order — never skip, repeat, reorder, or name a caption frame "
+    "(its words go into the line of the nearest drawn panel).\n"
     "DEFAULT TO FLOW: group panels carrying one action, traversal, "
     "progression, or caption-run into a 2-4 panel span with ONE flowing "
     "passage (clauses lean across panels; end mid-momentum, not mid-word). A "
@@ -2274,16 +2275,17 @@ _PROSE_NARRATION_INSTRUCTION = (
     "the passage, weaving captions and dialogue in as you go.\n"
     "THEN split that same passage into 'sentences': one entry per sentence, "
     "in order, text EXACTLY as written in the passage. Tag each entry with "
-    "'panels': ALL the scene_file(s) that sentence speaks over, in reading "
-    "order — a run-carrying sentence tags EACH of its 2-4 files; a "
-    "solo-moment sentence tags one. Tag every scene_file under some "
-    "sentence; give a system/notification card its own short sentence. File "
-    "names belong ONLY in 'panels' — NEVER in the narration or a sentence's "
-    "text.\n"
+    "'panels': ALL the drawn panel(s) that sentence speaks over, in reading "
+    "order, chosen ONLY from INPUT_JSON.taggable_panels — a run-carrying "
+    "sentence tags EACH of its 2-4 files; a solo-moment sentence tags one. "
+    "Tag every taggable panel under some sentence; give a "
+    "system/notification card its own short sentence. File names belong ONLY "
+    "in 'panels' — NEVER in the narration or a sentence's text.\n"
     "A panel that is JUST a speech bubble or caption on a plain background "
-    "(panel_kind 'caption') is TEXT, not a picture: WEAVE its words into the "
-    "sentence of the nearest drawn panel — never write a standalone sentence "
-    "about a bubble alone.\n"
+    "(panel_kind 'caption' — it is NOT in taggable_panels) is TEXT, not a "
+    "picture: WEAVE its words into the sentence of the nearest drawn panel "
+    "and tag THAT panel — never tag the caption itself, never write a "
+    "standalone sentence about a bubble alone.\n"
     # HARD numeric caps in the PRIMARY prompt (2026-07-17): the caps only
     # lived in the rejection note, so 15/25 groups paid a full second model
     # call to learn them (~9 min/chapter). Derived from the same constants
@@ -2760,6 +2762,9 @@ def main() -> int:
             surviving = all_files
         else:
             surviving = shown_partition(all_files, u_by_file)
+            # the allowlist the prompt names — present even with the enum off,
+            # since the instruction always refers to it
+            payload["taggable_panels"] = list(surviving)
             if _TAG_ENUM:
                 schema_g = build_beat_schema(
                     "adaptive" if pin_prev is not None else "prose",
