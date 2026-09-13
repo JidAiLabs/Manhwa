@@ -805,6 +805,45 @@ def test_auto_repair_never_reorders_a_bad_span():
     assert any("order" in e for e in errs)               # still model-repair turf
 
 
+# ---- a caption frame the writer SAW but may never own (2026-09-13) ----------
+# Caption panels are stripped from `surviving` upstream (the shown partition)
+# yet stay in the writer's payload so their words get woven in. The model
+# therefore tags them. Leaving that filename in the span failed validation
+# ("spans name unknown panel(s)"), bounced the beat to singleton pads and, on a
+# span-pinned heal, restored the previous lines — ORV Ep253 g0002 fell back on
+# all four heal cycles over p000006.jpg. Keep the words, drop the frame.
+
+def test_auto_repair_drops_a_caption_panel_from_a_span():
+    segs = [{"span": ["p1.jpg", "pX.jpg"], "line": _words(18)},
+            {"span": ["p2.jpg", "p3.jpg"], "line": _words(18)}]
+    out = gnp.auto_repair_segments(segs, FILES, KINDS, U_BY_FILE)
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg", "p3.jpg"]]
+    assert out[0]["line"] == _words(18)                  # prose untouched
+    assert gnp.validate_segments(out, FILES, KINDS) == []
+
+
+def test_auto_repair_folds_a_caption_only_span_into_its_neighbour():
+    # the caption's words survive (they ride the next visual line); its blank
+    # frame does not — the same untagged-fold segments_from_sentences does
+    segs = [{"span": ["p1.jpg"], "line": _words(8)},
+            {"span": ["pX.jpg"], "line": "Caption words."},
+            {"span": ["p2.jpg", "p3.jpg"], "line": _words(10)}]
+    out = gnp.auto_repair_segments(segs, FILES, KINDS, U_BY_FILE)
+    assert [s["span"] for s in out] == [["p1.jpg"], ["p2.jpg", "p3.jpg"]]
+    assert "Caption words." in out[1]["line"]
+    assert _words(10) in out[1]["line"]
+    assert gnp.validate_segments(out, FILES, KINDS) == []
+
+
+def test_auto_repair_keeps_a_trailing_caption_line_on_the_last_span():
+    segs = [{"span": ["p1.jpg", "p2.jpg", "p3.jpg"], "line": _words(18)},
+            {"span": ["pX.jpg"], "line": "Caption words."}]
+    out = gnp.auto_repair_segments(segs, FILES, KINDS, U_BY_FILE)
+    assert [s["span"] for s in out] == [["p1.jpg", "p2.jpg", "p3.jpg"]]
+    assert "Caption words." in out[0]["line"]            # never dropped
+    assert gnp.validate_segments(out, FILES, KINDS) == []
+
+
 def test_main_adaptive_skip_is_auto_repaired_without_reask(tmp_path,
                                                            monkeypatch):
     # the OLD wholesale-fallback case: a skipped panel now costs one padded

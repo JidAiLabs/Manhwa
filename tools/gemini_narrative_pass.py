@@ -1385,15 +1385,33 @@ def auto_repair_segments(segs, surviving, kinds, understand_by_file=None,
       - panels the model SKIPPED are inserted as grounded-pad singletons at
         their reading-order position (unambiguous positions only — a skip
         INSIDE a span's range still fails validation and goes to the model
-        repair re-ask).
-    Anything else (unknown/duplicate/out-of-order/cap/budget) is left for
+        repair re-ask),
+      - a panel OUTSIDE the shown partition (a caption frame the writer saw in
+        its payload) is dropped from the span and its words fold into the
+        neighbouring line.
+    Anything else (duplicate/out-of-order/cap/budget) is left for
     validate_segments. Returns a new list; the input is not mutated."""
     surviving = [f for f in (surviving or []) if f]
     order = {f: i for i, f in enumerate(surviving)}
     out = []
+    pending = ""            # words from a span whose panels are all non-shown
     for s in segs or []:
-        span = list(s.get("span") or [])
+        # A span may name a panel that is NOT in the shown partition: caption
+        # frames ride in the writer's payload so their words land in the line,
+        # but they never own a slot (they blank after bubble-cleaning), so the
+        # model tags them anyway. Keep the words, drop the frame. Leaving the
+        # filename in failed validation with "spans name unknown panel(s)" and
+        # bounced the WHOLE beat to singleton pads; on a span-pinned heal that
+        # restored the previous lines, so the group could never heal at all
+        # (ORV Ep253 g0002 fell back on all four cycles over p000006.jpg).
+        span = [f for f in (s.get("span") or []) if f in order]
         line = s.get("line")
+        if not span:
+            pending = (pending + " " + str(line or "")).strip()
+            continue
+        if pending:
+            line = (pending + " " + str(line or "")).strip()
+            pending = ""
         is_sys = [str(kinds.get(f) or "").lower() == "system" for f in span]
         if len(span) > 1 and any(is_sys):
             runs, cur = [], []
@@ -1417,6 +1435,9 @@ def auto_repair_segments(segs, surviving, kinds, understand_by_file=None,
                 line_used = line_used or keep
         else:
             out.append({"span": span, "line": line})
+    if pending and out:     # a trailing caption line has no next span to ride
+        out[-1]["line"] = (str(out[-1].get("line") or "") + " "
+                           + pending).strip()
     covered = {f for s in out for f in (s.get("span") or [])}
     for f in [f for f in surviving if f not in covered]:
         pos = order[f]
