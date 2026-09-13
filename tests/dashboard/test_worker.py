@@ -1718,6 +1718,43 @@ def test_regen_flagged_passes_understanding_to_the_writer(tmp_path, monkeypatch)
     assert str(ep / "manifest.panels.understood.json") in gnp[0]
 
 
+def test_regen_flagged_skips_punchup_for_a_group_the_regen_left_unchanged(
+        tmp_path, monkeypatch):
+    """A regen that fell back to pads keeps the previous lines byte-for-byte.
+    Re-punching that group is not a heal — it is a persona reword, and
+    narration_accept_better then keeps it on a caption-coverage tiebreak (ORV
+    Ep253 g0002 was reworded on all four cycles while its regen never once
+    produced a line). Only groups whose lines actually changed get punched."""
+    import json
+    import types
+    ep = tmp_path / "ep"
+    ep.mkdir()
+    beats = {"beats": [{"group_id": 2, "narration": "the incumbent line."},
+                       {"group_id": 4, "narration": "the old line."}]}
+    (ep / "manifest.beats.json").write_text(json.dumps(beats))
+    (ep / "corr.json").write_text(json.dumps({"2": "note", "4": "note"}))
+    calls = []
+
+    def fake_stream(cmd, log, **kw):
+        s = " ".join(map(str, cmd))
+        calls.append(s)
+        if "gemini_narrative_pass.py" in s:   # g4 re-rolled; g2 fell back
+            beats["beats"][1]["narration"] = "a genuinely new line."
+            (ep / "manifest.beats.json").write_text(json.dumps(beats))
+        return 0
+
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    cfg = types.SimpleNamespace(beats_model="gemma", punchup="cinematic",
+                                script_model="s",
+                                narration_source="gemini_verbatim",
+                                narration_sanitize=False)
+    worker._regen_flagged(ep, cfg, str(ep / "corr.json"), None,
+                          open(tmp_path / "log.txt", "w"))
+    punch = [c for c in calls if "narration_punchup.py" in c]
+    assert punch, "the groups that DID change still get punched"
+    assert "--only-groups 4" in punch[0]
+
+
 def test_heal_treadmill_guard_stops_on_identical_corrections(
         tmp_path, monkeypatch):
     """Job-49 class: WARN-driven corrections stay byte-identical cycle after

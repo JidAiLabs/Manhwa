@@ -689,6 +689,17 @@ def _regen_flagged(ep: Path, cfg, corr_path: str, env, log: TextIO) -> None:
     every other line), then re-apply persona + re-derive the verbatim script."""
     beats, cast = str(ep / "manifest.beats.json"), str(ep / "manifest.cast.json")
     vision = str(ep / "manifest.vision.json")
+
+    def _lines_by_gid():
+        """{group_id: narration} as the beats file stands right now."""
+        try:
+            d = json.loads(Path(beats).read_text())
+        except Exception:
+            return {}
+        return {int(b["group_id"]): str(b.get("narration") or "")
+                for b in (d.get("beats") or [])
+                if b.get("group_id") is not None}
+
     preheal = ep / "manifest.beats.preheal.json"
     if getattr(cfg, "semantic_heal", False):
         preheal.write_text(Path(beats).read_text())   # snapshot the pre-heal lines
@@ -710,8 +721,10 @@ def _regen_flagged(ep: Path, cfg, corr_path: str, env, log: TextIO) -> None:
              # cycle — so it must not be the one paying the 6-image premium:
              # measured 107.6s/call at 6 images vs 77.5s at 3.
              "--resume", "--corrections", corr_path, "--max-images-per-group", "3"]
+    before = _lines_by_gid()
     if _stream(gargs, log, env=env) != 0:
         raise RuntimeError("gemini_narrative_pass (heal) failed")
+    after = _lines_by_gid()
     if (cfg.punchup or "off") != "off":
         # SCOPE the persona pass to the groups we just re-narrated. Punching
         # the whole file at temp 0.7 rewrote ~20 unflagged beats every cycle;
@@ -719,17 +732,34 @@ def _regen_flagged(ep: Path, cfg, corr_path: str, env, log: TextIO) -> None:
         # (serially) and busted the grounding cache, which is keyed on the
         # narration TEXT — ~40 avoidable model calls per heal cycle.
         try:
-            _gids = sorted({int(g) for g in
+            _corr = sorted({int(g) for g in
                             json.loads(Path(corr_path).read_text())})
         except Exception:
-            _gids = []
-        pargs = [PY, str(REPO / "tools" / "narration_punchup.py"),
-                 "--beats", beats, "--out", beats, "--cast", cast,
-                 "--episode-dir", str(ep), "--humor", cfg.punchup]
-        if _gids:
-            pargs += ["--only-groups", ",".join(str(g) for g in _gids)]
-        pargs += ["--model", cfg.beats_model]
-        _stream(pargs, log, env=env)
+            _corr = []      # unreadable corrections: punch the file, as before
+        # A regen that fell back to pads restores the previous lines
+        # BYTE-FOR-BYTE (gemini_narrative_pass' span-pin branch). Punching that
+        # group is not a heal, it is a persona reword — and accept_better then
+        # keeps the reword on a caption-coverage tiebreak, so the QA flag
+        # survives while the wording drifts (ORV Ep253 g0002: four cycles, four
+        # rewords, zero re-narrations). Punch only what actually changed.
+        _gids = [g for g in _corr if before.get(g) != after.get(g)]
+        _fell_back = [g for g in _corr if g not in _gids]
+        if _fell_back:
+            log.write(f"[heal] regen fell back for group(s) {_fell_back} — "
+                      "lines unchanged, so they are NOT re-punched\n")
+        if _corr and not _gids:
+            # NEVER fall through with an empty _gids here: no --only-groups
+            # means punch the WHOLE file, the exact churn the scoping fixed.
+            log.write("[heal] every corrected group fell back -> no punchup "
+                      "this cycle\n")
+        else:
+            pargs = [PY, str(REPO / "tools" / "narration_punchup.py"),
+                     "--beats", beats, "--out", beats, "--cast", cast,
+                     "--episode-dir", str(ep), "--humor", cfg.punchup]
+            if _gids:
+                pargs += ["--only-groups", ",".join(str(g) for g in _gids)]
+            pargs += ["--model", cfg.beats_model]
+            _stream(pargs, log, env=env)
     if getattr(cfg, "semantic_heal", False):
         # strictly-better safeguard: keep each regenerated line ONLY if a judge
         # rules it beats the pre-heal line on the panel; else revert to the
