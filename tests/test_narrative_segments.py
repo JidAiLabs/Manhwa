@@ -313,6 +313,86 @@ def test_a_pure_length_fallback_is_still_labelled_too_fat(capsys):
     assert "also:" not in capsys.readouterr().out
 
 
+# ---- the cap counts what the page prints (2026-09-14) -----------------------
+# 435 of 443 corpus too-fat fallbacks were single-panel spans, and in 79% of
+# those groups the panels printed more words than the cap. A system card is
+# REPLACED by its full printed text (auto_repair_segments) and then capped at
+# 33: a card printing more could never validate (ORV Ep207 g17, two cards, 88
+# printed words). Printed words ride on top; a wordless panel keeps 33.
+
+def test_a_solo_system_card_voicing_its_printed_text_is_not_too_fat():
+    kinds = dict(KINDS, **{"p1.jpg": "system"})
+    segs = [{"span": ["p1.jpg"], "line": _words(60)},
+            {"span": ["p2.jpg"], "line": _words(8)},
+            {"span": ["p3.jpg"], "line": _words(8)}]
+    assert any("too fat" in e for e in gnp.validate_segments(segs, FILES, kinds))
+    assert gnp.validate_segments(segs, FILES, kinds,
+                                 printed={"p1.jpg": 60}) == []
+
+
+def test_a_fat_line_over_a_wordless_panel_is_still_too_fat():
+    printed = {"p1.jpg": 0, "p2.jpg": 0, "p3.jpg": 0}
+
+    def segs(n):
+        return [{"span": ["p1.jpg"], "line": _words(n)},
+                {"span": ["p2.jpg"], "line": _words(8)},
+                {"span": ["p3.jpg"], "line": _words(8)}]
+
+    assert gnp.validate_segments(segs(33), FILES, KINDS, printed=printed) == []
+    errs = gnp.validate_segments(segs(34), FILES, KINDS, printed=printed)
+    assert any("too fat" in e and "AT MOST 33 words" in e for e in errs)
+
+
+def test_the_too_fat_message_states_the_printed_allowance():
+    errs = gnp.validate_segments(
+        [{"span": ["p1.jpg"], "line": _words(80)},
+         {"span": ["p2.jpg"], "line": _words(8)},
+         {"span": ["p3.jpg"], "line": _words(8)}],
+        FILES, KINDS, printed={"p1.jpg": 40})
+    assert any("AT MOST 73 words" in e for e in errs)
+
+
+def test_finalize_keeps_a_long_line_that_voices_its_printed_caption(capsys):
+    long_line = _words(45)             # one sentence, over a panel printing 50
+    beat = {"group_id": 12, "scene_files": FILES,
+            "segments": [{"span": ["p1.jpg"], "line": long_line},
+                         {"span": ["p2.jpg"], "line": _words(8)},
+                         {"span": ["p3.jpg"], "line": _words(8)}]}
+    gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 12,
+                               reask_fn=lambda e: None,
+                               printed_words_by_file={"p1.jpg": 50})
+    assert "_segments_fallback" not in beat
+    assert beat["segments"][0]["line"] == long_line          # not trimmed
+    assert "fallback beat" not in capsys.readouterr().out
+
+
+def test_main_counts_printed_words_so_a_voiced_caption_is_not_padded(
+        tmp_path, monkeypatch):
+    voiced = dict(_PROSE_MODEL_BEAT, sentences=[
+        {"text": _words(45), "panels": ["p1.jpg"]},
+        {"text": "Then the ground gives way and the ravine swallows him "
+                 "whole.", "panels": ["p2.jpg", "p3.jpg"]}])
+    out, _ = _run_main(tmp_path, monkeypatch, [voiced],
+                       ocr={"p1.jpg": " ".join(["printed"] * 50)})
+    b = out["beats"][0]
+    assert "segments_fallback" not in b
+    assert len(b["segments"][0]["line"].split()) == 45       # nothing trimmed
+
+
+def test_word_cap_rule_tells_the_model_printed_words_ride_on_top():
+    rule = gnp._WORD_CAP_RULE
+    assert "AT MOST 33 words PER TAGGED PANEL" in rule       # numbers pinned
+    assert "PLUS the words the page prints" in rule
+    assert "ALL your sentences about the same panel" in rule
+
+
+def test_prose_repair_block_explains_the_fold_on_a_too_fat_error():
+    block = gnp._prose_repair_block([
+        "segment 0: too fat — 75 words (~33.3s) over 1 panel(s); rewrite "
+        "this line in AT MOST 33 words (or widen the span)"])
+    assert "count ALL your sentences about that panel together" in block
+
+
 def test_parse_error_beat_skips_reask_and_falls_back():
     beat = {"group_id": 7, "scene_files": FILES,
             "error": "parse_failed_after_retries"}            # no segments at all
@@ -385,7 +465,7 @@ def test_adaptive_prompt_criteria_and_bans():
 # ---------------------------------------------------------------------------
 
 def _write_manifests(tmp_path, files=tuple(FILES), system_files=(),
-                     caption_files=(), shots=None):
+                     caption_files=(), shots=None, ocr=None):
     def _kind(f):
         if f in system_files:
             return "system"
@@ -396,8 +476,8 @@ def _write_manifests(tmp_path, files=tuple(FILES), system_files=(),
                        "arc_label": "opening", "intensity": "tense"}]
     files = [f for s in shots for f in s["scene_files"]]
     groups = {"shots": shots}
-    vision = {"items": [{"scene_file": f, "ocr_clean": "", "vision": {}}
-                        for f in files]}
+    vision = {"items": [{"scene_file": f, "ocr_clean": (ocr or {}).get(f, ""),
+                         "vision": {}} for f in files]}
     understood = {"panels": [
         {"scene_file": f,
          "description": f"A figure moves near {f}.",
@@ -414,11 +494,11 @@ def _write_manifests(tmp_path, files=tuple(FILES), system_files=(),
 
 
 def _run_main(tmp_path, monkeypatch, responses, extra_argv=(),
-              caption_files=(), shots=None):
+              caption_files=(), shots=None, ocr=None):
     """Drive gnp.main() with a stubbed model that returns `responses` in order
     (the last response repeats if the tool asks again)."""
     g, v, u = _write_manifests(tmp_path, caption_files=caption_files,
-                               shots=shots)
+                               shots=shots, ocr=ocr)
     out = tmp_path / "beats.json"
     calls = []
 

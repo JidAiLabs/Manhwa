@@ -39,6 +39,7 @@ from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     beat_lines_usable,
     beat_overshoot,
+    printed_words_by_file,
     segments_overshoot,
     tighten_overlong_segments,
     dedupe_consecutive_panel_lines,
@@ -1895,7 +1896,7 @@ _LINE_END_RE = re.compile(r"""(?:[.!?…]|\.\.\.|[—–-])[\s"'”’)\]]*$""")
 
 
 def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
-                      echo_of=None) -> List[str]:
+                      echo_of=None, printed=None) -> List[str]:
     """Deterministic guardrails for adaptive flow segments — pure, no LLM.
 
     Returns human-readable errors ([] = valid) so a failing beat can be
@@ -2008,12 +2009,17 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
                 f"hold {n} panel(s) on screen (needs >= "
                 f"{n * _SEG_MIN_SEC_PER_PANEL:.0f}s of voice; add words or "
                 "shrink the span)")
-        elif sec > n * _SEG_MAX_SEC_PER_PANEL:
+        elif n_words > (max_words := (
+                int(n * _SEG_MAX_SEC_PER_PANEL * words_per_sec)
+                + sum(int((printed or {}).get(f, 0) or 0) for f in span))):
             # state the cap in WORDS — models follow an explicit word count
             # far more reliably than a seconds figure (2026-07-16: the
             # seconds-only phrasing re-asked into another fat line, and the
-            # fallback then shipped it -> a 21s single-panel hold)
-            max_words = int(n * _SEG_MAX_SEC_PER_PANEL * words_per_sec)
+            # fallback then shipped it -> a 21s single-panel hold).
+            # The words the page PRINTS on the span ride on top (2026-09-14,
+            # recap_style.span_word_cap): a card is replaced by its full
+            # printed text and a caption must be voiced, so a panel printing
+            # more than 33 words could otherwise never validate.
             errors.append(
                 f"segment {i}: too fat — {n_words} words (~{sec:.1f}s) over "
                 f"{n} panel(s); rewrite this line in AT MOST {max_words} "
@@ -2071,6 +2077,13 @@ def _prose_repair_block(errors: List[str], taggable: Optional[List[str]] = None,
     elif d.get("reason") == "lone_mega_sentence":
         notes.append("one sentence claimed every panel — split the passage so "
                      "2-4 sentences share them")
+    if any(_TOO_FAT_RE.match(str(e)) for e in errors):
+        # "(or widen the span)" is not something the prose shape can do: spans
+        # are derived from the tags, and every later sentence about an
+        # already-tagged panel is folded into that panel's ONE line
+        notes.append("for a too-fat line, count ALL your sentences about that "
+                     "panel together — they are voiced as one line; shorten "
+                     "the words, the tags decide the span")
     allow = (f"\nThe ONLY valid 'panels' values are: {', '.join(taggable)}."
              if taggable else "")
     return (
@@ -2166,7 +2179,7 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                            reask_fn=None, allow_flow_nudge=True,
                            derive_fn=None, allow_span_align=True,
                            echo_of=None, page_text_by_file=None,
-                           proper_case=None):
+                           proper_case=None, printed_words_by_file=None):
     """Adaptive mode: normalize + validate the model's segments; on failure do
     ONE repair re-ask (reask_fn(errors) -> repaired beat or None); still failing
     -> fall back to align_panel_narration singleton spans (never block the
@@ -2201,7 +2214,8 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         return glue_echo_spans(repaired, echo_of, surviving)
 
     def _check(s):
-        return validate_segments(s, surviving, kinds, echo_of=echo_of)
+        return validate_segments(s, surviving, kinds, echo_of=echo_of,
+                                 printed=printed_words_by_file)
 
     raw = _derive(beat)
     if raw:
@@ -2221,7 +2235,7 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                 if not err2:
                     segs, errors = segs2, []
                 elif (only_too_fat(err2)
-                      and segments_overshoot(segs2) < segments_overshoot(segs)):
+                      and segments_overshoot(segs2, printed=printed_words_by_file) < segments_overshoot(segs, printed=printed_words_by_file)):
                     # Still long, but SHORTER — and structurally sound (only
                     # the cap failed). The alternative is pads, which lose the
                     # plot, and the incumbent is longer still, so falling back
@@ -2229,8 +2243,8 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
                     # discarded, 61w original restored, three runs running).
                     # Shipping the shortest real prose is what converges.
                     print(f"[segments] g{gid:04d}: repair still over cap but "
-                          f"shorter ({segments_overshoot(segs2)}w over vs "
-                          f"{segments_overshoot(segs)}w) — adopted")
+                          f"shorter ({segments_overshoot(segs2, printed=printed_words_by_file)}w over vs "
+                          f"{segments_overshoot(segs, printed=printed_words_by_file)}w) — adopted")
                     # keep the errors: the deterministic trim below still has
                     # to bring it under the cap
                     segs, errors = segs2, err2
@@ -2252,7 +2266,8 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         # fixing: trim whole sentences, least page-grounded first. Without it
         # the only remaining moves are "ship the long line" or "ship pads", so
         # a verbose beat never converges and a human has to arbitrate.
-        tightened, notes = tighten_overlong_segments(segs, page_text_by_file)
+        tightened, notes = tighten_overlong_segments(
+            segs, page_text_by_file, printed=printed_words_by_file)
         if not _check(tightened):
             for note in notes:
                 print(f"[segments] g{gid:04d}: tightened {note}")
@@ -2334,8 +2349,11 @@ _WORD_CAP_RULE = (
     "and costs a rewrite): a sentence may carry AT MOST "
     f"{_max_words(1)} words PER TAGGED PANEL — one panel <={_max_words(1)}, "
     f"two <={_max_words(2)}, three <={_max_words(3)}, four <={_max_words(4)} "
-    "words. Count your words before answering. The taste target sits far "
-    "below the cap: a solo moment ~5-13 words, a run ~10-15 words per panel.\n"
+    "words — PLUS the words the page prints on that panel (a caption or card "
+    "you voice). Count ALL your sentences about the same panel(s) together: "
+    "they become ONE line. Count your words before answering. The taste "
+    "target sits far below the cap: a solo moment ~5-13 words, a run ~10-15 "
+    "words per panel.\n"
 )
 
 _ADAPTIVE_NARRATION_INSTRUCTION = (
@@ -2876,6 +2894,14 @@ def main() -> int:
         # and every span rule after the call read this one list, so the model
         # cannot emit a tag the deterministic layer would silently drop.
         all_files = [f for f in payload["scene_files"] if f]
+        # the words each shown panel's line must carry (its own OCR + adjacent
+        # caption frames) — the one allowance every length gate below reads
+        printed = printed_words_by_file(
+            all_files,
+            {f: (vision_by_file.get(f) or {}).get("ocr_clean") or ""
+             for f in all_files},
+            {f: (u_by_file.get(f) or {}).get("panel_kind") or ""
+             for f in all_files})
         if args.segmentation == "per_panel":
             surviving = all_files
         else:
@@ -3022,7 +3048,8 @@ def main() -> int:
                 # a span-pinned heal may change LINES only — an offset shift
                 # would re-split and be rejected wholesale by the pin
                 allow_span_align=pin_prev is None,
-                echo_of=echo_of)
+                echo_of=echo_of,
+                printed_words_by_file=printed)
 
         # Corrections regen of a native-segments beat: adopt the rewrite ONLY
         # if it kept the pinned spans AND is a real rewrite; a validation
@@ -3070,8 +3097,8 @@ def main() -> int:
             elif (still_long and prev0 is not None
                   and beat_lines_usable(prev0, dead_names=_dead_at(gid),
                                         noun_map=actor_nouns)
-                  and beat_overshoot(prev0)
-                  <= beat_overshoot(beat)):
+                  and beat_overshoot(prev0, printed=printed)
+                  <= beat_overshoot(beat, printed=printed)):
                 # the adopted repair is only worth taking while it is the
                 # SHORTER of the two — a heal fired for some other flag must
                 # not smuggle in a longer line than the one it replaced
@@ -3092,7 +3119,8 @@ def main() -> int:
         # pads, the guard restored the 59-word original, and it shipped).
         _files = [f for sg in beat_segments(beat) for f in (sg.get("span") or [])]
         _tight, _notes = tighten_overlong_segments(
-            beat_segments(beat), page_text_for(_files, vision_by_file, u_by_file))
+            beat_segments(beat), page_text_for(_files, vision_by_file, u_by_file),
+            printed=printed)
         if _notes:
             for _note in _notes:
                 print(f"[segments] g{gid:04d}: tightened (backstop) {_note}")

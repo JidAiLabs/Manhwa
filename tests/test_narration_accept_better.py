@@ -140,6 +140,39 @@ def test_gate_does_not_take_a_longer_rewrite_of_an_over_cap_line():
     assert decisions[0]["kept"] == "old"
 
 
+def test_gate_does_not_prefer_a_shorter_paraphrase_over_a_verbatim_card():
+    # a system card read aloud in full is NOT over its cap once the printed
+    # words count — so a shorter paraphrase must not win the length floor; it
+    # goes to the judge like any in-cap rewrite
+    card = {"span": ["p17.jpg"], "line": " ".join(["word"] * 60) + "."}
+    para = {"span": ["p17.jpg"], "line": " ".join(["word"] * 30) + "."}
+    old = [{"group_id": 17, "narration": "x", "segments": [card]}]
+    new = [{"group_id": 17, "narration": "y", "segments": [para]}]
+    judged = []
+
+    def judge(o, n):
+        judged.append(n["group_id"])
+        return "A_better"
+
+    accepted, decisions = ab.gate_beats(old, new, judge=judge,
+                                        printed={"p17.jpg": 60})
+    assert judged == [17]
+    assert decisions[0]["kept"] == "old"
+
+
+def test_make_printed_reads_the_manifests_beside_the_vision_one(tmp_path):
+    import json
+    (tmp_path / "manifest.vision.json").write_text(json.dumps({"items": [
+        {"scene_file": "a.jpg", "ocr_clean": "x y"},
+        {"scene_file": "b.jpg", "ocr_clean": "z"}]}))
+    (tmp_path / "manifest.panels.understood.json").write_text(json.dumps(
+        {"panels": [{"scene_file": "b.jpg", "panel_kind": "caption"}]}))
+    (tmp_path / "manifest.groups.json").write_text(json.dumps(
+        {"shots": [{"shot_id": 1, "scene_files": ["a.jpg", "b.jpg"]}]}))
+    assert ab.make_printed(str(tmp_path / "manifest.vision.json")) == {"a.jpg": 3}
+    assert ab.make_printed("") is None
+
+
 def test_gate_leaves_within_cap_rewrites_to_the_judge():
     # both fit the cap -> nothing measurable to compare, taste decides
     old = [{"group_id": 23, "narration": "x", "segments": [_seg(20)]}]

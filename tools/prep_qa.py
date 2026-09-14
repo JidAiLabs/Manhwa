@@ -64,6 +64,8 @@ from manifest_io import read_manifest
 from ollama_compat import first_json
 from recap_style import (
     analyze_recap_style,
+    printed_words_for_groups,
+    span_word_cap,
     ends_terminal,
     is_shot_description,
     mentions_figures_leak,
@@ -1523,7 +1525,9 @@ _BUDGET_WPM = 135.0                  # == gemini_narrative_pass.WPM
 _BUDGET_MAX_SEC_PER_PANEL = 15.0     # == _SEG_MAX_SEC_PER_PANEL
 
 
-def line_overlong_flags(beats_obj: Any) -> List[Dict[str, Any]]:
+def line_overlong_flags(beats_obj: Any,
+                        printed: Optional[Dict[str, int]] = None
+                        ) -> List[Dict[str, Any]]:
     """Deterministic length gate (ERROR, healable, NOT worker-blocking): a
     segment line past its span's word budget (N*15s at 135wpm ≈ 34 words per
     panel). The writer validator enforces this at authoring time, but its
@@ -1541,9 +1545,13 @@ def line_overlong_flags(beats_obj: Any) -> List[Dict[str, Any]]:
             n = max(1, len(s["span"]))
             words = len(str(s["line"] or "").split())
             sec = words / (_BUDGET_WPM / 60.0)
-            cap = n * _BUDGET_MAX_SEC_PER_PANEL
-            if sec > cap:
-                max_words = int(cap * _BUDGET_WPM / 60.0)
+            # the SAME cap as the writer (recap_style.span_word_cap): the words
+            # the page prints ride on top, or QA would re-flag — and the heal
+            # re-trim — the card/caption lines the writer accepts
+            max_words = span_word_cap(n, sum(int((printed or {}).get(f, 0) or 0)
+                                             for f in s["span"]))
+            cap = max_words / (_BUDGET_WPM / 60.0)
+            if words > max_words:
                 flags.append(_flag(
                     "line_overlong", ERROR,
                     f"segment line is {words} words (~{sec:.0f}s of voice) "
@@ -3233,7 +3241,13 @@ def main() -> int:
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))
     flags.extend(impact_mismatch_flags(beats_obj, understood_obj))
-    flags.extend(line_overlong_flags(beats_obj))
+    flags.extend(line_overlong_flags(beats_obj, printed=printed_words_for_groups(
+        groups_obj,
+        {str(v.get("scene_file") or ""): str(v.get("ocr_clean") or "")
+         for v in (vitems or []) if isinstance(v, dict)},
+        {str(p.get("scene_file") or ""): str(p.get("panel_kind") or "")
+         for p in ((understood_obj or {}).get("panels") or [])
+         if isinstance(p, dict)})))
     flags.extend(narration_null_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     ledger_obj = _load_manifest("manifest.ledger.json")

@@ -443,20 +443,91 @@ _OVERSHOOT_WPM = 135.0
 _OVERSHOOT_MAX_SEC_PER_PANEL = 15.0
 
 
-def segments_overshoot(segs: Sequence[Mapping[str, Any]]) -> int:
-    """Words the segments run OVER the per-panel voice cap (0 when all fit).
+def span_word_cap(n_panels: int, printed_words: int = 0) -> int:
+    """The most words a line may carry over *n_panels* panels: the voice cap
+    (15 s per panel at 135 wpm = 33 words) PLUS the words the page prints on
+    them.
+
+    The printed words ride on top because the voice MUST carry them: a system
+    card is replaced by its full printed text and read aloud, a caption has to
+    be voiced (caption_unvoiced). A fixed 33-word cap made a card printing more
+    than that unable to ever validate (ORV Ep207 g17: two cards, 88 printed
+    words), and the trim then cut exactly the printed text. A wordless panel
+    keeps 33 — a parked monologue over plain art is still rejected. Every
+    length gate (writer validator, overshoot, trim, prep_qa line_overlong)
+    reads this one function."""
+    return (int(max(1, int(n_panels)) * _OVERSHOOT_MAX_SEC_PER_PANEL
+                * _OVERSHOOT_WPM / 60.0)
+            + max(0, int(printed_words or 0)))
+
+
+def _span_printed(span: Sequence[str],
+                  printed: Mapping[str, int] | None) -> int:
+    return sum(int((printed or {}).get(f, 0) or 0) for f in (span or []))
+
+
+def printed_words_by_file(all_files: Sequence[str],
+                          ocr_by_file: Mapping[str, str],
+                          kind_by_file: Mapping[str, str]) -> Dict[str, int]:
+    """{shown file: printed words its line must carry} for ONE group.
+
+    A panel's own OCR, plus the OCR of adjacent caption panels: a caption never
+    owns a span (it is not shown), its words fold into a neighbour — the prose
+    path picks the previous segment, the native-segments path the next — so
+    both neighbours may carry them. An all-caption group shows its panels, so
+    each counts only itself. OCR only: the model's own description is not
+    printed text and must not inflate the cap."""
+    files = [f for f in (all_files or []) if f]
+    cap = {f: str(kind_by_file.get(f) or "").lower() == "caption" for f in files}
+    if files and all(cap.values()):
+        cap = {f: False for f in files}
+    words = {f: len(str(ocr_by_file.get(f) or "").split()) for f in files}
+    out: Dict[str, int] = {}
+    for i, f in enumerate(files):
+        if cap[f]:
+            continue
+        total = words[f]
+        j = i - 1
+        while j >= 0 and cap[files[j]]:
+            total += words[files[j]]
+            j -= 1
+        j = i + 1
+        while j < len(files) and cap[files[j]]:
+            total += words[files[j]]
+            j += 1
+        out[f] = total
+    return out
+
+
+def printed_words_for_groups(groups_obj: Any, ocr_by_file: Mapping[str, str],
+                             kind_by_file: Mapping[str, str]) -> Dict[str, int]:
+    """printed_words_by_file over every group of a chapter (a panel belongs to
+    one group), for the stages that see beats without the writer's per-group
+    loop — prep_qa and narration_accept_better."""
+    out: Dict[str, int] = {}
+    shots = groups_obj.get("shots") if isinstance(groups_obj, Mapping) else None
+    for s in shots or []:
+        if isinstance(s, Mapping):
+            out.update(printed_words_by_file(
+                list(s.get("scene_files") or []), ocr_by_file, kind_by_file))
+    return out
+
+
+def segments_overshoot(segs: Sequence[Mapping[str, Any]],
+                       printed: Mapping[str, int] | None = None) -> int:
+    """Words the segments run OVER their span cap (0 when all fit).
 
     The one number that says whether one version of a beat is LESS overlong
     than another. A heal that cannot make that comparison cannot converge: it
     either ships a fully valid rewrite or restores the incumbent, so a rewrite
     that is merely BETTER (47 words where the original ran 61) is thrown away
-    and the worst version survives."""
+    and the worst version survives. *printed* is printed_words_by_file."""
     over = 0
     for seg in (segs or []):
         if not isinstance(seg, Mapping):
             continue
-        n = max(1, len(seg.get("span") or []))
-        cap = int(n * _OVERSHOOT_MAX_SEC_PER_PANEL * _OVERSHOOT_WPM / 60.0)
+        span = list(seg.get("span") or [])
+        cap = span_word_cap(len(span), _span_printed(span, printed))
         over += max(0, len(str(seg.get("line") or "").split()) - cap)
     return over
 
@@ -482,6 +553,7 @@ def _page_grounding(sentence: str, page_words: set) -> int:
 
 def tighten_overlong_segments(segs: Sequence[Mapping[str, Any]],
                               page_text_by_file: Mapping[str, str] | None = None,
+                              printed: Mapping[str, int] | None = None,
                               ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Deterministically bring every over-cap segment back under the per-panel
     voice cap by dropping WHOLE sentences, least page-grounded first.
@@ -501,8 +573,9 @@ def tighten_overlong_segments(segs: Sequence[Mapping[str, Any]],
             continue
         span = list(seg.get("span") or [])
         line = str(seg.get("line") or "")
-        cap = int(max(1, len(span)) * _OVERSHOOT_MAX_SEC_PER_PANEL
-                  * _OVERSHOOT_WPM / 60.0)
+        # the printed words are part of the cap: the trim must never cut a
+        # card or caption back below the text the page prints
+        cap = span_word_cap(len(span), _span_printed(span, printed))
         sents = _sentences(line)
         if len(line.split()) <= cap or len(sents) < 2:
             out.append(dict(seg))
@@ -534,9 +607,10 @@ def tighten_overlong_segments(segs: Sequence[Mapping[str, Any]],
     return out, notes
 
 
-def beat_overshoot(beat: Mapping[str, Any]) -> int:
+def beat_overshoot(beat: Mapping[str, Any],
+                   printed: Mapping[str, int] | None = None) -> int:
     """segments_overshoot for a whole beat, whichever shape it carries."""
-    return segments_overshoot(beat_segments(beat))
+    return segments_overshoot(beat_segments(beat), printed=printed)
 
 
 def beat_lines_usable(beat: Mapping[str, Any], *,

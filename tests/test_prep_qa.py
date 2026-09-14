@@ -2316,6 +2316,18 @@ def test_line_overlong_clean_on_normal_lines():
     assert pq.line_overlong_flags(beats) == []
 
 
+def test_line_overlong_is_quiet_on_a_line_that_voices_its_printed_text():
+    # the SAME cap as the writer: a line carrying the words its panel prints is
+    # not overlong — otherwise QA would re-flag (and the heal re-trim) exactly
+    # the card/caption lines the writer was fixed to accept
+    fat = " ".join(["word"] * 55)
+    beats = {"beats": [{"group_id": 11, "segments": [
+        {"span": ["p000031.jpg"], "line": fat}]}]}
+    assert pq.line_overlong_flags(beats, printed={"p000031.jpg": 30}) == []
+    assert [f["code"] for f in pq.line_overlong_flags(beats)] == [
+        "line_overlong"]
+
+
 # ---- 2026-08-18: caption coverage tolerates morphology + OCR mis-scans ------
 # ORV Ep1 g0001: the caption IS voiced ("three ways to survive the apocalypse",
 # "swipes through the pages", "the text fades") but literal token matching

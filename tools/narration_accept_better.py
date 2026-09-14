@@ -27,7 +27,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
-from recap_style import beat_lines_usable, beat_overshoot  # noqa: E402
+from recap_style import (  # noqa: E402
+    beat_lines_usable, beat_overshoot, printed_words_for_groups)
 from beats_segments import beat_segments  # noqa: E402
 
 VERDICT_SCHEMA: Dict[str, Any] = {
@@ -89,6 +90,7 @@ def gate_beats(old_beats: List[Dict[str, Any]],
                caption_gap: Optional[Callable[[Dict[str, Any]], int]] = None,
                dead_for: Optional[Callable[[Dict[str, Any]], set]] = None,
                noun_map: Optional[Dict[str, Any]] = None,
+               printed: Optional[Dict[str, int]] = None,
                ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Return (accepted_beats, decisions). For every group the heal rewrote, ask
     `judge(old_beat, new_beat) -> verdict`; keep the new beat only when
@@ -124,7 +126,11 @@ def gate_beats(old_beats: List[Dict[str, Any]],
             })
             accepted.append(nb)
             continue
-        old_over, new_over = beat_overshoot(ob), beat_overshoot(nb)
+        # printed words count toward the cap (recap_style.span_word_cap): a
+        # card read aloud in full is NOT overlong, so a shorter paraphrase
+        # must not win this floor over it
+        old_over = beat_overshoot(ob, printed=printed)
+        new_over = beat_overshoot(nb, printed=printed)
         if old_over and new_over < old_over:
             # The heal was fired to SHORTEN an over-cap line and it did. The
             # judge scores grounding + writing, not length, so it happily
@@ -229,6 +235,27 @@ def make_caption_gap(vision_manifest: str):
     return caption_gap
 
 
+def make_printed(vision_manifest: str) -> Optional[Dict[str, int]]:
+    """{shown file: printed words} from the manifests beside the vision one
+    (groups for panel order, understanding for caption frames), or None when
+    there is no vision manifest. The length floor must use the SAME cap the
+    writer validated with, or it would prefer a paraphrase over a card read
+    aloud in full."""
+    if not vision_manifest or not os.path.exists(vision_manifest):
+        return None
+    d = os.path.dirname(vision_manifest)
+    ocr = {str(it.get("scene_file") or ""): str(it.get("ocr_clean") or "")
+           for it in (json.load(open(vision_manifest)).get("items") or [])}
+    kinds: Dict[str, str] = {}
+    up = os.path.join(d, "manifest.panels.understood.json")
+    if os.path.exists(up):
+        for pan in (json.load(open(up)).get("panels") or []):
+            kinds[str(pan.get("scene_file") or "")] = str(pan.get("panel_kind") or "")
+    gp = os.path.join(d, "manifest.groups.json")
+    groups = json.load(open(gp)) if os.path.exists(gp) else {}
+    return printed_words_for_groups(groups, ocr, kinds)
+
+
 def make_dead_for(vision_manifest: str):
     """(dead_for, noun_map) from the chapter's ledger + cast, or (None, None).
     Found beside the vision manifest, exactly like make_caption_gap — so the
@@ -289,7 +316,8 @@ def main() -> int:
     accepted, decisions = gate_beats(
         old_beats, new_beats, judge,
         caption_gap=make_caption_gap(args.vision_manifest),
-        dead_for=dead_for, noun_map=noun_map)
+        dead_for=dead_for, noun_map=noun_map,
+        printed=make_printed(args.vision_manifest))
     out_doc = dict(new_doc)
     out_doc["beats"] = accepted
     with open(args.out, "w", encoding="utf-8") as f:

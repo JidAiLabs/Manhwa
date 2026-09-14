@@ -1146,6 +1146,63 @@ def test_tighten_declines_when_no_single_sentence_fits():
     assert notes == []
 
 
+# ---- the voice cap counts what the page PRINTS (2026-09-14) -----------------
+# A panel printing 60 words (a system card read aloud, a caption voiced in full)
+# can never fit a 33-word cap: in 79% of the corpus "too fat" groups the panels
+# printed more words than the cap, and the trim then cut exactly the printed
+# text caption_unvoiced measures. The printed words ride ON TOP of the base cap;
+# a wordless panel keeps 33.
+
+def test_span_word_cap_adds_the_printed_words():
+    assert rs.span_word_cap(1) == 33
+    assert rs.span_word_cap(1, 55) == 88
+    assert rs.span_word_cap(4, 10) == 145
+
+
+def test_printed_words_count_own_text_and_adjacent_caption_panels():
+    files = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+    ocr = {"a.jpg": "one two three four five", "b.jpg": " ".join(["cap"] * 20),
+           "c.jpg": " ".join(["card"] * 40), "d.jpg": ""}
+    kinds = {"a.jpg": "story", "b.jpg": "caption", "c.jpg": "system",
+             "d.jpg": "story"}
+    # a caption never owns a span; its words fold into a neighbour (the prose
+    # path picks the previous one, the native path the next) — so both
+    # neighbours may carry them
+    assert rs.printed_words_by_file(files, ocr, kinds) == {
+        "a.jpg": 25, "c.jpg": 60, "d.jpg": 0}
+
+
+def test_an_all_caption_group_counts_each_panel_on_its_own():
+    assert rs.printed_words_by_file(
+        ["a.jpg", "b.jpg"], {"a.jpg": "x y", "b.jpg": "z"},
+        {"a.jpg": "caption", "b.jpg": "caption"}) == {"a.jpg": 2, "b.jpg": 1}
+
+
+def test_printed_words_for_groups_merges_every_group():
+    groups = {"shots": [{"shot_id": 1, "scene_files": ["a.jpg", "b.jpg"]},
+                        {"shot_id": 2, "scene_files": ["c.jpg"]}]}
+    ocr = {"a.jpg": "x", "b.jpg": "y y", "c.jpg": "z z z"}
+    assert rs.printed_words_for_groups(groups, ocr, {"b.jpg": "caption"}) == {
+        "a.jpg": 3, "c.jpg": 3}
+
+
+def test_overshoot_is_zero_for_a_line_that_voices_its_printed_text():
+    segs = [{"span": ["p1.jpg"], "line": " ".join(["word"] * 60) + "."}]
+    assert rs.segments_overshoot(segs) == 27                      # 60 - 33
+    assert rs.segments_overshoot(segs, printed={"p1.jpg": 40}) == 0
+    assert rs.beat_overshoot({"segments": segs},
+                             printed={"p1.jpg": 40}) == 0
+
+
+def test_the_trim_never_cuts_a_line_that_fits_its_printed_allowance():
+    line = " ".join(["word"] * 29) + ". " + " ".join(["more"] * 29) + "."
+    segs = [{"span": ["p1.jpg"], "line": line}]
+    out, notes = rs.tighten_overlong_segments(segs, {}, printed={"p1.jpg": 40})
+    assert out[0]["line"] == line and notes == []
+    out2, notes2 = rs.tighten_overlong_segments(segs, {})         # no allowance
+    assert notes2 and len(out2[0]["line"].split()) <= 33
+
+
 # ---- stringified nulls are not shippable lines (ORV Ep33 g0030) -----------
 # The g0026 story again. The heal DID regenerate the group, the regen fell back
 # to pads, and because "None." read as usable the span-pin fallback restored it:
