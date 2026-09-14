@@ -1357,6 +1357,9 @@ def test_main_a_cut_first_answer_is_retried_not_padded(tmp_path, monkeypatch):
     monkeypatch.delenv("STUDIO_NARR_SEGMENTATION", raising=False)
     monkeypatch.delenv("STUDIO_BEATS_NUM_CTX", raising=False)
     monkeypatch.delenv("STUDIO_BEATS_NUM_CTX_MAX", raising=False)
+    # the fitted retry lives behind the 8192 escape hatch; at the production
+    # writer window a cut is already at the cap
+    monkeypatch.setattr(gnp, "_BEATS_WINDOW", 8192, raising=False)
     monkeypatch.setattr(sys, "argv", [
         "gemini_narrative_pass.py", "--groups-manifest", str(g),
         "--vision-manifest", str(v), "--out", str(out),
@@ -1371,6 +1374,36 @@ def test_main_a_cut_first_answer_is_retried_not_padded(tmp_path, monkeypatch):
     assert res["stats"]["segments_fallbacks"] == 0
     assert res["stats"]["parse_errors"] == 0
     assert res["stats"]["usage"]["calls"] == 2
+
+
+def test_main_the_primary_ask_and_the_reask_use_one_window(tmp_path,
+                                                          monkeypatch):
+    """99% of 2,189 gemma reloads on the Mini were num_ctx changes. A group's
+    primary ask and its repair re-ask must not switch the window."""
+    import ollama_compat
+    g, v, u = _write_manifests(tmp_path)
+    out = tmp_path / "beats.json"
+    first = json.dumps(dict(_NO_TAGS_BEAT, group_id=7, scene_files=list(FILES)))
+    good = json.dumps(dict(_PROSE_MODEL_BEAT, group_id=7,
+                           scene_files=list(FILES)))
+    seen = []
+
+    def fake_chat(**kw):
+        seen.append(kw["options"]["num_ctx"])
+        return {"message": {"content": first if len(seen) == 1 else good},
+                "prompt_eval_count": 7000, "eval_count": 400,
+                "done_reason": "stop"}
+
+    monkeypatch.setattr(ollama_compat, "chat", fake_chat)
+    monkeypatch.setattr(gnp, "_BEATS_WINDOW", 16384, raising=False)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.delenv("STUDIO_NARR_SEGMENTATION", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "gemini_narrative_pass.py", "--groups-manifest", str(g),
+        "--vision-manifest", str(v), "--out", str(out),
+        "--understood", str(u), "--backend", "ollama", "--min-sleep", "0"])
+    assert gnp.main() == 0
+    assert seen == [16384, 16384]
 
 
 def test_main_prose_resolves_cast_tokens_in_segment_lines(tmp_path,

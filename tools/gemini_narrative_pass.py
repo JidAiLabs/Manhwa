@@ -737,6 +737,93 @@ def _fit_num_ctx(prompt_tokens: int, num_predict: int, cur_ctx: int,
 # halved), so the sum is a reliable fill signal.
 _CUT_SLACK_TOKENS = 16
 
+# ONE window for every writer call (primary ask, re-ask, JSON formatter).
+# ollama reloads the runner whenever num_ctx changes; over 42 h on the Mini
+# 2,189 of 2,214 consecutive gemma reloads (99%) were window changes — the
+# writer's 8192 default overflowed (the static system prompt alone is ~6.5k
+# tokens), bumped to 12288, and the next group went back to 8192: a reload and a
+# cold prompt cache per call (one measured reload: 61 s of a 139 s call).
+# STUDIO_BEATS_WINDOW=8192 restores the old error-driven behaviour.
+_BEATS_WINDOW = int(os.environ.get("STUDIO_BEATS_WINDOW", "16384"))
+# Pre-flight estimate: conservative until calibrated against prompt_eval_count
+# (the production transport has no /api/tokenize). The format schema is a
+# decoding grammar, not prompt tokens, so it is not counted.
+_BEATS_CHARS_PER_TOKEN = 3.5
+_BEATS_IMAGE_TOKENS = 512
+_BEATS_CTX_MARGIN = 512
+_REASK_RESERVE_TOKENS = 600      # the repair block a re-ask appends
+_SILENT_SHIFT_RATIO = 0.55       # a real prompt counts at ~0.8x the estimate
+
+
+def _beats_prompt_tokens(system_instruction: str, user_content: str,
+                         n_images: int) -> int:
+    return (int((len(system_instruction or "") + len(user_content or ""))
+                / _BEATS_CHARS_PER_TOKEN)
+            + max(0, int(n_images)) * _BEATS_IMAGE_TOKENS)
+
+
+def _gist_scenes(payload: Dict[str, Any], ocr: int, desc: int, dlg: int,
+                 act: int) -> Dict[str, Any]:
+    """A copy of *payload* whose per-panel prose is cut to word-boundary gists.
+    Only the four free-text fields: subjects, figures, panel_kind and the
+    group's facts/taggable_panels carry the grounding and are never touched."""
+    from story_group import _gist   # local: story_group imports this module
+    limits = (("ocr_clean", ocr), ("description", desc), ("dialogue", dlg),
+              ("action", act))
+    out = dict(payload)
+    out["scenes_signals"] = [
+        dict(s, **{k: _gist(s.get(k), lim) for k, lim in limits if s.get(k)})
+        if isinstance(s, dict) else s
+        for s in (payload.get("scenes_signals") or [])]
+    return out
+
+
+def _fit_beats_input(system_instruction: str, payload: Dict[str, Any],
+                     image_paths: List[str], num_predict: int,
+                     gid: Any) -> Tuple[Dict[str, Any], List[str]]:
+    """Make the writer's input fit _BEATS_WINDOW BEFORE the call.
+
+    An input too long for the window has only bad outcomes after the fact: an
+    error and a reload at a different window, or a silent context shift that
+    drops the system prompt. Shrink in a fixed order, cheapest loss first, and
+    log every step; the grounding fields are never touched. Returns the
+    (payload, image_paths) to send — the originals when they already fit."""
+    def est(p, imgs):
+        return (_beats_prompt_tokens(
+                    system_instruction,
+                    "INPUT_JSON:\n" + json.dumps(p, ensure_ascii=False),
+                    len(imgs))
+                + _REASK_RESERVE_TOKENS)
+
+    def fits(p, imgs):
+        return (est(p, imgs) + max(0, int(num_predict)) + _BEATS_CTX_MARGIN
+                <= _BEATS_WINDOW)
+
+    if fits(payload, image_paths):
+        return payload, image_paths
+    steps = (
+        ("drop previous_narration",
+         lambda p, i: ({k: v for k, v in p.items()
+                        if k != "previous_narration"}, i)),
+        ("gist panel text 300/160/160/100",
+         lambda p, i: (_gist_scenes(p, 300, 160, 160, 100), i)),
+        ("gist panel text 160/100/100/60",
+         lambda p, i: (_gist_scenes(p, 160, 100, 100, 60), i)),
+        ("images -> 2", lambda p, i: (p, list(i)[:2])),
+        ("images -> 1", lambda p, i: (p, list(i)[:1])),
+    )
+    p, imgs = payload, image_paths
+    for name, step in steps:
+        p, imgs = step(p, imgs)
+        print(f"[beats] g{int(gid):04d}: prompt over cap (est={est(p, imgs)}"
+              f"+{num_predict} > {_BEATS_WINDOW}) — {name}", file=sys.stderr)
+        if fits(p, imgs):
+            return p, imgs
+    print(f"[beats] g{int(gid):04d}: STILL over cap after every shrink "
+          f"(est={est(p, imgs)}+{num_predict} > {_BEATS_WINDOW}) — calling "
+          "anyway; expect a cut", file=sys.stderr)
+    return p, imgs
+
 
 def _cut_kind(resp: Any, num_ctx: int, num_predict: int) -> Optional[str]:
     """Why a generation stopped early, if it did.
@@ -759,7 +846,8 @@ def _cut_kind(resp: Any, num_ctx: int, num_predict: int) -> Optional[str]:
 
 
 def _settle_cut(kw: Dict[str, Any], resp: Any, usage: Dict[str, Any],
-                num_predict: int, ctx_max: int) -> Tuple[Any, Dict[str, Any]]:
+                num_predict: int, ctx_max: int,
+                est: int = 0) -> Tuple[Any, Dict[str, Any]]:
     """The writer's budget check on one finished call (fit_ctx callers only).
 
     A window cut is retried ONCE at a window fitted from the REAL prompt size.
@@ -771,6 +859,13 @@ def _settle_cut(kw: Dict[str, Any], resp: Any, usage: Dict[str, Any],
     from ollama_compat import chat as _ollama_chat
     cur = int(kw["options"]["num_ctx"])
     p, e = usage["input"], usage["output"]
+    if est and p < _SILENT_SHIFT_RATIO * est:
+        # a prompt too long for the window raises nothing: ollama context-shifts
+        # it, keeping the TAIL (probe: ~14k tokens at 13312 -> 6,659 counted)
+        print(f"[beats] WARNING prompt_eval_count={p} far below the estimate "
+              f"est={est} at num_ctx={cur} — ollama likely context-shifted the "
+              "prompt (its head, the system prompt, was dropped)",
+              file=sys.stderr)
     kind = _cut_kind(resp, cur, num_predict)
     calls = 1
     if kind == "window":
@@ -891,6 +986,15 @@ def _call_model(
     # never hard-fails the whole chapter. Both env-tunable.
     ctx0 = int(os.environ.get("STUDIO_BEATS_NUM_CTX", "8192"))
     ctx_max = int(os.environ.get("STUDIO_BEATS_NUM_CTX_MAX", "16384"))
+    est = 0
+    if fit_ctx:
+        # the writer asks for ONE window on every call (see _BEATS_WINDOW); the
+        # 8192/bump behaviour above stays for the callers that share this
+        # function (understanding, grouping, accept_better, sanitize, teaser)
+        ctx0 = _BEATS_WINDOW
+        ctx_max = max(ctx_max, _BEATS_WINDOW)
+        est = _beats_prompt_tokens(system_instruction, msg["content"],
+                                   len(images))
     _kw = dict(
         model=model,
         messages=[{"role": "system", "content": system_instruction}, msg],
@@ -916,7 +1020,7 @@ def _call_model(
         if fit_ctx:
             # the writer's calls only — every other caller stays byte-identical
             resp, usage = _settle_cut(_kw, resp, usage, max_output_tokens,
-                                      ctx_max)
+                                      ctx_max, est=est)
         raw = (resp.get("message") or {}).get("content") or ""
         try:
             return json.loads(raw), raw, usage
@@ -2914,6 +3018,10 @@ def main() -> int:
                     "adaptive" if pin_prev is not None else "prose",
                     taggable=surviving)
         img_paths = _select_images_for_group(payload, vision_by_file, args.max_images_per_group)
+        # fit the ONE writer window before the call (logged when it shrinks);
+        # the re-ask closes over the result, so it inherits the fitted input
+        payload, img_paths = _fit_beats_input(
+            sys_g, payload, img_paths, args.max_output_tokens, gid)
 
         beat = _generate_beat_for_group(
             model=args.model,

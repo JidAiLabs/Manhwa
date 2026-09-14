@@ -48,6 +48,9 @@ def _call(monkeypatch, responses, fit_ctx=True, num_predict=2400):
 def _default_window(monkeypatch):
     monkeypatch.delenv("STUDIO_BEATS_NUM_CTX", raising=False)
     monkeypatch.delenv("STUDIO_BEATS_NUM_CTX_MAX", raising=False)
+    # the fitted retry is exercised through the 8192 escape hatch
+    # (STUDIO_BEATS_WINDOW=8192): at the production window a cut is at the cap
+    monkeypatch.setattr(gnp, "_BEATS_WINDOW", 8192, raising=False)
 
 
 # ---- classification ---------------------------------------------------------
@@ -101,6 +104,7 @@ def test_a_window_cut_is_retried_once_at_a_window_that_fits(monkeypatch,
 def test_a_cut_at_the_cap_is_logged_and_not_retried(monkeypatch, capsys):
     monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "16384")
     monkeypatch.setenv("STUDIO_BEATS_NUM_CTX_MAX", "16384")
+    monkeypatch.setattr(gnp, "_BEATS_WINDOW", 16384, raising=False)
     obj, _, usage, seen = _call(monkeypatch,
                                 [_resp('{"a', 16000, 384, "length")])
     assert len(seen) == 1
@@ -199,3 +203,108 @@ def test_generate_beat_counts_a_retried_call_in_usage(monkeypatch):
                     "calls": 2})
     _gen(monkeypatch, [beat], usage=acc)
     assert acc.calls == 2
+
+
+# ---- A2: ONE window for every writer call + an over-cap shrink --------------
+# ollama reloads the runner whenever num_ctx changes. Over 42 h on the Mini,
+# 2,189 of 2,214 consecutive gemma reloads (99%) were window changes — mostly
+# the writer flip-flopping 8192 -> 12288 (error-driven bump) -> 8192 (next
+# group), a reload and a cold prompt cache per call. Every writer call now asks
+# for one window; an input too long for it is shrunk BEFORE the call.
+
+def test_every_budgeted_call_asks_for_the_one_writer_window(monkeypatch):
+    monkeypatch.setattr(gnp, "_BEATS_WINDOW", 16384, raising=False)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")   # the shared default
+    _, _, _, seen = _call(monkeypatch, [_resp(GOOD, 7000, 800, "stop")])
+    assert seen[0]["num_ctx"] == 16384
+
+
+def test_non_writer_callers_keep_their_own_window(monkeypatch):
+    monkeypatch.setattr(gnp, "_BEATS_WINDOW", 16384, raising=False)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    _, _, _, seen = _call(monkeypatch, [_resp(GOOD, 10, 5, "stop")],
+                          fit_ctx=False)
+    assert seen[0]["num_ctx"] == 8192
+
+
+def _exact_estimates(monkeypatch, window):
+    # 1 char = 1 token, 100 tokens per image, no margin/reserve: the shrink's
+    # arithmetic becomes the payload's serialized length, so thresholds are exact
+    monkeypatch.setattr(gnp, "_BEATS_WINDOW", window, raising=False)
+    monkeypatch.setattr(gnp, "_BEATS_CHARS_PER_TOKEN", 1.0, raising=False)
+    monkeypatch.setattr(gnp, "_BEATS_IMAGE_TOKENS", 100, raising=False)
+    monkeypatch.setattr(gnp, "_BEATS_CTX_MARGIN", 0, raising=False)
+    monkeypatch.setattr(gnp, "_REASK_RESERVE_TOKENS", 0, raising=False)
+
+
+def _payload(n_panels, words_each, prev=True):
+    files = [f"p{i}.jpg" for i in range(n_panels)]
+    text = " ".join(["word"] * words_each)
+    p = {"scene_files": list(files), "taggable_panels": list(files),
+         "facts": {"dead_by_now": ["the old man"]},
+         "scenes_signals": [{"scene_file": f, "ocr_clean": text,
+                             "description": text, "dialogue": text,
+                             "action": text, "subjects": ["the prince"]}
+                            for f in files]}
+    if prev:
+        p["previous_narration"] = [" ".join(["x"] * 300),
+                                   " ".join(["y"] * 300)]
+    return p
+
+
+def _input_chars(payload):
+    return len("INPUT_JSON:\n" + json.dumps(payload, ensure_ascii=False))
+
+
+def test_an_input_that_fits_is_left_exactly_as_it_is(monkeypatch, capsys):
+    p, imgs = _payload(2, 10), ["a.jpg", "b.jpg"]
+    _exact_estimates(monkeypatch, _input_chars(p) + 200 + 1000)
+    out_p, out_i = gnp._fit_beats_input("", p, imgs, 0, 7)
+    assert out_p is p and out_i is imgs
+    assert capsys.readouterr().err == ""
+
+
+def test_the_shrink_stops_at_the_first_step_that_fits(monkeypatch, capsys):
+    p = _payload(2, 10)
+    no_prev = {k: v for k, v in p.items() if k != "previous_narration"}
+    _exact_estimates(monkeypatch, _input_chars(no_prev))     # fits once dropped
+    out_p, out_i = gnp._fit_beats_input("", p, [], 0, 7)
+    steps = [l for l in capsys.readouterr().err.splitlines()
+             if "prompt over cap" in l]
+    assert len(steps) == 1 and steps[0].endswith("drop previous_narration")
+    assert "previous_narration" not in out_p
+    assert out_p["scenes_signals"] == p["scenes_signals"]    # not gisted
+    assert "previous_narration" in p                         # input untouched
+
+
+def test_an_input_nothing_can_fit_is_shrunk_in_order_and_never_silent(
+        monkeypatch, capsys):
+    p, imgs = _payload(6, 200), ["a.jpg", "b.jpg", "c.jpg"]
+    _exact_estimates(monkeypatch, 10)                        # nothing fits
+    out_p, out_i = gnp._fit_beats_input("", p, imgs, 0, 7)
+    err = capsys.readouterr().err
+    steps = [l.rsplit(" — ", 1)[1] for l in err.splitlines()
+             if "prompt over cap" in l]
+    assert steps == ["drop previous_narration",
+                     "gist panel text 300/160/160/100",
+                     "gist panel text 160/100/100/60",
+                     "images -> 2", "images -> 1"]
+    assert "STILL over cap" in err
+    assert out_i == ["a.jpg"]
+    # grounding the writer needs survives every step
+    for key in ("scene_files", "taggable_panels", "facts"):
+        assert out_p[key] == p[key]
+    assert [s["subjects"] for s in out_p["scenes_signals"]] == \
+        [s["subjects"] for s in p["scenes_signals"]]
+    assert len(out_p["scenes_signals"][0]["ocr_clean"]) < \
+        len(p["scenes_signals"][0]["ocr_clean"])
+
+
+def test_a_prompt_counted_far_below_its_estimate_is_flagged(monkeypatch,
+                                                           capsys):
+    # ollama context-shifts an over-long prompt SILENTLY (probe: ~14k tokens at
+    # 13312 -> prompt_eval_count 6,659, head and system prompt dropped)
+    monkeypatch.setattr(gnp, "_BEATS_WINDOW", 16384, raising=False)
+    monkeypatch.setattr(gnp, "_BEATS_CHARS_PER_TOKEN", 1.0, raising=False)
+    _call(monkeypatch, [_resp(GOOD, 2, 5, "stop")])
+    assert "context-shifted" in capsys.readouterr().err
