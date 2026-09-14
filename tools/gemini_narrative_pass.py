@@ -1406,7 +1406,11 @@ def _grounded_pad_line(f, understand_by_file):
     or empty, leave a short heal-flaggable bridge instead of reading the
     picture."""
     return (_non_camera_description((understand_by_file or {}).get(f) or {})
-            or "The moment holds.")
+            or _GENERIC_PAD_LINE)
+
+
+# the last-resort stand-in: speakable, but says nothing about the panel
+_GENERIC_PAD_LINE = "The moment holds."
 
 
 # A system card's line must SAY the card, never describe it (the prompt bans
@@ -1635,6 +1639,30 @@ def ocr_looks_clipped(text: str, min_clipped: int = 2) -> bool:
     return False
 
 
+def _speaks_a_word(text: str) -> bool:
+    """True when *text* holds something a voice can say: a number, or a word
+    of the language (the same word test ocr_looks_clipped uses)."""
+    s = str(text or "")
+    if re.search(r"\d", s):
+        return True
+    words = _dict_words(_DICT_PATH)[1]
+    return any(_is_card_word(t.lower(), words)
+               for t in re.findall(r"[A-Za-z]+", s))
+
+
+def card_is_decoration(dialogue: str, card: str) -> bool:
+    """A card whose marks are not language: Gemma read no printed text AND the
+    recognizer's text holds no word (Wimp Ch21: an hourglass ringed by Roman
+    numerals, read as "+ IIX"; a serial code; a bare counter). Both signals are
+    required, so a word the old list lacks costs a paraphrase, never a silent
+    clip. Fails open when there is no word list."""
+    if dialogue or not card or not _dict_words(_DICT_PATH)[0]:
+        return False
+    words = _dict_words(_DICT_PATH)[1]
+    return not any(_is_card_word(t.lower(), words)
+                   for t in re.findall(r"[A-Za-z]+", card))
+
+
 def system_card_line(f, understand_by_file, line, proper_case=None):
     """The line to voice on solo system panel *f*: the model's line when it
     voices the card (shares content, doesn't describe it), else the card's own
@@ -1658,6 +1686,15 @@ def system_card_line(f, understand_by_file, line, proper_case=None):
                 return pad
         return line
     ln = str(line or "").strip()
+    if card_is_decoration(dialogue, card):
+        # nothing on the card is language: reading it made "Iix." (Wimp Ch21),
+        # which the voice cannot say. The writer saw the art and the
+        # understanding; its line stands, and a line that only copies the marks
+        # gets the grounded stand-in. When that stand-in is only the generic
+        # _GENERIC_PAD_LINE, prep_qa's unspeakable_line sends the group to heal.
+        if is_unvoiceable_line(ln) or not _speaks_a_word(ln):
+            return _grounded_pad_line(f, understand_by_file)
+        return line
     # A line that cannot be SPOKEN never counts as the writer voicing the card.
     # ORV Ep210's profile panel reads "NAME: DOKJA KIM SUPPORTING CONSTELLATION:
     # NONE" and the writer emitted just "None." -- which shares the word "none"
@@ -1682,8 +1719,16 @@ def system_card_line(f, understand_by_file, line, proper_case=None):
     # speak the PRINTED lines when we have them: the card's own line breaks
     # are its punctuation, and the flat `ocr_clean` has thrown them away
     layout = str(u.get("ocr_layout") or "").strip()
-    return _speak_card(layout if (layout and not dialogue) else card,
-                       proper_case)
+    spoken = _speak_card(layout if (layout and not dialogue) else card,
+                         proper_case)
+    if spoken and not ends_terminal(spoken) and ln \
+            and not is_unvoiceable_line(ln):
+        # the card's own text stops mid-phrase (Wimp Ch19: one heading split
+        # across two panels, "[PHYSICAL" | "[TRAITS AND"). Forcing it built a
+        # line truncated_line must block and no heal could change, because
+        # this rule put it back every time. The writer's line stands.
+        return line
+    return spoken
 
 
 def auto_repair_segments(segs, surviving, kinds, understand_by_file=None,

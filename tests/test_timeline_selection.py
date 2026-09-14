@@ -347,14 +347,24 @@ def test_one_panel_segment_with_selection_still_one_cut():
 
 # ---- C2: image-aware duration --------------------------------------------
 
-def test_compute_duration_image_min_floors_short_audio():
-    # A visually heavy panel under a SHORT line: image_min raises the dwell above
-    # the audio+pad / base_min floor.
-    d = tp.compute_duration_sec(mode="narrated", tts_text="x", overlays=[],
-                                base_min=2.5, max_sec=25.0, chars_per_sec=18.0,
-                                audio_duration_sec=1.0, audio_pad_sec=0.2,
-                                image_min=3.4)
-    assert abs(d - 3.4) < 1e-6
+def test_compute_duration_image_min_lingers_only_a_breath_past_the_voice():
+    # A visually heavy panel under a SHORT line used to be held to image_min:
+    # Wimp Ch31 g0002_p02 was 1.78s of voice and 4.0s on screen, 2.2s of
+    # silence. The dwell may outlast the voice by IMAGE_DWELL_BREATH_SEC and no
+    # more; base_min still governs a very short line.
+    kw = dict(mode="narrated", tts_text="x", overlays=[], base_min=2.5,
+              max_sec=25.0, chars_per_sec=18.0, audio_pad_sec=0.2)
+    breath = tp.IMAGE_DWELL_BREATH_SEC
+    assert 0.3 <= breath <= 1.0
+    d = tp.compute_duration_sec(audio_duration_sec=1.777, image_min=4.0, **kw)
+    assert abs(d - (1.977 + breath)) < 1e-6
+    d = tp.compute_duration_sec(audio_duration_sec=2.8, image_min=4.0, **kw)
+    assert abs(d - (3.0 + breath)) < 1e-6
+    d = tp.compute_duration_sec(audio_duration_sec=1.0, image_min=3.4, **kw)
+    assert abs(d - 2.5) < 1e-6
+    # a heavy panel whose line nearly fills it still gets its full dwell
+    d = tp.compute_duration_sec(audio_duration_sec=3.2, image_min=3.8, **kw)
+    assert abs(d - 3.8) < 1e-6
 
 
 def test_compute_duration_image_min_never_truncates_long_audio():

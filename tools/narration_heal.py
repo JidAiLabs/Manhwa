@@ -63,6 +63,9 @@ HEALABLE = {
     # a voiced line stops mid-sentence ("...no mercy to be found, only the")
     # — a writer-truncated final sentence; a re-roll writes the full thought.
     "truncated_line",
+    # a system card's marks (a numeral ring, a code) voiced as the line — the
+    # voice cannot say it (Wimp Ch21 "Iix."); the re-roll writes a real line
+    "unspeakable_line",
     # a line broken mid-sentence by a missing noun ("using my and even forgot")
     # — ends correctly, so truncated_line never sees it; only a re-roll can
     # restore the word (deleting around it would invent facts).
@@ -124,6 +127,11 @@ def _note_for(code: str, detail: str) -> str:
         return ("This line is the literal word 'None' (or null/N/A) instead of "
                 "narration — it was never written. Write a real line for this "
                 "panel: say what happens in it, grounded in the art.")
+    if code == "unspeakable_line":
+        return ("This SYSTEM panel's line is the screen's marks (numerals, a "
+                "code), not words, and the voice cannot say it. Do not copy "
+                "the marks: say in a real sentence what the screen shows "
+                "happening (a timer starting, an icon appearing).")
     if code == "truncated_line":
         return ("This line STOPS MID-SENTENCE — the thought never ends. "
                 "Re-narrate it as a complete sentence that finishes the "

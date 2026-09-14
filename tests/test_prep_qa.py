@@ -2400,6 +2400,84 @@ def test_system_card_unvoiced_ignores_story_panels_short_cards_and_wide_spans():
         _card_understood(), _card_vitems()) == []
 
 
+# ---- a system card's marks are not always words (2026-09-15) ----------------
+# Wimp Ch21 p000028: Gemma saw an hourglass ringed by Roman numerals and no
+# text; the recognizer read "+ IIX" and the line became "Iix.": three dead voice
+# takes, voicing blocked an hour after prepare had passed QA.
+
+def _small_words(monkeypatch, tmp_path,
+                 words=("the", "timer", "start", "an", "hourglass")):
+    import gemini_narrative_pass as g
+    p = tmp_path / "words"
+    p.write_text("\n".join(words))
+    g._dict_words.cache_clear()
+    monkeypatch.setattr(g, "_DICT_PATH", str(p))
+
+
+def test_unspeakable_line_flags_a_card_line_made_of_the_cards_marks(
+        monkeypatch, tmp_path):
+    _small_words(monkeypatch, tmp_path)
+    fl = pq.unspeakable_card_line_flags(_card_beats("Iix."), _card_understood(),
+                                        _card_vitems("+ IIX"))
+    assert [(f["code"], f["severity"]) for f in fl] == [("unspeakable_line",
+                                                         pq.ERROR)]
+    assert fl[0]["segment_id"] == "g0017" and fl[0]["scene"] == "p79.jpg"
+    import narration_heal
+    assert 17 in narration_heal.corrections_from_qa({"flags": fl})
+
+
+def test_unspeakable_line_sends_a_decoration_card_left_with_the_generic_line(
+        monkeypatch, tmp_path):
+    # the writer now swaps a line that copies the marks for the grounded
+    # stand-in; when that stand-in says nothing ("The moment holds."), heal
+    # must still be asked for a real line about what the screen shows
+    _small_words(monkeypatch, tmp_path)
+    import gemini_narrative_pass as g
+    fl = pq.unspeakable_card_line_flags(_card_beats(g._GENERIC_PAD_LINE),
+                                        _card_understood(), _card_vitems("+ IIX"))
+    assert [f["code"] for f in fl] == ["unspeakable_line"]
+
+
+def test_unspeakable_line_is_quiet_for_real_lines_and_transcribed_cards(
+        monkeypatch, tmp_path):
+    _small_words(monkeypatch, tmp_path)
+    assert pq.unspeakable_card_line_flags(
+        _card_beats("The hourglass timer starts."), _card_understood(),
+        _card_vitems("+ IIX")) == []
+    assert pq.unspeakable_card_line_flags(
+        _card_beats("Tada!"), _card_understood(dialogue="TADA~"),
+        _card_vitems("TADA~")) == []
+    assert pq.unspeakable_card_line_flags(
+        _card_beats("Iix."), _card_understood(kind="story"),
+        _card_vitems("+ IIX")) == []
+
+
+# ---- a panel held past its voice (2026-09-15) --------------------------------
+# Wimp Ch31 g0002_p02: "The vibes shift instantly." is 1.78s of voice on a panel
+# the image-dwell floor held for 4.0s: 2.2s of silence that no check reported.
+
+def _voiced_plan(duration, audio):
+    return {"timeline": [{"segment_id": "g0002_p02", "duration_sec": duration,
+                          "tts_audio_duration_sec": audio,
+                          "cuts": [{"file": "p000005.jpg", "start": 0.0,
+                                    "dur": duration}]}]}
+
+
+def test_voice_gap_warns_when_a_panel_outlasts_its_voice():
+    fl = pq.voice_gap_flags(_voiced_plan(4.0, 1.777))
+    assert [(f["code"], f["severity"]) for f in fl] == [("voice_gap", pq.WARN)]
+    assert fl[0]["scene"] == "p000005.jpg"
+    assert fl[0]["segment_id"] == "g0002_p02"
+    assert "2.2" in fl[0]["detail"]
+
+
+def test_voice_gap_is_quiet_within_a_second_and_without_voice():
+    assert pq.voice_gap_flags(_voiced_plan(2.577, 1.777)) == []
+    assert pq.voice_gap_flags(_voiced_plan(4.0, 0.0)) == []
+    assert pq.voice_gap_flags(
+        {"timeline": [{"segment_id": "g0001_p00", "duration_sec": 4.0}]}) == []
+
+
 def test_system_card_unvoiced_reads_the_models_transcription_first():
     # the same precedence as the writer: understood dialogue, then vision OCR
     fl = pq.system_card_unvoiced_flags(_card_beats(_PARAPHRASE),

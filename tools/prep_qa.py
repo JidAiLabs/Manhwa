@@ -1585,6 +1585,72 @@ def system_card_unvoiced_flags(beats_obj: Any, understood_obj: Any,
     return flags
 
 
+def unspeakable_card_line_flags(beats_obj: Any, understood_obj: Any,
+                                vitems: Optional[Dict[str, Dict[str, Any]]] = None
+                                ) -> List[Dict[str, Any]]:
+    """A solo system card whose marks are not language (Gemma read no text and
+    the recognizer's text holds no word) voiced as a line with nothing a voice
+    can say: Wimp Ch21's "Iix." from an hourglass ringed by Roman numerals —
+    three dead voice takes and a blocked voiceover an hour after prepare had
+    passed QA. ERROR so heal re-narrates it at prepare; not blocking, because
+    voicing's audio_failed still stops a survivor. Uses the writer's own tests,
+    so this gate never asks for what the writer would refuse."""
+    import gemini_narrative_pass as _gnp   # the writer owns the card rules
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    und = {str(p.get("scene_file") or ""): p
+           for p in ((understood_obj or {}).get("panels") or [])
+           if isinstance(p, dict)}
+    for b in beats_obj.get("beats") or []:
+        seg_id = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            if len(s["span"]) != 1:
+                continue
+            f = str(s["span"][0])
+            u = und.get(f) or {}
+            if str(u.get("panel_kind") or "").lower() != "system":
+                continue
+            dialogue = _gnp.clean_card_text(u.get("dialogue") or "")
+            card = _gnp.clean_card_text(
+                ((vitems or {}).get(f) or {}).get("ocr_clean") or "")
+            line = str(s["line"] or "")
+            # the writer swaps a line that copies the marks for the grounded
+            # stand-in; the generic one says nothing, so heal is still asked
+            if (_gnp.card_is_decoration(dialogue, card)
+                    and (not _gnp._speaks_a_word(line)
+                         or line.strip() == _gnp._GENERIC_PAD_LINE)):
+                flags.append(_flag(
+                    "unspeakable_line", ERROR,
+                    f"the line {line[:40]!r} is the card's marks, not words "
+                    f"({card[:40]!r}) — the voice cannot say it; narrate "
+                    "what the screen shows happening instead",
+                    scene=f, segment_id=seg_id))
+    return flags
+
+
+def voice_gap_flags(plan: Any, *, max_gap_sec: float = 1.0
+                    ) -> List[Dict[str, Any]]:
+    """A panel still on screen more than *max_gap_sec* after its voice ends:
+    silence in a narrated recap (Wimp Ch31 g0002_p02, 1.78s of voice held for
+    4.0s). WARN — base_min still holds a very short line a little longer."""
+    flags: List[Dict[str, Any]] = []
+    for item in (plan or {}).get("timeline") or []:
+        audio = float(item.get("tts_audio_duration_sec") or 0.0)
+        if audio <= 0.0:
+            continue
+        shown = float(item.get("duration_sec") or 0.0)
+        if shown - audio > max_gap_sec:
+            cuts = item.get("cuts") or []
+            flags.append(_flag(
+                "voice_gap", WARN,
+                f"the panel stays on screen {shown - audio:.1f}s after its voice "
+                f"ends ({audio:.2f}s of voice, {shown:.2f}s shown)",
+                scene=str((cuts[0] or {}).get("file") or "") if cuts else "",
+                segment_id=str(item.get("segment_id") or "")))
+    return flags
+
+
 def line_overlong_flags(beats_obj: Any,
                         printed: Optional[Dict[str, int]] = None
                         ) -> List[Dict[str, Any]]:
@@ -3288,6 +3354,7 @@ def main() -> int:
     flags.extend(long_hold_flags(plan, beats_obj,
                                  max_hold_sec=args.max_hold_sec,
                                  is_exempt=_static_ceiling_exempt))
+    flags.extend(voice_gap_flags(plan))
     flags.extend(sfx_voiced_flags(script_obj))
     flags.extend(raw_caps_voiced_flags(script_obj))
     flags.extend(shot_description_flags(beats_obj))
@@ -3304,6 +3371,7 @@ def main() -> int:
     flags.extend(line_overlong_flags(
         beats_obj, printed=_printed_for(groups_obj, vitems, understood_obj)))
     flags.extend(system_card_unvoiced_flags(beats_obj, understood_obj, vitems))
+    flags.extend(unspeakable_card_line_flags(beats_obj, understood_obj, vitems))
     flags.extend(narration_null_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     ledger_obj = _load_manifest("manifest.ledger.json")

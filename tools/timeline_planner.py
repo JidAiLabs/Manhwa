@@ -307,9 +307,13 @@ def compute_duration_sec(
         # so a long beat just shows its panels longer instead of clipping the line
         # mid-sentence (the "...had absolutely no neigong at all" cut-off bug).
         # C2: a visually heavy panel also floors the dwell at image_min (a FLOOR,
-        # never a cap — defaults to 0.0 so callers that don't pass it are unchanged).
+        # never a cap — defaults to 0.0 so callers that don't pass it are unchanged)
+        # — but never more than IMAGE_DWELL_BREATH_SEC past the voice: a narrated
+        # recap never stretches into silence (Wimp Ch31 g0002_p02 held 1.78s of
+        # voice for 4.0s).
         dur = float(audio_duration_sec) + float(audio_pad_sec)
-        return float(max(base_min, dur, float(image_min)))
+        return float(max(base_min, dur,
+                         min(float(image_min), dur + IMAGE_DWELL_BREATH_SEC)))
 
     overlay_chars = sum(text_len(o.get("text")) for o in overlays if isinstance(o, dict))
     narr_chars = text_len(tts_text) if mode == "narrated" else 0
@@ -945,6 +949,10 @@ PANEL_FLOOR_SEC = 2.0   # keep == prep_qa flash_cut threshold
 # small reaction crop, and a high-intensity reveal/peak earns a small bump.
 # Deterministic (no RNG, no model): same manifest in -> same seconds out.
 IMAGE_DWELL_CAP = 4.0   # a quiet splash never stalls the recap past this
+# ...and in a narrated plan the dwell outlasts the voice by at most this breath.
+# Without it a short line on a big panel left seconds of silence: lines followed
+# by >1s of it were 3-7% of all voiced lines (2.8-9.3s per chapter).
+IMAGE_DWELL_BREATH_SEC = 0.6
 
 _INTENSITY_DWELL_BUMP = {"calm": 0.0, "tense": 0.4, "intense": 0.8, "explosive": 1.2}
 
