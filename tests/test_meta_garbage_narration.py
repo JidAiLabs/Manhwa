@@ -96,7 +96,8 @@ def test_meta_garbage_then_clean_line_retries_to_clean(monkeypatch):
     calls = {"n": 0}
 
     def stub(*, model, system_instruction, user_payload, image_paths,
-             response_schema, max_output_tokens, temperature, backoff_max):
+             response_schema, max_output_tokens, temperature, backoff_max,
+             fit_ctx=False):
         calls["n"] += 1
         if calls["n"] == 1:
             obj = {"beat_title": "Beat", "what_happens": "The duel begins.",

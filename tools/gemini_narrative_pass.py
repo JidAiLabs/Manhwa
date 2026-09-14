@@ -717,9 +717,88 @@ def _bumped_num_ctx(err_str: str, cur_ctx: int, num_predict: int,
          or re.search(r"n_prompt_tokens[\"\s:]+(\d+)", err_str))
     if not m:
         return None
-    need = int(m.group(1)) + max(0, int(num_predict)) + 1024
+    return _fit_num_ctx(int(m.group(1)), num_predict, cur_ctx, ctx_max)
+
+
+def _fit_num_ctx(prompt_tokens: int, num_predict: int, cur_ctx: int,
+                 ctx_max: int = 16384) -> Optional[int]:
+    """A window holding the prompt + the whole generation budget + headroom,
+    rounded up to 1k and capped; None when nothing bigger than *cur_ctx* fits."""
+    need = int(prompt_tokens) + max(0, int(num_predict)) + 1024
     fit = min(int(ctx_max), ((need + 1023) // 1024) * 1024)
     return fit if fit > int(cur_ctx) else None
+
+
+# ollama reports a window fill exactly (prompt_eval_count + eval_count ==
+# num_ctx, measured 8025 + 167 = 8192 on 0.31.1); the slack absorbs template /
+# BOS accounting drift. prompt_eval_count counts the FULL prompt even when the
+# runner reuses a cached prefix (probe 2026-09-14: 8298 reported, eval time
+# halved), so the sum is a reliable fill signal.
+_CUT_SLACK_TOKENS = 16
+
+
+def _cut_kind(resp: Any, num_ctx: int, num_predict: int) -> Optional[str]:
+    """Why a generation stopped early, if it did.
+
+    'window'  — prompt + answer filled num_ctx: the PROMPT fit, so ollama raised
+                nothing, and the answer was cut. A bigger window fixes it.
+    'predict' — the answer used its whole num_predict (a loop or a runaway
+                answer). A bigger window cannot help; checked first because it
+                is the binding limit when both hold.
+    None      — a normal stop (a missing done_reason counts as one)."""
+    if str(resp.get("done_reason") or "") != "length":
+        return None
+    p = int(resp.get("prompt_eval_count") or 0)
+    e = int(resp.get("eval_count") or 0)
+    if e >= int(num_predict):
+        return "predict"
+    if p + e >= int(num_ctx) - _CUT_SLACK_TOKENS:
+        return "window"
+    return None
+
+
+def _settle_cut(kw: Dict[str, Any], resp: Any, usage: Dict[str, Any],
+                num_predict: int, ctx_max: int) -> Tuple[Any, Dict[str, Any]]:
+    """The writer's budget check on one finished call (fit_ctx callers only).
+
+    A window cut is retried ONCE at a window fitted from the REAL prompt size.
+    Before this the cut was invisible: the truncated JSON failed to parse, the
+    text-only formatter re-serialized the fragment into valid JSON with the
+    story cut mid-sentence (or `sentences` — the last schema property — gone),
+    and the beat went to pads. Every budgeted call logs what it spent, so the
+    cut rate is measured, not guessed."""
+    from ollama_compat import chat as _ollama_chat
+    cur = int(kw["options"]["num_ctx"])
+    p, e = usage["input"], usage["output"]
+    kind = _cut_kind(resp, cur, num_predict)
+    calls = 1
+    if kind == "window":
+        nb = _fit_num_ctx(p, num_predict, cur, ctx_max)
+        if nb is None:
+            print(f"[beats] answer cut at the cap num_ctx={cur} prompt={p} "
+                  f"out={e} — no larger window", file=sys.stderr)
+        else:
+            print(f"[beats] answer cut at num_ctx={cur} prompt={p} out={e} "
+                  f"-> retry at num_ctx={nb}", file=sys.stderr)
+            kw["options"]["num_ctx"] = nb
+            resp = _ollama_chat(**kw)
+            p2 = int(resp.get("prompt_eval_count") or 0)
+            e2 = int(resp.get("eval_count") or 0)
+            usage = {"input": p + p2, "output": e + e2, "cached": 0}
+            calls = 2
+            kind = _cut_kind(resp, nb, num_predict)
+            cur, p, e = nb, p2, e2
+    elif kind == "predict":
+        print(f"[beats] output budget exhausted num_predict={num_predict} "
+              f"at num_ctx={cur} prompt={p} — not a window problem",
+              file=sys.stderr)
+    load_ms = int(int(resp.get("load_duration") or 0) / 1e6)
+    print(f"[beats] call num_ctx={cur} prompt={p} out={e} "
+          f"done={resp.get('done_reason') or 'stop'} load_ms={load_ms}",
+          file=sys.stderr)
+    usage["cut"] = kind
+    usage["calls"] = calls
+    return resp, usage
 
 
 # A single over-tall panel (ORV Ep1 ~4623x800) OOMs gemma's Metal VISION encoder
@@ -781,6 +860,7 @@ def _call_model(
     response_schema: Dict[str, Any],
     max_output_tokens: int,
     temperature: float,
+    fit_ctx: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
     # local open model (Gemma 4 et al.) via the Ollama server — same
     # contract: system + INPUT_JSON + panel images -> schema'd JSON
@@ -830,9 +910,13 @@ def _call_model(
                   file=sys.stderr)
             _kw["options"]["num_ctx"] = nb
             resp = _ollama_chat(**_kw)
-        raw = (resp.get("message") or {}).get("content") or ""
         usage = {"input": int(resp.get("prompt_eval_count") or 0),
                  "output": int(resp.get("eval_count") or 0), "cached": 0}
+        if fit_ctx:
+            # the writer's calls only — every other caller stays byte-identical
+            resp, usage = _settle_cut(_kw, resp, usage, max_output_tokens,
+                                      ctx_max)
+        raw = (resp.get("message") or {}).get("content") or ""
         try:
             return json.loads(raw), raw, usage
         except Exception:
@@ -873,6 +957,7 @@ def _call_model_with_backoff(
     max_output_tokens: int,
     temperature: float,
     backoff_max: float,
+    fit_ctx: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, int]]:
     attempt = 0
     # BOUND the 429 retry: a quota cliff during a 300-chapter run must NOT loop
@@ -888,6 +973,7 @@ def _call_model_with_backoff(
                 response_schema=response_schema,
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
+                fit_ctx=fit_ctx,
             )
         except _TRANSIENT_LLM_EXC as e:
             # ollama dropped the connection mid-request (restart/crash/overload) —
@@ -930,7 +1016,8 @@ def _generate_beat_for_group(
     def _acc(u: Dict[str, int]) -> None:
         if usage is not None:
             usage.add(input_tokens=u["input"], output_tokens=u["output"],
-                      cached_tokens=u.get("cached", 0))
+                      cached_tokens=u.get("cached", 0),
+                      calls=int(u.get("calls", 1) or 1))
 
     scene_files = payload.get("scene_files", [])
     raw_text = ""
@@ -945,6 +1032,7 @@ def _generate_beat_for_group(
             max_output_tokens=max_output_tokens,
             temperature=0.2,
             backoff_max=backoff_max,
+            fit_ctx=True,
         )
         _acc(u)
         raw_text = raw
@@ -969,6 +1057,15 @@ def _generate_beat_for_group(
             obj["scene_files"] = scene_files
             return obj
 
+        if u.get("cut"):
+            # A length-cut answer must never reach the JSON formatter: it would
+            # re-serialize the fragment into VALID JSON with the story cut
+            # mid-sentence (or `sentences` gone), and that beat then fails
+            # validation -> re-ask -> pads. Regenerate the whole answer instead.
+            print(f"[beats] g{int(gid):04d}: answer cut ({u['cut']}) — "
+                  "skipping the JSON formatter, regenerating", file=sys.stderr)
+            continue
+
         repair_payload = {
             "group_id": gid,
             "scene_files": scene_files,
@@ -984,6 +1081,7 @@ def _generate_beat_for_group(
             max_output_tokens=max_output_tokens,
             temperature=0.0,
             backoff_max=backoff_max,
+            fit_ctx=True,
         )
         _acc(u2)
         raw_text = raw2

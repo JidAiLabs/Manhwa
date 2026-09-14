@@ -87,8 +87,11 @@ class UsageAccumulator:
         self.output_tokens = 0
         self.cached_tokens = 0
 
-    def add(self, *, input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> None:
-        self.calls += 1
+    def add(self, *, input_tokens: int, output_tokens: int, cached_tokens: int = 0,
+            calls: int = 1) -> None:
+        # calls > 1: one logical request the transport retried (a length-cut
+        # answer re-run at a larger window) — [cost] calls= stays the exact count
+        self.calls += calls
         self.input_tokens += int(input_tokens or 0)
         self.output_tokens += int(output_tokens or 0)
         self.cached_tokens += int(cached_tokens or 0)

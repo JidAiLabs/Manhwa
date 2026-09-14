@@ -1218,6 +1218,46 @@ def test_main_prose_repair_reask_adopts_good_answer(tmp_path, monkeypatch):
         ["p1.jpg"], ["p2.jpg", "p3.jpg"]]              # repaired answer adopted
 
 
+def test_main_a_cut_first_answer_is_retried_not_padded(tmp_path, monkeypatch):
+    """Through the REAL model call (stubbed at ollama_compat.chat, below every
+    budget decision): the production g0005 shape — prompt fits, answer cut at
+    the window — must come back as a real beat, not singleton pads."""
+    import ollama_compat
+    g, v, u = _write_manifests(tmp_path)
+    out = tmp_path / "beats.json"
+    good = json.dumps(dict(_PROSE_MODEL_BEAT, group_id=7,
+                           scene_files=list(FILES)))
+    seen = []
+
+    def fake_chat(**kw):
+        seen.append(kw["options"]["num_ctx"])
+        if len(seen) == 1:
+            return {"message": {"content": good[:len(good) // 2]},
+                    "prompt_eval_count": 8025, "eval_count": 167,
+                    "done_reason": "length"}
+        return {"message": {"content": good}, "prompt_eval_count": 8025,
+                "eval_count": 400, "done_reason": "stop"}
+
+    monkeypatch.setattr(ollama_compat, "chat", fake_chat)
+    monkeypatch.delenv("STUDIO_NARR_SEGMENTATION", raising=False)
+    monkeypatch.delenv("STUDIO_BEATS_NUM_CTX", raising=False)
+    monkeypatch.delenv("STUDIO_BEATS_NUM_CTX_MAX", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "gemini_narrative_pass.py", "--groups-manifest", str(g),
+        "--vision-manifest", str(v), "--out", str(out),
+        "--understood", str(u), "--backend", "ollama", "--min-sleep", "0"])
+    assert gnp.main() == 0
+    res = json.loads(out.read_text())
+    beat = res["beats"][0]
+    assert seen == [8192, 12288]                       # one fitted retry
+    assert "segments_fallback" not in beat             # a real beat shipped
+    assert [s["span"] for s in beat["segments"]] == [
+        ["p1.jpg"], ["p2.jpg", "p3.jpg"]]
+    assert res["stats"]["segments_fallbacks"] == 0
+    assert res["stats"]["parse_errors"] == 0
+    assert res["stats"]["usage"]["calls"] == 2
+
+
 def test_main_prose_resolves_cast_tokens_in_segment_lines(tmp_path,
                                                           monkeypatch):
     cast = tmp_path / "cast.json"
