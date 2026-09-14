@@ -21,6 +21,7 @@ All stubs are pure-Python (sleep / raise) — NO real TTS model is loaded.
 from __future__ import annotations
 
 import importlib.util
+import json
 import threading
 import time
 import wave
@@ -301,3 +302,125 @@ def test_short_but_valid_take_is_not_failed(tmp_path):
         group_mode=False)
 
     assert index["clips"][0].get("tts_failed", False) is False
+
+
+# ---- one-word lines + ellipsis pauses (Wimp Ch5 "Tada!", ORV Ep120 "So...",
+# Wimp Ch1 "...wondering if this is...") --------------------------------------
+# Qwen-MLX samples (no seed), and on a one-word line it sometimes stops after a
+# blip: 2 of the corpus' 6 one-word clips (of 17,799) came out at 0.06s/0.08s.
+# The dead-take check flagged "Tada!" but never re-rolled it (only raises and
+# timeouts were retried) and skipped "So..." entirely (estimate under 0.30s),
+# so one chapter blocked on audio_failed and one shipped a blip.
+
+def _take_of(seconds):
+    return lambda text, out_path, exaggeration: lt.write_silence_wav(out_path, seconds)
+
+
+def test_a_near_empty_take_is_re_rolled_and_a_good_retake_kept(tmp_path):
+    calls = []
+
+    def synth(text, out_path, exaggeration):
+        calls.append(text)
+        lt.write_silence_wav(out_path, 0.06 if len(calls) == 1 else 0.6)
+
+    index = lt.synthesize_manifest(
+        _script_with(["[tense] Tada!"]), str(tmp_path), backend="kokoro",
+        synth_fn=synth, duration_fn=lt.wav_duration_sec, clip_timeout_sec=0.5,
+        clip_retries=2, group_mode=False)
+
+    clip = index["clips"][0]
+    assert clip.get("tts_failed", False) is False
+    assert len(calls) == 2
+    assert clip["duration_sec"] == pytest.approx(0.6, abs=0.02)
+
+
+def test_a_take_that_stays_near_empty_fails_after_every_retry(tmp_path):
+    calls = []
+
+    def synth(text, out_path, exaggeration):
+        calls.append(text)
+        lt.write_silence_wav(out_path, 0.06)
+
+    index = lt.synthesize_manifest(
+        _script_with(["[tense] Tada!"]), str(tmp_path), backend="kokoro",
+        synth_fn=synth, duration_fn=lt.wav_duration_sec, clip_timeout_sec=0.5,
+        clip_retries=2, group_mode=False)
+
+    assert index["clips"][0]["tts_failed"] is True
+    assert len(calls) == 3                     # 1 take + 2 re-rolls, then give up
+
+
+def test_a_blip_on_the_shortest_line_is_caught(tmp_path):
+    # "So." is estimated at ~0.21s, under the old 0.30s gate that skipped it
+    index = lt.synthesize_manifest(
+        _script_with(["[whisper] So..."]), str(tmp_path), backend="kokoro",
+        synth_fn=_take_of(0.08), duration_fn=lt.wav_duration_sec,
+        clip_timeout_sec=0.5, clip_retries=0, group_mode=False)
+    assert index["clips"][0]["tts_failed"] is True
+
+
+def test_a_real_one_word_take_is_not_failed(tmp_path):
+    # the shortest real clips measured in the corpus are ~0.46-0.65s
+    index = lt.synthesize_manifest(
+        _script_with(["[calm] Hi."]), str(tmp_path), backend="kokoro",
+        synth_fn=_take_of(0.45), duration_fn=lt.wav_duration_sec,
+        clip_timeout_sec=0.5, clip_retries=0, group_mode=False)
+    assert index["clips"][0].get("tts_failed", False) is False
+
+
+def test_a_line_ending_in_an_ellipsis_keeps_its_pause(tmp_path):
+    seen = []
+
+    def synth(text, out_path, exaggeration):
+        seen.append(text)
+        lt.write_silence_wav(out_path, 1.0)
+
+    index = lt.synthesize_manifest(
+        _script_with(["[tense] Leaving him wondering if this is...",
+                      "[tense] Leaving him wondering if this is.",
+                      "[calm] So... he waits for the door to open.",
+                      "[calm] And then…"]),
+        str(tmp_path), backend="kokoro", synth_fn=synth,
+        duration_fn=lt.wav_duration_sec, clip_timeout_sec=0.5, clip_retries=0,
+        group_mode=False)
+
+    dur = [c["duration_sec"] for c in index["clips"]]
+    pause = lt.PAUSE_AFTER_ELLIPSIS_SEC
+    assert pause >= 0.4
+    assert dur[0] == pytest.approx(1.0 + pause, abs=0.02)   # trails off: waits
+    assert dur[1] == pytest.approx(1.0, abs=0.02)           # a full stop: no extra
+    assert dur[2] == pytest.approx(1.0, abs=0.02)           # mid-line ellipsis: no extra
+    assert dur[3] == pytest.approx(1.0 + pause, abs=0.02)   # unicode ellipsis
+    # the backend still never sees "..." (it triggered filler vocalization)
+    assert not any("..." in t or "…" in t for t in seen)
+
+
+def test_a_clip_voiced_before_the_pause_existed_gets_it_once(tmp_path, monkeypatch):
+    # Wimp Ch1's "...wondering if this is..." is already voiced and cached: a
+    # re-run must add the pause without re-synthesizing, and never add it twice
+    script = _script_with(["[tense] Leaving him wondering if this is..."])
+    calls = []
+
+    def synth(text, out_path, exaggeration):
+        calls.append(text)
+        lt.write_silence_wav(out_path, 1.0)
+
+    def run():
+        idx = lt.synthesize_manifest(
+            script, str(tmp_path), backend="kokoro", synth_fn=synth,
+            duration_fn=lt.wav_duration_sec, clip_timeout_sec=0.5,
+            clip_retries=0, group_mode=False)
+        (tmp_path / "tts_index.json").write_text(json.dumps(idx))   # as main() does
+        return idx["clips"][0]
+
+    pause = lt.PAUSE_AFTER_ELLIPSIS_SEC
+    monkeypatch.setattr(lt, "PAUSE_AFTER_ELLIPSIS_SEC", 0.0)   # the old code
+    assert run()["duration_sec"] == pytest.approx(1.0, abs=0.02)
+    monkeypatch.setattr(lt, "PAUSE_AFTER_ELLIPSIS_SEC", pause)
+
+    topped = run()
+    assert topped["cached"] is True and len(calls) == 1         # no re-synthesis
+    assert topped["duration_sec"] == pytest.approx(1.0 + pause, abs=0.02)
+    again = run()
+    assert again["duration_sec"] == pytest.approx(1.0 + pause, abs=0.02)
+    assert len(calls) == 1

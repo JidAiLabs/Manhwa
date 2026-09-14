@@ -506,7 +506,30 @@ _clip_timeout_formula = clip_timeout_sec
 # success. A real take is never a small fraction of its text's spoken length.
 # Deliberately loose: atempo (speed) shortens the take, and short lines vary.
 _DUR_FLOOR_RATIO = 0.35
-_DUR_CHECK_MIN_EST_SEC = 0.30
+# ...and an absolute floor for the shortest lines, where a ratio of a ~0.21s
+# estimate ("So.") means nothing: the shortest real takes in the corpus are
+# ~0.46s, the dead ones 0.06-0.08s. It replaced a 0.30s estimate gate that
+# skipped those lines entirely, so ORV Ep120 shipped a 0.08s "So...".
+_DUR_ABS_MIN_SEC = 0.25
+
+# The synth never sees "..." (normalize_tts_text turns it into a full stop: it
+# triggered filler vocalization), so a line that trails off ("wondering if this
+# is...") was voiced as a flat sentence with the normal 0.2s tail — it sounded
+# cut off. Its pause is put back as silence after the take.
+PAUSE_AFTER_ELLIPSIS_SEC = 0.5
+_ELLIPSIS_END_RE = re.compile(r"(\.{2,}|…)[\"'’”)\]]*\s*$")
+
+
+def _dead_take(dur: float, est: float) -> bool:
+    """A take the backend called successful that cannot hold its words.
+    `dur > 0` is REQUIRED: a 0.0 reading means the duration could not be read
+    (missing soundfile, a stub file), and treating that as evidence would fail
+    every clip in the run and block the chapter."""
+    return 0.0 < dur < max(_DUR_FLOOR_RATIO * est, _DUR_ABS_MIN_SEC)
+
+
+def ends_in_ellipsis(source_text: str) -> bool:
+    return bool(_ELLIPSIS_END_RE.search(strip_bracket_tags(source_text)))
 
 
 def write_silence_wav(path: str, duration_sec: float, sr: int = 24000) -> None:
@@ -519,6 +542,22 @@ def write_silence_wav(path: str, duration_sec: float, sr: int = 24000) -> None:
         w.setsampwidth(2)
         w.setframerate(int(sr))
         w.writeframes(struct.pack("<%dh" % n, *([0] * n)))
+
+
+def append_silence_wav(path: str, seconds: float) -> bool:
+    """Append *seconds* of silence to a PCM wav in place; True when written.
+    Fail-soft: a clip that cannot be read keeps its audio, without the pause."""
+    try:
+        with wave.open(path, "rb") as r:
+            params, frames = r.getparams(), r.readframes(r.getnframes())
+        n = int(round(float(seconds) * params.framerate))
+        with wave.open(path, "wb") as w:
+            w.setparams(params)
+            w.writeframes(frames + b"\x00" * (n * params.nchannels * params.sampwidth))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] pause skipped for {os.path.basename(path)}: {exc}")
+        return False
 
 
 def run_guarded_synth(
@@ -884,6 +923,7 @@ def synthesize_manifest(
     prior_exag: Dict[str, float] = {}
     prior_speed: Dict[str, float] = {}
     prior_failed: set = set()
+    prior_pause: Dict[str, float] = {}
     prior_index_path = os.path.join(out_dir, "tts_index.json")
     # Run-level provenance guard: per-clip caching (text_sha/exaggeration/
     # speed) says nothing about WHICH voice produced the audio. Switching
@@ -926,11 +966,13 @@ def synthesize_manifest(
                         if c.get("exaggeration") is not None:
                             prior_exag[str(sid)] = float(c["exaggeration"])
                         prior_speed[str(sid)] = float(c.get("speed") or 1.0)
+                        prior_pause[str(sid)] = float(c.get("pause_sec") or 0.0)
         except Exception:
             prior_sha = {}
             prior_exag = {}
             prior_speed = {}
             prior_failed = set()
+            prior_pause = {}
 
     index: Dict[str, Any] = {
         "source_script": os.path.abspath(script_obj.get("_path", "")) if script_obj.get("_path") else "",
@@ -970,6 +1012,7 @@ def synthesize_manifest(
                   and abs(prior_speed.get(seg_id, 1.0) - float(speed)) < 1e-3)
         cond: Dict[str, Any] = {}
         tts_failed = False
+        pause_sec = 0.0
         est = expected_audio_sec(sent_text)
         if is_unvoiceable_line(sent_text):
             # Refuse the backend entirely: a stringified null has no right
@@ -981,34 +1024,47 @@ def synthesize_manifest(
         elif not cached:
             timeout = float(clip_timeout_sec) if clip_timeout_sec is not None \
                 else _clip_timeout_formula(est)
-            guard = run_guarded_synth(
-                synth_fn, sent_text, audio_path, exaggeration,
-                timeout_sec=timeout, retries=int(clip_retries),
-                expected_sec=est, segment_id=seg_id,
-                in_thread=(str(backend).lower() != "qwen-mlx"))
-            tts_failed = not guard["ok"]
-            # condition only a real take; a silence placeholder needs no lift
-            if not tts_failed:
+            # A take the backend called successful but that is a small fraction
+            # of its text's spoken length is dead audio `ok` cannot see (Ep38's
+            # "None." at 0.0565s, Ch5's "Tada!" at 0.06s). The production
+            # backend samples, so a dead take is RE-ROLLED like a raise or a
+            # timeout. Judged AFTER atempo, so the ratio absorbs the speed-up.
+            # Cached clips were vetted by the run that produced them.
+            # ponytail: a backend alternating raises and dead takes can cost
+            # (retries+1)^2 synth calls; share one budget if that ever shows up.
+            takes = int(clip_retries) + 1
+            for take in range(1, takes + 1):
+                guard = run_guarded_synth(
+                    synth_fn, sent_text, audio_path, exaggeration,
+                    timeout_sec=timeout, retries=int(clip_retries),
+                    expected_sec=est, segment_id=seg_id,
+                    in_thread=(str(backend).lower() != "qwen-mlx"))
+                tts_failed = not guard["ok"]
+                if tts_failed:
+                    break   # the guard already wrote the silence placeholder
                 # uniform lead/tail pads + soft-attack lift (first word audible)
                 cond = condition_wav_file(audio_path)
                 # snappier delivery (pitch-preserved tempo), transcript unchanged
                 apply_atempo(audio_path, speed)
+                take_dur = duration_fn(audio_path)
+                if not _dead_take(take_dur, est):
+                    break
+                if take < takes:
+                    print(f"[retry] {seg_id}: voiced {take_dur:.2f}s for ~{est:.2f}s of "
+                          f"text — a dead take, re-rolling ({take}/{takes - 1})")
+                else:
+                    tts_failed = True
+                    print(f"[fail] {seg_id}: voiced {take_dur:.2f}s for ~{est:.2f}s of "
+                          f"text after {takes} take(s) — treating as unvoiced")
+        # the trail-off pause: a new take gets it; a clip cached from before the
+        # pause existed is topped up once (stamped, so never twice)
+        if cached:
+            pause_sec = prior_pause.get(seg_id, 0.0)
+        if (not tts_failed and ends_in_ellipsis(source_text)
+                and pause_sec < PAUSE_AFTER_ELLIPSIS_SEC
+                and append_silence_wav(audio_path, PAUSE_AFTER_ELLIPSIS_SEC - pause_sec)):
+            pause_sec = PAUSE_AFTER_ELLIPSIS_SEC
         dur = duration_fn(audio_path)
-        # A take the backend called successful but that is a small fraction of
-        # its text's spoken length is dead audio `ok` cannot see. Cached clips
-        # were vetted by the run that produced them; placeholders are already
-        # flagged. Runs AFTER atempo, so the ratio absorbs the speed-up.
-        # `dur > 0` is REQUIRED, not incidental: a 0.0 reading means "duration
-        # could not be read" (missing soundfile, a stub/short file) just as much
-        # as "empty", and treating that as evidence would fail every clip in the
-        # run and block the chapter — far worse than the dead air it guards.
-        # Ep38's bad take measured 0.0565s, comfortably above zero.
-        if (not tts_failed and not cached
-                and est >= _DUR_CHECK_MIN_EST_SEC
-                and 0.0 < dur < _DUR_FLOOR_RATIO * est):
-            tts_failed = True
-            print(f"[fail] {seg_id}: voiced {dur:.2f}s for ~{est:.2f}s of text "
-                  f"(under {_DUR_FLOOR_RATIO:.0%}) — treating as unvoiced")
 
         clip_row: Dict[str, Any] = {
             "segment_id": seg_id,
@@ -1027,6 +1083,8 @@ def synthesize_manifest(
             "cached": cached,
             **cond,
         }
+        if pause_sec:
+            clip_row["pause_sec"] = pause_sec
         if tts_failed:
             clip_row["tts_failed"] = True   # unvoiced: silence placeholder, kept aligned
         index["clips"].append(clip_row)
