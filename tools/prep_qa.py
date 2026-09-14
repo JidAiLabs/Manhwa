@@ -1525,6 +1525,66 @@ _BUDGET_WPM = 135.0                  # == gemini_narrative_pass.WPM
 _BUDGET_MAX_SEC_PER_PANEL = 15.0     # == _SEG_MAX_SEC_PER_PANEL
 
 
+def _printed_for(groups_obj: Any,
+                 vitems: Optional[Dict[str, Dict[str, Any]]],
+                 understood_obj: Any) -> Dict[str, int]:
+    """Printed words per shown panel (recap_style.printed_words_for_groups)
+    from prep_qa's own inputs. vitems is a DICT keyed by scene file: the first
+    wiring iterated it as a list, got the keys, and line_overlong silently fell
+    back to the bare 33-word cap."""
+    ocr = {str(k): str((v or {}).get("ocr_clean") or "")
+           for k, v in (vitems or {}).items() if isinstance(v, dict)}
+    kinds = {str(p.get("scene_file") or ""): str(p.get("panel_kind") or "")
+             for p in ((understood_obj or {}).get("panels") or [])
+             if isinstance(p, dict)}
+    return printed_words_for_groups(groups_obj, ocr, kinds)
+
+
+def system_card_unvoiced_flags(beats_obj: Any, understood_obj: Any,
+                               vitems: Optional[Dict[str, Dict[str, Any]]] = None
+                               ) -> List[Dict[str, Any]]:
+    """A solo system card whose line voices under half of its printed words
+    (WARN, healable, never blocking). Cards are READ ALOUD, yet 92 of 201
+    measured solo cards shipped as short paraphrases, and nothing checked:
+    system_coverage_flags only checks that the panel is SHOWN.
+
+    Uses the writer's own card rules (text source, clipped-OCR exception, the
+    share and its threshold) so this gate can never demand what the writer —
+    and so the heal — would refuse to produce."""
+    import gemini_narrative_pass as _gnp   # the writer owns the card rules
+    flags: List[Dict[str, Any]] = []
+    if not isinstance(beats_obj, dict):
+        return flags
+    und = {str(p.get("scene_file") or ""): p
+           for p in ((understood_obj or {}).get("panels") or [])
+           if isinstance(p, dict)}
+    for b in beats_obj.get("beats") or []:
+        seg_id = f"g{int(b.get('group_id') or 0):04d}"
+        for s in beat_segments(b):
+            if len(s["span"]) != 1:
+                continue
+            f = str(s["span"][0])
+            u = und.get(f) or {}
+            if str(u.get("panel_kind") or "").lower() != "system":
+                continue
+            dialogue = _gnp.clean_card_text(u.get("dialogue") or "")
+            card = dialogue or _gnp.clean_card_text(
+                ((vitems or {}).get(f) or {}).get("ocr_clean") or "")
+            if not card or (not dialogue and _gnp.ocr_looks_clipped(card)):
+                continue
+            share = _gnp.card_voiced_share(str(s["line"] or ""), card)
+            if share is None or share >= _gnp._CARD_VOICED_MIN_SHARE:
+                continue
+            n_card = len(_gnp._card_words(card))
+            flags.append(_flag(
+                "system_card_unvoiced", WARN,
+                f"the line voices {share:.0%} of the system card's printed "
+                f"words ({round(share * n_card)}/{n_card}) — read the card "
+                f"aloud: {card[:80]!r}",
+                scene=f, segment_id=seg_id))
+    return flags
+
+
 def line_overlong_flags(beats_obj: Any,
                         printed: Optional[Dict[str, int]] = None
                         ) -> List[Dict[str, Any]]:
@@ -3241,13 +3301,9 @@ def main() -> int:
     flags.extend(system_coverage_flags(beats_obj, plan, vitems))
     flags.extend(span_cover_flags(plan, beats_obj, vitems))
     flags.extend(impact_mismatch_flags(beats_obj, understood_obj))
-    flags.extend(line_overlong_flags(beats_obj, printed=printed_words_for_groups(
-        groups_obj,
-        {str(v.get("scene_file") or ""): str(v.get("ocr_clean") or "")
-         for v in (vitems or []) if isinstance(v, dict)},
-        {str(p.get("scene_file") or ""): str(p.get("panel_kind") or "")
-         for p in ((understood_obj or {}).get("panels") or [])
-         if isinstance(p, dict)})))
+    flags.extend(line_overlong_flags(
+        beats_obj, printed=_printed_for(groups_obj, vitems, understood_obj)))
+    flags.extend(system_card_unvoiced_flags(beats_obj, understood_obj, vitems))
     flags.extend(narration_null_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     ledger_obj = _load_manifest("manifest.ledger.json")

@@ -2328,6 +2328,95 @@ def test_line_overlong_is_quiet_on_a_line_that_voices_its_printed_text():
         "line_overlong"]
 
 
+def test_printed_words_are_read_from_vitems_keyed_by_scene_file():
+    # vitems is a DICT keyed by scene file everywhere in prep_qa. The first
+    # wiring (025ab60) iterated it as a list — that yields the KEYS, the OCR map
+    # came out empty, and production line_overlong silently fell back to the
+    # 33-word cap, re-flagging the card/caption lines the writer now accepts
+    groups = {"shots": [{"shot_id": 11, "scene_files": ["p30.jpg", "p31.jpg"]}]}
+    vitems = {"p30.jpg": {"scene_file": "p30.jpg",
+                          "ocr_clean": " ".join(["cap"] * 30)},
+              "p31.jpg": {"scene_file": "p31.jpg", "ocr_clean": ""}}
+    understood = {"panels": [{"scene_file": "p30.jpg", "panel_kind": "caption"},
+                             {"scene_file": "p31.jpg", "panel_kind": "story"}]}
+    assert pq._printed_for(groups, vitems, understood) == {"p31.jpg": 30}
+
+
+# ---- system cards are READ ALOUD (2026-09-14) --------------------------------
+# 92 of 201 solo system-card segments voiced under half the card's printed
+# words; nothing checked. system_coverage_flags only checks the panel is SHOWN.
+
+_CARD = ("[THE CONSTELLATION 'DEMON-LIKE JUDGE OF FIRE' IS WATCHING YOU WITH "
+         "INTEREST. THE SUB SCENARIO HAS BEEN COMPLETED AND YOUR REWARD WILL "
+         "BE PAID SHORTLY.]")
+_PARAPHRASE = "A watchful constellation takes an interest as the scenario ends."
+
+
+def _card_beats(line, span=("p79.jpg",)):
+    return {"beats": [{"group_id": 17, "segments": [
+        {"span": list(span), "line": line}]}]}
+
+
+def _card_understood(kind="system", dialogue=""):
+    return {"panels": [{"scene_file": "p79.jpg", "panel_kind": kind,
+                        "dialogue": dialogue}]}
+
+
+def _card_vitems(ocr=_CARD):
+    return {"p79.jpg": {"scene_file": "p79.jpg", "ocr_clean": ocr}}
+
+
+def test_system_card_unvoiced_flags_a_card_voiced_under_half(monkeypatch,
+                                                            tmp_path):
+    # the clipped-OCR exception reads the host's word list, which lacks "has",
+    # "paid" and "completed": isolate it, the subject here is the gate
+    import gemini_narrative_pass as g
+    monkeypatch.setattr(g, "_DICT_PATH", str(tmp_path / "missing"))
+    fl = pq.system_card_unvoiced_flags(_card_beats(_PARAPHRASE),
+                                       _card_understood(), _card_vitems())
+    assert [f["code"] for f in fl] == ["system_card_unvoiced"]
+    assert fl[0]["severity"] == "WARN"
+    assert fl[0]["segment_id"] == "g0017" and fl[0]["scene"] == "p79.jpg"
+    assert "%" in fl[0]["detail"]
+
+
+def test_system_card_unvoiced_is_quiet_when_the_card_is_read():
+    read = ("The Demon-like Judge of Fire is watching you with interest; the "
+            "sub scenario has been completed and your reward will be paid "
+            "shortly.")
+    assert pq.system_card_unvoiced_flags(
+        _card_beats(read), _card_understood(), _card_vitems()) == []
+
+
+def test_system_card_unvoiced_ignores_story_panels_short_cards_and_wide_spans():
+    assert pq.system_card_unvoiced_flags(
+        _card_beats(_PARAPHRASE), _card_understood(kind="story"),
+        _card_vitems()) == []
+    assert pq.system_card_unvoiced_flags(
+        _card_beats(_PARAPHRASE), _card_understood(),
+        _card_vitems("[LEVEL UP]")) == []
+    assert pq.system_card_unvoiced_flags(
+        _card_beats(_PARAPHRASE, span=("p79.jpg", "p80.jpg")),
+        _card_understood(), _card_vitems()) == []
+
+
+def test_system_card_unvoiced_reads_the_models_transcription_first():
+    # the same precedence as the writer: understood dialogue, then vision OCR
+    fl = pq.system_card_unvoiced_flags(_card_beats(_PARAPHRASE),
+                                       _card_understood(dialogue=_CARD), {})
+    assert [f["code"] for f in fl] == ["system_card_unvoiced"]
+
+
+def test_system_card_unvoiced_skips_a_clipped_card_the_writer_will_not_read(
+        monkeypatch):
+    # the writer keeps its own line over clipped OCR by design; flagging it
+    # would ask the heal for something it can never deliver
+    import gemini_narrative_pass as g
+    monkeypatch.setattr(g, "ocr_looks_clipped", lambda text, *a, **k: True)
+    assert pq.system_card_unvoiced_flags(
+        _card_beats(_PARAPHRASE), _card_understood(), _card_vitems()) == []
+
+
 # ---- 2026-08-18: caption coverage tolerates morphology + OCR mis-scans ------
 # ORV Ep1 g0001: the caption IS voiced ("three ways to survive the apocalypse",
 # "swipes through the pages", "the text fades") but literal token matching

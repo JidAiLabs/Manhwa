@@ -1539,6 +1539,24 @@ def _card_words(text: str):
     return {w for w in re.findall(r"[a-z0-9]+", str(text or "").lower()) if len(w) > 2}
 
 
+# A system card is READ ALOUD. Measured over the corpus (2026-09-14): of 201
+# solo card segments with >= 4 card words, 92 voiced under half the card's
+# printed words and 50 under a quarter — a 12-word paraphrase standing in for a
+# 32-word card — because ONE shared word counted as voicing it. prep_qa's
+# system_card_unvoiced reads these same two constants.
+_CARD_VOICED_MIN_SHARE = 0.5
+_CARD_SHARE_MIN_WORDS = 4
+
+
+def card_voiced_share(line: str, card: str) -> Optional[float]:
+    """Share of the card's words the line voices; None when the card has too
+    few words for a share to mean anything (then one shared word decides)."""
+    cw = _card_words(card)
+    if len(cw) < _CARD_SHARE_MIN_WORDS:
+        return None
+    return len(cw & _card_words(line)) / len(cw)
+
+
 # macOS ships this on every machine the pipeline runs on (Apple Vision OCR
 # is the only OCR backend, so the pipeline is macOS-only already).
 _DICT_PATH = "/usr/share/dict/words"
@@ -1604,8 +1622,15 @@ def system_card_line(f, understand_by_file, line, proper_case=None):
     # NONE" and the writer emitted just "None." -- which shares the word "none"
     # with the card, so the overlap test below accepted it as a voicing and
     # returned it unchanged through all four heal cycles.
+    # The writer's line stands in for the card only when it actually VOICES the
+    # card: at least half of the card's words (one shared word used to be
+    # enough, and 46% of solo cards shipped as short paraphrases). A card too
+    # short to measure keeps the one-shared-word test.
+    share = card_voiced_share(ln, card)
+    voices = (share >= _CARD_VOICED_MIN_SHARE if share is not None
+              else bool(_card_words(ln) & _card_words(card)))
     if ln and not is_unvoiceable_line(ln) and not _CARD_DESC_RE.search(ln) \
-            and (_card_words(ln) & _card_words(card)):
+            and voices:
         return ln
     if not dialogue and ocr_looks_clipped(card):
         # the model's transcription is absent and the OCR is of a clipped

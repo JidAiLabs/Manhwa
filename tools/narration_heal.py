@@ -113,6 +113,11 @@ def _note_for(code: str, detail: str) -> str:
                 "almost no readers'). NEVER use interface words — 'view count', "
                 "'comments', 'tap', 'swipe', 'next episode', 'displays statistics', "
                 "'the screen/chapter shows'.")
+    if code == "system_card_unvoiced":
+        return ("This panel is an in-world SYSTEM CARD and the line barely "
+                "voices it. READ THE CARD aloud: say its printed words "
+                "(verbatim, or a tight paraphrase that keeps them), never a "
+                "summary of what it says.")
     if code == "fragment_dangle":
         return "The narration is a dangling fragment — make it a complete sentence."
     if code == "narration_null":
@@ -252,6 +257,10 @@ def corrections_from_qa(report: Dict[str, Any], *,
         elif code == "phrase_echo":
             pass   # WARN by design (heal-target): a near-verbatim repeated
             #        phrase is a wording fix, never worth blocking a chapter
+        elif code == "system_card_unvoiced":
+            pass   # WARN heal-target: a re-narration reads the card — the
+            #        writer now speaks the printed card when a line voices
+            #        under half of it — and a card is never worth blocking on
         elif code == "grounding_weak" and include_grounding_warn:
             pass   # a rule/quality violation worth healing at ANY severity
         elif code == "cold_open" and include_grounding_warn:
