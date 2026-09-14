@@ -278,6 +278,41 @@ def test_bad_bad_falls_back_to_singleton_spans(capsys):
     assert "fallback beat g0007" in capsys.readouterr().out   # logged
 
 
+# ---- an honest fallback label (2026-09-14) ----------------------------------
+# Per-segment errors are emitted before the cover errors, so a beat blocked by
+# an ORDER error that also carried one long segment was logged "too fat" — and
+# the corpus count of that class (495) was inflated by beats the length fix can
+# never help. The label names the blocker; the prefix stays byte-stable.
+
+def test_fallback_label_names_the_blocking_error_not_the_length_one(capsys):
+    bad = {"group_id": 9, "scene_files": FILES,
+           "segments": [{"span": ["p2.jpg"], "line": _words(40)},
+                        {"span": ["p1.jpg"], "line": _words(8)},
+                        {"span": ["p3.jpg"], "line": _words(8)}]}
+    beat = dict(bad)
+    gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 9,
+                               reask_fn=lambda errs: dict(bad))
+    out = capsys.readouterr().out
+    assert ("fallback beat g0009 -> singleton spans (spans are out of "
+            "reading order") in out
+    assert "also: 1 too-fat segment(s)" in out
+    assert beat["_segments_fallback_reason"].startswith(
+        "spans are out of reading order")
+
+
+def test_a_pure_length_fallback_is_still_labelled_too_fat(capsys):
+    one = " ".join(["word"] * 60) + "."            # one unsplittable sentence
+    fat = {"group_id": 3, "scene_files": FILES,
+           "segments": [{"span": ["p1.jpg"], "line": one},
+                        {"span": ["p2.jpg"], "line": _words(8)},
+                        {"span": ["p3.jpg"], "line": _words(8)}]}
+    beat = dict(fat)
+    gnp.finalize_adaptive_beat(beat, FILES, KINDS, U_BY_FILE, 3,
+                               reask_fn=lambda errs: dict(fat))
+    assert beat["_segments_fallback_reason"].startswith("segment 0: too fat")
+    assert "also:" not in capsys.readouterr().out
+
+
 def test_parse_error_beat_skips_reask_and_falls_back():
     beat = {"group_id": 7, "scene_files": FILES,
             "error": "parse_failed_after_retries"}            # no segments at all

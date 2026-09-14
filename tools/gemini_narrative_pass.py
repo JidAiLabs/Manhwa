@@ -2135,6 +2135,20 @@ def only_too_fat(errors: List[str]) -> bool:
     return bool(errs) and all(_TOO_FAT_RE.match(e) for e in errs)
 
 
+def _fallback_reason(errors: List[str]) -> str:
+    """The error that actually blocked a beat. validate_segments emits the
+    per-segment errors BEFORE the cover errors, so errors[0] named a long line
+    even when a skip/order error made the beat unfixable by length alone — and
+    the corpus 'too fat' count (495) was inflated by exactly those beats. A pure
+    length failure keeps its own text."""
+    errs = [str(e) for e in (errors or [])]
+    fat = [e for e in errs if _TOO_FAT_RE.match(e)]
+    other = [e for e in errs if not _TOO_FAT_RE.match(e)]
+    if fat and other:
+        return f"{other[0]}; also: {len(fat)} too-fat segment(s)"
+    return errs[0] if errs else ""
+
+
 def page_text_for(files, vision_by_file, u_by_file) -> Dict[str, str]:
     """What the PAGE prints for each panel — OCR first, backed by the model's
     own reading when OCR is thin. The rank a last-resort trim sacrifices by."""
@@ -2246,7 +2260,7 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
             beat.pop("_segments_overlong", None)
     if errors:
         print(f"[segments] fallback beat g{gid:04d} -> singleton spans "
-              f"({errors[0]})")
+              f"({_fallback_reason(errors)})")
         # Reuse whatever lines the model DID give as positional material;
         # align_panel_narration keys/fills/pads to exactly one line per panel.
         model_panels = [{"scene_file": (s.get("span") or [""])[0],
@@ -2265,7 +2279,7 @@ def finalize_adaptive_beat(beat, surviving, kinds, u_by_file, gid,
         # span comparison alone can't tell fallback pads from a real rewrite
         # (this poisoned 6 healed ch1 beats with "The moment holds.").
         beat["_segments_fallback"] = True
-        beat["_segments_fallback_reason"] = str(errors[0])
+        beat["_segments_fallback_reason"] = _fallback_reason(errors)
     if not errors and allow_span_align:
         # ONE-PANEL OFFSET post-pass (2026-07-06 review, dominant class): fix
         # a line leading/lagging its art by one panel by shifting span
