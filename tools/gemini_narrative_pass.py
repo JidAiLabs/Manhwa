@@ -1572,6 +1572,47 @@ def _dict_words(path: str):
     return ordered, frozenset(ordered)
 
 
+# The system word list holds base forms. Irregular forms, n't-contraction stems
+# (the tokenizer splits "doesn't" at the apostrophe) and irregular plurals are
+# not derivable from it, so they are named here. Closed on purpose.
+_COMMON_IRREGULAR = frozenset({
+    "are", "has", "had", "was", "were", "been", "does", "did", "done", "held",
+    "paid", "made", "got", "gave", "took", "told", "said", "went", "came",
+    "saw", "won", "lost", "led", "left", "felt", "kept", "sent", "spent",
+    "built", "bought", "brought", "caught", "fought", "taught", "thought",
+    "found", "heard", "stood", "began", "became", "ran", "hit", "met", "sat",
+    "fell", "doesn", "wasn", "isn", "didn", "hasn", "haven", "weren", "aren",
+    "couldn", "wouldn", "shouldn", "women", "men", "children", "people"})
+
+
+def _is_card_word(token: str, words: Optional[frozenset] = None) -> bool:
+    """True when *token* is ordinary English rather than a word cut at a crop
+    edge: in the word list, a closed irregular form, or a regular inflection of
+    a listed word (-s/-es/-ed/-d/-ing/-ly, with a restored e, a doubled
+    consonant, or ies->y). Measured over the corpus: without this, "has",
+    "coins", "monsters", "completed", "paid" made 396 of 1,329 clean-OCR system
+    cards look clipped; with it, 84 — and the Ch130 crop is still caught."""
+    t = str(token or "").lower()
+    if words is None:
+        words = _dict_words(_DICT_PATH)[1]
+    if t in words or t in _COMMON_IRREGULAR:
+        return True
+    for suf in ("ing", "ed", "es", "s", "d", "ly"):
+        if not t.endswith(suf):
+            continue
+        stem = t[:-len(suf)]
+        cands = [stem]
+        if suf in ("ing", "ed"):
+            cands.append(stem + "e")
+            if len(stem) >= 2 and stem[-1] == stem[-2]:
+                cands.append(stem[:-1])
+        if suf == "es" and stem.endswith("i"):
+            cands.append(stem[:-1] + "y")
+        if any(len(c) >= 3 and c in words for c in cands):
+            return True
+    return False
+
+
 def ocr_looks_clipped(text: str, min_clipped: int = 2) -> bool:
     """True when OCR reads like a crop cut mid-word: >= min_clipped alpha
     tokens that are NOT words but ARE prefixes of words ("scenar", "extin",
@@ -1584,7 +1625,7 @@ def ocr_looks_clipped(text: str, min_clipped: int = 2) -> bool:
     clipped = 0
     for t in re.findall(r"[A-Za-z]{3,}", str(text or "")):
         t = t.lower()
-        if t in words:
+        if _is_card_word(t, words):
             continue
         i = bisect.bisect_left(ordered, t)
         if i < len(ordered) and ordered[i].startswith(t):
