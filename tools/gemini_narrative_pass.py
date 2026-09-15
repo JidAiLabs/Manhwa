@@ -1663,6 +1663,28 @@ def card_is_decoration(dialogue: str, card: str) -> bool:
                    for t in re.findall(r"[A-Za-z]+", card))
 
 
+def card_line_unspeakable(f, understand_by_file, line) -> bool:
+    """A solo system card's line the voice cannot say: the card's marks are not
+    language (card_is_decoration) and the line holds no word, or only the
+    generic stand-in. One rule for the writer's heal guard and prep_qa's
+    unspeakable_line."""
+    u = (understand_by_file or {}).get(f) or {}
+    if str(u.get("panel_kind") or "").lower() != "system":
+        return False
+    ln = str(line or "").strip()
+    return (card_is_decoration(clean_card_text(u.get("dialogue") or ""),
+                               clean_card_text(u.get("ocr_clean") or ""))
+            and (not _speaks_a_word(ln) or ln == _GENERIC_PAD_LINE))
+
+
+def pinned_lines_unspeakable(beat, understand_by_file) -> List[str]:
+    """The solo system-card files in *beat* whose line the voice cannot say."""
+    return [str(s["span"][0]) for s in beat_segments(beat or {})
+            if len(s["span"]) == 1
+            and card_line_unspeakable(str(s["span"][0]), understand_by_file,
+                                      s["line"])]
+
+
 def system_card_line(f, understand_by_file, line, proper_case=None):
     """The line to voice on solo system panel *f*: the model's line when it
     voices the card (shares content, doesn't describe it), else the card's own
@@ -2170,7 +2192,13 @@ def validate_segments(segments, scene_files, kinds, wpm: float = WPM,
             errors.append(f"segment {i}: span of {n_cap} panels exceeds the "
                           f"cap of {SPAN_CAP}")
         for f in span:
-            if str(kinds.get(f) or "") == "system" and n > 1:
+            # a card's own zoomed copies ride its span (glue_echo_spans) and
+            # add no second event: the card is still alone. Without this the
+            # glue and this rule contradicted each other and every attempt on
+            # the group fell back, whatever the model wrote (Wimp Ch21 g0006).
+            if (str(kinds.get(f) or "") == "system" and n > 1
+                    and echo_of.get(f) not in span
+                    and any(echo_of.get(x) != f for x in span if x != f)):
                 errors.append(f"segment {i}: system panel {f} must be a "
                               "solo span")
         if not line:
@@ -3286,14 +3314,21 @@ def main() -> int:
         fell_back_beat = beat if beat.get("_segments_fallback") else None
         if pin_prev is not None:
             if beat.pop("_segments_fallback", False):
-                if beat_lines_usable(pin_prev, dead_names=_dead_at(gid),
-                                     noun_map=actor_nouns):
+                # an old card line the voice cannot say is not worth keeping
+                # either: Wimp Ch21 kept "Iix." through a rejected heal rewrite
+                # and failed voicing on it a second time
+                unspeakable = pinned_lines_unspeakable(pin_prev, u_by_file)
+                if not unspeakable and beat_lines_usable(
+                        pin_prev, dead_names=_dead_at(gid),
+                        noun_map=actor_nouns):
                     print(f"[segments] span-pin g{gid:04d}: regen fell back to "
                           "pads — kept previous lines")
                     beat = pin_prev
                 else:
+                    why = (f" (unspeakable card line on {', '.join(unspeakable)})"
+                           if unspeakable else "")
                     print(f"[segments] span-pin g{gid:04d}: previous lines are "
-                          "unshippable — kept the grounded pads")
+                          f"unshippable{why} — kept the grounded pads")
             else:
                 beat.pop("_segments_overlong", None)
                 beat = enforce_pinned_spans(beat, pin_prev, gid)

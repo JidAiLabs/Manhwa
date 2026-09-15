@@ -98,3 +98,55 @@ def test_a_card_gemma_transcribed_is_trusted_without_the_word_list(
     out = gnp.system_card_line("p1.jpg", _u(dialogue="TADA~"),
                                "The reveal lands.")
     assert out.lower().startswith("tada")
+
+
+# ---- a card and its zoomed copy are ONE card (Wimp Ch21 g0006, 2026-09-15) ---
+# p000026 is a zoom re-frame of the card p000023 (story_group echo pair).
+# auto_repair_segments split the card out of any shared span, glue_echo_spans
+# put the copy back beside it, and validate_segments rejected "system panel
+# must be a solo span" — whatever the model wrote. The group fell back on every
+# attempt (original prepare and heal), heal kept its old lines, and "Iix."
+# reached voicing twice.
+
+def test_a_system_card_and_its_zoomed_copy_pass_as_one_card():
+    files = ["p22.jpg", "p23.jpg", "p26.jpg", "p27.jpg"]
+    kinds = {"p22.jpg": "story", "p23.jpg": "system", "p26.jpg": "story",
+             "p27.jpg": "system"}
+    echo_of = {"p26.jpg": "p23.jpg"}
+    segs = [{"span": [f], "line": "The battle is finally over for everyone."}
+            for f in files]
+    glued = gnp.glue_echo_spans(gnp.auto_repair_segments(segs, files, kinds),
+                                echo_of, files)
+    assert [s["span"] for s in glued] == [["p22.jpg"], ["p23.jpg", "p26.jpg"],
+                                          ["p27.jpg"]]
+    errs = gnp.validate_segments(glued, files, kinds, echo_of=echo_of)
+    assert not [e for e in errs if "solo span" in e], errs
+    # a zoomed copy that is itself read as a card rides its original too
+    kinds["p26.jpg"] = "system"
+    errs = gnp.validate_segments(glued, files, kinds, echo_of=echo_of)
+    assert not [e for e in errs if "solo span" in e], errs
+
+
+def test_a_card_sharing_a_span_with_any_other_panel_is_still_rejected():
+    files = ["p23.jpg", "p24.jpg"]
+    kinds = {"p23.jpg": "system", "p24.jpg": "story"}
+    segs = [{"span": files, "line": "Perks are awarded as he looks on."}]
+    for echo_of in ({}, {"p24.jpg": "p22.jpg"}):   # a copy of ANOTHER panel
+        errs = gnp.validate_segments(segs, files, kinds, echo_of=echo_of)
+        assert any("solo span" in e for e in errs), echo_of
+
+
+def test_heal_does_not_keep_an_old_card_line_the_voice_cannot_say(monkeypatch,
+                                                                 tmp_path):
+    # when a heal rewrite is rejected the writer keeps the previous lines; an
+    # unspeakable card line is not worth keeping (same rule as prep_qa's
+    # unspeakable_line), so the grounded lines ship instead
+    _dict(monkeypatch, tmp_path)
+    u = {"p28.jpg": {"scene_file": "p28.jpg", "panel_kind": "system",
+                     "dialogue": "", "ocr_clean": "+ IIX"}}
+    prev = {"group_id": 6, "segments": [{"span": ["p28.jpg"], "line": "Iix."}]}
+    assert gnp.pinned_lines_unspeakable(prev, u) == ["p28.jpg"]
+    prev["segments"][0]["line"] = gnp._GENERIC_PAD_LINE
+    assert gnp.pinned_lines_unspeakable(prev, u) == ["p28.jpg"]
+    prev["segments"][0]["line"] = "An hourglass timer appears on the interface."
+    assert gnp.pinned_lines_unspeakable(prev, u) == []

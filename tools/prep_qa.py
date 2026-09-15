@@ -1611,15 +1611,13 @@ def unspeakable_card_line_flags(beats_obj: Any, understood_obj: Any,
             u = und.get(f) or {}
             if str(u.get("panel_kind") or "").lower() != "system":
                 continue
-            dialogue = _gnp.clean_card_text(u.get("dialogue") or "")
             card = _gnp.clean_card_text(
                 ((vitems or {}).get(f) or {}).get("ocr_clean") or "")
             line = str(s["line"] or "")
             # the writer swaps a line that copies the marks for the grounded
             # stand-in; the generic one says nothing, so heal is still asked
-            if (_gnp.card_is_decoration(dialogue, card)
-                    and (not _gnp._speaks_a_word(line)
-                         or line.strip() == _gnp._GENERIC_PAD_LINE)):
+            if _gnp.card_line_unspeakable(f, {f: dict(u, ocr_clean=card)},
+                                          line):
                 flags.append(_flag(
                     "unspeakable_line", ERROR,
                     f"the line {line[:40]!r} is the card's marks, not words "
