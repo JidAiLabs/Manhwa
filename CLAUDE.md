@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A **manhwa/webtoon → narrated video** pipeline for the YouTube channel **OriginPower Manhwa Recap**. It fetches manhwa chapters, slices them into panels/scenes (trained YOLO), extracts OCR (Google Vision), writes narrative beats (Gemini) + a recap script (OpenAI), voices it (ElevenLabs), plans a timeline, and renders in Blender VSE. The `tools/` scripts are the pipeline stages (manifest-in → manifest-out); the **`studio/` package is the orchestrated front-end** that drives them.
+A **manhwa/webtoon → narrated video** pipeline for the YouTube channel **OriginPower Manhwa Recap**. It fetches manhwa chapters, slices them into panels/scenes (trained YOLO), extracts OCR (on-device Apple Vision), understands and narrates the panels with a local model (ollama `gemma4:26b`), voices it (local Qwen3-TTS via MLX, `narrator_v2.wav`), plans a timeline, and renders with Remotion. Everything runs locally and free; the one paid call is the thumbnail image model. (Read `studio.toml` when it matters — this line said Google Vision/Gemini/ElevenLabs/Blender for months after all four were replaced.) The `tools/` scripts are the pipeline stages (manifest-in → manifest-out); the **`studio/` package is the orchestrated front-end** that drives them.
 
-> **USE `studio/` — don't run `tools/` by hand.** There's a working CLI + SQLite catalog. See "studio/ — the front-end" below. Git repo on `main`. Tests: `.eval_venv/bin/python -m pytest -q` (~2288 passing). Use the existing venv `.eval_venv/` (Python 3.12 + torch/ultralytics/cv2/openai/gallery-dl; `google-genai` is installed for `tools/thumbnail_gen.py` ONLY).
+> **USE `studio/` — don't run `tools/` by hand.** There's a working CLI + SQLite catalog. See "studio/ — the front-end" below. Git repo on `main`. Tests: `.eval_venv/bin/python -m pytest -q` (~2519 passing). Use the existing venv `.eval_venv/` (Python 3.12 + torch/ultralytics/cv2/openai/gallery-dl; `google-genai` is installed for `tools/thumbnail_gen.py` ONLY).
 
 ### Dependency model (2026-07-06 refactor — the single invalidation authority)
 
@@ -50,10 +50,10 @@ $V -m studio refresh-facts <series_id> --chapters 1            # re-read the cha
 
 | Stage | Needs | Notes |
 |-------|-------|-------|
-| `visioned` (OCR) | `keys/gcp-vision.json` | repo key; auto-set |
+| `visioned` (OCR) | **none by default** | `vision_backend = "apple"` in `studio.toml` = on-device macOS Vision, free. `keys/gcp-vision.json` only for `"google"` |
 | `beated` (beats) | **none** | local ollama Gemma (`gemma4:26b`). LOCAL-ONLY is a hard rule: there is no cloud code path and no backend knob |
 | `scripted` (recap script) | **none by default** | default `[models].narration_source = "gemini_verbatim"` voices the image-grounded beats narration verbatim — deterministic, $0, no key. `OPENAI_API_KEY` (in creds.env) only for `legacy`/`openai_polish` |
-| `voiced` (TTS) | depends on `[tts].backend` | **`chatterbox`/`kokoro` = local, FREE, no key** (default chatterbox). `elevenlabs` needs `ELEVENLABS_API_KEY`+`ELEVENLABS_VOICE_ID` |
+| `voiced` (TTS) | depends on `[tts].backend` | **production is `qwen-mlx`** (local, FREE, `.mlx_venv`, `assets/voice/narrator_v2.wav`). `chatterbox`/`kokoro`/`qwen` are also local and free. `elevenlabs` needs `ELEVENLABS_API_KEY`+`ELEVENLABS_VOICE_ID` |
 
 ### Models & cost (configurable in `studio.toml`)
 - `[models].beats_model` (ollama tag, default `gemma4:26b`) and `[models].script_model` (OpenAI, default **`gpt-5-nano`** — note `gpt-4.1-mini` API-retires **2026-10-14**; only used when narration_source ≠ gemini_verbatim).
@@ -100,10 +100,8 @@ Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), 
   (`scene_files` = span); the planner paces spans via multi_cut (≥2.0s floor); prep_qa gates
   span cover (`panel_uncovered`/`panel_double_covered`); heal regen is span-pinned (lines may
   change, spans may not). Escape hatch: `[narration].segmentation = "per_panel"`.
-- **NEXT (see `.continue-here.md`):** clean slate (clear logs + DB job/stage history), reset
-  the 4 first chapters to `visioned`, run "prepare → QA" per chapter on the dashboard to
-  exercise the new pipeline end-to-end, review, then voice (Qwen) + render only once it looks
-  right. **A pull that touches `studio/worker.py` or `studio/dashboard/**` needs a daemon
+- **Live state, open items and what to do next: `.continue-here.md`** (rewritten each
+  session; older handovers are in its git history). **A pull that touches `studio/worker.py` or `studio/dashboard/**` needs a daemon
   restart (`launchctl kickstart -k`). `studio/pipeline.py` is IMPORTED by the worker, so it needs the
   restart too; only `tools/` are subprocesses → fresh on pull.**
 
