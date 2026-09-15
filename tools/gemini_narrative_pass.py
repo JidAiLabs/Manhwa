@@ -3340,8 +3340,9 @@ def main() -> int:
                 # UNPINNED corrections (unvoiced episode): a re-split rewrite
                 # is welcome, but pads must never replace real lines — the
                 # same poisoning family the pin guards against.
-                if beat_lines_usable(prev0, dead_names=_dead_at(gid),
-                                     noun_map=actor_nouns):
+                if (not pinned_lines_unspeakable(prev0, u_by_file)
+                        and beat_lines_usable(prev0, dead_names=_dead_at(gid),
+                                              noun_map=actor_nouns)):
                     print(f"[segments] corrections g{gid:04d}: regen fell back "
                           "to pads — kept previous lines")
                     beat = prev0
@@ -3349,6 +3350,7 @@ def main() -> int:
                     print(f"[segments] corrections g{gid:04d}: previous lines "
                           "are unshippable — kept the grounded pads")
             elif (still_long and prev0 is not None
+                  and not pinned_lines_unspeakable(prev0, u_by_file)
                   and beat_lines_usable(prev0, dead_names=_dead_at(gid),
                                         noun_map=actor_nouns)
                   and beat_overshoot(prev0, printed=printed)

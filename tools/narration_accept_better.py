@@ -91,6 +91,7 @@ def gate_beats(old_beats: List[Dict[str, Any]],
                dead_for: Optional[Callable[[Dict[str, Any]], set]] = None,
                noun_map: Optional[Dict[str, Any]] = None,
                printed: Optional[Dict[str, int]] = None,
+               card_unspeakable: Optional[Callable[[Dict[str, Any]], bool]] = None,
                ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Return (accepted_beats, decisions). For every group the heal rewrote, ask
     `judge(old_beat, new_beat) -> verdict`; keep the new beat only when
@@ -107,6 +108,10 @@ def gate_beats(old_beats: List[Dict[str, Any]],
             continue
         dead = dead_for(ob) if dead_for else None
         floor = ("old_unshippable" if not beat_lines_usable(ob)
+                 # a system card's marks voiced as the line (Wimp Ch21 "Iix.")
+                 # — the judge preferred it and the heal could never land
+                 else "old_unspeakable_card" if (card_unspeakable
+                                                 and card_unspeakable(ob))
                  else "old_dead_actor" if (dead and not beat_lines_usable(
                      ob, dead_names=dead, noun_map=noun_map))
                  else "")
@@ -256,6 +261,27 @@ def make_printed(vision_manifest: str) -> Optional[Dict[str, int]]:
     return printed_words_for_groups(groups, ocr, kinds)
 
 
+def make_card_unspeakable(vision_manifest: str):
+    """beat -> True when one of its solo system-card lines is the card's marks,
+    which the voice cannot say (gemini_narrative_pass.pinned_lines_unspeakable,
+    the same rule the writer and prep_qa's unspeakable_line use), read from the
+    understanding + OCR beside the vision manifest; None without one."""
+    if not vision_manifest or not os.path.exists(vision_manifest):
+        return None
+    from gemini_narrative_pass import merge_vision_ocr, pinned_lines_unspeakable
+    vision_by_file = {str(it.get("scene_file") or ""): it for it in
+                      (json.load(open(vision_manifest)).get("items") or [])}
+    up = os.path.join(os.path.dirname(vision_manifest),
+                      "manifest.panels.understood.json")
+    u_by_file: Dict[str, Any] = {}
+    if os.path.exists(up):
+        u_by_file = {str(p.get("scene_file")): dict(p)
+                     for p in (json.load(open(up)).get("panels") or [])
+                     if p.get("scene_file")}
+    merge_vision_ocr(u_by_file, vision_by_file)
+    return lambda beat: bool(pinned_lines_unspeakable(beat, u_by_file))
+
+
 def make_dead_for(vision_manifest: str):
     """(dead_for, noun_map) from the chapter's ledger + cast, or (None, None).
     Found beside the vision manifest, exactly like make_caption_gap — so the
@@ -317,7 +343,8 @@ def main() -> int:
         old_beats, new_beats, judge,
         caption_gap=make_caption_gap(args.vision_manifest),
         dead_for=dead_for, noun_map=noun_map,
-        printed=make_printed(args.vision_manifest))
+        printed=make_printed(args.vision_manifest),
+        card_unspeakable=make_card_unspeakable(args.vision_manifest))
     out_doc = dict(new_doc)
     out_doc["beats"] = accepted
     with open(args.out, "w", encoding="utf-8") as f:

@@ -98,6 +98,54 @@ def test_gate_never_restores_an_unshippable_old_line():
     assert decisions[0]["verdict"] == "old_unshippable"
 
 
+def test_gate_never_restores_an_unspeakable_card_line():
+    # Wimp Ch21 g0006: heal rewrote the group, the judge answered A_better, and
+    # the gate put back "Iix." — a system card's numeral ring the voice cannot
+    # say — so the chapter voiced it again. Validity outranks taste.
+    old = [{"group_id": 6, "narration": "Iix.",
+            "segments": [{"span": ["p28.jpg"], "line": "Iix."}]}]
+    new = [{"group_id": 6, "narration": "An hourglass timer starts on the screen.",
+            "segments": [{"span": ["p28.jpg"],
+                          "line": "An hourglass timer starts on the screen."}]}]
+    judged = []
+
+    def judge(o, n):
+        judged.append(n["group_id"])
+        return "A_better"
+
+    accepted, decisions = ab.gate_beats(
+        old, new, judge=judge,
+        card_unspeakable=lambda b: b["narration"] == "Iix.")
+    assert judged == []
+    assert accepted[0]["narration"].startswith("An hourglass")
+    assert decisions[0]["verdict"] == "old_unspeakable_card"
+    assert decisions[0]["kept"] == "new"
+
+
+def test_make_card_unspeakable_reads_the_chapter_beside_the_vision_manifest(
+        tmp_path, monkeypatch):
+    import json
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import gemini_narrative_pass as g
+    words = tmp_path / "words"
+    words.write_text("\n".join(["an", "hourglass", "timer", "start", "on",
+                                "the", "screen"]))
+    g._dict_words.cache_clear()
+    monkeypatch.setattr(g, "_DICT_PATH", str(words))
+    (tmp_path / "manifest.vision.json").write_text(json.dumps({"items": [
+        {"scene_file": "p28.jpg", "ocr_clean": "+ IIX"}]}))
+    (tmp_path / "manifest.panels.understood.json").write_text(json.dumps(
+        {"panels": [{"scene_file": "p28.jpg", "panel_kind": "system",
+                     "dialogue": ""}]}))
+    fn = ab.make_card_unspeakable(str(tmp_path / "manifest.vision.json"))
+    assert fn({"group_id": 6,
+               "segments": [{"span": ["p28.jpg"], "line": "Iix."}]})
+    assert not fn({"group_id": 6, "segments": [
+        {"span": ["p28.jpg"], "line": "An hourglass timer starts on the screen."}]})
+    assert ab.make_card_unspeakable("") is None
+
+
 def test_gate_still_reverts_when_the_old_line_is_shippable():
     # the safety rule itself is untouched: a real incumbent still wins ties
     old = [{"group_id": 3, "narration": "He kneels beside the body.",
