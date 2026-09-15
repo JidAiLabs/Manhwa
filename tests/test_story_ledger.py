@@ -1209,6 +1209,33 @@ def test_a_death_never_precedes_the_victims_own_last_act():
         "p000038.jpg"]
 
 
+def test_a_death_card_naming_two_victims_places_both_deaths():
+    """ORV Ep298: the card at p000044 reads "[HAYEONG JANG, HAS BEEN KILLED!]
+    ... [SKY BREAKING MASTER, HAS BEEN KILLED!]" and the story event put both
+    victims in ONE target: "Hayeong Jang and Sky Breaking Master". resolve_name
+    reads one figure per string, so only one victim was credited; Hayeong's
+    death sat on his last act nine panels early, while he still stood on
+    screen, and dead_actor blocked a correct line."""
+    ents, profs = _ents_profs()
+    story = {"cast": [
+        {"name": "Prince Cheon", "role": "protagonist", "fate": "killed"},
+        {"name": "the leader", "role": "antagonist", "fate": "killed"}],
+        "events": [
+            {"panels": "p000031", "actor": "Prince Cheon", "does": "attacks",
+             "target": "the members", "evidence": "q"},
+            {"panels": "p000033", "actor": "the leader", "does": "strikes",
+             "target": "Prince Cheon", "evidence": "q1"},
+            {"panels": "p000039", "actor": "unknown",
+             "does": "kills Prince Cheon and the leader",
+             "target": "Prince Cheon and the leader", "evidence": "q2"}]}
+    ev, _ = sl.facts_from_chapter_story(story, ents, _U12, profs,
+                                        log=lambda _m: None)
+    deaths = sorted((e["subject"], e["scene_file"], e["evidence_quote"])
+                    for e in ev if e["type"] == "death")
+    assert deaths == [("our protagonist", "p000039.jpg", "q2"),
+                      ("unnamed assassin", "p000039.jpg", "q2")]
+
+
 def test_normalize_events_carries_the_anchor_flags():
     ents, _ = _ents_profs()
     base = {"type": "death", "scene_file": "p000034.jpg",

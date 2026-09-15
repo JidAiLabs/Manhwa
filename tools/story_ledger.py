@@ -658,6 +658,24 @@ def extend_over_silent(span: List[str], ordered: List[str],
     return span
 
 
+_NAME_LIST_SPLIT_RE = re.compile(r"\s*(?:,|&|\band\b)\s*", re.IGNORECASE)
+
+
+def _each_named(text: Any, profiles: List[Dict[str, Any]]) -> Set[str]:
+    """Every figure a story field names when it LISTS several ("Hayeong Jang
+    and Sky Breaking Master"). resolve_name reads ONE figure per string, so a
+    listed field credited one of them at most. Empty for a single name."""
+    parts = [p for p in _NAME_LIST_SPLIT_RE.split(str(text or "")) if p.strip()]
+    if len(parts) < 2:
+        return set()
+    out: Set[str] = set()
+    for p in parts:
+        who, _ev = resolve_name(p, profiles)
+        if who != "unknown":
+            out.add(who)
+    return out
+
+
 def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                              understood: Any,
                              profiles: List[Dict[str, Any]],
@@ -730,6 +748,14 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
             last_seen[actor] = max(last_seen.get(actor, -1), order[span[-1]])
         if target != "unknown":
             last_seen[target] = max(last_seen.get(target, -1), order[span[-1]])
+        # a field that LISTS figures names each of them (ORV Ep298: "Hayeong
+        # Jang and Sky Breaking Master" on the card that kills both — the one
+        # string resolved to one victim, and the other died on his last act
+        # nine panels early, while still on screen)
+        listed = (_each_named(ev.get("actor"), profiles)
+                  | _each_named(ev.get("target"), profiles))
+        for who in listed:
+            last_seen[who] = max(last_seen.get(who, -1), order[span[-1]])
         # direction: every panel in the span gets the story's attribution
         if actor != "unknown" or target != "unknown":
             for fn in span:
@@ -749,9 +775,11 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
         # The killing line is the death's EVIDENCE. It is not its location:
         # "flames of hell that eradicate all evil" is a caption explaining why
         # she is dying, printed 20 panels before she stops speaking.
-        if target in dead and str(ev.get("evidence") or "").strip():
-            if is_completed_death(does) or target not in death_quote:
-                death_quote[target] = str(ev["evidence"])[:200]
+        if str(ev.get("evidence") or "").strip():
+            victims = ({target} | _each_named(ev.get("target"), profiles))
+            for victim in sorted(v for v in victims if v in dead):
+                if is_completed_death(does) or victim not in death_quote:
+                    death_quote[victim] = str(ev["evidence"])[:200]
 
     # STEP 2b — WHERE. The chapter never states a death panel. ORV Ep107 has a
     # caption explaining why the Beast Lord is dying, her goodbye to the

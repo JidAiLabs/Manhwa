@@ -1105,6 +1105,20 @@ def test_vary_never_doubles_a_determiner():
     assert _lines(B2)[3].lower().startswith("the assassin stalks ")
 
 
+def test_usable_narration_line_rejects_a_line_cut_mid_sentence():
+    # ORV Ep299 g0027: the writer's answer was cut ("The"), the fallback reused
+    # it, and every heal rewrite that fell back KEPT it because it read as
+    # usable — while prep_qa's truncated_line blocks exactly that line. A guard
+    # that restores lines must use the gate's own end-of-thought test.
+    assert not rs.usable_narration_line("The")
+    assert not rs.usable_narration_line("But there is no mercy to be found, only the")
+    assert not rs.usable_narration_line("Suddenly, the")
+    # a deliberate trail-off, a quoted exclamation and a plain sentence stay
+    assert rs.usable_narration_line("He hesitates, wondering if this is...")
+    assert rs.usable_narration_line("He gasps, 'What is that light?!'")
+    assert rs.usable_narration_line("He kneels beside the body.")
+
+
 def test_usable_narration_line_rejects_pipeline_bookkeeping():
     assert rs.usable_narration_line("He kneels beside a body that is not moving.")
     assert not rs.usable_narration_line("")

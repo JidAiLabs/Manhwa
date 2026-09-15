@@ -38,19 +38,21 @@ def test_gate_keeps_new_when_strictly_better():
 
 
 def test_gate_reverts_when_not_strictly_better():
-    old = [{"group_id": 1, "narration": "two snarling beasts"}]
-    new = [{"group_id": 1, "narration": "some animals appear"}]
+    # real lines end their sentence: the usable floor rejects a line cut
+    # mid-sentence (it is what truncated_line blocks)
+    old = [{"group_id": 1, "narration": "two snarling beasts."}]
+    new = [{"group_id": 1, "narration": "some animals appear."}]
     for verdict in ("equivalent", "A_better"):
         accepted, decisions = ab.gate_beats(old, new, judge=lambda o, n: verdict)
-        assert accepted[0]["narration"] == "two snarling beasts"   # reverted
+        assert accepted[0]["narration"] == "two snarling beasts."   # reverted
         assert decisions[0]["kept"] == "old"
 
 
 def test_gate_passes_unchanged_beats_without_judging():
-    old = [{"group_id": 1, "narration": "kept line"},
-           {"group_id": 2, "narration": "healed away"}]
-    new = [{"group_id": 1, "narration": "kept line"},
-           {"group_id": 2, "narration": "regenerated"}]
+    old = [{"group_id": 1, "narration": "kept line."},
+           {"group_id": 2, "narration": "healed away."}]
+    new = [{"group_id": 1, "narration": "kept line."},
+           {"group_id": 2, "narration": "regenerated."}]
     judged = []
 
     def judge(o, n):
@@ -59,8 +61,8 @@ def test_gate_passes_unchanged_beats_without_judging():
 
     accepted, decisions = ab.gate_beats(old, new, judge=judge)
     assert judged == [2]                       # only the changed group is judged
-    assert accepted[0]["narration"] == "kept line"
-    assert accepted[1]["narration"] == "healed away"   # reverted (equivalent)
+    assert accepted[0]["narration"] == "kept line."
+    assert accepted[1]["narration"] == "healed away."   # reverted (equivalent)
 
 
 def test_gate_is_a_noop_when_nothing_changed():
@@ -108,7 +110,7 @@ def test_gate_still_reverts_when_the_old_line_is_shippable():
 
 
 def _seg(words, span=("p1.jpg",)):
-    line = " ".join(["word"] * words)
+    line = " ".join(["word"] * words) + "."   # a real line ends its sentence
     return {"span": list(span), "line": line}
 
 

@@ -428,6 +428,12 @@ def usable_narration_line(text: str) -> bool:
     # refusal use, so all three agree on what counts as a null.
     if is_unvoiceable_line(ln):
         return False
+    # A line that stops mid-sentence is what prep_qa's truncated_line BLOCKS.
+    # ORV Ep299 g0027: the fallback reused "The", and every heal rewrite that
+    # fell back put it back because it read as usable — the chapter could never
+    # get past its own gate. Same end-of-thought test as that gate.
+    if not ends_terminal(ln):
+        return False
     if mentions_image_file(ln) or mentions_impact_marker(ln):
         return False
     if MOOD_PREFIX_RE.match(ln) or mentions_mood_tag_leak(ln):
