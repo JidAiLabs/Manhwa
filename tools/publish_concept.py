@@ -699,10 +699,23 @@ def _lead_panels(ep_dir: str, max_figures: int = 2):
                     None)
     subjects = {os.path.basename(str(p.get("scene_file") or "")):
                 (p.get("subjects") or []) for p in (u.get("panels") or [])}
+    # hair COLOUR too, via cast_identity's own classes: suggestions offered
+    # "short light blonde hair" and "short grey hair" as ORV's dark-haired lead
+    from cast_identity import _hair_colors, _tokens
+    lead_desc = next((str(m.get("visual_description") or "")
+                      for m in ((c.get("cast") or c.get("members") or []))
+                      if _norm_name(m.get("id")) == _norm_name(lead)
+                      or _norm_name(m.get("canonical_name")) == _norm_name(lead)),
+                     "")
+    lead_hc = _hair_colors(_tokens(lead_desc))
+
+    def clashes(s: str) -> bool:
+        hc = _hair_colors(_tokens(s))
+        return (bool(lead_len) and hair_length(s) not in (None, lead_len)) or \
+            (bool(lead_hc) and bool(hc) and not (hc & lead_hc))
     out: set = set()
     for f, figs in (resolve_figures_by_file(u, c) or {}).items():
-        if lead_len and any(hair_length(s) not in (None, lead_len)
-                            for s in subjects.get(os.path.basename(str(f)), [])):
+        if any(clashes(s) for s in subjects.get(os.path.basename(str(f)), [])):
             continue
         names = [str(x.get("name") or "") for x in (figs or []) if x.get("name")]
         # Count EVERY figure, not just the identified ones. Counting only named

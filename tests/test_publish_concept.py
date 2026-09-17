@@ -838,6 +838,7 @@ def test_portraits_drop_panels_whose_hair_length_contradicts_the_lead(tmp_path,
         {"scene_file": "p1.jpg", "subjects": ["a young man with messy black hair"]},
         {"scene_file": "p2.jpg", "subjects": ["a character with long, dark, messy hair"]}]}))
     fake = _t.ModuleType("cast_identity")
+    fake.__dict__.update(__import__("cast_identity").__dict__)
     fake.resolve_figures_by_file = lambda u, c: {
         "p1.jpg": [{"name": "our protagonist"}], "p2.jpg": [{"name": "our protagonist"}]}
     monkeypatch.setitem(__import__("sys").modules, "cast_identity", fake)
@@ -935,3 +936,29 @@ def test_picked_refs_override_the_automatic_choice(monkeypatch):
     # nothing picked: the automatic path, unchanged
     assert pc.choose_refs("before_after", [{}], ["e"], climax_ci=3,
                           auto_refs=["a.jpg"]) == ["/auto/before.jpg", "a.jpg"]
+
+
+def test_look_evidence_must_not_contradict_the_registry_hair_colour(tmp_path,
+                                                                   monkeypatch):
+    """ORV suggestions offered "a man with short light blonde hair" (Ep154) and
+    "short grey hair" (Ep302) as Dokja: length and gender matched, colour not."""
+    import json as _j
+    import types as _t
+    ep = tmp_path / "ch"; ep.mkdir()
+    (ep / "manifest.cast.json").write_text(_j.dumps({"cast": [
+        {"id": "our_protagonist", "canonical_name": "our protagonist",
+         "visual_description": "A young man with short dark hair."}]}))
+    (ep / "manifest.panels.understood.json").write_text(_j.dumps({"panels": [
+        {"scene_file": "p1.jpg", "subjects": ["a young man with short black hair"]},
+        {"scene_file": "p2.jpg", "subjects": ["a man with short light blonde hair"]},
+        {"scene_file": "p3.jpg", "subjects": ["a man with short grey hair"]}]}))
+    import sys as _s
+    real = _s.modules.get("cast_identity") or __import__("cast_identity")
+    fake = _t.ModuleType("cast_identity")
+    fake.__dict__.update(real.__dict__)
+    fake.resolve_figures_by_file = lambda u, c: {
+        f: [{"name": "our protagonist"}] for f in ("p1.jpg", "p2.jpg", "p3.jpg")}
+    monkeypatch.setitem(_s.modules, "cast_identity", fake)
+    portraits, look = pc._lead_panels(str(ep))
+    assert look == {"p1.jpg"}
+    assert portraits == {"p1.jpg"}        # a colour clash is not the lead at all
