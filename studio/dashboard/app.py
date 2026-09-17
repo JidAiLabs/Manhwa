@@ -633,6 +633,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     "name": name, "hook": oc.get("hook") or "",
                     "style": oc.get("style") or name,
                     "v": int((od / "thumbnail_yt.jpg").stat().st_mtime)})
+        ref_cands = _ref_candidates(sid)
         # the planner reads cached beats/understanding, so it needs prepared
         # chapters — the same readiness the thumbnail requires
         teaser_ready = thumb_ready
@@ -656,6 +657,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     thumb_v=int(thumb.stat().st_mtime) if thumb_exists else 0,
                     thumb_approved=gates.thumbnail_approved(c, sid),
                     thumb_options=thumb_options,
+                    ref_cands=ref_cands,
                     teaser_card=_teaser_card(sid),
                     teaser_state=teaser_state, teaser_exists=teaser_exists,
                     teaser_ready=teaser_ready,
@@ -685,6 +687,52 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         if not p.exists():
             return PlainTextResponse("no thumbnail yet", status_code=404)
         return FileResponse(str(p), media_type="image/jpeg")
+
+    def _ref_candidates(sid: int) -> Dict[str, List[Dict[str, Any]]]:
+        """Suggested reference panels (written by a series_thumbnail job with
+        payload candidates=true). The page only ever sends back INDICES into
+        this list; a path never comes from the browser."""
+        try:
+            d = json.loads((REPO / "dist" / f"series_{sid}"
+                            / "ref_candidates.json").read_text())
+        except (OSError, ValueError):
+            return {"lead": [], "before": []}
+        return {k: [x for x in (d.get(k) or []) if isinstance(x, dict)]
+                for k in ("lead", "before")}
+
+    @app.get("/thumb/series/{sid}/ref/{kind}/{idx}")
+    def series_ref_candidate(sid: int, kind: str, idx: int):
+        items = _ref_candidates(sid).get(kind)
+        if items is None or not 0 <= idx < len(items) \
+                or not Path(str(items[idx].get("path") or "")).is_file():
+            return PlainTextResponse("no such reference panel", status_code=404)
+        return FileResponse(str(items[idx]["path"]), media_type="image/jpeg")
+
+    @app.post("/thumbnail/candidates")
+    def find_ref_candidates(series_id: int = Form(...)):
+        jobs.enqueue(con(), "thumbnail_refs", series_id=series_id)
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
+
+    @app.post("/thumbnail/generate")
+    def generate_with_refs(series_id: int = Form(...),
+                           lead: List[int] = Form([]),
+                           before: Optional[int] = Form(None)):
+        """Generate both options from the reference panels the owner ticked:
+        1-3 lead panels, and optionally one before panel."""
+        cands = _ref_candidates(series_id)
+        if not 1 <= len(lead) <= 3 \
+                or any(not 0 <= i < len(cands["lead"]) for i in lead) \
+                or (before is not None and not 0 <= before < len(cands["before"])):
+            return PlainTextResponse("pick 1-3 lead panels (and at most one "
+                                     "before panel) from the suggestions",
+                                     status_code=400)
+        payload: Dict[str, Any] = {
+            "refs": [cands["lead"][i]["path"] for i in lead]}
+        if before is not None:
+            payload["before_ref"] = cands["before"][before]["path"]
+        jobs.enqueue(con(), "series_thumbnail", series_id=series_id,
+                     payload=payload)
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.get("/thumb/series/{sid}/option/{name}")
     def series_thumb_option(sid: int, name: str):

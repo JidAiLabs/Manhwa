@@ -43,6 +43,8 @@ LANES = {
     "voiceover": "tts",
     # --- CPU / ffmpeg / remotion: no local model ---
     "render_segment": "cpu", "branding_segments": "cpu", "concat": "cpu",
+    # suggested thumbnail reference panels: identity + scoring, no model
+    "thumbnail_refs": "cpu",
     # --- network-bound, no local model ---
     "refresh": "api", "discovery_scan": "api", "add_series": "api",
     # EVERY claimable type MUST be listed here: lane loops only ever claim
@@ -546,6 +548,7 @@ def failed_chapters(con: sqlite3.Connection,
 _JOB_LABEL = {
     "prepare": "preparing", "voiceover": "voicing", "render_segment": "rendering",
     "qa_scan": "QA scan", "plan_teaser": "teaser", "series_thumbnail": "thumbnail",
+    "thumbnail_refs": "thumbnail refs",
     "publish_meta": "meta", "concat": "concat", "branding_segments": "branding",
     "refresh": "refresh", "refresh_facts": "refreshing facts",
     "add_series": "add-series", "discovery_scan": "scan",

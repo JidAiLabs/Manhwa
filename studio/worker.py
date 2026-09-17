@@ -2027,6 +2027,12 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         raise RuntimeError("no processed chapters yet — prepare at least one "
                            "chapter (narration) before generating a thumbnail")
     env = _series_env(con, sid)
+    payload = job.get("payload") or {}
+    # the owner's picks from the suggested reference panels (_h_thumbnail_refs)
+    picked = [str(r) for r in (payload.get("refs") or []) if str(r).strip()]
+    picked_args = ((["--refs", ",".join(picked)] if picked else [])
+                   + (["--before-ref", str(payload["before_ref"])]
+                      if payload.get("before_ref") else []))
 
     def build(out_dir: Path, style: str) -> None:
         # The paid image step needs GEMINI_API_KEY from the login keychain,
@@ -2038,6 +2044,7 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                       "--episode-dirs", ",".join(eps), "--series-title", title,
                       *(["--style", style] if style else []),
+                      *picked_args,
                       "--out", str(concept_path)], log, env=env)
         if rc != 0:
             raise RuntimeError(f"publish_concept exited {rc}")
@@ -2053,7 +2060,7 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
 
     # VARIANT mode: an explicit style renders to its OWN directory, for
     # comparing a style by hand. Never live, never touches the options.
-    style = str((job.get("payload") or {}).get("style") or "").strip()
+    style = str(payload.get("style") or "").strip()
     with record_stage(con, chapter_id=None, stage="series_thumbnail",
                       series_id=sid):
         if style:
@@ -2081,12 +2088,38 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
                 "page to pick" % ", ".join(failed))
 
 
+def _h_thumbnail_refs(con: sqlite3.Connection, job: Dict[str, Any],
+                      log: TextIO) -> None:
+    """SUGGEST reference panels for the series thumbnail; the owner picks on
+    the Series page and generates with them. Local and free: identity +
+    scoring over every chapter, no model, no image call. Its own job type so
+    it never dedupes against (and silently swallows) a paid generate."""
+    sid = job["series_id"]
+    if not sid:
+        raise RuntimeError("thumbnail_refs needs series_id")
+    rows = con.execute(
+        "SELECT ep_dir FROM chapter WHERE series_id=? AND ep_dir IS NOT NULL "
+        "ORDER BY number", (sid,)).fetchall()
+    eps = [r[0] for r in rows
+           if r[0] and (Path(r[0]) / "manifest.beats.json").exists()]
+    if not eps:
+        raise NonRetryableError("no processed chapters yet")
+    out = REPO / "dist" / f"series_{sid}" / "ref_candidates.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
+                  "--episode-dirs", ",".join(eps), "--ref-candidates",
+                  "--out", str(out)], log, env=_series_env(con, sid))
+    if rc != 0:
+        raise NonRetryableError(f"ref candidates exited {rc}")
+
+
 HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]] = {
     "discovery_scan": _h_discovery_scan,
     "prepare": _h_prepare,
     "voiceover": _h_voiceover,
     "publish_meta": _h_publish_meta,
     "series_thumbnail": _h_series_thumbnail,
+    "thumbnail_refs": _h_thumbnail_refs,
     "add_series": _h_add_series,
     "branding_segments": _h_branding_segments,
     "chain": _h_chain,

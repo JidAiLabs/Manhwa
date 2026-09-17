@@ -881,3 +881,57 @@ def test_look_evidence_must_not_belong_to_a_figure_of_the_other_gender():
     assert pc.gender_word("a person with short dark hair") is None
     assert pc.gender_word("a human-like woman-shaped statue") == "f"
     assert pc.gender_word("a manhole cover") is None
+
+
+# ---- suggested reference panels, the owner picks (2026-09-17) ----------------
+# Owner: "instead of handpick you should propose few options so i can select
+# ref image". Automatic refs gave ORV long hair (Ep306) and bystanders (Ep96).
+
+def _cand_arc(tmp_path, monkeypatch, n=20):
+    import json as _j
+    eps, beats = [], []
+    for i in range(n):
+        d = tmp_path / f"ch{i}"; d.mkdir()
+        (d / "manifest.panels.understood.json").write_text(_j.dumps({"panels": [
+            {"scene_file": "p1.jpg", "subjects": ["a young man"], "panel_kind": "story"},
+            {"scene_file": "p2.jpg", "subjects": ["a young man"], "panel_kind": "story"}]}))
+        eps.append(str(d))
+        beats.append({"beats": [{"scene_selection": [
+            {"scene_file": "p1.jpg", "intensity": "calm"},
+            {"scene_file": "p2.jpg", "intensity": "explosive"}]}]})
+    # every chapter: both panels show the lead; p2 matches the registry look
+    monkeypatch.setattr(pc, "_lead_panels",
+                        lambda d, max_figures=2: ({"p1.jpg", "p2.jpg"}, {"p2.jpg"}))
+    return eps, beats
+
+
+def test_lead_candidates_spread_across_the_arc(tmp_path, monkeypatch):
+    eps, beats = _cand_arc(tmp_path, monkeypatch)
+    c = pc.ref_candidates(eps, beats, n_lead=4, n_before=2)
+    chapters = [x["chapter"] for x in c["lead"]]
+    assert len(chapters) == 4 and len(set(chapters)) == 4
+    assert max(chapters) - min(chapters) >= 10          # not one late chapter
+    assert all(x["file"] == "p2.jpg" for x in c["lead"])  # registry look first
+    assert all(Path(x["path"]).is_absolute() for x in c["lead"])
+
+
+def test_before_candidates_come_from_the_earliest_chapters(tmp_path, monkeypatch):
+    eps, beats = _cand_arc(tmp_path, monkeypatch)
+    c = pc.ref_candidates(eps, beats, n_lead=4, n_before=2)
+    assert [x["chapter"] for x in c["before"]] == [0, 1]
+    assert all(x["file"] == "p1.jpg" for x in c["before"])  # calm, not explosive
+
+
+def test_picked_refs_override_the_automatic_choice(monkeypatch):
+    monkeypatch.setattr(pc, "select_before_ref",
+                        lambda *a, **k: "/auto/before.jpg")
+    picked = ["/p/ep96/p20.jpg", "/p/ep251/p38.jpg"]
+    assert pc.choose_refs("power_reveal", [{}], ["e"], climax_ci=3,
+                          auto_refs=["a.jpg"], picked=picked) == picked
+    assert pc.choose_refs("before_after", [{}], ["e"], climax_ci=3,
+                          auto_refs=["a.jpg"], picked=picked,
+                          picked_before="/p/ep0/p35.jpg") == \
+        ["/p/ep0/p35.jpg"] + picked
+    # nothing picked: the automatic path, unchanged
+    assert pc.choose_refs("before_after", [{}], ["e"], climax_ci=3,
+                          auto_refs=["a.jpg"]) == ["/auto/before.jpg", "a.jpg"]

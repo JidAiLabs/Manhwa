@@ -2735,3 +2735,40 @@ def test_a_failed_variant_is_not_auto_retried(tmp_path, monkeypatch):
         worker._h_series_thumbnail(
             con, {"series_id": 1, "payload": {"style": "vs_monster"}},
             io.StringIO())
+
+
+def test_candidates_payload_writes_suggestions_and_pays_for_nothing(tmp_path,
+                                                                    monkeypatch):
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_thumbnail_refs(con, {"series_id": 1, "payload": {}},
+                             io.StringIO())
+    assert worker.HANDLERS["thumbnail_refs"] is worker._h_thumbnail_refs
+    from studio.dashboard import jobs as _jobs
+    assert _jobs.LANES["thumbnail_refs"] == "cpu"      # no model: never waits on gemma
+    assert len(calls) == 1 and "--ref-candidates" in calls[0]
+    assert calls[0][calls[0].index("--out") + 1].endswith(
+        "dist/series_1/ref_candidates.json")
+    assert not any(c[1].endswith("thumbnail_build.py") for c in calls)
+
+
+def test_picked_refs_reach_both_options(tmp_path, monkeypatch):
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_thumbnail(
+        con, {"series_id": 1, "payload": {"refs": ["/a/p1.jpg", "/b/p2.jpg"],
+                                          "before_ref": "/c/p0.jpg"}},
+        io.StringIO())
+    concept_cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
+    assert len(concept_cmds) == 2
+    for c in concept_cmds:
+        assert c[c.index("--refs") + 1] == "/a/p1.jpg,/b/p2.jpg"
+        assert c[c.index("--before-ref") + 1] == "/c/p0.jpg"
