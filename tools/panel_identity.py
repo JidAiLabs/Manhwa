@@ -90,15 +90,17 @@ def build_prompt(names: List[str]) -> str:
         "Images %d and %d show CHARACTER %s." % (2 * i + 1, 2 * i + 2, L)
         for i, L in enumerate(letters))
     n = 2 * len(names) + 1
-    answers = ", ".join('"%s"' % L for L in letters) + ' or "OTHER"'
+    ab = " or ".join(letters)                       # "A" / "A or B"
     return (
-        "%s They are different characters. Image %d is a panel from the same "
-        "manhwa, which has MANY other characters who look similar: dark hair, "
-        "suits, young men. For EACH person visible in image %d, answer %s. "
-        "Answer a letter only when the FACE clearly matches (eyes, face shape, "
-        "hairstyle); a similar outfit or hair colour alone is OTHER. "
-        'Return ONLY JSON: {"people": [%s, ...]}'
-        % (shown, n, n, answers.replace('"', ""), answers))
+        "%s%s Image %d is a panel from the same manhwa, which has MANY other "
+        "characters who look similar: dark hair, suits, young men. For EACH "
+        "person visible in image %d, answer %s or OTHER. Answer %s only when "
+        "the FACE clearly matches (eyes, face shape, hairstyle); a similar "
+        "outfit or hair colour alone is OTHER. Return ONLY JSON: "
+        '{"people": [%s or "OTHER", ...]}'
+        % (shown, " They are two different characters." if len(names) > 1 else "",
+           n, n, ", ".join(letters), ab,
+           " or ".join('"%s"' % L for L in letters)))
 
 
 def parse_reply(raw: Any, names: List[str]) -> Dict[str, Any]:
