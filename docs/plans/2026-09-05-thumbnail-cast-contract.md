@@ -2,6 +2,16 @@
 
 *2026-09-05 · companion to the `manhwa-thumbnail` skill · owner-gated, nothing built yet*
 
+> **2026-09-17 update (skill v2.0.0).** `triptych` is removed (owner decision; 0 of 27 example
+> thumbnails use 3 panels), so item 5's three-position search is no longer needed:
+> `before_after` gets its pre-climax, lead-first ref on both concept paths via
+> `refs_for_style`. Also built that day: drawn-text refusal on the art
+> (`thumbnail_build.art_text_words`, which covers item 2 for the art), both options + owner
+> pick (`_h_series_thumbnail`, `/thumbnail/pick`), and `normalize_title`. New open items
+> from the owner's examples: arrows that land on their labelled subject
+> (`apple_vision.faces`), a second contrasting label, and number grounding for titles.
+> The skill's "Not built yet" table is the current list.
+
 The skill `manhwa-thumbnail` documents a contract the repo only partially implements:
 **the hook decides the cast, the cast decides the reference panels.**
 `publish_concept.select_before_ref` is the shipped proof it works — for 1 of 7 styles.
@@ -77,7 +87,7 @@ ineligible via item 2 — it must not guess.
 
 ---
 
-## 5. Story-position refs, generalised
+## 5. Story-position refs, generalised — SUPERSEDED 2026-09-17 (triptych removed; see the update at the top)
 
 **Why:** `triptych` needs the lead at three arc positions and has no implementation;
 three refs from one chapter defeat the style's entire premise.

@@ -472,17 +472,19 @@ def test_first_json_recovers_a_reply_with_bare_array_tokens():
     assert oc.first_json('{"x": [1,2,]}') == {"x": [1, 2]}
 
 
-def test_triptych_hook_needs_three_parts():
-    """A two-part hook would leave the third panel unlabelled."""
-    hooks = ["READER|PROPHET", "ORDINARY|AWAKENING|PROPHET", "GENIUS"]
-    assert pc.pick_hook(hooks, "triptych") == "ORDINARY|AWAKENING|PROPHET"
-    # before_after is happy with two
+def test_before_after_hook_needs_a_pair():
+    hooks = ["GENIUS", "READER|PROPHET"]
     assert pc.pick_hook(hooks, "before_after") == "READER|PROPHET"
 
 
-def test_triptych_style_is_registered_with_split3():
-    ov = pc.style_for("triptych")["overlay"]
-    assert ov.get("split3") is True
+def test_the_only_split_layout_is_before_after():
+    """Owner, 2026-09-17: no 3-panel layout, ever. A split is before/after or
+    nothing. The triptych was added as "the most common layout in the reference
+    thumbnails" -- counted, 0 of 18 refs and 0 of the owner's 9 new examples."""
+    assert "triptych" not in pc.STYLE_MODULES
+    assert not any(m["overlay"].get("split3") for m in pc.STYLE_MODULES.values())
+    assert [n for n, m in pc.STYLE_MODULES.items()
+            if m["overlay"].get("split")] == ["before_after"]
 
 
 def test_style_cli_choices_track_the_registry():
@@ -496,7 +498,6 @@ def test_style_cli_choices_track_the_registry():
     assert m, "the --style argument moved or changed shape"
     assert "STYLE_MODULES" in m.group(1), (
         "choices must derive from the style registry, not a hand-written list")
-    assert "triptych" in pc.STYLE_MODULES
 
 
 # ---- two-stage: understand the story, THEN write the copy -----------------
@@ -519,19 +520,22 @@ def test_package_prompt_writes_from_the_brief_not_the_narration():
     assert "STORY UNDERSTANDING" in p and '"premise": "P"' in p
     # the MODEL picks the layout -- a keyword heuristic kept choosing
     # stat_callout for a series whose largest number is 11
-    assert "thumbnail_style" in p and "triptych" in p
+    assert "thumbnail_style" in p
+    # the AUTO path only ever offers single-scene layouts: before_after is
+    # always built as its own option and the owner picks between them
+    assert "before_after" not in p and "triptych" not in p
+    assert "3-panel" not in p
     assert "could ONLY belong to this story" in p
 
 
 def test_assemble_package_honours_the_models_layout_choice():
     beats = {"beats": [{"segments": [{"line": "he reaches level 3"}]}]}
-    pkg = {"title": "T", "description": "D", "thumbnail_style": "triptych",
-           "style_reason": "it is a progression",
-           "labels": ["READER|PLAYER|PROPHET"], "hashtags": ["#m"]}
+    pkg = {"title": "T", "description": "D", "thumbnail_style": "vs_monster",
+           "style_reason": "a giant foe",
+           "labels": ["F-RANK PORTER"], "hashtags": ["#m"]}
     c = pc.assemble_package(beats, {"premise": "P"}, pkg, series_title="X")
-    assert c["style"] == "triptych"
-    assert c["style_overlay"]["split3"] is True
-    assert c["hook"] == "READER|PLAYER|PROPHET"
+    assert c["style"] == "vs_monster"
+    assert c["hook"] == "F-RANK PORTER"
     assert c["brief"] == {"premise": "P"}
 
 
@@ -554,40 +558,36 @@ def test_labels_returned_as_a_bare_string_are_not_split_into_characters():
     """A JSON schema in a prompt is a request, not a guarantee. qwen3.6 returned
     labels as the STRING "READER|SURVIVOR|AUTHOR"; iterating it yielded one
     CHARACTER per label and the hook became "R"."""
-    pkg = {"title": "T", "thumbnail_style": "triptych",
-           "labels": "READER|SURVIVOR|AUTHOR", "hashtags": []}
-    c = pc.assemble_package({}, {}, pkg, series_title="X")
-    assert c["hooks"] == ["READER|SURVIVOR|AUTHOR"]
-    assert c["hook"] == "READER|SURVIVOR|AUTHOR"
+    pkg = {"title": "T", "thumbnail_style": "before_after",
+           "labels": "READER|AUTHOR", "hashtags": []}
+    c = pc.assemble_package({}, {}, pkg, series_title="X", styles=["before_after"])
+    assert c["hooks"] == ["READER|AUTHOR"]
+    assert c["hook"] == "READER|AUTHOR"
 
 
 def test_labels_as_a_list_still_work():
     pkg = {"title": "T", "thumbnail_style": "before_after",
            "labels": ["WEAK|STRONG", "OTHER"], "hashtags": []}
-    c = pc.assemble_package({}, {}, pkg, series_title="X")
+    c = pc.assemble_package({}, {}, pkg, series_title="X", styles=["before_after"])
     assert c["hooks"] == ["WEAK|STRONG", "OTHER"]
 
 
 def test_panelled_layouts_join_one_label_per_panel():
-    """The model returns either shape: a joined "A|B|C" string, or one list
-    entry per panel. Taking the first entry of the latter left panels 2 and 3
-    blank, so the per-panel form is joined instead."""
-    pkg = {"title": "T", "thumbnail_style": "triptych",
-           "labels": ["THE READER", "SCENARIO SURVIVOR", "STORY MANIPULATOR"],
-           "hashtags": []}
-    c = pc.assemble_package({}, {}, pkg, series_title="X")
-    assert c["hook"] == "THE READER|SCENARIO SURVIVOR|STORY MANIPULATOR"
-
+    """The model returns either shape: a joined "A|B" string, or one list
+    entry per half. Taking the first entry of the latter left the right half
+    blank, so the per-half form is joined instead."""
     two = {"title": "T", "thumbnail_style": "before_after",
            "labels": ["PASSIVE READER", "STORY ARCHITECT"], "hashtags": []}
-    assert pc.assemble_package({}, {}, two, series_title="X")["hook"] == \
+    assert pc.assemble_package({}, {}, two, series_title="X",
+                               styles=["before_after"])["hook"] == \
         "PASSIVE READER|STORY ARCHITECT"
 
 
 def test_an_already_joined_hook_is_left_alone():
-    pkg = {"title": "T", "thumbnail_style": "triptych",
-           "labels": ["A|B|C", "spare"], "hashtags": []}
-    assert pc.assemble_package({}, {}, pkg, series_title="X")["hook"] == "A|B|C"
+    pkg = {"title": "T", "thumbnail_style": "before_after",
+           "labels": ["A|B", "spare"], "hashtags": []}
+    assert pc.assemble_package({}, {}, pkg, series_title="X",
+                               styles=["before_after"])["hook"] == "A|B"
 
 
 def test_single_label_layouts_are_untouched():
@@ -654,3 +654,159 @@ def test_climax_refs_send_several_portraits_not_one():
     assert "ADD NOTHING the references do not show" in p
     assert "swords" in p or "weapons" in p
     assert "any other manhwa" in p
+
+
+# ---- the title follows the format that performs (owner examples 2026-09-17) --
+# 27 of 27 example titles end in the Manhwa Recap suffix, 0 carry an emoji, and
+# 7 of the owner's 9 capitalise every word, FULL CAPS kept on status words. Ours
+# shipped "He Read THE ENDING, Now He's TRAPPED in a REAL NIGHTMARE 😱".
+
+def test_title_gets_the_channel_suffix_and_loses_emoji():
+    t = pc.normalize_title("He Read THE ENDING, Now He's TRAPPED in a REAL NIGHTMARE 😱")
+    assert t == "He Read THE ENDING, Now He's TRAPPED In A REAL NIGHTMARE - Manhwa Recap"
+
+
+def test_title_suffix_is_never_doubled():
+    for raw in ("BETRAYED Porter Awakens OP Power - Manhwa Recap",
+                "BETRAYED Porter Awakens OP Power - Manhwa Recaps",
+                "BETRAYED Porter Awakens OP Power | Manhwa Recap",
+                "BETRAYED Porter Awakens OP Power"):
+        assert pc.normalize_title(raw) == \
+            "BETRAYED Porter Awakens OP Power - Manhwa Recap", raw
+
+
+def test_title_case_keeps_numbers_caps_and_contractions():
+    assert pc.normalize_title("poor loser multiplies every dollar 200x! he's #1") == \
+        "Poor Loser Multiplies Every Dollar 200x! He's #1 - Manhwa Recap"
+
+
+def test_empty_title_stays_empty():
+    assert pc.normalize_title("") == ""
+    assert pc.normalize_title("  📖🔥 ") == ""
+
+
+def test_assemble_package_normalizes_the_title():
+    pkg = {"title": "He used the SCRIPT 📖", "thumbnail_style": "power_reveal",
+           "labels": ["READER"], "hashtags": []}
+    c = pc.assemble_package({}, {}, pkg, series_title="X")
+    assert c["title"] == "He Used The SCRIPT - Manhwa Recap"
+
+
+def test_package_prompt_title_has_no_worked_example_and_no_emoji_ask():
+    p = pc.build_package_prompt({"premise": "P"}, "Banned")
+    assert "No emoji" in p
+    assert "Manhwa Recap" not in p      # the suffix is added in code, not asked for
+    assert "e.g." not in p              # a worked example ships verbatim (LEVEL 999)
+
+
+def test_package_prompt_reuses_the_picked_thumbnail_labels():
+    p = pc.build_package_prompt({"premise": "P"}, "Banned",
+                                thumb_labels="F-RANK SUMMONER")
+    assert "F-RANK SUMMONER" in p
+    assert "F-RANK SUMMONER" not in pc.build_package_prompt({"premise": "P"}, "B")
+
+
+# ---- before_after refs: the BEFORE half comes from before the climax -------
+# The two-stage path (production default) never called select_before_ref, so
+# series_9's before_after got three refs from its climax chapter: both halves
+# painted from one moment -- the bug select_before_ref was written to fix.
+
+def test_refs_for_before_after_prepend_the_before_panel(monkeypatch):
+    monkeypatch.setattr(pc, "select_before_ref",
+                        lambda beats, eps, climax_ci: "/abs/ch0/scenes/p1.jpg")
+    assert pc.refs_for_style("before_after", [{}], ["ch0"], climax_ci=3,
+                             climax_refs=["p9.jpg", "p8.jpg"]) == \
+        ["/abs/ch0/scenes/p1.jpg", "p9.jpg", "p8.jpg"]
+
+
+def test_refs_for_a_scene_style_are_the_climax_refs(monkeypatch):
+    monkeypatch.setattr(pc, "select_before_ref",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    assert pc.refs_for_style("power_reveal", [{}], ["ch0"], climax_ci=3,
+                             climax_refs=["p9.jpg"]) == ["p9.jpg"]
+
+
+def test_before_ref_prefers_the_lead_over_any_person(tmp_path, monkeypatch):
+    """The before half must show the LEAD. 'Shows a person' alone handed the
+    model a side character before (see protagonist_portrait_files)."""
+    import json as _j
+    ep = tmp_path / "ch0"; ep.mkdir()
+    (ep / "manifest.panels.understood.json").write_text(_j.dumps({"panels": [
+        {"scene_file": "p1.jpg", "subjects": ["a guard in armour"]},
+        {"scene_file": "p2.jpg", "subjects": ["a thin boy in rags"]}]}))
+    beats = [{"beats": [{"scene_selection": [
+        {"scene_file": "p1.jpg", "intensity": "calm"},
+        {"scene_file": "p2.jpg", "intensity": "calm"}]}]}, {}]
+    monkeypatch.setattr(pc, "protagonist_portrait_files", lambda d: {"p2.jpg"})
+    assert pc.select_before_ref(beats, [str(ep), str(tmp_path / "ch1")],
+                                climax_ci=1) == str(ep / "scenes" / "p2.jpg")
+
+
+# ---- verifier findings 2026-09-17 ------------------------------------------
+
+def test_the_scene_option_can_never_come_back_as_a_split():
+    """A prompt is a request. gemma returning before_after (or stat_callout)
+    for the scene option must not turn it into a split."""
+    for rogue in ("before_after", "stat_callout", "triptych", ""):
+        pkg = {"title": "T", "thumbnail_style": rogue,
+               "labels": ["DEAD|KING"], "hashtags": []}
+        c = pc.assemble_package({}, {}, pkg, series_title="X")
+        assert c["style"] in pc.SCENE_STYLES, rogue
+        assert not c["style_overlay"].get("split")
+        # the pair becomes ONE transformation label, never a literal pipe
+        assert c["hook"] == "DEAD -> KING"
+
+
+def test_the_before_after_option_can_never_come_back_as_a_scene():
+    pkg = {"title": "T", "thumbnail_style": "power_reveal",
+           "labels": ["WEAK|KING"], "hashtags": []}
+    c = pc.assemble_package({}, {}, pkg, series_title="X",
+                            styles=["before_after"])
+    assert c["style"] == "before_after" and c["hook"] == "WEAK|KING"
+
+
+def test_title_suffix_in_any_trailing_form_is_not_doubled():
+    for raw in ("He Wins Manhwa Recap", "He wins - MANHWA RECAPS!",
+                "He wins (Manhwa Recap)", "He wins: Manhwa Recap"):
+        assert pc.normalize_title(raw) == "He Wins - Manhwa Recap", raw
+
+
+def test_before_ref_never_falls_back_to_a_panel_known_to_show_nobody(tmp_path):
+    import json as _j
+    ep = tmp_path / "ch0"; ep.mkdir()
+    (ep / "manifest.panels.understood.json").write_text(_j.dumps({"panels": [
+        {"scene_file": "p1.jpg", "panel_kind": "system",
+         "subjects": ["a status window"]}]}))
+    beats = [{"beats": [{"scene_selection": [
+        {"scene_file": "p1.jpg", "intensity": "calm"}]}]}, {}]
+    assert pc.select_before_ref(beats, [str(ep), str(tmp_path / "ch1")],
+                                climax_ci=1) == ""
+
+
+def test_before_after_with_the_climax_in_chapter_one_gets_no_before_ref(monkeypatch):
+    """select_before_ref would search the climax chapter itself and hand back
+    the climax panel twice (verifier probe, 2026-09-17)."""
+    monkeypatch.setattr(pc, "select_before_ref",
+                        lambda *a, **k: "/abs/ch0/scenes/p1.jpg")
+    assert pc.refs_for_style("before_after", [{}], ["ch0"], climax_ci=0,
+                             climax_refs=["p1.jpg"]) == ["p1.jpg"]
+
+
+def test_before_after_run_refuses_to_paint_without_a_before_panel(tmp_path,
+                                                                  monkeypatch):
+    """The two-stage run exits 2 before any image is paid for."""
+    import json as _j
+    import sys as _s
+    ep = tmp_path / "ch1"; ep.mkdir()
+    (ep / "manifest.beats.json").write_text(_j.dumps({"beats": [
+        {"scene_selection": [{"scene_file": "p1.jpg", "intensity": "calm"}]}]}))
+    replies = iter([{"premise": "P"},
+                    {"title": "T", "thumbnail_style": "before_after",
+                     "labels": ["WEAK|KING"], "hashtags": []}])
+    monkeypatch.setattr(pc, "_gemma", lambda prompt, model: next(replies))
+    out = tmp_path / "c.json"
+    monkeypatch.setattr(_s, "argv", ["publish_concept.py", "--episode-dirs",
+                                     str(ep), "--style", "before_after",
+                                     "--out", str(out)])
+    assert pc.main() == 2
+    assert not out.exists()

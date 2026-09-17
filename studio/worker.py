@@ -15,6 +15,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1982,8 +1983,16 @@ def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
         raise RuntimeError(f"bundle {bid} has no chapters with beats yet")
     out_dir = REPO / "dist" / f"bundle_{bid}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    # the title reuses the live thumbnail's words ONLY if the owner picked it:
+    # a pre-picker live concept was the model's choice (the ORV triptych)
+    picked = REPO / "dist" / f"series_{sid}" / "concept.json"
+    was_picked = con.execute(
+        "SELECT 1 FROM approval WHERE gate='thumbnail' AND series_id=? "
+        "AND note LIKE 'picked option:%'", (sid,)).fetchone()
     rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                   "--episode-dirs", ",".join(eps), "--series-title", title,
+                  *(["--thumbnail-concept", str(picked)]
+                    if was_picked and picked.exists() else []),
                   "--out", str(out_dir / "publish_meta.json")],
                  log, env=_series_env(con, sid))
     if rc != 0:
@@ -1992,13 +2001,19 @@ def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
 
 def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
                         log: TextIO) -> None:
-    """ONE thumbnail per manhwa (series), reused across every video. Built from
-    the arc's CLIMAX — the highest-intensity beat across the series' processed
-    chapters: a $0 local-Gemma concept (style + hook + climax refs) -> a
-    text-free Nano-Banana background -> branded overlay -> dist/series_<id>/
-    thumbnail_yt.jpg. Copyright-safe (no licensed name in the image). A fresh
-    build clears any prior approval so the APPROVED badge always refers to the
-    image currently on disk."""
+    """ONE thumbnail per manhwa (series), reused across every video.
+
+    Builds EVERY option in gates.THUMBNAIL_OPTIONS side by side under
+    dist/series_<id>/options/<name>/ -- a single-scene composition and a
+    before/after split -- and makes NONE of them live. The owner picks one on
+    the Series page (POST /thumbnail/pick copies it live and approves it).
+    Owner, 2026-09-17: "i should see both options created and i can select 1
+    of them." The job used to let the model pick the layout (it picked a
+    3-panel triptych nobody wanted) and wrote straight over the live image.
+
+    Each option: a $0 local-Gemma concept (style + hook + refs) -> a text-free
+    Nano-Banana background (~0.13 USD) -> branded overlay. One failed option
+    never blocks the other; the job still fails loud, naming it."""
     sid = job["series_id"]
     if not sid:
         raise RuntimeError("series_thumbnail needs series_id")
@@ -2011,20 +2026,15 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
     if not eps:
         raise RuntimeError("no processed chapters yet — prepare at least one "
                            "chapter (narration) before generating a thumbnail")
-    # VARIANT mode: an explicit style renders to its OWN directory and leaves
-    # the live thumbnail (and its approval) untouched, so styles can be compared
-    # without clobbering the one currently published. The paid image step needs
-    # GEMINI_API_KEY from the login keychain, which only this launchd-run worker
-    # can reach — a non-interactive ssh session cannot unlock it.
-    style = str((job.get("payload") or {}).get("style") or "").strip()
-    out_dir = REPO / "dist" / (f"series_{sid}_{style}" if style
-                               else f"series_{sid}")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    concept_path = out_dir / "concept.json"
     env = _series_env(con, sid)
-    with record_stage(con, chapter_id=None, stage="series_thumbnail",
-                      series_id=sid):
-        # 1) coherent arc concept (style + hook + climax refs) — $0 local Gemma
+
+    def build(out_dir: Path, style: str) -> None:
+        # The paid image step needs GEMINI_API_KEY from the login keychain,
+        # which only this launchd-run worker can reach.
+        out_dir.mkdir(parents=True, exist_ok=True)
+        concept_path = out_dir / "concept.json"
+        # ponytail: each option re-reads the story (2 local gemma calls each);
+        # share one brief across options if this job ever gets slow.
         rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                       "--episode-dirs", ",".join(eps), "--series-title", title,
                       *(["--style", style] if style else []),
@@ -2034,21 +2044,41 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         concept = json.loads(concept_path.read_text())
         ci = int(concept.get("climax_chapter_index") or 0)
         ref_ep = eps[ci] if 0 <= ci < len(eps) else eps[0]
-        # 2) text-free art (Nano Banana, ~$0.13) + deterministic branded overlay
         rc = _stream([PY, str(REPO / "tools" / "thumbnail_build.py"),
                       "--concept", str(concept_path),
                       "--ref-episode-dir", ref_ep,
                       "--out-dir", str(out_dir)], log, env=env)
         if rc != 0:
             raise RuntimeError(f"thumbnail_build exited {rc}")
-    # 3) a freshly built thumbnail must be re-approved before it's "the one".
-    # A VARIANT is not the one: it rendered to its own directory and never
-    # touched the live image, so revoking the live approval would be wrong.
-    if not style:
-        con.execute(
-            "DELETE FROM approval WHERE gate='thumbnail' AND series_id=?",
-            (sid,))
-        con.commit()
+
+    # VARIANT mode: an explicit style renders to its OWN directory, for
+    # comparing a style by hand. Never live, never touches the options.
+    style = str((job.get("payload") or {}).get("style") or "").strip()
+    with record_stage(con, chapter_id=None, stage="series_thumbnail",
+                      series_id=sid):
+        if style:
+            try:
+                build(REPO / "dist" / f"series_{sid}_{style}", style)
+            except (RuntimeError, ValueError, OSError) as e:
+                raise NonRetryableError(f"variant {style} failed: {e}") from e
+            return
+        failed: List[str] = []
+        for name, opt_style in gates.THUMBNAIL_OPTIONS.items():
+            opt_dir = REPO / "dist" / f"series_{sid}" / "options" / name
+            # a failed rebuild must not leave the OLD image pickable
+            shutil.rmtree(opt_dir, ignore_errors=True)
+            try:
+                build(opt_dir, opt_style)
+            except (RuntimeError, ValueError, OSError) as e:  # ValueError: bad json
+                log.write(f"[thumbnail] option {name} failed: {e}\n")
+                failed.append(name)
+        if failed:
+            # NON-retryable: an auto-retry would delete the options that DID
+            # build and pay for every image again. Regenerating is the owner's
+            # call, from the Series page.
+            raise NonRetryableError(
+                "thumbnail option(s) failed: %s — the rest are on the Series "
+                "page to pick" % ", ".join(failed))
 
 
 HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]] = {

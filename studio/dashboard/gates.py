@@ -132,10 +132,17 @@ def ensure_approval(con: sqlite3.Connection, gate: str, *,
            bundle_id=bundle_id, note=note, content_sha=current_sha)
 
 
+# The series thumbnail options the worker builds side by side, name -> the
+# publish_concept --style it runs with ("" = the model picks a single-scene
+# layout). The owner picks one; nothing goes live without that pick. A split
+# is only ever before/after -- never 3 panels (owner, 2026-09-17).
+THUMBNAIL_OPTIONS = {"scene": "", "before_after": "before_after"}
+
+
 def thumbnail_approved(con: sqlite3.Connection, series_id: int) -> bool:
-    """One thumbnail per manhwa — approved at the SERIES level. Regenerating
-    the thumbnail clears this (the worker deletes the row), so an APPROVED
-    badge always refers to the image currently on disk."""
+    """One thumbnail per manhwa — approved at the SERIES level. Generating
+    options never touches it (the live image is unchanged); picking an option
+    replaces the live image and re-records this approval."""
     return _has_approval(con, "thumbnail", series_id=series_id)
 
 

@@ -35,6 +35,7 @@ def _patch(monkeypatch, calls):
 
     monkeypatch.setattr(tb.tg, "generate", fake_generate)
     monkeypatch.setattr(tb, "render_overlay", fake_overlay)
+    monkeypatch.setattr(tb, "art_text_words", lambda path: [])
 
 
 def test_render_thumbnail_series_mode_resolves_refs_at_ref_dir(tmp_path, monkeypatch):
@@ -72,3 +73,36 @@ def test_render_thumbnail_explicit_refs_override_concept(tmp_path, monkeypatch):
                         out_dir=str(tmp_path / "o"), models=["m1"],
                         refs=["override.jpg"])
     assert calls["refs"] == ["override.jpg"]
+
+
+# ---- the art must be text-free, and the prompt alone does not make it so ----
+# series_1's live triptych art (2026-09-17) carried ORDINARY / TRANSFORMATION /
+# POWERFUL and "LEFT (ordinary)" etc. -- the model drew the layout description
+# as captions despite "render NO text". Our overlay painted over half of it.
+# Measured with Apple Vision over all 6 arts on the Mini: those 9 words at conf
+# 1.0 and 4.4-6% of the image height; the only other hit was "BOX" at 1.8%, a
+# corner glyph on a drawn UI panel.
+
+def test_drawn_words_flags_readable_text_only():
+    words = [
+        {"t": "ORDINARY", "conf": 1.0, "bbox": [0.1, 0.02, 0.3, 0.0668]},
+        {"t": "(ordinary)", "conf": 1.0, "bbox": [0.1, 0.9, 0.3, 0.9585]},
+        {"t": "BOX", "conf": 1.0, "bbox": [0.9477, 0.2812, 0.9666, 0.2995]},
+        {"t": "FLARE", "conf": 0.5, "bbox": [0.83, 0.70, 0.87, 0.75]},
+        {"t": "18", "conf": 1.0, "bbox": [0.1, 0.1, 0.2, 0.2]},
+    ]
+    assert tb.drawn_words(words) == ["ORDINARY", "(ordinary)"]
+
+
+def test_render_thumbnail_refuses_art_with_drawn_text(tmp_path, monkeypatch):
+    import pytest
+    ref_ep = tmp_path / "ch"; ref_ep.mkdir()
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    monkeypatch.setattr(tb, "art_text_words", lambda path: ["ORDINARY", "LEFT"])
+    with pytest.raises(RuntimeError, match="ORDINARY"):
+        tb.render_thumbnail({"style": "power_reveal", "hook": "X",
+                             "refs": ["a.jpg"]}, ref_episode_dir=str(ref_ep),
+                            out_dir=str(tmp_path / "o"), models=["m1"])
+    assert "overlay_hook" not in calls           # never overlaid, never shipped
+    assert not (tmp_path / "o" / "thumbnail_yt.jpg").exists()

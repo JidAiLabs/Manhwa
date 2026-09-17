@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 _TD = os.path.dirname(os.path.abspath(__file__))
@@ -62,14 +63,12 @@ _HOOK_GRAMMAR = (
     "arrow from it to a person in the picture. Never a mood, never atmosphere, "
     "never a sentence or a clause. Use this story's OWN words for the role. ")
 
+# The layouts the AUTO path may choose: one cohesive scene each. before_after is
+# only ever built as its own option (--style before_after); stat_callout only as
+# an explicit variant (it produced "LEVEL 999" on a story whose max level is 11).
+SCENE_STYLES = ["power_reveal", "vs_monster", "humiliation", "feat_object"]
+
 _HOOK_SHAPE = {
-    "triptych": (_HOOK_GRAMMAR +
-                 '3 labels. EVERY one is a THREE-part progression written as '
-                 '"FIRST|MIDDLE|LAST" (1-2 words per part) — what this '
-                 'character is at the start, at the turning point, and at the '
-                 'end of the arc. Each part is a role or status this story '
-                 'actually gives them, in its own words. A part may end in "?" '
-                 'where the story leaves it open'),
     "before_after": (_HOOK_GRAMMAR +
                      '3 labels. EVERY one is a contrasting PAIR of ROLES or '
                      'RANKS written as "BEFORE SIDE|AFTER SIDE" (1-2 words per '
@@ -94,7 +93,8 @@ _HOOK_DEFAULT = (_HOOK_GRAMMAR +
 
 def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
                      pkg: Dict[str, Any], *, series_title: str,
-                     official_link: str = "") -> Dict[str, Any]:
+                     official_link: str = "",
+                     styles: Optional[List[str]] = None) -> Dict[str, Any]:
     """Concept from the two-stage understanding. Pure/testable.
 
     The model's own layout choice wins, validated against the registry (an
@@ -103,9 +103,12 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
     the text it wrote can never disagree -- the failure mode when a keyword
     heuristic picked the layout and the model wrote for a different one.
     """
+    # The offered list is ENFORCED, not just asked for: a prompt is a request,
+    # and the scene option must never come back as a split (or vice versa).
+    allowed = [s for s in (styles or SCENE_STYLES) if s in STYLE_MODULES]
     style = str(pkg.get("thumbnail_style") or "").strip()
-    if style not in STYLE_MODULES:
-        style = DEFAULT_STYLE
+    if style not in allowed:
+        style = allowed[0]
     # `labels` may come back as a bare STRING ("READER|SURVIVOR|AUTHOR") rather
     # than a list -- iterating that yields one CHARACTER per label and the hook
     # becomes "R". A JSON schema in a prompt is a request, not a guarantee.
@@ -113,13 +116,16 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
     if isinstance(raw_labels, str):
         raw_labels = [raw_labels]
     labels = [str(x).strip() for x in raw_labels if str(x).strip()]
-    # A panelled layout needs ONE pipe-joined hook ("A|B|C"). The model returns
-    # either shape: a joined string, or one list entry per panel. Taking the
-    # first entry of the latter left panels 2 and 3 blank, so join instead.
-    want = 3 if style_for(style)["overlay"].get("split3") else (
-        2 if style_for(style)["overlay"].get("split") else 1)
+    # A split layout needs ONE pipe-joined hook ("A|B"). The model returns
+    # either shape: a joined string, or one list entry per half. Taking the
+    # first entry of the latter left the right half blank, so join instead.
+    want = 2 if style_for(style)["overlay"].get("split") else 1
     if want > 1 and len(labels) >= want and not any("|" in s for s in labels):
         labels = ["|".join(labels[:want])] + labels[want:]
+    if want == 1:
+        # a pair written for a split, on a one-scene layout, is a
+        # transformation label ("DEAD -> KING"), never a literal pipe
+        labels = [s.replace("|", " -> ") for s in labels]
 
     corpus = beats_text_corpus(beats_obj)
     # numbers stay guarded: a rank or level is a checkable claim about the
@@ -128,7 +134,7 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
     synopsis = str(pkg.get("description") or "").strip()
     hashtags = pkg.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
     return {
-        "title": str(pkg.get("title") or "").strip(),
+        "title": normalize_title(pkg.get("title")),
         "style": style,
         "style_reason": str(pkg.get("style_reason") or "").strip(),
         "style_overlay": style_for(style)["overlay"],
@@ -173,7 +179,8 @@ def build_brief_prompt(digest: str, banned: str) -> str:
 
 
 def build_package_prompt(brief: Dict[str, Any], banned: str,
-                         styles: Optional[List[str]] = None) -> str:
+                         styles: Optional[List[str]] = None,
+                         thumb_labels: str = "") -> str:
     """STAGE 2: write the whole publish package FROM the understanding.
 
     Takes the stage-1 brief, not the raw narration -- the model is now writing
@@ -182,9 +189,20 @@ def build_package_prompt(brief: Dict[str, Any], banned: str,
     thumbnail layout: which composition suits the story is a judgement about
     the story, and a keyword heuristic kept picking stat_callout for a series
     whose largest number is 11.
+
+    The auto path offers SINGLE-SCENE layouts only. before_after is always
+    built as its own option (--style before_after) and the owner picks between
+    them on the Series page -- the model never chooses between a split and a
+    scene. 27 of 27 example thumbnails are one scene; 0 are split at all.
+
+    *thumb_labels* is the picked series thumbnail's text: a video title reuses
+    its status words so the thumbnail and the title make the same claim.
     """
-    opts = styles or ["power_reveal", "before_after", "triptych",
-                      "vs_monster", "humiliation", "feat_object"]
+    opts = styles or SCENE_STYLES
+    same_claim = (
+        f"The series thumbnail already shows: {thumb_labels}. Reuse those "
+        "status words in the title so the thumbnail and title make the same "
+        "claim.\n\n" if thumb_labels else "")
     return (
         "You are writing the YouTube package for a manhwa recap. You have "
         "already read the series; your understanding of it is below.\n"
@@ -192,11 +210,17 @@ def build_package_prompt(brief: Dict[str, Any], banned: str,
         "No real character names anywhere in the output.\n\n"
         "STORY UNDERSTANDING:\n" + json.dumps(brief, indent=2) + "\n\n"
         "Write copy that could ONLY belong to this story. Anything that would "
-        "fit any manhwa is a failure.\n\n"
+        "fit any manhwa is a failure.\n\n" + same_claim +
         "Return ONLY JSON:\n"
         "{\n"
-        '  "title": "YouTube title, 60-95 chars. State the specific situation '
-        'and the turn it takes. CAPS on the 2-3 words that carry the hook",\n'
+        '  "title": "YouTube title, 45-80 characters. Shape: WHO the '
+        'protagonist starts as (a low status, a humiliating role or an odd '
+        'identity, in this story\'s own terms), then the TURN (the verb of '
+        'change), then their specific EDGE (the concrete power or trick, with '
+        'its number when the story states one), then the PAYOFF (what it does '
+        'to the people or world around them). FULL CAPS on the 2-4 words that '
+        'carry status or power. No emoji, no character names, no question '
+        'marks, no channel name. A number must be one the story states",\n'
         '  "description": "3-5 sentences a viewer reads to decide. Open with '
         'the premise, say what changes, end on the open question. No hashtag '
         'list, no boilerplate — prose only",\n'
@@ -205,9 +229,9 @@ def build_package_prompt(brief: Dict[str, Any], banned: str,
         '  "style_reason": "one sentence: why that composition suits it",\n'
         '  "labels": ["the thumbnail text for the layout you chose. A label is '
         'a NAMETAG naming what someone IS or BECAME — a role, title or status, '
-        'in this story\'s own words. Never a mood or a sentence. For a 2-panel '
-        'layout give \\"BEFORE|AFTER\\"; for a 3-panel layout \\"FIRST|MIDDLE|'
-        'LAST\\"; otherwise a single 1-3 word label"],\n'
+        'in this story\'s own words. Never a mood or a sentence. ' +
+        ('Give ONE \\"BEFORE|AFTER\\" pair' if opts == ["before_after"]
+         else 'A single 1-3 word label') + '"],\n'
         '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
         "}")
 
@@ -418,16 +442,34 @@ def pick_hook(hooks: List[str], style: str, *, corpus: str = "") -> str:
         # label rather than print a false claim on the thumbnail.
         if grounded:
             return grounded[0]
-    if style == "triptych":
-        # needs THREE parts: a two-part hook would leave the last panel unlabelled
-        for h in hooks:
-            if h.count("|") >= 2:
-                return h
     if style == "before_after":
         for h in hooks:
             if "|" in h:
                 return h
     return hooks[0]
+
+
+_TITLE_SUFFIX = " - Manhwa Recap"
+_SUFFIX_RE = re.compile(
+    r"[\s\-|:(\[\u2013\u2014]*manhwa\s+recaps?[\s)\]!.]*$", re.IGNORECASE)
+
+
+def normalize_title(title: Any) -> str:
+    """The title in the format that performs, enforced where it is mechanical.
+
+    Counted over 27 example titles (18 refs + the owner's 9, 2026-09-17):
+    every one ends in the "Manhwa Recap" suffix (26 with a dash, 1 with a
+    pipe), none carries an emoji, and 7 of the owner's 9 capitalise every word
+    while the status words stay FULL CAPS. The model is asked for the
+    shape; these three things are not left to it. Empty stays empty.
+    """
+    t = "".join(ch for ch in str(title or "")
+                if unicodedata.category(ch) not in ("So", "Sk", "Cs")
+                and ch not in "\u200d\ufe0f")
+    t = _SUFFIX_RE.sub("", " ".join(t.split()))
+    if not t:
+        return ""
+    return " ".join(w[:1].upper() + w[1:] for w in t.split()) + _TITLE_SUFFIX
 
 
 def build_description(synopsis: str, hashtags: List[str]) -> str:
@@ -708,15 +750,18 @@ def select_before_ref(beats_objs: List[Dict[str, Any]], ep_dirs: List[str], *,
     "before" at all, and the composition's whole premise was unsupported.
 
     Searches the earliest chapters first for a calm/tense kept panel, which is
-    where a protagonist is most likely to be shown at their weakest.
+    where a protagonist is most likely to be shown at their weakest. A panel
+    showing the LEAD wins over one that merely shows a person: "a person" is
+    how a side character became the protagonist before.
     """
-    fallback = ""
+    fallback = person = ""
     for ci in range(0, max(1, min(climax_ci, len(beats_objs)))):
         # the "before" half must SHOW the character too -- picking purely on
         # intensity handed the image model a panel with no person in it, and
         # the fidelity instruction had nothing to copy (see
         # panel_shows_a_character).
         shows: Dict[str, bool] = {}
+        lead = protagonist_portrait_files(ep_dirs[ci]) if ci < len(ep_dirs) else set()
         if ci < len(ep_dirs):
             try:
                 u = json.load(open(os.path.join(
@@ -731,10 +776,37 @@ def select_before_ref(beats_objs: List[Dict[str, Any]], ep_dirs: List[str], *,
                 continue
             path = (os.path.join(ep_dirs[ci], "scenes", fn)
                     if ci < len(ep_dirs) else fn)
-            if shows.get(fn):
+            if fn in lead:
                 return path
-            fallback = fallback or path
-    return fallback
+            if shows.get(fn):
+                person = person or path
+            elif not shows:
+                # no understanding for this chapter: no evidence either way.
+                # A panel KNOWN to show nobody is never a fallback.
+                fallback = fallback or path
+    return person or fallback
+
+
+def refs_for_style(style: str, beats_list: List[Dict[str, Any]],
+                   ep_dirs: List[str], *, climax_ci: int,
+                   climax_refs: List[str]) -> List[str]:
+    """The reference panels a style's composition actually needs.
+
+    before_after paints two moments, so its BEFORE half needs a panel from
+    before the climax (an absolute path, usually another chapter); climax refs
+    alone painted both halves from one moment. Every other style is one scene
+    and uses the climax refs. The ONE place this is decided: the two-stage path
+    (the production default) used to skip it and series_9 shipped a
+    before_after built from three climax-chapter panels.
+    """
+    refs = list(climax_refs or [])
+    # climax in the first chapter: there is no "before" to search, and
+    # select_before_ref would search the climax chapter itself
+    if style == "before_after" and climax_ci >= 1:
+        before = select_before_ref(beats_list, ep_dirs, climax_ci=climax_ci)
+        if before:
+            refs = [before] + [r for r in refs if r != before]
+    return refs
 
 
 def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
@@ -756,7 +828,7 @@ def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
     synopsis = str(llm.get("synopsis") or "").strip()
     hashtags = llm.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
     return {
-        "title": str(llm.get("title") or "").strip(),
+        "title": normalize_title(llm.get("title")),
         "style": style,
         "style_overlay": style_for(style)["overlay"],
         "hook": hook,
@@ -816,12 +888,8 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
     # the transformed climax. Climax refs alone painted both halves from one
     # moment. The before panel usually lives in an earlier chapter, so it is an
     # ABSOLUTE path — refs from the climax chapter stay bare filenames.
-    if c.get("style") == "before_after":
-        before = select_before_ref(beats_list, ep_dirs or [],
-                                   climax_ci=climax_ci)
-        if before:
-            refs = [before] + [r for r in refs if r != before]
-    c["refs"] = refs
+    c["refs"] = refs_for_style(c.get("style", ""), beats_list, ep_dirs or [],
+                               climax_ci=climax_ci, climax_refs=refs)
     c["description"] = c["description"] + "\n\n" + "\n".join(c["parts"])
     return c
 
@@ -875,6 +943,9 @@ def main() -> int:
                     help="the OLD one-call path: write copy straight from the "
                          "raw narration digest. Kept for comparison; the "
                          "default now understands the story first (two calls).")
+    ap.add_argument("--thumbnail-concept", default="",
+                    help="the PICKED series thumbnail's concept.json: the "
+                         "title reuses its status words (bundle mode)")
     ap.add_argument("--ollama-model", default="gemma4:26b")
     ap.add_argument("--digest-chapters", type=int, default=24,
                     help="max chapters described to the LLM (bundle mode). "
@@ -914,18 +985,34 @@ def main() -> int:
             brief = _gemma(build_brief_prompt(digest, args.series_title),
                            args.ollama_model)
             print("[..] brief: %s" % str(brief.get("premise") or "")[:110])
+            thumb_labels = ""
+            if args.thumbnail_concept and os.path.exists(args.thumbnail_concept):
+                tc = json.load(open(args.thumbnail_concept))
+                thumb_labels = " / ".join(
+                    x for x in str(tc.get("hook") or "").split("|") if x.strip())
             pkg = _gemma(
                 build_package_prompt(brief, args.series_title,
-                                     [args.style] if args.style else None),
+                                     [args.style] if args.style else None,
+                                     thumb_labels=thumb_labels),
                 args.ollama_model)
             style_beats = beats_list[climax_ci] if beats_list else {}
             concept = assemble_package(
                 style_beats, brief, pkg, series_title=args.series_title,
-                official_link=args.official_link)
-            _sc2 = select_bundle_climax_scored(eps)
+                official_link=args.official_link,
+                styles=[args.style] if args.style else None)
             concept["climax_chapter_index"] = climax_ci
-            concept["refs"] = (_sc2[1] if _sc2
-                               else select_bundle_climax(beats_list)[1])
+            concept["refs"] = refs_for_style(
+                concept["style"], beats_list, eps, climax_ci=climax_ci,
+                climax_refs=(_sc[1] if _sc
+                             else select_bundle_climax(beats_list)[1]))
+            if concept["style"] == "before_after" and not (
+                    concept["refs"] and os.path.isabs(concept["refs"][0])):
+                # both halves would be painted from the climax: refuse before
+                # paying for the image (and say which chapter was the climax)
+                print("[err] before_after needs a panel of the lead from BEFORE "
+                      "the climax (chapter #%d of %d); none found"
+                      % (climax_ci + 1, len(beats_list)))
+                return 2
             concept["parts"] = parts_timestamps(durations)
             if beats_list:
                 concept["badge"] = "%d CHAPTERS" % len(beats_list)
@@ -945,6 +1032,11 @@ def main() -> int:
                                    vocab=story_vocabulary([args.episode_dir]))
         out = args.out or os.path.join(args.episode_dir, "render", "publish_meta.json")
 
+    if len(concept.get("title") or "") > 100:
+        # YouTube rejects titles over 100 characters. Uploads are manual, so
+        # say it loudly rather than cut the claim mid-sentence.
+        print("[warn] title is %d chars, YouTube allows 100: %r"
+              % (len(concept["title"]), concept["title"]))
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(concept, f, ensure_ascii=False, indent=2)

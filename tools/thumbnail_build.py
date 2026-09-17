@@ -24,6 +24,33 @@ from thumbnail_overlay import render_overlay                            # noqa: 
 import thumbnail_gen as tg                                              # noqa: E402
 
 
+def drawn_words(words: List[Dict[str, Any]], *, min_conf: float = 0.9,
+                min_h: float = 0.03) -> List[str]:
+    """OCR words that are READABLE text the model drew into the art.
+
+    Thresholds are measured, not guessed: Apple Vision over the 6 arts on the
+    Mini found the live triptych's 9 drawn captions at conf 1.0 and 4.4-6% of
+    the image height, and one false hit, "BOX" at 1.8% -- a corner glyph on a
+    drawn UI panel. Low-confidence hits (0.3-0.5) were art misreads. A word
+    needs 3+ letters: digits and 1-2 letter shapes are sparks and runes.
+    """
+    return [str(w.get("t")) for w in (words or [])
+            if float(w.get("conf") or 0) >= min_conf
+            and sum(ch.isalpha() for ch in str(w.get("t") or "")) >= 3
+            and (w["bbox"][3] - w["bbox"][1]) >= min_h]
+
+
+def art_text_words(path: str) -> List[str]:
+    """Readable words in the generated art (on-device Apple Vision, $0)."""
+    import apple_vision as av
+    if not av.available():
+        # ponytail: macOS-only check; production runs on the Mini, so say so
+        # rather than pretend the art was checked.
+        print("[warn] apple vision unavailable: art NOT checked for drawn text")
+        return []
+    return drawn_words(av.ocr_words(path, langs=("en-US",))[1])
+
+
 def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
                      out_dir: str, models: List[str],
                      size: str = "2K", refs: List[str] = None) -> Dict[str, Any]:
@@ -47,6 +74,14 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
                        out_path=art_path, prompt_override=art_prompt)
     if not used:
         raise RuntimeError("Nano Banana returned no image")
+    # "render NO text" in the prompt does not make the art text-free: the
+    # series_1 triptych drew its own layout captions and shipped them. Refuse
+    # the art rather than overlay onto it.
+    drawn = art_text_words(art_path)
+    if drawn:
+        raise RuntimeError("the model drew text into the art (%s): %s -- "
+                           "regenerate; this image was not overlaid"
+                           % (art_path, drawn))
 
     out = os.path.join(out_dir, "thumbnail_yt.jpg")
     render_overlay(art_path, out, hook=concept.get("hook", ""),

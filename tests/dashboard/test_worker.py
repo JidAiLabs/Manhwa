@@ -2589,3 +2589,149 @@ def test_h_prepare_blocking_verdict_outlives_a_stale_green_row(tmp_path, monkeyp
     assert con.execute("SELECT state FROM job WHERE id=?",
                        (jid,)).fetchone()[0] == "failed"
     assert gates.latest_qa_ok(con, 5) is False
+
+
+# ---- series thumbnail: BOTH options are built, the owner picks one ----------
+# Owner, 2026-09-17: "i should see both options created and i can select 1 of
+# them. I am telling this many times." The job used to let the model choose the
+# layout (it chose a 3-panel triptych) and wrote straight over the live image.
+
+def _thumb_stream(calls, fail_style=None):
+    import json as _j
+
+    def fake(cmd, log, **kw):
+        s = [str(x) for x in cmd]
+        calls.append(s)
+        if s[1].endswith("publish_concept.py"):
+            style = s[s.index("--style") + 1] if "--style" in s else ""
+            _j.dump({"style": style or "power_reveal", "hook": "HOOK",
+                     "climax_chapter_index": 0},
+                    open(s[s.index("--out") + 1], "w"))
+        elif s[1].endswith("thumbnail_build.py"):
+            out = s[s.index("--out-dir") + 1]
+            if fail_style and fail_style in out:
+                return 1
+            open(out + "/thumbnail_yt.jpg", "wb").write(b"jpg")
+        return 0
+    return fake
+
+
+def test_series_thumbnail_builds_both_options_and_leaves_live_alone(tmp_path,
+                                                                   monkeypatch):
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    live = tmp_path / "dist" / "series_1"
+    live.mkdir(parents=True)
+    (live / "thumbnail_yt.jpg").write_bytes(b"live")
+    gates.approve(con, "thumbnail", series_id=1)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+                               io.StringIO())
+    for name in ("scene", "before_after"):
+        assert (live / "options" / name / "thumbnail_yt.jpg").exists(), name
+    concept_cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
+    assert ["--style", "before_after"] == [
+        x for c in concept_cmds for x in c if x in ("--style", "before_after")]
+    # nothing goes live until the owner picks: live image + approval untouched
+    assert (live / "thumbnail_yt.jpg").read_bytes() == b"live"
+    assert gates.thumbnail_approved(con, 1) is True
+
+
+def test_one_failed_option_still_builds_the_other_then_fails_loud(tmp_path,
+                                                                 monkeypatch):
+    import io
+    import pytest
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    opts = tmp_path / "dist" / "series_1" / "options"
+    (opts / "before_after").mkdir(parents=True)
+    (opts / "before_after" / "thumbnail_yt.jpg").write_bytes(b"stale")
+    monkeypatch.setattr(worker, "_stream",
+                        _thumb_stream([], fail_style="before_after"))
+    with pytest.raises(RuntimeError, match="before_after"):
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+                                   io.StringIO())
+    assert (opts / "scene" / "thumbnail_yt.jpg").exists()
+    # a failed rebuild never leaves the OLD image pickable under the new label
+    assert not (opts / "before_after" / "thumbnail_yt.jpg").exists()
+
+
+def test_failed_option_is_not_auto_retried(tmp_path, monkeypatch):
+    """A retry would delete the option that DID build and pay for both again."""
+    import io
+    import pytest
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    monkeypatch.setattr(worker, "_stream",
+                        _thumb_stream([], fail_style="scene"))
+    with pytest.raises(worker.NonRetryableError):
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+                                   io.StringIO())
+
+
+def test_a_corrupt_concept_in_one_option_still_builds_the_other(tmp_path,
+                                                               monkeypatch):
+    import io
+    import pytest
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    good = _thumb_stream([])
+
+    def stream(cmd, log, **kw):
+        s = [str(x) for x in cmd]
+        rc = good(cmd, log, **kw)
+        if s[1].endswith("publish_concept.py") and "--style" not in s:
+            open(s[s.index("--out") + 1], "w").write("{not json")
+        return rc
+    monkeypatch.setattr(worker, "_stream", stream)
+    with pytest.raises(worker.NonRetryableError, match="scene"):
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+                                   io.StringIO())
+    opts = tmp_path / "dist" / "series_1" / "options"
+    assert (opts / "before_after" / "thumbnail_yt.jpg").exists()
+
+
+def test_publish_meta_reuses_thumbnail_words_only_after_an_owner_pick(tmp_path,
+                                                                     monkeypatch):
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 1)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    con.execute("INSERT INTO bundle (id, series_id, title, kind) "
+                "VALUES (7, 1, 'b', 'season')")
+    con.commit()
+    monkeypatch.setattr(worker.bundles, "bundle_chapters", lambda c, b: [1])
+    monkeypatch.setattr(worker, "_chapter",
+                        lambda c, cid: {"ep_dir": str(tmp_path / "ch1")})
+    live = tmp_path / "dist" / "series_1"
+    live.mkdir(parents=True)
+    (live / "concept.json").write_text('{"hook": "READER|PLAYER|PROTAGONIST"}')
+    calls = []
+    monkeypatch.setattr(worker, "_stream",
+                        lambda cmd, log, **kw: calls.append(cmd) or 0)
+    gates.approve(con, "thumbnail", series_id=1)          # pre-picker approval
+    worker._h_publish_meta(con, {"bundle_id": 7}, io.StringIO())
+    assert "--thumbnail-concept" not in calls[-1]
+    gates.approve(con, "thumbnail", series_id=1, note="picked option: scene")
+    worker._h_publish_meta(con, {"bundle_id": 7}, io.StringIO())
+    assert "--thumbnail-concept" in calls[-1]
+
+
+def test_a_failed_variant_is_not_auto_retried(tmp_path, monkeypatch):
+    import io
+    import pytest
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 1)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    monkeypatch.setattr(worker, "_stream",
+                        _thumb_stream([], fail_style="series_1_vs_monster"))
+    with pytest.raises(worker.NonRetryableError, match="vs_monster"):
+        worker._h_series_thumbnail(
+            con, {"series_id": 1, "payload": {"style": "vs_monster"}},
+            io.StringIO())

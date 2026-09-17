@@ -1282,3 +1282,46 @@ def test_videos_page_is_scoped_to_the_selected_manhwa(client, monkeypatch, tmp_p
     assert "no videos yet for this manhwa" in other
     # no param -> the first manhwa
     assert "Videos of Nano Machine" in c.get("/videos").text
+
+
+def test_series_page_shows_both_thumbnail_options_and_pick_makes_one_live(
+        client, tmp_path, monkeypatch):
+    """Owner picks between the options; picking copies that option live and
+    records the approval. Nothing is live before a pick."""
+    import json as _j
+    c, con = client
+    from studio.dashboard import app as _app, gates
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    base = tmp_path / "dist" / "series_1"
+    for name, hook in (("scene", "F-RANK SUMMONER"),
+                       ("before_after", "READER|AUTHOR")):
+        d = base / "options" / name
+        d.mkdir(parents=True)
+        (d / "thumbnail_yt.jpg").write_bytes(name.encode())
+        (d / "concept.json").write_text(_j.dumps({"hook": hook, "style": name}))
+    page = c.get("/series/1").text
+    assert "/thumb/series/1/option/scene" in page
+    assert "/thumb/series/1/option/before_after" in page
+    assert "F-RANK SUMMONER" in page and "READER|AUTHOR" in page
+    assert c.get("/thumb/series/1/option/scene").content == b"scene"
+    assert not gates.thumbnail_approved(con, 1)
+
+    r = c.post("/thumbnail/pick", data={"series_id": 1, "option": "before_after"},
+               follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/series/1"
+    assert (base / "thumbnail_yt.jpg").read_bytes() == b"before_after"
+    assert _j.loads((base / "concept.json").read_text())["hook"] == "READER|AUTHOR"
+    assert gates.thumbnail_approved(con, 1)
+
+
+def test_thumbnail_option_names_are_a_closed_set(client, tmp_path, monkeypatch):
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    (tmp_path / "dist" / "series_1").mkdir(parents=True)
+    assert c.get("/thumb/series/1/option/..%2F..%2Fkeys").status_code == 404
+    assert c.post("/thumbnail/pick", data={"series_id": 1, "option": "../x"},
+                  follow_redirects=False).status_code == 404
+    # a valid name with nothing built yet is also a 404, never a half-copy
+    assert c.post("/thumbnail/pick", data={"series_id": 1, "option": "scene"},
+                  follow_redirects=False).status_code == 404

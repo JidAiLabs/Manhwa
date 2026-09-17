@@ -620,6 +620,19 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         thumb_ready = any(
             ch["ep_dir"] and (Path(ch["ep_dir"]) / "manifest.beats.json").exists()
             for ch in chs)
+        # the options the worker built side by side; the owner picks one
+        thumb_options = []
+        for name in gates.THUMBNAIL_OPTIONS:
+            od = REPO / "dist" / f"series_{sid}" / "options" / name
+            if (od / "thumbnail_yt.jpg").exists():
+                try:
+                    oc = json.loads((od / "concept.json").read_text())
+                except (OSError, ValueError):
+                    oc = {}
+                thumb_options.append({
+                    "name": name, "hook": oc.get("hook") or "",
+                    "style": oc.get("style") or name,
+                    "v": int((od / "thumbnail_yt.jpg").stat().st_mtime)})
         # the planner reads cached beats/understanding, so it needs prepared
         # chapters — the same readiness the thumbnail requires
         teaser_ready = thumb_ready
@@ -642,6 +655,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     thumb_exists=thumb_exists, thumb_ready=thumb_ready,
                     thumb_v=int(thumb.stat().st_mtime) if thumb_exists else 0,
                     thumb_approved=gates.thumbnail_approved(c, sid),
+                    thumb_options=thumb_options,
                     teaser_card=_teaser_card(sid),
                     teaser_state=teaser_state, teaser_exists=teaser_exists,
                     teaser_ready=teaser_ready,
@@ -671,6 +685,33 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         if not p.exists():
             return PlainTextResponse("no thumbnail yet", status_code=404)
         return FileResponse(str(p), media_type="image/jpeg")
+
+    @app.get("/thumb/series/{sid}/option/{name}")
+    def series_thumb_option(sid: int, name: str):
+        # closed set: the name becomes a path segment
+        p = REPO / "dist" / f"series_{sid}" / "options" / name / "thumbnail_yt.jpg"
+        if name not in gates.THUMBNAIL_OPTIONS or not p.exists():
+            return PlainTextResponse("no such thumbnail option", status_code=404)
+        return FileResponse(str(p), media_type="image/jpeg")
+
+    @app.post("/thumbnail/pick")
+    def pick_thumbnail(series_id: int = Form(...), option: str = Form(...)):
+        """The owner's pick goes live: copy that option over the live
+        thumbnail and approve it. The pick IS the approval."""
+        src = REPO / "dist" / f"series_{series_id}" / "options" / option
+        if option not in gates.THUMBNAIL_OPTIONS \
+                or not (src / "thumbnail_yt.jpg").exists():
+            return PlainTextResponse("no such thumbnail option", status_code=404)
+        live = REPO / "dist" / f"series_{series_id}"
+        for fn in ("thumbnail_art.png", "concept.json", "thumbnail_yt.jpg"):
+            if (src / fn).exists():
+                shutil.copy2(src / fn, live / fn)
+        c = con()
+        c.execute("DELETE FROM approval WHERE gate='thumbnail' AND series_id=?",
+                  (series_id,))
+        gates.approve(c, "thumbnail", series_id=series_id,
+                      note=f"picked option: {option}")
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.get("/chapter/{cid}", response_class=HTMLResponse)
     def chapter_page(request: Request, cid: int):

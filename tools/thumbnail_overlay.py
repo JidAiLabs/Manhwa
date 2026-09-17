@@ -142,20 +142,7 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
     hook = (hook or "").strip().upper()
 
     label_pos = style_overlay.get("label_pos", "upper_right")
-    # TRIPTYCH: three vertical panels, one label under each -- the single most
-    # common layout in the thumbnails that perform (a three-beat progression
-    # across the arc). Labels sit at the BOTTOM of their own panel, centred,
-    # which is where the eye lands after reading the picture above it.
-    if style_overlay.get("split3"):
-        parts = [p.strip() for p in hook.split("|")][:3]
-        parts += [""] * (3 - len(parts))
-        f = _font(int(H * 0.105))
-        for i, part in enumerate(parts):
-            if not part:
-                continue
-            _outlined(draw, (int(W * (0.17 + 0.33 * i)), int(H * 0.84)),
-                      part, f, anchor="ma")
-    elif style_overlay.get("split"):
+    if style_overlay.get("split"):
         parts = (hook.split("|", 1) + [""])[:2] if "|" in hook else ("BEFORE", "AFTER")
         f = _font(int(H * 0.13))
         _outlined(draw, (int(W * 0.25), int(H * 0.08)), parts[0].strip(), f, anchor="ma")
@@ -189,8 +176,7 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
     # one lonely label on the right) and the arrow, aimed at frame centre, cuts
     # straight over the artwork. Tags are for single-composition styles.
     f_tag = _font(int(H * 0.095))
-    _panelled = style_overlay.get("split") or style_overlay.get("split3")
-    for t in ([] if _panelled else (tags or [])):
+    for t in ([] if style_overlay.get("split") else (tags or [])):
         text = str((t or {}).get("text") or "").strip().upper()
         if not text:
             continue
