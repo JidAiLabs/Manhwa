@@ -83,6 +83,15 @@ ARTIFACTS: Dict[str, A] = {
                                          # the chapter it is meant to repair.
                                          optional=("manifest.panels.understood.json",)),
     # story-state ledger (2026-07-20): chapter fact record (entities, action
+    # WHO is in each panel, decided from the IMAGE (panel_identity, 2026-09-18):
+    # word matching over text looks cannot separate same-looking characters and
+    # narrated ORV's Dokja as "Namwoon Kim" 67 times. Derived from the
+    # understanding (the panels it asks about); the owner's exemplars live in
+    # cast/<slug>.json, whose mtime is its freshness edge in pipeline.py — the
+    # same arrangement manifest.cast.json uses. Written only for a series that
+    # HAS exemplars, so it is never `required`.
+    "manifest.identity.json":          A(stage="beated",
+                                         inputs=("manifest.panels.understood.json",)),
     # attribution, deaths/role transitions) built between cast and the writer.
     # NOT required yet — older chapters predate it; flip once the fleet has
     # regenerated.

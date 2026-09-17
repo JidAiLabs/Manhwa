@@ -621,23 +621,63 @@ def resolve_figures(understanding: Optional[Dict[str, Any]],
     return out
 
 
+def _figures_from_identity(panel: Dict[str, Any],
+                           record: Optional[Dict[str, Any]],
+                           excluded: Optional[Set[str]] = None
+                           ) -> List[Dict[str, str]]:
+    """Figures for ONE panel from the IMAGE pass (panel_identity).
+
+    Confirmed names carry evidence 'image'. Everyone else is 'unknown' with the
+    panel's own subject text as evidence, so the writer can say "the
+    white-haired guy" instead of guessing a name. A panel the pass never
+    confirmed (absent record) is all-unknown: no keyword fallback, because a
+    fallback is exactly how a wrong name got in (ORV Ep6).
+    """
+    subjects = [str(s).strip() for s in ((panel or {}).get("subjects") or [])
+                if str(s).strip()]
+    rec = record or {}
+    raw = [n for n in (rec.get("names") or []) if n]
+    names = [n for n in raw if n not in (excluded or set())]
+    out: List[Dict[str, str]] = [{"name": n, "evidence": "image"} for n in names]
+    # a vetoed name (the ledger's dead set) does not delete the DRAWN person:
+    # they become unknown, so the panel still has someone to narrate
+    unknowns = (int(rec.get("others") or 0) + (len(raw) - len(names))
+                if record is not None else len(subjects))
+    for i in range(max(0, unknowns)):
+        out.append({"name": "unknown",
+                    "evidence": subjects[i] if i < len(subjects) else ""})
+    return out
+
+
 def resolve_figures_by_file(understood_obj: Any, cast: Any,
                             excluded_by_file: Optional[
-                                Dict[str, Set[str]]] = None
+                                Dict[str, Set[str]]] = None,
+                            identity: Optional[Dict[str, Any]] = None
                             ) -> Dict[str, List[Dict[str, str]]]:
     """{scene_file: figures} over a whole manifest.panels.understood.json.
     {} when either side is missing/empty — consumers stay silent.
     *excluded_by_file* maps scene_file -> cast names that must not resolve
-    there (the story ledger's per-panel dead set)."""
+    there (the story ledger's per-panel dead set).
+
+    *identity* is manifest.identity.json (or its `panels` map), keyed by panel
+    BASENAME. When present it WINS: same-looking characters cannot be told
+    apart from text, so the image pass is the authority and unconfirmed people
+    stay unknown."""
     profiles = cast_profiles(cast)
     if not profiles:
         return {}
+    by_base = (identity or {}).get("panels") if isinstance(identity, dict) \
+        and "panels" in identity else identity
     out: Dict[str, List[Dict[str, str]]] = {}
     for p in ((understood_obj or {}).get("panels") or []):
         if isinstance(p, dict) and p.get("scene_file"):
             fn = str(p["scene_file"])
-            out[fn] = resolve_figures(
-                p, profiles, excluded=(excluded_by_file or {}).get(fn))
+            excluded = (excluded_by_file or {}).get(fn)
+            if by_base is not None:
+                rec = by_base.get(fn.rsplit("/", 1)[-1], by_base.get(fn))
+                out[fn] = _figures_from_identity(p, rec, excluded)
+            else:
+                out[fn] = resolve_figures(p, profiles, excluded=excluded)
     return out
 
 

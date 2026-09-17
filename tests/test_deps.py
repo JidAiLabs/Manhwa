@@ -79,14 +79,15 @@ def test_artifacts_beyond_closures():
         "tts/tts_index.json", "render.plan.json", "render.plan.clean.json"}
     assert set(deps.artifacts_beyond("grouped")) == {
         "manifest.cast.json", "manifest.chapter_story.json",
-        "manifest.ledger.json", "manifest.beats.json",
+        "manifest.identity.json", "manifest.ledger.json", "manifest.beats.json",
         "manifest.script.json", "manifest.sanitize.json", "render.plan.json",
         "tts/tts_index.json", "render.plan.clean.json"}
     assert set(deps.artifacts_beyond("detected")) == {
         "manifest.scenes.json", "manifest.vision.json",
         "manifest.panels.understood.json", "manifest.groups.json",
         "manifest.story.json", "manifest.cast.json",
-        "manifest.chapter_story.json", "manifest.ledger.json",
+        "manifest.chapter_story.json", "manifest.identity.json",
+        "manifest.ledger.json",
         "manifest.beats.json", "manifest.script.json",
         "manifest.sanitize.json", "render.plan.json",
         "tts/tts_index.json", "render.plan.clean.json"}
@@ -155,3 +156,14 @@ def test_a_facts_refresh_does_not_stale_the_narration_it_repairs():
     assert "manifest.ledger.json" not in d["manifest.beats.json"][1]
     # the rewind delete-lists are stage-derived, so they are untouched
     assert "manifest.cast.json" in deps.artifacts_beyond("grouped")
+
+
+def test_identity_manifest_is_declared_and_rewound_with_the_narration():
+    """manifest.identity.json (the IMAGE pass that says who is in a panel) is a
+    beated artifact derived from the understanding: a re-narration must rebuild
+    it, or a chapter keeps the identities its old narration was written from."""
+    a = deps.ARTIFACTS["manifest.identity.json"]
+    assert a.stage == "beated"
+    assert "manifest.panels.understood.json" in a.inputs
+    from studio.catalog import reset
+    assert "manifest.identity.json" in reset.artifacts_for("grouped")

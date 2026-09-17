@@ -979,3 +979,30 @@ def test_look_evidence_must_not_contradict_the_registry_hair_colour(tmp_path,
     portraits, look = pc._lead_panels(str(ep))
     assert look == {"p1.jpg"}
     assert portraits == {"p1.jpg"}        # a colour clash is not the lead at all
+
+
+def test_lead_panels_trust_the_image_pass_when_it_exists(tmp_path, monkeypatch):
+    """Thumbnail refs come from the same authority as the narration. 5 of the 8
+    tiles the keyword path suggested for ORV were other men; the image pass got
+    8 of 8 in the spike."""
+    import json as _j
+    import types as _t
+    ep = tmp_path / "ch"; ep.mkdir()
+    (ep / "manifest.cast.json").write_text(_j.dumps({"cast": [
+        {"id": "our_protagonist", "canonical_name": "our protagonist",
+         "visual_description": "A young man with short dark hair."}]}))
+    (ep / "manifest.panels.understood.json").write_text(_j.dumps({"panels": [
+        {"scene_file": "p1.jpg", "subjects": ["a young man with short dark hair"]},
+        {"scene_file": "p2.jpg", "subjects": ["a young man with short dark hair"]},
+        {"scene_file": "p3.jpg", "subjects": ["a young man with short dark hair"]}]}))
+    (ep / "manifest.identity.json").write_text(_j.dumps({"panels": {
+        "p1.jpg": {"names": ["our protagonist"], "others": 0},   # confirmed
+        "p2.jpg": {"names": [], "others": 1},                    # someone else
+        "p3.jpg": {"names": ["our protagonist"], "others": 3}}}))  # a crowd
+    fake = _t.ModuleType("cast_identity")
+    fake.__dict__.update(__import__("cast_identity").__dict__)
+    fake.resolve_figures_by_file = lambda u, c, **kw: (_ for _ in ()).throw(
+        AssertionError("keyword matching must not run when the image pass exists"))
+    monkeypatch.setitem(__import__("sys").modules, "cast_identity", fake)
+    portraits, look = pc._lead_panels(str(ep))
+    assert portraits == {"p1.jpg"} and look == {"p1.jpg"}

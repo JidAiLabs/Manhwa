@@ -801,9 +801,10 @@ def test_actor_mismatch_resolves_the_same_figures_the_writer_saw(monkeypatch):
     seen = {}
     real = ci_flat.resolve_figures_by_file
 
-    def spy(u, c, excluded_by_file=None):
+    def spy(u, c, excluded_by_file=None, identity=None):
         seen["excluded"] = excluded_by_file
-        return real(u, c, excluded_by_file=excluded_by_file)
+        seen["identity"] = identity
+        return real(u, c, excluded_by_file=excluded_by_file, identity=identity)
     monkeypatch.setattr(ci_flat, "resolve_figures_by_file", spy)
     beats = _beats(("The prince rips his hidden knife free.", ["p000010.jpg"]),
                    _OWNED_NEIGHBOUR)
@@ -980,3 +981,70 @@ def test_identity_gate_leaves_a_system_cards_printed_name_alone():
     # and with no kinds at all, behaviour is unchanged (older callers)
     legacy, rw_legacy = run(None)
     assert (legacy, rw_legacy) == (story, rw_story)
+
+
+# ---- the IMAGE decides when panel_identity confirmed the panel --------------
+# Word matching cannot separate same-looking characters: ORV Ep6 called the
+# protagonist "Namwoon Kim" 67 times. When manifest.identity.json exists it is
+# the authority, and an unconfirmed person stays 'unknown' WITH its description
+# so the writer can say "the white-haired guy" instead of a name.
+
+_CAST_ID = {"cast": [
+    {"canonical_name": "our protagonist", "is_protagonist": True,
+     "visual_description": "A young man with short dark hair in a dark suit."},
+    {"canonical_name": "Namwoon Kim",
+     "visual_description": "A young man with messy white hair in a green jacket."},
+]}
+_U_ID = {"panels": [
+    {"scene_file": "scenes/p1.jpg",
+     "subjects": ["a young man with short dark hair in a dark suit",
+                  "a young man with messy white hair in a green jacket"]},
+    {"scene_file": "scenes/p2.jpg",
+     "subjects": ["a young man with short dark hair in a dark suit"]},
+]}
+
+
+def test_identity_manifest_wins_over_keyword_matching():
+    identity = {"p1.jpg": {"names": ["Namwoon Kim"], "others": 1}}
+    got = ci.resolve_figures_by_file(_U_ID, _CAST_ID, identity=identity)
+    # keyword matching would have said protagonist + Namwoon here
+    assert [f["name"] for f in got["scenes/p1.jpg"]] == ["Namwoon Kim", "unknown"]
+    # the unconfirmed person keeps a description to build a neutral handle from
+    assert "white hair" in got["scenes/p1.jpg"][1]["evidence"] or \
+        "dark suit" in got["scenes/p1.jpg"][1]["evidence"]
+
+
+def test_a_panel_the_image_pass_did_not_confirm_names_nobody():
+    identity = {"p1.jpg": {"names": [], "others": 2}}
+    got = ci.resolve_figures_by_file(_U_ID, _CAST_ID, identity=identity)
+    assert [f["name"] for f in got["scenes/p1.jpg"]] == ["unknown", "unknown"]
+    # p2 is absent from the identity pass entirely -> still no guessing
+    assert [f["name"] for f in got["scenes/p2.jpg"]] == ["unknown"]
+
+
+def test_without_an_identity_manifest_the_keyword_path_is_unchanged():
+    got = ci.resolve_figures_by_file(_U_ID, _CAST_ID)
+    assert [f["name"] for f in got["scenes/p1.jpg"]] == \
+        ["our protagonist", "Namwoon Kim"]
+
+
+def test_the_dead_set_still_vetoes_an_image_confirmed_name():
+    identity = {"p1.jpg": {"names": ["Namwoon Kim"], "others": 0}}
+    got = ci.resolve_figures_by_file(_U_ID, _CAST_ID, identity=identity,
+                                     excluded_by_file={"scenes/p1.jpg": {"Namwoon Kim"}})
+    assert [f["name"] for f in got["scenes/p1.jpg"]] == ["unknown"]
+
+
+def test_actor_mismatch_reads_the_image_pass_when_it_exists():
+    """The gate shares the writer's authority. With an identity manifest, a
+    line naming a character the IMAGE did not confirm is the mismatch, and a
+    line naming the one it DID confirm is clean — whatever the words say."""
+    beats = _beats(("The assassin draws his steel.", ["p000010.jpg"]))
+    # the image pass says p000010 shows the assassin, not Prince Cheon
+    identity = {"p000010.jpg": {"names": ["unnamed assassin"], "others": 0}}
+    assert pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST,
+                                   identity_obj=identity) == []
+    # ...and here it confirms nobody, so nothing is contradicted either
+    assert pq.actor_mismatch_flags(beats, _UNDERSTOOD, CAST,
+                                   identity_obj={"p000010.jpg": {"names": [],
+                                                                 "others": 1}}) == []

@@ -1,27 +1,54 @@
 {
-  "_readme": [
-    "Owner-curated series cast: cast_builder restores these names/looks VERBATIM per chapter",
-    "instead of re-guessing (it once gave Dokja and Michio the same look, Ep128).",
-    "Write looks POSITIVELY (list every outfit the character wears in the arcs being",
-    "processed); exclusions go in `not` — 'no glasses' in the text would count AS glasses.",
-    "Entries absent from a chapter are never injected. Seed a draft from existing chapters:",
-    "  python tools/cast_registry.py ongoing/omniscient-reader --stdout"
-  ],
-  "series": "omniscient-reader",
-  "cast": [
-    {
-      "canonical_name": "our protagonist",
-      "aliases": ["Dokja Kim", "Kim Dokja", "Dokja"],
-      "visual_description": "A young man with short dark hair, wearing a long white coat or a light grey suit jacket over a black shirt.",
-      "not": ["glasses"],
-      "is_protagonist": true
-    },
-    {
-      "canonical_name": "Michio Shoji",
-      "aliases": ["Michio", "Shoji"],
-      "visual_description": "A young man with dark hair and glasses, wearing a black button-down shirt over a white t-shirt and a dark jacket.",
-      "not": [],
-      "is_protagonist": false
-    }
-  ]
+ "_readme": [
+  "Owner-curated series cast: cast_builder restores these names/looks VERBATIM per chapter",
+  "instead of re-guessing (it once gave Dokja and Michio the same look, Ep128).",
+  "Write looks POSITIVELY (list every outfit the character wears in the arcs being",
+  "processed); exclusions go in `not` — 'no glasses' in the text would count AS glasses.",
+  "Entries absent from a chapter are never injected. Seed a draft from existing chapters:",
+  "  python tools/cast_registry.py ongoing/omniscient-reader --stdout"
+ ],
+ "series": "omniscient-reader",
+ "cast": [
+  {
+   "canonical_name": "our protagonist",
+   "aliases": [
+    "Dokja Kim",
+    "Kim Dokja",
+    "Dokja"
+   ],
+   "visual_description": "A young man with short dark hair, wearing a long white coat or a light grey suit jacket over a black shirt.",
+   "not": [
+    "glasses"
+   ],
+   "is_protagonist": true,
+   "exemplars": [
+    "ongoing/omniscient-reader/Episode_6/scenes/p000010.jpg",
+    "ongoing/omniscient-reader/Episode_6/scenes/p000037.jpg"
+   ]
+  },
+  {
+   "canonical_name": "Michio Shoji",
+   "aliases": [
+    "Michio",
+    "Shoji"
+   ],
+   "visual_description": "A young man with dark hair and glasses, wearing a black button-down shirt over a white t-shirt and a dark jacket.",
+   "not": [],
+   "is_protagonist": false
+  },
+  {
+   "canonical_name": "Namwoon Kim",
+   "aliases": [
+    "Namwoon",
+    "Kim Namwoon"
+   ],
+   "visual_description": "A high-school student with messy white hair, wearing a green jacket over a white shirt.",
+   "not": [],
+   "is_protagonist": false,
+   "exemplars": [
+    "ongoing/omniscient-reader/Episode_6/scenes/p000011.jpg",
+    "ongoing/omniscient-reader/Episode_6/scenes/p000097.jpg"
+   ]
+  }
+ ]
 }

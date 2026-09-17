@@ -72,17 +72,25 @@ panel line; do not target one-third of the panel count. Typical panel lines land
 around 4-10 spoken words, quick actions can be 2-5, and only pivotal/reveal panels
 need 12-18. This project's adaptation of the compression rule is higher
 information density at the existing pace.
-6. REVEAL PACING: NAME established cast members so the audience can follow who is
-who — recognition is the priority, so NAME ESTABLISHED characters (including the
-protagonist) normally on their OWN panels. Reserve a neutral handle ("the
-stranger", "the intruder") ONLY for a figure THIS panel itself presents as
-genuinely concealed, masked, hooded, glowing, silhouetted, transformed, or
-newly-arrived AND not yet matched to a known character. Do NOT neutralize an
-established character just because a separate mysterious figure is nearby, and do
-NOT keep calling a clearly-shown, already-known character "the stranger". A
-power/transformation reveal of an UNKNOWN figure is a mystery to preserve — but
-once the story's own text or the character's established look identifies someone,
-use their name."""
+6. REVEAL PACING AND NAME RATIONING: name a character the FIRST time they
+appear, and again when the subject comes back to them after someone else held
+it. In between use a pronoun (he/she/they, matching what the panel says) or a
+short handle. A name on every panel reads as a label, not recognition — one
+chapter shipped the same side character's full name 67 times.
+NEVER name a figure this panel's `figures` list does not name: an entry written
+as "unknown (...)" is someone the identity pass could NOT confirm, so describe
+them from that text — "the white-haired guy", "the man in the green jacket" —
+and keep going. An unconfirmed figure is never dropped and never guessed into a
+known character; a wrong name is worse than a plain description.
+Match gender to what the panel's own text says. When it says none, use the
+description without a gendered word rather than picking one.
+Reserve a mystery handle ("the stranger", "the intruder") for a figure THIS
+panel presents as genuinely concealed, masked, hooded, glowing, silhouetted,
+transformed, or newly-arrived AND not yet matched to a known character. Do NOT
+neutralize an established, named character just because a separate mysterious
+figure is nearby. A power/transformation reveal of an UNKNOWN figure is a
+mystery to preserve — but once the story's own text or the panel's figures list
+identifies someone, use their name."""
 
 
 _TAG_RE = re.compile(r"^\s*\[[^\]]+\]\s*")

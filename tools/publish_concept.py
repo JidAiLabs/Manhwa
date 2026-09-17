@@ -687,12 +687,27 @@ def _lead_panels(ep_dir: str, max_figures: int = 2):
         c = json.load(open(os.path.join(ep_dir, "manifest.cast.json")))
     except Exception:
         return set(), set()
+    lead = protagonist_name(c)
+    if not lead:
+        return set(), set()
+    # The IMAGE pass, when the chapter has one: same authority as the
+    # narration. Keyword matching suggested 5 other men among 8 "MC" tiles;
+    # the image pass got 8 of 8 in the 2026-09-17 spike.
+    try:
+        with open(os.path.join(ep_dir, "manifest.identity.json"),
+                  encoding="utf-8") as f:
+            ident = (json.load(f) or {}).get("panels") or {}
+    except (OSError, ValueError):
+        ident = {}
+    if ident:
+        conf = {fn for fn, rec in ident.items()
+                if _norm_name(lead) in {_norm_name(n) for n in (rec.get("names") or [])}
+                and len(rec.get("names") or []) + int(rec.get("others") or 0)
+                <= max_figures}
+        return conf, conf          # image-confirmed IS the look evidence
     try:
         from cast_identity import resolve_figures_by_file
     except Exception:
-        return set(), set()
-    lead = protagonist_name(c)
-    if not lead:
         return set(), set()
     # The registry's hair LENGTH, which cast_identity never compares (it keys
     # on colour): 390 of 2925 ORV "lead portraits" describe long hair while

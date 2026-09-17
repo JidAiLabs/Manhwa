@@ -2719,6 +2719,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cast", default="", help="Optional manifest.cast.json for consistent character naming + dialogue attribution")
     ap.add_argument("--story", default="", help="Optional manifest.story.json (chapter spine: logline + ordered arc) so each beat advances ONE connected story")
     ap.add_argument("--corrections", default="", help="Optional JSON {group_id: note}; force-regen those groups with the note appended (closed-loop grounding gate)")
+    ap.add_argument("--identity", default="",
+                    help="manifest.identity.json — WHO is in each panel, decided "
+                         "from the IMAGE (panel_identity). When present it is "
+                         "the naming authority: unconfirmed figures stay "
+                         "unknown and the writer describes them instead.")
     ap.add_argument("--understood", default="",
                     help="manifest.panels.understood.json for per-panel pad grounding")
     ap.add_argument("--ledger", default="",
@@ -2741,6 +2746,8 @@ def main() -> int:
     groups_m = load_json(args.groups_manifest)
     vision_m = load_json(args.vision_manifest)
     understood_m = load_json(args.understood) if args.understood and os.path.exists(args.understood) else {}
+    identity_m = (load_json(args.identity)
+                  if args.identity and os.path.exists(args.identity) else {})
     u_by_file = {p.get("scene_file"): p for p in (understood_m.get("panels") or []) if p.get("scene_file")}
     # Story-state ledger — fail-soft: {} keeps every downstream byte-compatible
     ledger_m = (load_json(args.ledger)
@@ -2973,8 +2980,12 @@ def main() -> int:
                 ledger_m, [p.get("scene_file")
                            for p in (understood_m.get("panels") or [])
                            if p.get("scene_file")])
+        # identity_m (the IMAGE pass) WINS when present: same-looking
+        # characters cannot be separated from text, and an unconfirmed figure
+        # must reach the writer as a description, never a name.
         figures_by_file = resolve_figures_by_file(
-            understood_m, cast_list, excluded_by_file=excluded_by_file)
+            understood_m, cast_list, excluded_by_file=excluded_by_file,
+            identity=identity_m or None)
         actor_nouns = actor_noun_map(cast_list)
         protagonist_names = _prot_names(cast_list)
         spoken_map = _spoken_names(cast_list)

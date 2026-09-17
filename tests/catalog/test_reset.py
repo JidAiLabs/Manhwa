@@ -158,16 +158,19 @@ def test_derived_lists_match_legacy():
         # tts_index was only ever deleted via the tts/ dir; now explicit.
         # ledger + chapter_story: beated-stage facts (2026-07-20) — they die
         # on any rewind past beated, like cast.
+        # identity: WHO is in each panel, from the IMAGE (2026-09-18). The
+        # narration is written from it, so a re-narration must rebuild it.
         "grouped": {"tts/tts_index.json", "manifest.ledger.json",
-                    "manifest.chapter_story.json"},
+                    "manifest.chapter_story.json", "manifest.identity.json"},
         # THE bug: everything derived from re-materialized scenes must die
         "detected": {"tts/tts_index.json", "manifest.scenes.json",
                      "manifest.vision.json", "manifest.panels.understood.json",
                      "manifest.groups.json", "manifest.story.json",
                      "manifest.cast.json", "manifest.ledger.json",
-                     "manifest.chapter_story.json"},
+                     "manifest.chapter_story.json", "manifest.identity.json"},
         "downloaded": {"tts/tts_index.json", "manifest.ledger.json",
-                       "manifest.chapter_story.json"},
+                       "manifest.chapter_story.json",
+                       "manifest.identity.json"},
     }
     for target, legacy_set in legacy.items():
         derived = set(reset.artifacts_for(target))

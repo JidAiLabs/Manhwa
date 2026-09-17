@@ -1869,6 +1869,7 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
                          cast_obj: Any,
                          vitems: Optional[Dict[str, Any]] = None,
                          ledger_obj: Any = None,
+                         identity_obj: Any = None,
                          ) -> List[Dict[str, Any]]:
     """CAST-GROUNDED actor gate (WARN, report-only, never in the worker
     blocking set and no longer a heal-target — see the precision note):
@@ -1908,7 +1909,8 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     group_names = group_member_names(cast_obj)
     figures = resolve_figures_by_file(
         understood_obj, cast_obj,
-        excluded_by_file=_ledger_dead_sets(ledger_obj, understood_obj))
+        excluded_by_file=_ledger_dead_sets(ledger_obj, understood_obj),
+        identity=identity_obj)
     if not noun_map or not figures or not isinstance(beats_obj, dict):
         return flags
     fig_by_base = {_base_scene(os.path.basename(f)): v
@@ -3373,8 +3375,9 @@ def main() -> int:
     flags.extend(narration_null_flags(beats_obj))
     flags.extend(narration_offset_flags(beats_obj, understood_obj))
     ledger_obj = _load_manifest("manifest.ledger.json")
+    identity_obj = _load_manifest("manifest.identity.json")
     flags.extend(actor_mismatch_flags(beats_obj, understood_obj, cast_obj,
-                                      vitems, ledger_obj))
+                                      vitems, ledger_obj, identity_obj))
     flags.extend(actor_count_flags(beats_obj, understood_obj, cast_obj))
     flags.extend(ledger_contradiction_flags(beats_obj, ledger_obj, cast_obj))
     flags.extend(cold_open_flags(beats_obj))

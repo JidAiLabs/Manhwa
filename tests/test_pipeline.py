@@ -575,6 +575,41 @@ class TestBeatedCastWiring:
         cast_argv = next(a for n, a in stub.calls if n == "cast_builder.py")
         assert cast_argv[cast_argv.index("--series-cast") + 1] == str(reg)
 
+    def test_identity_pass_runs_when_the_registry_has_exemplars(self, tmp_path,
+                                                                monkeypatch):
+        """Who is in a panel is decided from the IMAGE when the owner has
+        confirmed exemplars (word matching called ORV's Dokja 'Namwoon Kim' 67
+        times). It must run BEFORE the writer, which reads its manifest."""
+        reg = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.json"
+        reg.parent.mkdir(parents=True)
+        reg.write_text('{"cast": [{"canonical_name": "X", "is_protagonist": true,'
+                       ' "exemplars": ["a.jpg", "b.jpg"]}]}')
+        stub, _ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=False)
+        names = [n for n, _ in stub.calls]
+        assert "panel_identity.py" in names
+        assert names.index("panel_identity.py") < names.index("gemini_narrative_pass.py")
+        argv = next(a for n, a in stub.calls if n == "panel_identity.py")
+        assert argv[argv.index("--episode-dir") + 1] == str(ep_dir)
+        assert argv[argv.index("--series-cast") + 1] == str(reg)
+
+    def test_identity_manifest_is_threaded_to_the_writer(self, tmp_path,
+                                                         monkeypatch):
+        """The writer must NAME from the image pass, not from word matching."""
+        reg = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.json"
+        reg.parent.mkdir(parents=True)
+        reg.write_text('{"cast": [{"canonical_name": "X", "is_protagonist": true,'
+                       ' "exemplars": ["a.jpg", "b.jpg"]}]}')
+        stub, _ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=False)
+        gem = next(a for n, a in stub.calls if n == "gemini_narrative_pass.py")
+        assert gem[gem.index("--identity") + 1].endswith("manifest.identity.json")
+
+    def test_no_exemplars_means_no_identity_pass(self, tmp_path, monkeypatch):
+        reg = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.json"
+        reg.parent.mkdir(parents=True)
+        reg.write_text('{"cast": [{"canonical_name": "X"}]}')       # no exemplars
+        stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False)
+        assert "panel_identity.py" not in [n for n, _ in stub.calls]
+
     def test_existing_cast_skips_cast_builder(self, tmp_path, monkeypatch):
         stub, ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=True)
         names = [n for n, _ in stub.calls]

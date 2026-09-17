@@ -337,6 +337,18 @@ def refresh_facts(ep_dir: Path, cfg: Config, *, force: bool = False,
             "deaths": deaths}
 
 
+def _identity_exemplars(series_cast: Path) -> bool:
+    """True when the owner's registry carries exemplar panels to identify
+    against (see tools/panel_identity.py)."""
+    try:
+        reg = json.loads(series_cast.read_text())
+    except (OSError, ValueError):
+        return False
+    members = reg.get("cast") if isinstance(reg, dict) else reg
+    return any((m or {}).get("exemplars") for m in (members or [])
+               if isinstance(m, dict))
+
+
 def _stage_beated(ep_dir: Path, cfg: Config) -> None:
     p = _ep_paths(ep_dir)
     # keep-base: reuse the EXISTING beats' exact wording as the grounded base
@@ -408,6 +420,21 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             if series_cast.exists():
                 cast_args += ["--series-cast", str(series_cast)]
             _run_tool("cast_builder.py", cast_args)
+        # WHO is in each panel, from the IMAGE (2026-09-18). Only for a series
+        # whose registry carries owner-confirmed exemplars; without them the
+        # keyword identity stands, rather than a half-trusted mix. Rebuilt when
+        # the understanding or the registry moves — the narration is written
+        # from this, so a stale identity is a wrong name in a finished chapter.
+        identity = ep_dir / "manifest.identity.json"
+        if series_cast.exists() and _identity_exemplars(series_cast):
+            id_stale = (identity.exists()
+                        and (_artifact_is_stale(ep_dir, "manifest.identity.json")
+                             or series_cast.stat().st_mtime > identity.stat().st_mtime))
+            if not identity.exists() or id_stale:
+                _run_tool("panel_identity.py",
+                          ["--episode-dir", str(ep_dir),
+                           "--series-cast", str(series_cast),
+                           "--model", cfg.beats_model])
         # Story-state ledger (2026-07-20): projects the chapter story onto
         # per-beat facts (deaths propagate, dead role-holders' titles get
         # banned) — the record the writer, identity gate, and QA all read.
@@ -428,6 +455,9 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                       "--understood", str(p["understood"]),
                       # chapter fact record -> per-beat FACTS block + gate
                       "--ledger", str(ep_dir / "manifest.ledger.json"),
+                      # WHO is in each panel, from the IMAGE. Absent (no
+                      # exemplars) the writer keeps the keyword identity.
+                      "--identity", str(ep_dir / "manifest.identity.json"),
                       # adaptive flow segments vs legacy per_panel — passed
                       # explicitly so config (not the tool's env default) rules
                       "--segmentation", cfg.segmentation or "adaptive"]

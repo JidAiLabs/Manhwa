@@ -284,12 +284,18 @@ def test_established_protagonist_not_neutralized_after_concealed_figure(_=None):
 
 
 def test_reveal_pacing_rule_leads_with_recognition_not_blanket_carry():
+    """The 2026-08 balance still holds: an established character is not
+    neutralized into "the stranger" just because a mysterious figure is nearby,
+    and the old blanket carry-the-handle instruction stays gone. What changed
+    on 2026-09-18 (owner) is FREQUENCY: name on first appearance and on a
+    subject change, pronoun or handle in between."""
     rules = rs.RECAP_STYLE_RULES
     assert "REVEAL PACING" in rules
-    # rebalanced: lead with NAMING established cast for recognition
-    assert "name established" in rules.lower()
-    # the old blanket "carry that handle across" instruction is gone
-    assert "carry that handle across" not in rules.lower()
+    low = rules.lower()
+    assert "do not\nneutralize an established" in low or \
+        "do not neutralize an established" in low.replace("\n", " ")
+    assert "identifies someone, use their name" in low
+    assert "carry that handle across" not in low
 
 
 def test_dedupe_consecutive_duplicate_panel_lines_merges_to_one():
@@ -1332,3 +1338,21 @@ def test_the_protagonist_name_is_used_once_then_handles():
     assert "Dokja" not in tail
     assert len({h for h in ("our MC", "the protagonist", "our guy", "our boy")
                 if h.lower() in tail.lower()}) >= 1
+
+
+def test_rule_six_rations_names_and_forbids_guessing_an_unknown_figure():
+    """Owner, 2026-09-17: "you use the names too much, you can also use he,
+    she"; and for an unidentified figure "use the man, the white hair guy...
+    just dont mix it and dont drop a panel". One ORV chapter carried the same
+    side character's name 67 times because the rule said to name established
+    characters on their own panels."""
+    r = rs.RECAP_STYLE_RULES
+    assert "NAME RATIONING" in r
+    low = " ".join(r.lower().split())          # the rules are hard-wrapped
+    assert "first time they appear" in low
+    assert "pronoun" in low
+    assert "unknown (" in low            # the payload's unconfirmed marker
+    assert "never name a figure" in low
+    assert "gender" in low
+    # the old instruction (name established characters on their own panels) is gone
+    assert "normally on their OWN panels" not in r
