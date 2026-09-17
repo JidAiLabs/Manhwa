@@ -120,21 +120,21 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
     if isinstance(raw_labels, str):
         raw_labels = [raw_labels]
     labels = [str(x).strip() for x in raw_labels if str(x).strip()]
-    # A split layout needs ONE pipe-joined hook ("A|B"). The model returns
-    # either shape: a joined string, or one list entry per half. Taking the
-    # first entry of the latter left the right half blank, so join instead.
-    want = 2 if style_for(style)["overlay"].get("split") else 1
-    if want > 1 and len(labels) >= want and not any("|" in s for s in labels):
-        labels = ["|".join(labels[:want])] + labels[want:]
-    if want == 1:
-        # a pair written for a split, on a one-scene layout, is a
-        # transformation label ("DEAD -> KING"), never a literal pipe
-        labels = [s.replace("|", " -> ") for s in labels]
+    # a pair written as "A|B" on a one-scene layout is a transformation label
+    # ("DEAD -> KING"), never a literal pipe. (The split's labels are fixed
+    # BEFORE / AFTER below, so no model label is ever joined for it.)
+    labels = [s.replace("|", " -> ") for s in labels]
 
     corpus = beats_text_corpus(beats_obj)
     # numbers stay guarded: a rank or level is a checkable claim about the
     # story, and an invented one is what put LEVEL 999 on a live thumbnail.
-    hook = next((s for s in labels if hook_is_grounded(s, corpus)), "")
+    # Only grounded candidates are OFFERED (the owner switches between them).
+    labels = [s for s in labels if hook_is_grounded(s, corpus)]
+    if style == "before_after":
+        # Owner: "use before / after, not invent words such as Observer /
+        # protagonist". The split's labels are literally BEFORE and AFTER.
+        labels = ["BEFORE|AFTER"]
+    hook = labels[0] if labels else ""
     synopsis = str(pkg.get("description") or "").strip()
     hashtags = pkg.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
     return {
@@ -231,12 +231,17 @@ def build_package_prompt(brief: Dict[str, Any], banned: str,
         f'  "thumbnail_style": "ONE of: {", ".join(opts)} — choose the '
         'composition that fits THIS story\'s shape, and say why in reason",\n'
         '  "style_reason": "one sentence: why that composition suits it",\n'
-        '  "labels": ["the thumbnail text for the layout you chose. A label is '
-        'a NAMETAG naming what someone IS or BECAME — a role, title or status, '
-        'in this story\'s own words. Never a mood or a sentence. ' +
-        ('Give ONE \\"BEFORE|AFTER\\" pair' if opts == ["before_after"]
-         else 'A single 1-3 word label') + '"],\n'
-        '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
+        + ('' if opts == ["before_after"] else
+           # before_after is always labelled BEFORE / AFTER (owner), so it asks
+           # for no labels at all
+           '  "labels": ["5 candidate labels for the thumbnail, 1-4 words each. '
+           'Each puts the protagonist at an EXTREME on a ladder a viewer '
+           'understands instantly -- rank, power level, wealth, age or social '
+           'status: the very bottom, the very top, or the jump from bottom to top '
+           'written as LOW -> HIGH. It must make a viewer ask HOW. Only facts of '
+           'THIS story; a number or rank must be one the story states. Never a '
+           'plain role or job name that any story could have, never a mood"],\n')
+        + '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
         "}")
 
 
@@ -896,78 +901,76 @@ def refs_for_style(style: str, beats_list: List[Dict[str, Any]],
 
 def choose_refs(style: str, beats_list: List[Dict[str, Any]],
                 ep_dirs: List[str], *, climax_ci: int, auto_refs: List[str],
-                picked: Optional[List[str]] = None,
-                picked_before: str = "") -> List[str]:
-    """The refs a run paints from: the owner's picks when there are any
-    (Series page, from ref_candidates), else the automatic choice."""
-    climax_refs = list(picked or auto_refs or [])
-    if style == "before_after" and picked_before:
-        return [picked_before] + [r for r in climax_refs if r != picked_before]
+                picked: Optional[List[str]] = None) -> List[str]:
+    """The refs a run paints from: the owner's picks, as-is, for EVERY layout
+    (owner: one set of clear MC shots; the prompt makes before and after).
+    Nothing picked: the automatic choice."""
+    if picked:
+        return list(picked)
     return refs_for_style(style, beats_list, ep_dirs, climax_ci=climax_ci,
-                          climax_refs=climax_refs)
+                          climax_refs=list(auto_refs or []))
 
 
-def ref_candidates(ep_dirs: List[str], beats_list: List[Dict[str, Any]], *,
-                   n_lead: int = 8, n_before: int = 4) -> Dict[str, Any]:
-    """Reference panels to SUGGEST to the owner, who picks the ones to use.
+_CLOSE_UP_RE = re.compile(r"close-up|closeup|portrait|\\bface\\b", re.IGNORECASE)
 
-    Owner, 2026-09-17: "instead of handpick you should propose few options so
-    i can select ref image". Automatic refs painted ORV's Dokja long-haired
-    (every ref from Ep306) and then with two bystanders (Ep96).
 
-    lead:   one panel per equal band of the arc, so no single chapter decides
-            the look; within a band, panels that state the registry look first,
-            then any lead portrait, the most dramatic by the teaser scorer.
-    before: the lead in calm/tense kept panels of the earliest chapters, one
-            per chapter, registry look first.
-    Paths are absolute. ponytail: resolves identity for every chapter (the
-    slow part, ~1-2 min on 309 chapters), so it runs as a job, not on page load.
+def ref_candidates(ep_dirs: List[str], beats_list: Any = None, *,
+                   n: int = 8) -> Dict[str, Any]:
+    """Reference panels to SUGGEST to the owner, who ticks 1-3 for both options.
+
+    Owner, 2026-09-17: the first suggestions were "wierd", not clear images of
+    the MC -- they were ranked by DRAMA (crowds, effects, speech bubbles), and
+    split into lead/before sets the owner did not want.
+
+    A tile is a CLEAR SOLO SHOT of the lead: a lead panel (identity + registry
+    look guards in _lead_panels) with exactly one subject, no dialogue, text
+    coverage <= 3%, aspect 0.5-2.0 and at least 600px wide. Ranked by registry
+    look, then close-up/face, then size; one per chapter. Fewer than *n* is
+    returned rather than padding with unclear panels. Measured on ORV: 10 such
+    panels among the look-matched ones, so all lead panels are considered.
+    ponytail: identity for every chapter (~1-2 min on 309), so it runs as a job.
     """
-    import teaser_planner as _tp
-    per: List[Dict[str, Any]] = []
+    cands: List[Dict[str, Any]] = []
     for i, d in enumerate(ep_dirs or []):
         try:
             u = json.load(open(os.path.join(d, "manifest.panels.understood.json")))
         except Exception:
-            per.append({})
             continue
+        try:
+            v = json.load(open(os.path.join(d, "manifest.vision.json")))
+        except Exception:
+            v = {}
+        vis = {os.path.basename(str(it.get("scene_file") or "")): it
+               for it in (v.get("items") or [])}
         portraits, look = _lead_panels(d)
-        panels = {}
         for p in u.get("panels") or []:
             fn = os.path.basename(str(p.get("scene_file") or ""))
-            if fn in portraits:
-                panels[fn] = dict(p, scene_file=fn, _look=fn in look)
-        per.append(panels)
-
-    def item(i: int, p: Dict[str, Any]) -> Dict[str, Any]:
-        return {"path": os.path.abspath(os.path.join(ep_dirs[i], "scenes",
-                                                     p["scene_file"])),
-                "chapter": i, "label": os.path.basename(ep_dirs[i].rstrip("/")),
-                "file": p["scene_file"], "subjects": p.get("subjects") or []}
-
-    lead: List[Dict[str, Any]] = []
-    n = len(ep_dirs or [])
-    bands = max(1, min(n_lead, n))
-    for b in range(bands):
-        lo, hi = b * n // bands, (b + 1) * n // bands
-        pool = [dict(p, _ci=i) for i in range(lo, max(hi, lo + 1))
-                for p in per[i].values()]
-        best = [p for p in pool if p["_look"]] or pool
-        pick = _tp.select_climax_panel(best) or (best[0] if best else None)
-        if pick:
-            lead.append(item(pick["_ci"], pick))
-
-    before: List[Dict[str, Any]] = []
-    for i in range(n):
-        if len(before) >= n_before:
+            it = vis.get(fn) or {}
+            w, h = int(it.get("width") or 0), int(it.get("height") or 0)
+            if (fn not in portraits or len(p.get("subjects") or []) != 1
+                    or str(p.get("dialogue") or "").strip()
+                    or float(it.get("text_coverage") or 0) > 0.03
+                    or not h or not 0.5 <= w / h <= 2.0 or w < 600):
+                continue
+            cands.append({
+                "path": os.path.abspath(os.path.join(d, "scenes", fn)),
+                "chapter": i, "label": os.path.basename(d.rstrip("/")),
+                "file": fn, "subjects": p.get("subjects") or [],
+                "_rank": (0 if fn in look else 1,
+                          0 if _CLOSE_UP_RE.search(str(p.get("description") or "")) else 1,
+                          -(w * h))})
+    cands.sort(key=lambda c: c["_rank"])
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for c in cands:
+        if c["chapter"] in seen:
+            continue
+        seen.add(c["chapter"])
+        out.append({k: v for k, v in c.items() if k != "_rank"})
+        if len(out) >= n:
             break
-        calm = {fn for fn, inten in _kept_panels(beats_list[i] if i < len(beats_list) else {})
-                if inten in ("calm", "tense")}
-        pool = [p for fn, p in per[i].items() if fn in calm]
-        pool.sort(key=lambda p: 0 if p["_look"] else 1)
-        if pool:
-            before.append(item(i, pool[0]))
-    return {"lead": lead, "before": before}
+    out.sort(key=lambda c: c["chapter"])
+    return {"refs": out}
 
 
 def assemble_concept(beats_obj: Dict[str, Any], llm: Dict[str, Any], *,
@@ -1113,8 +1116,6 @@ def main() -> int:
     ap.add_argument("--refs", default="",
                     help="comma-separated ABSOLUTE ref paths the owner picked "
                          "(overrides the automatic choice)")
-    ap.add_argument("--before-ref", default="",
-                    help="the owner's BEFORE panel for before_after")
     ap.add_argument("--ollama-model", default="gemma4:26b")
     ap.add_argument("--digest-chapters", type=int, default=24,
                     help="max chapters described to the LLM (bundle mode). "
@@ -1133,8 +1134,7 @@ def main() -> int:
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             with open(args.out, "w", encoding="utf-8") as f:
                 json.dump(cands, f, ensure_ascii=False, indent=2)
-            print("[ok] wrote=%s lead=%d before=%d"
-                  % (args.out, len(cands["lead"]), len(cands["before"])))
+            print("[ok] wrote=%s refs=%d" % (args.out, len(cands["refs"])))
             return 0
         durations = [_plan_duration(e) for e in eps]
         # the climax scan is exhaustive (cheap, pure Python over every
@@ -1184,8 +1184,7 @@ def main() -> int:
                 concept["style"], beats_list, eps, climax_ci=climax_ci,
                 auto_refs=(_sc[1] if _sc
                            else select_bundle_climax(beats_list)[1]),
-                picked=[r for r in args.refs.split(",") if r.strip()],
-                picked_before=args.before_ref.strip())
+                picked=[r for r in args.refs.split(",") if r.strip()])
             if concept["style"] == "before_after" and not (
                     concept["refs"] and os.path.isabs(concept["refs"][0])):
                 # both halves would be painted from the climax: refuse before

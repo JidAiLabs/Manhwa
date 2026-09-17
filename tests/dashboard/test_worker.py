@@ -2764,11 +2764,11 @@ def test_picked_refs_reach_both_options(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
     worker._h_series_thumbnail(
-        con, {"series_id": 1, "payload": {"refs": ["/a/p1.jpg", "/b/p2.jpg"],
-                                          "before_ref": "/c/p0.jpg"}},
+        con, {"series_id": 1, "payload": {"refs": ["/a/p1.jpg", "/b/p2.jpg"]}},
         io.StringIO())
     concept_cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
     assert len(concept_cmds) == 2
     for c in concept_cmds:
         assert c[c.index("--refs") + 1] == "/a/p1.jpg,/b/p2.jpg"
-        assert c[c.index("--before-ref") + 1] == "/c/p0.jpg"
+        assert "--before-ref" not in c
+

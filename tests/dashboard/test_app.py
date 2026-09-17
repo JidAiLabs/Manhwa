@@ -1344,58 +1344,76 @@ def test_an_unpicked_old_live_thumbnail_is_hidden_once_options_exist(
     assert 'src="/thumb/series/1?v=' in c.get("/series/1").text   # a pick shows
 
 
-def test_suggested_refs_are_shown_and_a_pick_queues_generation(client, tmp_path,
-                                                               monkeypatch):
+def _refs_json(tmp_path, n=3):
+    import json as _j
+    base = tmp_path / "dist" / "series_1"; base.mkdir(parents=True, exist_ok=True)
+    imgs = tmp_path / "imgs"; imgs.mkdir(exist_ok=True)
+    refs = []
+    for i in range(n):
+        p = imgs / f"r{i}.jpg"; p.write_bytes(b"R%d" % i)
+        refs.append({"path": str(p), "chapter": i * 10, "label": f"Episode_{i * 10}",
+                     "file": p.name, "subjects": ["a young man"]})
+    (base / "ref_candidates.json").write_text(_j.dumps({"refs": refs}))
+    return base, refs
+
+
+def test_suggested_refs_are_one_set_and_a_pick_queues_generation(client, tmp_path,
+                                                                 monkeypatch):
     import json as _j
     c, con = client
     from studio.dashboard import app as _app
     monkeypatch.setattr(_app, "REPO", tmp_path)
-    base = tmp_path / "dist" / "series_1"; base.mkdir(parents=True)
-    imgs = tmp_path / "imgs"; imgs.mkdir()
-    lead, before = [], []
-    for i in range(3):
-        p = imgs / f"l{i}.jpg"; p.write_bytes(b"L%d" % i)
-        lead.append({"path": str(p), "chapter": i * 10, "label": f"Ep {i * 10}",
-                     "file": p.name, "subjects": ["a young man"]})
-    p = imgs / "b0.jpg"; p.write_bytes(b"B0")
-    before.append({"path": str(p), "chapter": 0, "label": "Ep 0", "file": "b0.jpg",
-                   "subjects": ["a young man"]})
-    (base / "ref_candidates.json").write_text(_j.dumps({"lead": lead,
-                                                         "before": before}))
+    base, refs = _refs_json(tmp_path)
     page = c.get("/series/1").text
-    assert "/thumb/series/1/ref/lead/2" in page and "/thumb/series/1/ref/before/0" in page
-    assert c.get("/thumb/series/1/ref/lead/1").content == b"L1"
-    assert c.get("/thumb/series/1/ref/lead/9").status_code == 404
-    assert c.get("/thumb/series/1/ref/other/0").status_code == 404
-
-    r = c.post("/thumbnail/candidates", data={"series_id": 1},
+    assert page.count("/thumb/series/1/ref/") == 3 and "before" not in \
+        page[page.index("Reference panels"):page.index("generate options with these")].lower()
+    assert c.get("/thumb/series/1/ref/1").content == b"R1"
+    assert c.get("/thumb/series/1/ref/9").status_code == 404
+    assert c.post("/thumbnail/candidates", data={"series_id": 1},
+                  follow_redirects=False).status_code == 303
+    r = c.post("/thumbnail/generate", data={"series_id": 1, "ref": ["0", "2"]},
                follow_redirects=False)
     assert r.status_code == 303
-    r = c.post("/thumbnail/generate",
-               data={"series_id": 1, "lead": ["0", "2"], "before": "0"},
-               follow_redirects=False)
-    assert r.status_code == 303
-    # two job types: the free suggestions never swallow the paid generate
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='thumbnail_refs'"
-                       ).fetchone()[0] == 1
     rows = con.execute("SELECT payload_json FROM job WHERE type='series_thumbnail'"
                        ).fetchall()
-    assert [_j.loads(r[0]) for r in rows] == [
-        {"refs": [lead[0]["path"], lead[2]["path"]], "before_ref": before[0]["path"]}]
+    assert [_j.loads(x[0]) for x in rows] == [{"refs": [refs[0]["path"], refs[2]["path"]]}]
 
 
 def test_generate_with_picks_rejects_bad_selections(client, tmp_path, monkeypatch):
-    import json as _j
     c, con = client
     from studio.dashboard import app as _app
     monkeypatch.setattr(_app, "REPO", tmp_path)
-    base = tmp_path / "dist" / "series_1"; base.mkdir(parents=True)
-    (base / "ref_candidates.json").write_text(_j.dumps({
-        "lead": [{"path": "/x/a.jpg"}] * 4, "before": [{"path": "/x/b.jpg"}]}))
-    for data in ({"series_id": 1},                                  # no lead
-                 {"series_id": 1, "lead": ["0", "1", "2", "3"]},    # > 3
-                 {"series_id": 1, "lead": ["7"]},                   # out of range
-                 {"series_id": 1, "lead": ["0"], "before": "5"}):   # bad before
+    _refs_json(tmp_path, n=4)
+    for data in ({"series_id": 1}, {"series_id": 1, "ref": ["0", "1", "2", "3"]},
+                 {"series_id": 1, "ref": ["7"]}):
         assert c.post("/thumbnail/generate", data=data,
                       follow_redirects=False).status_code == 400, data
     assert con.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 0
+
+
+def test_label_candidates_switch_for_free_and_only_from_the_list(client, tmp_path,
+                                                                 monkeypatch):
+    """Owner: "THE ONLY READER ... doesnt tell anything". The concept keeps 5
+    candidates; clicking one redraws the label on the SAME art, no new image."""
+    import json as _j
+    from PIL import Image
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    d = tmp_path / "dist" / "series_1" / "options" / "scene"; d.mkdir(parents=True)
+    Image.new("RGB", (1280, 720), (20, 30, 40)).save(d / "thumbnail_art.png")
+    (d / "thumbnail_yt.jpg").write_bytes(b"old")
+    (d / "concept.json").write_text(_j.dumps({
+        "style": "power_reveal", "hook": "A",
+        "hooks": ["F-RANK -> KING", "SECRET RANK"],
+        "style_overlay": {"label_pos": "upper_right", "arrow": "none", "marks": []}}))
+    page = c.get("/series/1").text
+    assert "F-RANK -&gt; KING" in page or "F-RANK -> KING" in page
+    r = c.post("/thumbnail/label", data={"series_id": 1, "option": "scene", "hook": "1"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert (d / "thumbnail_yt.jpg").read_bytes() != b"old"
+    assert _j.loads((d / "concept.json").read_text())["hook"] == "SECRET RANK"
+    for bad in ({"option": "scene", "hook": "5"}, {"option": "../x", "hook": "0"}):
+        assert c.post("/thumbnail/label", data=dict(bad, series_id=1),
+                      follow_redirects=False).status_code == 404, bad

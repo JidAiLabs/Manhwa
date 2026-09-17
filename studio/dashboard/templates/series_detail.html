@@ -76,36 +76,31 @@
 <div style="max-width:420px">
 <img src="/thumb/series/{{ sid }}/option/{{ o.name }}?v={{ o.v }}" alt="thumbnail option {{ o.name }}" style="width:100%;border:1px solid var(--line);border-radius:8px">
 <div class="kv">{{ o.style }} · {{ o.hook }}</div>
+{% if o.hooks|length > 1 %}
+<form method="post" action="/thumbnail/label"><input type="hidden" name="series_id" value="{{ sid }}"><input type="hidden" name="option" value="{{ o.name }}">
+{% for hk in o.hooks %}<label style="display:block"><input type="radio" name="hook" value="{{ loop.index0 }}"{% if hk == o.hook %} checked{% endif %}> {{ hk }}</label>{% endfor %}
+<button class="ghost">apply label</button> <span class="kv">free, same image</span></form>
+{% endif %}
 <form class="inline" method="post" action="/thumbnail/pick"><input type="hidden" name="series_id" value="{{ sid }}">
 <input type="hidden" name="option" value="{{ o.name }}"><button class="green">use this one</button></form>
 </div>
 {% endfor %}
 </div>
 {% endif %}
-<h3 style="margin:.8em 0 .3em">Reference panels <small class="kv">— the art copies the character from these. Suggestions are free; tick 1–3 lead panels and one before panel, then generate.</small></h3>
+<h3 style="margin:.8em 0 .3em">Reference panels <small class="kv">— clear shots of the MC; the art copies him from these for BOTH options. Suggestions are free; tick 1–3, then generate.</small></h3>
 <div class="row">
 <form class="inline" method="post" action="/thumbnail/candidates"><input type="hidden" name="series_id" value="{{ sid }}">
-<button class="ghost"{% if not thumb_ready %} disabled{% endif %}>{{ 'refresh suggestions' if ref_cands.lead else 'find reference panels' }}</button></form>
+<button class="ghost"{% if not thumb_ready %} disabled{% endif %}>{{ 'refresh suggestions' if ref_cands else 'find reference panels' }}</button></form>
 </div>
-{% if ref_cands.lead %}
+{% if ref_cands %}
 <form method="post" action="/thumbnail/generate">
 <input type="hidden" name="series_id" value="{{ sid }}">
-<div class="kv">LEAD, used for both options (pick 1–3)</div>
 <div class="row" style="flex-wrap:wrap;gap:.6em;align-items:flex-start">
-{% for r in ref_cands.lead %}
-<label style="max-width:150px;text-align:center"><img src="/thumb/series/{{ sid }}/ref/lead/{{ loop.index0 }}" alt="lead reference {{ loop.index0 }}" style="width:150px;height:200px;object-fit:cover;border:1px solid var(--line);border-radius:6px"><br>
-<input type="checkbox" name="lead" value="{{ loop.index0 }}"> {{ r.label }} · {{ r.file }}</label>
+{% for r in ref_cands %}
+<label style="max-width:170px;text-align:center"><img src="/thumb/series/{{ sid }}/ref/{{ loop.index0 }}" alt="reference panel {{ loop.index0 }}" style="width:170px;height:220px;object-fit:contain;background:#000;border:1px solid var(--line);border-radius:6px"><br>
+<input type="checkbox" name="ref" value="{{ loop.index0 }}"> {{ r.label }} · {{ r.file }}</label>
 {% endfor %}
 </div>
-{% if ref_cands.before %}
-<div class="kv">BEFORE, for the before/after option only (pick 1)</div>
-<div class="row" style="flex-wrap:wrap;gap:.6em;align-items:flex-start">
-{% for r in ref_cands.before %}
-<label style="max-width:150px;text-align:center"><img src="/thumb/series/{{ sid }}/ref/before/{{ loop.index0 }}" alt="before reference {{ loop.index0 }}" style="width:150px;height:200px;object-fit:cover;border:1px solid var(--line);border-radius:6px"><br>
-<input type="radio" name="before" value="{{ loop.index0 }}"> {{ r.label }} · {{ r.file }}</label>
-{% endfor %}
-</div>
-{% endif %}
 <div class="row"><button class="green">generate options with these</button> <span class="kv">~0.26 USD, builds both options</span></div>
 </form>
 {% endif %}

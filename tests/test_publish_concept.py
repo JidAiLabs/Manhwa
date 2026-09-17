@@ -561,34 +561,9 @@ def test_labels_returned_as_a_bare_string_are_not_split_into_characters():
     CHARACTER per label and the hook became "R"."""
     pkg = {"title": "T", "thumbnail_style": "before_after",
            "labels": "READER|AUTHOR", "hashtags": []}
-    c = pc.assemble_package({}, {}, pkg, series_title="X", styles=["before_after"])
-    assert c["hooks"] == ["READER|AUTHOR"]
-    assert c["hook"] == "READER|AUTHOR"
-
-
-def test_labels_as_a_list_still_work():
-    pkg = {"title": "T", "thumbnail_style": "before_after",
-           "labels": ["WEAK|STRONG", "OTHER"], "hashtags": []}
-    c = pc.assemble_package({}, {}, pkg, series_title="X", styles=["before_after"])
-    assert c["hooks"] == ["WEAK|STRONG", "OTHER"]
-
-
-def test_panelled_layouts_join_one_label_per_panel():
-    """The model returns either shape: a joined "A|B" string, or one list
-    entry per half. Taking the first entry of the latter left the right half
-    blank, so the per-half form is joined instead."""
-    two = {"title": "T", "thumbnail_style": "before_after",
-           "labels": ["PASSIVE READER", "STORY ARCHITECT"], "hashtags": []}
-    assert pc.assemble_package({}, {}, two, series_title="X",
-                               styles=["before_after"])["hook"] == \
-        "PASSIVE READER|STORY ARCHITECT"
-
-
-def test_an_already_joined_hook_is_left_alone():
-    pkg = {"title": "T", "thumbnail_style": "before_after",
-           "labels": ["A|B", "spare"], "hashtags": []}
-    assert pc.assemble_package({}, {}, pkg, series_title="X",
-                               styles=["before_after"])["hook"] == "A|B"
+    c = pc.assemble_package({}, {}, pkg, series_title="X", styles=["power_reveal"])
+    assert c["hooks"] == ["READER -> AUTHOR"]
+    assert c["hook"] == "READER -> AUTHOR"
 
 
 def test_single_label_layouts_are_untouched():
@@ -763,8 +738,7 @@ def test_the_before_after_option_can_never_come_back_as_a_scene():
            "labels": ["WEAK|KING"], "hashtags": []}
     c = pc.assemble_package({}, {}, pkg, series_title="X",
                             styles=["before_after"])
-    assert c["style"] == "before_after" and c["hook"] == "WEAK|KING"
-
+    assert c["style"] == "before_after" and c["hook"] == "BEFORE|AFTER"
 
 def test_title_suffix_in_any_trailing_form_is_not_doubled():
     for raw in ("He Wins Manhwa Recap", "He wins - MANHWA RECAPS!",
@@ -888,54 +862,97 @@ def test_look_evidence_must_not_belong_to_a_figure_of_the_other_gender():
 # Owner: "instead of handpick you should propose few options so i can select
 # ref image". Automatic refs gave ORV long hair (Ep306) and bystanders (Ep96).
 
-def _cand_arc(tmp_path, monkeypatch, n=20):
+def _cand_arc(tmp_path, monkeypatch, n=6, panels=None):
+    """n chapters, each with the given panels [(file, subjects, extra, vision)]."""
     import json as _j
-    eps, beats = [], []
+    eps = []
+    panels = panels or [("p1.jpg", ["a young man with short dark hair"], {},
+                         {"text_coverage": 0.0, "width": 800, "height": 900})]
     for i in range(n):
         d = tmp_path / f"ch{i}"; d.mkdir()
         (d / "manifest.panels.understood.json").write_text(_j.dumps({"panels": [
-            {"scene_file": "p1.jpg", "subjects": ["a young man"], "panel_kind": "story"},
-            {"scene_file": "p2.jpg", "subjects": ["a young man"], "panel_kind": "story"}]}))
+            dict({"scene_file": f, "subjects": subj, "panel_kind": "story",
+                  "dialogue": "", "description": ""}, **extra)
+            for f, subj, extra, _v in panels]}))
+        (d / "manifest.vision.json").write_text(_j.dumps({"items": [
+            dict({"scene_file": f}, **vis) for f, _s, _e, vis in panels]}))
         eps.append(str(d))
-        beats.append({"beats": [{"scene_selection": [
-            {"scene_file": "p1.jpg", "intensity": "calm"},
-            {"scene_file": "p2.jpg", "intensity": "explosive"}]}]})
-    # every chapter: both panels show the lead; p2 matches the registry look
+    files = {f for f, *_ in panels}
     monkeypatch.setattr(pc, "_lead_panels",
-                        lambda d, max_figures=2: ({"p1.jpg", "p2.jpg"}, {"p2.jpg"}))
-    return eps, beats
+                        lambda d, max_figures=2: (set(files), set(files)))
+    return eps
 
 
-def test_lead_candidates_spread_across_the_arc(tmp_path, monkeypatch):
-    eps, beats = _cand_arc(tmp_path, monkeypatch)
-    c = pc.ref_candidates(eps, beats, n_lead=4, n_before=2)
-    chapters = [x["chapter"] for x in c["lead"]]
-    assert len(chapters) == 4 and len(set(chapters)) == 4
-    assert max(chapters) - min(chapters) >= 10          # not one late chapter
-    assert all(x["file"] == "p2.jpg" for x in c["lead"])  # registry look first
-    assert all(Path(x["path"]).is_absolute() for x in c["lead"])
+def test_ref_candidates_are_clear_solo_shots_of_the_lead(tmp_path, monkeypatch):
+    """Owner: the suggested refs were "wierd", not clear images of the MC.
+    They were ranked by DRAMA (crowds, effects, bubbles). A tile is now a solo
+    shot: one subject, no dialogue, almost no text, not a tall strip."""
+    ok = {"text_coverage": 0.0, "width": 800, "height": 900}
+    eps = _cand_arc(tmp_path, monkeypatch, n=1, panels=[
+        ("solo.jpg", ["a young man with short dark hair"], {}, ok),
+        ("two.jpg", ["a young man", "a woman"], {}, ok),
+        ("talk.jpg", ["a young man"], {"dialogue": "RUN!"}, ok),
+        ("text.jpg", ["a young man"], {}, dict(ok, text_coverage=0.2)),
+        ("strip.jpg", ["a young man"], {}, dict(ok, width=800, height=3000)),
+        ("tiny.jpg", ["a young man"], {}, dict(ok, width=300, height=300)),
+    ])
+    assert [x["file"] for x in pc.ref_candidates(eps)["refs"]] == ["solo.jpg"]
 
 
-def test_before_candidates_come_from_the_earliest_chapters(tmp_path, monkeypatch):
-    eps, beats = _cand_arc(tmp_path, monkeypatch)
-    c = pc.ref_candidates(eps, beats, n_lead=4, n_before=2)
-    assert [x["chapter"] for x in c["before"]] == [0, 1]
-    assert all(x["file"] == "p1.jpg" for x in c["before"])  # calm, not explosive
+def test_ref_candidates_rank_look_then_close_up_one_per_chapter(tmp_path,
+                                                               monkeypatch):
+    ok = {"text_coverage": 0.0, "width": 800, "height": 900}
+    eps = _cand_arc(tmp_path, monkeypatch, n=3, panels=[
+        ("wide.jpg", ["a young man"], {}, ok),
+        ("close.jpg", ["a young man"], {"description": "A close-up of his face"}, ok),
+    ])
+    c = pc.ref_candidates(eps, n=8)["refs"]
+    assert [x["chapter"] for x in c] == [0, 1, 2]           # one per chapter
+    assert all(x["file"] == "close.jpg" for x in c)
+    assert all(Path(x["path"]).is_absolute() for x in c)
+    assert set(c[0]) >= {"path", "chapter", "label", "file", "subjects"}
 
 
-def test_picked_refs_override_the_automatic_choice(monkeypatch):
+def test_picked_refs_are_used_as_is_for_both_layouts(monkeypatch):
+    """Owner: no separate BEFORE refs; the prompt makes before and after."""
     monkeypatch.setattr(pc, "select_before_ref",
                         lambda *a, **k: "/auto/before.jpg")
     picked = ["/p/ep96/p20.jpg", "/p/ep251/p38.jpg"]
-    assert pc.choose_refs("power_reveal", [{}], ["e"], climax_ci=3,
-                          auto_refs=["a.jpg"], picked=picked) == picked
-    assert pc.choose_refs("before_after", [{}], ["e"], climax_ci=3,
-                          auto_refs=["a.jpg"], picked=picked,
-                          picked_before="/p/ep0/p35.jpg") == \
-        ["/p/ep0/p35.jpg"] + picked
-    # nothing picked: the automatic path, unchanged
+    for style in ("power_reveal", "before_after"):
+        assert pc.choose_refs(style, [{}], ["e"], climax_ci=3,
+                              auto_refs=["a.jpg"], picked=picked) == picked
     assert pc.choose_refs("before_after", [{}], ["e"], climax_ci=3,
                           auto_refs=["a.jpg"]) == ["/auto/before.jpg", "a.jpg"]
+
+
+def test_before_after_is_always_labelled_before_and_after():
+    """Owner: "i told you to use before / after not invent words such as
+    Observer / protagonist". The split never carries model-written words."""
+    pkg = {"title": "T", "thumbnail_style": "before_after",
+           "labels": ["OBSERVER|PROTAGONIST"], "hashtags": []}
+    c = pc.assemble_package({}, {}, pkg, series_title="X",
+                            styles=["before_after"])
+    assert c["hook"] == "BEFORE|AFTER" and c["hooks"] == ["BEFORE|AFTER"]
+    assert "labels" not in pc.build_package_prompt({"premise": "P"}, "B",
+                                                   ["before_after"])
+
+
+def test_scene_label_prompt_asks_for_an_extreme_and_five_candidates():
+    """Owner: "THE ONLY READER ... doesnt tell anything ... i wouldnt get
+    excited". The 9 examples each put the MC at an extreme on a ladder."""
+    p = pc.build_package_prompt({"premise": "P"}, "B")
+    assert "EXTREME" in p and "5 candidate labels" in p
+    assert "e.g." not in p
+
+
+def test_only_grounded_label_candidates_are_offered():
+    beats = {"beats": [{"segments": [{"line": "he reaches level 11"}]}]}
+    pkg = {"title": "T", "thumbnail_style": "power_reveal",
+           "labels": ["LEVEL 999 GOD", "F-RANK -> KING", "LEVEL 11 READER"],
+           "hashtags": []}
+    c = pc.assemble_package(beats, {}, pkg, series_title="X")
+    assert c["hooks"] == ["F-RANK -> KING", "LEVEL 11 READER"]
+    assert c["hook"] == "F-RANK -> KING"
 
 
 def test_look_evidence_must_not_contradict_the_registry_hair_colour(tmp_path,

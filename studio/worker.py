@@ -2030,9 +2030,7 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
     payload = job.get("payload") or {}
     # the owner's picks from the suggested reference panels (_h_thumbnail_refs)
     picked = [str(r) for r in (payload.get("refs") or []) if str(r).strip()]
-    picked_args = ((["--refs", ",".join(picked)] if picked else [])
-                   + (["--before-ref", str(payload["before_ref"])]
-                      if payload.get("before_ref") else []))
+    picked_args = ["--refs", ",".join(picked)] if picked else []
 
     def build(out_dir: Path, style: str) -> None:
         # The paid image step needs GEMINI_API_KEY from the login keychain,

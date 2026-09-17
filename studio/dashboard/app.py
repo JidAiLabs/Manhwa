@@ -631,6 +631,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     oc = {}
                 thumb_options.append({
                     "name": name, "hook": oc.get("hook") or "",
+                    "hooks": [h for h in (oc.get("hooks") or []) if h],
                     "style": oc.get("style") or name,
                     "v": int((od / "thumbnail_yt.jpg").stat().st_mtime)})
         ref_cands = _ref_candidates(sid)
@@ -688,22 +689,22 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             return PlainTextResponse("no thumbnail yet", status_code=404)
         return FileResponse(str(p), media_type="image/jpeg")
 
-    def _ref_candidates(sid: int) -> Dict[str, List[Dict[str, Any]]]:
-        """Suggested reference panels (written by a series_thumbnail job with
-        payload candidates=true). The page only ever sends back INDICES into
-        this list; a path never comes from the browser."""
+    def _ref_candidates(sid: int) -> List[Dict[str, Any]]:
+        """Suggested reference panels (written by a thumbnail_refs job): ONE
+        set of clear shots of the MC, used for both options. The page only
+        ever sends back INDICES into this list; a path never comes from the
+        browser."""
         try:
             d = json.loads((REPO / "dist" / f"series_{sid}"
                             / "ref_candidates.json").read_text())
         except (OSError, ValueError):
-            return {"lead": [], "before": []}
-        return {k: [x for x in (d.get(k) or []) if isinstance(x, dict)]
-                for k in ("lead", "before")}
+            return []
+        return [x for x in (d.get("refs") or []) if isinstance(x, dict)]
 
-    @app.get("/thumb/series/{sid}/ref/{kind}/{idx}")
-    def series_ref_candidate(sid: int, kind: str, idx: int):
-        items = _ref_candidates(sid).get(kind)
-        if items is None or not 0 <= idx < len(items) \
+    @app.get("/thumb/series/{sid}/ref/{idx}")
+    def series_ref_candidate(sid: int, idx: int):
+        items = _ref_candidates(sid)
+        if not 0 <= idx < len(items) \
                 or not Path(str(items[idx].get("path") or "")).is_file():
             return PlainTextResponse("no such reference panel", status_code=404)
         return FileResponse(str(items[idx]["path"]), media_type="image/jpeg")
@@ -715,23 +716,41 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.post("/thumbnail/generate")
     def generate_with_refs(series_id: int = Form(...),
-                           lead: List[int] = Form([]),
-                           before: Optional[int] = Form(None)):
-        """Generate both options from the reference panels the owner ticked:
-        1-3 lead panels, and optionally one before panel."""
+                           ref: List[int] = Form([])):
+        """Generate both options from the 1-3 reference panels the owner
+        ticked (the prompt makes the before and the after from the same set)."""
         cands = _ref_candidates(series_id)
-        if not 1 <= len(lead) <= 3 \
-                or any(not 0 <= i < len(cands["lead"]) for i in lead) \
-                or (before is not None and not 0 <= before < len(cands["before"])):
-            return PlainTextResponse("pick 1-3 lead panels (and at most one "
-                                     "before panel) from the suggestions",
-                                     status_code=400)
-        payload: Dict[str, Any] = {
-            "refs": [cands["lead"][i]["path"] for i in lead]}
-        if before is not None:
-            payload["before_ref"] = cands["before"][before]["path"]
+        if not 1 <= len(ref) <= 3 or any(not 0 <= i < len(cands) for i in ref):
+            return PlainTextResponse("pick 1-3 reference panels from the "
+                                     "suggestions", status_code=400)
         jobs.enqueue(con(), "series_thumbnail", series_id=series_id,
-                     payload=payload)
+                     payload={"refs": [cands[i]["path"] for i in ref]})
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
+
+    @app.post("/thumbnail/label")
+    def switch_label(series_id: int = Form(...), option: str = Form(...),
+                     hook: int = Form(...)):
+        """Redraw an option's label with another of its candidates: the same
+        art, a new text layer, no image call, no cost."""
+        d = REPO / "dist" / f"series_{series_id}" / "options" / option
+        try:
+            concept = json.loads((d / "concept.json").read_text())
+        except (OSError, ValueError):
+            concept = {}
+        hooks = concept.get("hooks") or []
+        if option not in gates.THUMBNAIL_OPTIONS or not 0 <= hook < len(hooks) \
+                or not (d / "thumbnail_art.png").exists():
+            return PlainTextResponse("no such label", status_code=404)
+        from thumbnail_overlay import render_overlay
+        render_overlay(str(d / "thumbnail_art.png"), str(d / "thumbnail_yt.jpg"),
+                       hook=hooks[hook],
+                       style_overlay=concept.get("style_overlay") or {},
+                       speech=concept.get("speech") or [],
+                       badge=concept.get("badge") or "",
+                       tags=concept.get("tags") or [])
+        concept["hook"] = hooks[hook]
+        (d / "concept.json").write_text(json.dumps(concept, ensure_ascii=False,
+                                                   indent=2))
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.get("/thumb/series/{sid}/option/{name}")
