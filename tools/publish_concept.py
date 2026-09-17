@@ -637,6 +637,18 @@ def hair_length(text: Any) -> Optional[str]:
     return m.group(1).lower()
 
 
+_FEMALE_RE = re.compile(r"\b(woman|women|girl|lady|female|she|her)\b", re.IGNORECASE)
+_MALE_RE = re.compile(r"\b(man|men|boy|guy|male|he|his)\b", re.IGNORECASE)
+
+
+def gender_word(text: Any) -> Optional[str]:
+    """'f' / 'm' from gender words in a description, None when it has none or
+    both. ("woman" contains no word-bounded "man".)"""
+    t = str(text or "")
+    f, m = bool(_FEMALE_RE.search(t)), bool(_MALE_RE.search(t))
+    return "f" if f and not m else "m" if m and not f else None
+
+
 def protagonist_name(cast_obj: Dict[str, Any]) -> str:
     """The cast entry that is the lead, by its own id/name."""
     members = (cast_obj or {}).get("cast") or (cast_obj or {}).get("members") or []
@@ -704,8 +716,20 @@ def _lead_panels(ep_dir: str, max_figures: int = 2):
         if _norm_name(lead) in {_norm_name(n) for n in names} \
                 and len(names) <= max_figures:
             out.add(os.path.basename(str(f)))
+    # the evidence must be about someone who COULD be the lead: subjects are
+    # not tied to figures, and Ep196's "a woman with short dark hair" beside
+    # Dokja counted as his short hair
+    lead_g = next((gender_word(m.get("visual_description"))
+                   for m in ((c.get("cast") or c.get("members") or []))
+                   if _norm_name(m.get("id")) == _norm_name(lead)
+                   or _norm_name(m.get("canonical_name")) == _norm_name(lead)),
+                  None)
     look = {f for f in out if lead_len and any(
-        hair_length(s) == lead_len for s in subjects.get(f, []))}
+        hair_length(s) == lead_len
+        # "a person with short dark hair" is not evidence either: when the
+        # registry states a gender, the description must state the same one
+        and (gender_word(s) == lead_g if lead_g else True)
+        for s in subjects.get(f, []))}
     return out, look
 
 

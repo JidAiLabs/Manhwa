@@ -871,3 +871,13 @@ def test_climax_refs_prefer_panels_that_match_the_registry_look(tmp_path,
         {"p1.jpg"}, {"p1.jpg"} if d.endswith("ch1") else set()))
     ci, refs = pc.select_bundle_climax_scored(eps)
     assert ci == 0 and refs == ["p1.jpg"]
+
+
+def test_look_evidence_must_not_belong_to_a_figure_of_the_other_gender():
+    """Ep196: "a woman with short dark hair" beside Dokja counted as HIS short
+    hair; subjects aren't tied to figures, so gender words must not contradict."""
+    assert pc.gender_word("a woman with short dark hair") == "f"
+    assert pc.gender_word("A young man with short dark hair") == "m"
+    assert pc.gender_word("a person with short dark hair") is None
+    assert pc.gender_word("a human-like woman-shaped statue") == "f"
+    assert pc.gender_word("a manhole cover") is None
