@@ -1325,3 +1325,20 @@ def test_thumbnail_option_names_are_a_closed_set(client, tmp_path, monkeypatch):
     # a valid name with nothing built yet is also a 404, never a half-copy
     assert c.post("/thumbnail/pick", data={"series_id": 1, "option": "scene"},
                   follow_redirects=False).status_code == 404
+
+
+def test_an_unpicked_old_live_thumbnail_is_hidden_once_options_exist(
+        client, tmp_path, monkeypatch):
+    """The owner saw THREE images: the old model-chosen triptych (live, never
+    approved) above the two options, with its own approve button."""
+    c, con = client
+    from studio.dashboard import app as _app, gates
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    base = tmp_path / "dist" / "series_1"
+    (base / "options" / "scene").mkdir(parents=True)
+    (base / "options" / "scene" / "thumbnail_yt.jpg").write_bytes(b"s")
+    (base / "thumbnail_yt.jpg").write_bytes(b"old triptych")
+    page = c.get("/series/1").text
+    assert 'src="/thumb/series/1?v=' not in page and "approve this one" not in page
+    gates.approve(con, "thumbnail", series_id=1, note="picked option: scene")
+    assert 'src="/thumb/series/1?v=' in c.get("/series/1").text   # a pick shows

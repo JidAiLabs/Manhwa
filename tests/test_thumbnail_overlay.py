@@ -185,3 +185,31 @@ def test_split_badge_does_not_sit_on_the_before_label(tmp_path):
     # the badge lands in the right half's top strip, the left half is untouched
     assert list(ia.crop((0, 0, 640, 60)).getdata()) == \
         list(ib.crop((0, 0, 640, 60)).getdata())
+
+
+# ---- a label never runs across the centre, where the hero is (ORV scene) -----
+# "THE ONLY SURVIVOR" at a fixed H*0.16 from the upper-right corner spanned
+# ~890 of 1280px and covered the protagonist's face (power_reveal centres him).
+
+def test_a_long_corner_label_stays_out_of_the_centre(tmp_path):
+    base = _stub(tmp_path)
+    out = str(tmp_path / "c.jpg")
+    style = {"label_pos": "upper_right", "arrow": "none", "marks": []}
+    ov.render_overlay(base, out, hook="THE ONLY SURVIVOR", style_overlay=style)
+    cols = _yellow_cols(Image.open(out).convert("RGB"), 0, 300)
+    assert cols and min(cols) > int(1280 * 0.55)          # right of the hero
+
+
+def test_a_label_that_would_shrink_stacks_on_two_lines_instead(tmp_path):
+    """The owner's examples stack a two-word tag (NEW / SLAVE, #1 / HUNTER)
+    rather than shrinking it to a thin strip."""
+    base = _stub(tmp_path)
+    out = str(tmp_path / "c.jpg")
+    style = {"label_pos": "upper_right", "arrow": "none", "marks": []}
+    ov.render_overlay(base, out, hook="THE ONLY SURVIVOR", style_overlay=style)
+    im = Image.open(out).convert("RGB")
+    px = im.load()
+    rows = [y for y in range(0, 400, 2)
+            if any(px[x, y][0] > 200 and px[x, y][1] > 170 and px[x, y][2] < 90
+                   for x in range(700, 1280, 4))]
+    assert rows and max(rows) - min(rows) > 150           # two lines tall

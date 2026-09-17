@@ -53,6 +53,24 @@ def _fitted(draw: ImageDraw.ImageDraw, text: str, size: int,
     return f
 
 
+def _label_lines(draw: ImageDraw.ImageDraw, text: str, size: int,
+                 max_w: int):
+    """(lines, font) for a label that must fit *max_w*. A two-word-or-more
+    label that would have to shrink is STACKED on two lines instead -- the
+    owner's examples stack their tags (NEW / SLAVE, #1 / HUNTER) rather than
+    shrinking them to a thin strip."""
+    one = _fitted(draw, text, size, max_w)
+    words = text.split()
+    if one.size >= size or len(words) < 2:
+        return [text], one
+    cut = min(range(1, len(words)), key=lambda i: abs(
+        len(" ".join(words[:i])) - len(" ".join(words[i:]))))
+    lines = [" ".join(words[:cut]), " ".join(words[cut:])]
+    two = _fitted(draw, max(lines, key=lambda l: draw.textlength(l, font=one)),
+                  size, max_w)
+    return (lines, two) if two.size > one.size else ([text], one)
+
+
 def _outlined(draw: ImageDraw.ImageDraw, xy: Tuple[int, int], text: str,
               font: ImageFont.FreeTypeFont, *, fill=_YELLOW, anchor="la") -> None:
     stroke = max(3, font.size // 12)
@@ -161,17 +179,25 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
                       _fitted(draw, part, int(H * 0.13), int(W * 0.44)),
                       anchor="ma")
     elif hook:
-        f = _font(int(H * 0.16))
         (lx, ly), anc = _anchor_xy(label_pos, W, H)
         xform = _split_transform(hook)
         if xform:
+            f = _fitted(draw, "%s    %s" % xform, int(H * 0.16), int(W * 0.9))
             _draw_transform(draw, (lx, ly), xform[0], xform[1], f, anc, W)
         else:
-            _outlined(draw, (lx, ly), hook, f, anchor=anc)
+            # A corner label stays in its own side: power_reveal CENTRES the
+            # hero, and "THE ONLY SURVIVOR" at a fixed size ran across his face.
+            # ponytail: a fixed 40% column, not face detection -- Apple's face
+            # model misses anime faces and its body fallback found 1 figure of 3.
+            max_w = int(W * (0.8 if anc == "ma" else 0.40))
+            lines, f = _label_lines(draw, hook, int(H * 0.16), max_w)
+            step = int(f.size * 1.05)
+            for i, line in enumerate(lines):
+                _outlined(draw, (lx, ly + i * step), line, f, anchor=anc)
         if style_overlay.get("arrow", "none") != "none" and not xform:
             # arrow from just under the label toward frame center (the subject)
             sx = lx - (int(W * 0.10) if anc == "ra" else -int(W * 0.10))
-            _arrow(draw, (sx, ly + int(H * 0.14)),
+            _arrow(draw, (sx, ly + len(lines) * step + int(H * 0.02)),
                    (int(W * 0.52), int(H * 0.46)), max(6, H // 90))
 
     # status badge: a FACT about the upload (chapter range, full recap), never a

@@ -810,3 +810,34 @@ def test_before_after_run_refuses_to_paint_without_a_before_panel(tmp_path,
                                      "--out", str(out)])
     assert pc.main() == 2
     assert not out.exists()
+
+
+# ---- a lead ref must not contradict the registry look (ORV long hair) --------
+# 390 of 2925 ORV lead portraits describe LONG hair; the registry says Dokja has
+# short dark hair. cast_identity compares hair COLOUR only, so p000001 (a
+# long-haired close-up, speech bubble "JUNGHYEOK...?") passed as the lead and
+# the before_after "after" half was painted with long hair.
+
+def test_hair_length_class():
+    assert pc.hair_length("a young man with short dark hair") == "short"
+    assert pc.hair_length("a character with long, dark, messy hair") == "long"
+    assert pc.hair_length("a young man with messy black hair") is None
+    assert pc.hair_length("a long white coat over dark hair") is None
+
+
+def test_portraits_drop_panels_whose_hair_length_contradicts_the_lead(tmp_path,
+                                                                      monkeypatch):
+    import json as _j
+    import types as _t
+    ep = tmp_path / "ch"; ep.mkdir()
+    (ep / "manifest.cast.json").write_text(_j.dumps({"cast": [
+        {"id": "our_protagonist", "canonical_name": "our protagonist",
+         "visual_description": "A young man with short dark hair."}]}))
+    (ep / "manifest.panels.understood.json").write_text(_j.dumps({"panels": [
+        {"scene_file": "p1.jpg", "subjects": ["a young man with messy black hair"]},
+        {"scene_file": "p2.jpg", "subjects": ["a character with long, dark, messy hair"]}]}))
+    fake = _t.ModuleType("cast_identity")
+    fake.resolve_figures_by_file = lambda u, c: {
+        "p1.jpg": [{"name": "our protagonist"}], "p2.jpg": [{"name": "our protagonist"}]}
+    monkeypatch.setitem(__import__("sys").modules, "cast_identity", fake)
+    assert pc.protagonist_portrait_files(str(ep)) == {"p1.jpg"}

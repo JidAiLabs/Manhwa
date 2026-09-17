@@ -619,6 +619,20 @@ def _norm_name(s: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
 
 
+_HAIR_LEN_RE = re.compile(r"\b(long|short)\b[^.;]{0,30}?\bhair\b", re.IGNORECASE)
+
+
+def hair_length(text: Any) -> Optional[str]:
+    """'long' / 'short' when *text* says so of HAIR ("long, dark, messy hair"),
+    else None. "a long white coat over dark hair" is a coat: a garment word
+    between the two breaks the match."""
+    m = _HAIR_LEN_RE.search(str(text or ""))
+    if not m or re.search(r"\b(coat|jacket|robe|cloak|scarf|sleeve)s?\b",
+                          m.group(0), re.IGNORECASE):
+        return None
+    return m.group(1).lower()
+
+
 def protagonist_name(cast_obj: Dict[str, Any]) -> str:
     """The cast entry that is the lead, by its own id/name."""
     members = (cast_obj or {}).get("cast") or (cast_obj or {}).get("members") or []
@@ -651,8 +665,21 @@ def protagonist_portrait_files(ep_dir: str, max_figures: int = 2) -> set:
     lead = protagonist_name(c)
     if not lead:
         return set()
+    # The registry's hair LENGTH, which cast_identity never compares (it keys
+    # on colour): 390 of 2925 ORV "lead portraits" describe long hair while
+    # the registry says short, and the long-haired one became the after half.
+    lead_len = next((hair_length(m.get("visual_description"))
+                     for m in ((c.get("cast") or c.get("members") or []))
+                     if _norm_name(m.get("id")) == _norm_name(lead)
+                     or _norm_name(m.get("canonical_name")) == _norm_name(lead)),
+                    None)
+    subjects = {os.path.basename(str(p.get("scene_file") or "")):
+                (p.get("subjects") or []) for p in (u.get("panels") or [])}
     out: set = set()
     for f, figs in (resolve_figures_by_file(u, c) or {}).items():
+        if lead_len and any(hair_length(s) not in (None, lead_len)
+                            for s in subjects.get(os.path.basename(str(f)), [])):
+            continue
         names = [str(x.get("name") or "") for x in (figs or []) if x.get("name")]
         # Count EVERY figure, not just the identified ones. Counting only named
         # figures let a five-figure battle panel score as 2 -- the three
