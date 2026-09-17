@@ -195,10 +195,15 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
             for i, line in enumerate(lines):
                 _outlined(draw, (lx, ly + i * step), line, f, anchor=anc)
         if style_overlay.get("arrow", "none") != "none" and not xform:
-            # arrow from just under the label toward frame center (the subject)
-            sx = lx - (int(W * 0.10) if anc == "ra" else -int(W * 0.10))
-            _arrow(draw, (sx, ly + len(lines) * step + int(H * 0.02)),
-                   (int(W * 0.52), int(H * 0.46)), max(6, H // 90))
+            # arrow from the label's edge NEAREST the subject toward frame
+            # centre: a low label ("on_object") had its arrow run up through
+            # its own text ("THE ONLY READER")
+            sx = lx if anc == "ma" else lx - (
+                int(W * 0.10) if anc == "ra" else -int(W * 0.10))
+            sy = (ly + len(lines) * step + int(H * 0.02) if ly < H * 0.5
+                  else ly - int(H * 0.03))
+            _arrow(draw, (sx, sy), (int(W * 0.52), int(H * 0.46)),
+                   max(6, H // 90))
 
     # status badge: a FACT about the upload (chapter range, full recap), never a
     # claim about the story. Sits opposite the main label so the two never stack.

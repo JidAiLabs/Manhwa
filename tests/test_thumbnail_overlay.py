@@ -213,3 +213,19 @@ def test_a_label_that_would_shrink_stacks_on_two_lines_instead(tmp_path):
             if any(px[x, y][0] > 200 and px[x, y][1] > 170 and px[x, y][2] < 90
                    for x in range(700, 1280, 4))]
     assert rows and max(rows) - min(rows) > 150           # two lines tall
+
+
+def test_an_arrow_never_crosses_a_bottom_label(tmp_path):
+    """on_object puts the label low; the arrow ran up THROUGH "THE ONLY READER"."""
+    base = _stub(tmp_path)
+    a = str(tmp_path / "a.jpg"); b = str(tmp_path / "b.jpg")
+    for out, arrow in ((a, "none"), (b, "to_object")):
+        ov.render_overlay(base, out, hook="THE ONLY READER",
+                          style_overlay={"label_pos": "on_object",
+                                         "arrow": arrow, "marks": []})
+    band = (0, 560, 1280, 720)                        # the label's own rows
+    ia = Image.open(a).convert("RGB").crop(band)
+    ib = Image.open(b).convert("RGB").crop(band)
+    diff = sum(1 for p, q in zip(ia.getdata(), ib.getdata())
+               if abs(p[0] - q[0]) + abs(p[1] - q[1]) + abs(p[2] - q[2]) > 60)
+    assert diff < 50

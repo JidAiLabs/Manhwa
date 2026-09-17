@@ -66,7 +66,11 @@ _HOOK_GRAMMAR = (
 # The layouts the AUTO path may choose: one cohesive scene each. before_after is
 # only ever built as its own option (--style before_after); stat_callout only as
 # an explicit variant (it produced "LEVEL 999" on a story whose max level is 11).
-SCENE_STYLES = ["power_reveal", "vs_monster", "humiliation", "feat_object"]
+# Only styles whose ref slots code can FILL: feat_object asks for "a giant
+# weapon/hammer" and no code finds an object ref, so ORV got an invented stone
+# hammer (job 1694). vs_monster / humiliation have the same lead-only gap.
+# ponytail: re-add each one when its counterpart ref finder exists.
+SCENE_STYLES = ["power_reveal"]
 
 _HOOK_SHAPE = {
     "before_after": (_HOOK_GRAMMAR +
@@ -645,7 +649,15 @@ def protagonist_name(cast_obj: Dict[str, Any]) -> str:
 
 
 def protagonist_portrait_files(ep_dir: str, max_figures: int = 2) -> set:
-    """Panels where the LEAD is present and the frame is not a crowd.
+    """Panels where the LEAD is present and the frame is not a crowd."""
+    return _lead_panels(ep_dir, max_figures)[0]
+
+
+def _lead_panels(ep_dir: str, max_figures: int = 2):
+    """(portraits, look): lead portraits, and the subset whose subjects show
+    POSITIVE evidence of the registry look (its stated hair length).
+
+    Portraits: panels where the LEAD is present and the frame is not a crowd.
 
     Requiring merely "a person" was not enough. The chosen reference had EIGHT
     subjects -- a boot, two system windows, a fire-breathing creature, an
@@ -657,14 +669,14 @@ def protagonist_portrait_files(ep_dir: str, max_figures: int = 2) -> set:
         u = json.load(open(os.path.join(ep_dir, "manifest.panels.understood.json")))
         c = json.load(open(os.path.join(ep_dir, "manifest.cast.json")))
     except Exception:
-        return set()
+        return set(), set()
     try:
         from cast_identity import resolve_figures_by_file
     except Exception:
-        return set()
+        return set(), set()
     lead = protagonist_name(c)
     if not lead:
-        return set()
+        return set(), set()
     # The registry's hair LENGTH, which cast_identity never compares (it keys
     # on colour): 390 of 2925 ORV "lead portraits" describe long hair while
     # the registry says short, and the long-haired one became the after half.
@@ -692,7 +704,9 @@ def protagonist_portrait_files(ep_dir: str, max_figures: int = 2) -> set:
         if _norm_name(lead) in {_norm_name(n) for n in names} \
                 and len(names) <= max_figures:
             out.add(os.path.basename(str(f)))
-    return out
+    look = {f for f in out if lead_len and any(
+        hair_length(s) == lead_len for s in subjects.get(f, []))}
+    return out, look
 
 
 def select_bundle_climax_scored(ep_dirs: List[str]):
@@ -717,12 +731,13 @@ def select_bundle_climax_scored(ep_dirs: List[str]):
             data = json.load(open(man))
         except Exception:
             continue
-        portraits = protagonist_portrait_files(d)
+        portraits, look_files = _lead_panels(d)
         for p in data.get("panels") or []:
             q = dict(p)
             q["_ep_index"] = i        # rides back on the returned climax panel
             q["scene_file"] = os.path.basename(str(p.get("scene_file") or ""))
             q["_is_portrait"] = q["scene_file"] in portraits
+            q["_is_look"] = q["scene_file"] in look_files
             panels.append(q)
     if not panels:
         return None
@@ -731,9 +746,14 @@ def select_bundle_climax_scored(ep_dirs: List[str]):
     # out of the crowd. A reference has one job -- show the image model who the
     # lead IS -- so prefer panels where the lead is present and it is not a
     # crowd. Each tier falls back so a chapter without one still works.
+    # Registry look first: a lead panel that SAYS the registry's hair length
+    # beats a more dramatic one that doesn't. ORV's climax chapter (Ep306)
+    # draws Dokja's hair longer than the registry, and every regenerate
+    # painted him long-haired from those refs.
+    look = [p for p in panels if p.get("_is_look")]
     portrait = [p for p in panels if p.get("_is_portrait")]
     with_people = [p for p in panels if panel_shows_a_character(p)]
-    climax = _tp.select_climax_panel(portrait or with_people or panels)
+    climax = _tp.select_climax_panel(look or portrait or with_people or panels)
     if not climax:
         return None
     sf = climax.get("scene_file")
@@ -745,7 +765,8 @@ def select_bundle_climax_scored(ep_dirs: List[str]):
     # appear nowhere in this story. Send several panels of the SAME lead from
     # the same chapter so appearance is pinned by evidence, not by one frame.
     ep_i = climax["_ep_index"]
-    extra = [p["scene_file"] for p in panels
+    extra = [p["scene_file"] for p in sorted(
+                 panels, key=lambda p: 0 if p.get("_is_look") else 1)
              if p.get("_ep_index") == ep_i and p.get("_is_portrait")
              and p.get("scene_file") and p["scene_file"] != sf]
     return ep_i, [sf] + extra[:2]

@@ -533,7 +533,8 @@ def test_assemble_package_honours_the_models_layout_choice():
     pkg = {"title": "T", "description": "D", "thumbnail_style": "vs_monster",
            "style_reason": "a giant foe",
            "labels": ["F-RANK PORTER"], "hashtags": ["#m"]}
-    c = pc.assemble_package(beats, {"premise": "P"}, pkg, series_title="X")
+    c = pc.assemble_package(beats, {"premise": "P"}, pkg, series_title="X",
+                            styles=["power_reveal", "vs_monster"])
     assert c["style"] == "vs_monster"
     assert c["hook"] == "F-RANK PORTER"
     assert c["brief"] == {"premise": "P"}
@@ -841,3 +842,32 @@ def test_portraits_drop_panels_whose_hair_length_contradicts_the_lead(tmp_path,
         "p1.jpg": [{"name": "our protagonist"}], "p2.jpg": [{"name": "our protagonist"}]}
     monkeypatch.setitem(__import__("sys").modules, "cast_identity", fake)
     assert pc.protagonist_portrait_files(str(ep)) == {"p1.jpg"}
+
+
+# ---- ORV regenerate (job 1694), 2026-09-17 ------------------------------------
+
+def test_auto_scene_offers_only_styles_whose_refs_code_can_fill():
+    """feat_object asks for a giant weapon/hammer and no code finds an object
+    ref: ORV got an invented stone hammer. vs_monster / humiliation are the same
+    lead-only gap. Offered again only when their counterpart finders exist."""
+    assert pc.SCENE_STYLES == ["power_reveal"]
+
+
+def test_climax_refs_prefer_panels_that_match_the_registry_look(tmp_path,
+                                                                monkeypatch):
+    """Ep306 refs are drawn with longer hair than the registry's Dokja; Ep251
+    p000038 says "short dark hair wearing a white coat". A lead panel with
+    POSITIVE evidence of the registry look beats a more dramatic one without."""
+    import json as _j
+    eps = []
+    for name, subj in (("ch1", "a young man with short dark hair"),
+                       ("ch2", "a young man with messy dark hair screaming")):
+        d = tmp_path / name; d.mkdir()
+        (d / "manifest.panels.understood.json").write_text(_j.dumps({"panels": [
+            {"scene_file": "p1.jpg", "subjects": [subj], "panel_kind": "story",
+             "intensity": "explosive" if name == "ch2" else "calm"}]}))
+        eps.append(str(d))
+    monkeypatch.setattr(pc, "_lead_panels", lambda d, max_figures=2: (
+        {"p1.jpg"}, {"p1.jpg"} if d.endswith("ch1") else set()))
+    ci, refs = pc.select_bundle_climax_scored(eps)
+    assert ci == 0 and refs == ["p1.jpg"]
