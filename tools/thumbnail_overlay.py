@@ -42,6 +42,17 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
+def _fitted(draw: ImageDraw.ImageDraw, text: str, size: int,
+            max_w: int) -> ImageFont.FreeTypeFont:
+    """The largest font up to *size* whose *text* fits *max_w* pixels. A split
+    label at a fixed size ran off the frame ("UNIMPORTANT SPECTATOR")."""
+    f = _font(size)
+    while size > 12 and draw.textlength(text, font=f) > max_w:
+        size = int(size * 0.92)
+        f = _font(size)
+    return f
+
+
 def _outlined(draw: ImageDraw.ImageDraw, xy: Tuple[int, int], text: str,
               font: ImageFont.FreeTypeFont, *, fill=_YELLOW, anchor="la") -> None:
     stroke = max(3, font.size // 12)
@@ -144,9 +155,11 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
     label_pos = style_overlay.get("label_pos", "upper_right")
     if style_overlay.get("split"):
         parts = (hook.split("|", 1) + [""])[:2] if "|" in hook else ("BEFORE", "AFTER")
-        f = _font(int(H * 0.13))
-        _outlined(draw, (int(W * 0.25), int(H * 0.08)), parts[0].strip(), f, anchor="ma")
-        _outlined(draw, (int(W * 0.75), int(H * 0.82)), parts[1].strip(), f, anchor="ma")
+        for (cx, cy), part in zip(((0.25, 0.08), (0.75, 0.82)), parts):
+            part = part.strip()
+            _outlined(draw, (int(W * cx), int(H * cy)), part,
+                      _fitted(draw, part, int(H * 0.13), int(W * 0.44)),
+                      anchor="ma")
     elif hook:
         f = _font(int(H * 0.16))
         (lx, ly), anc = _anchor_xy(label_pos, W, H)
@@ -164,7 +177,9 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
     # status badge: a FACT about the upload (chapter range, full recap), never a
     # claim about the story. Sits opposite the main label so the two never stack.
     if badge:
-        bpos = "upper_right" if label_pos == "upper_left" else "upper_left"
+        # a split's BEFORE label owns the top-left, so its badge goes right
+        bpos = ("upper_right" if label_pos in ("upper_left", "split")
+                else "upper_left")
         (bx, by), banc = _anchor_xy(bpos, W, H)
         _outlined(draw, (bx, int(H * 0.03)), str(badge).strip().upper(),
                   _font(int(H * 0.062)), anchor=banc)

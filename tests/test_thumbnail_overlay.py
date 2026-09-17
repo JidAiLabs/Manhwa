@@ -147,3 +147,41 @@ def test_non_split_styles_still_draw_tags(tmp_path):
     ov.render_overlay(base, b, hook="READER", style_overlay=style,
                       tags=[{"text": "DOKKAEBI", "pos": "lower_left"}])
     assert Path(a).read_bytes() != Path(b).read_bytes()
+
+
+# ---- split labels must fit their half (ORV before_after, 2026-09-17) --------
+# "UNIMPORTANT SPECTATOR" at a fixed H*0.13 ran off the LEFT edge and
+# "THE SCRIPT MASTER" off the RIGHT; the "309 CHAPTERS" badge sat on the top
+# label because both used the upper-left corner.
+
+def _yellow_cols(im, y0, y1):
+    px = im.load()
+    return [x for x in range(im.width)
+            if any(px[x, y][0] > 200 and px[x, y][1] > 170 and px[x, y][2] < 90
+                   for y in range(y0, y1, 3))]
+
+
+def test_long_split_labels_stay_inside_their_half(tmp_path):
+    base = _stub(tmp_path)
+    out = str(tmp_path / "s.jpg")
+    style = {"label_pos": "split", "split": True, "arrow": "none", "marks": []}
+    ov.render_overlay(base, out, hook="UNIMPORTANT SPECTATOR|THE SCRIPT MASTER",
+                      style_overlay=style)
+    im = Image.open(out).convert("RGB")
+    top = _yellow_cols(im, 0, 200)
+    bottom = _yellow_cols(im, 560, 720)
+    assert top and min(top) > 4 and max(top) < 640        # inside the left half
+    assert bottom and min(bottom) > 640 and max(bottom) < 1276
+
+
+def test_split_badge_does_not_sit_on_the_before_label(tmp_path):
+    base = _stub(tmp_path)
+    style = {"label_pos": "split", "split": True, "arrow": "none", "marks": []}
+    a = str(tmp_path / "a.jpg"); b = str(tmp_path / "b.jpg")
+    ov.render_overlay(base, a, hook="WEAK|KING", style_overlay=style)
+    ov.render_overlay(base, b, hook="WEAK|KING", style_overlay=style,
+                      badge="309 CHAPTERS")
+    ia, ib = Image.open(a).convert("RGB"), Image.open(b).convert("RGB")
+    # the badge lands in the right half's top strip, the left half is untouched
+    assert list(ia.crop((0, 0, 640, 60)).getdata()) == \
+        list(ib.crop((0, 0, 640, 60)).getdata())
