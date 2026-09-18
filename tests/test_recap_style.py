@@ -1356,3 +1356,39 @@ def test_rule_six_rations_names_and_forbids_guessing_an_unknown_figure():
     assert "gender" in low
     # the old instruction (name established characters on their own panels) is gone
     assert "normally on their OWN panels" not in r
+
+
+# ---- the protagonist's handle never fronts another character's name ---------
+# ORV Ep6 after the identity fix still shipped "The protagonist Kim, a
+# second-year student at Cheongil High School…" — the panel's character is
+# Namwoon Kim, and the handle glued the lead's label onto him. A name list
+# cannot catch it: "Kim" is a surname BOTH characters carry.
+
+def test_handle_before_a_name_is_stripped():
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["p1.jpg"],
+         "line": "The protagonist Kim, a second-year student, stares at him."},
+        {"span": ["p2.jpg"], "line": "Our guy Namwoon lunges forward."},
+        {"span": ["p3.jpg"], "line": "The protagonist watches in silence."},
+        {"span": ["p4.jpg"], "line": "Our protagonist, Kim, says nothing."},
+    ]}]}
+    n = rs.strip_handle_before_other_name(beats)
+    lines = [s["line"] for s in rs.beat_segments(beats["beats"][0])]
+    assert lines[0] == "Kim, a second-year student, stares at him."
+    assert lines[1] == "Namwoon lunges forward."
+    assert lines[2] == "The protagonist watches in silence."   # no name follows
+    assert lines[3] == "Our protagonist, Kim, says nothing."   # apposition, not a stack
+    assert n == 2
+
+
+def test_handle_strip_keeps_a_line_speakable():
+    """Never empty a line: an unsalvageable strip is left alone."""
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["p1.jpg"], "line": "Our protagonist Dokja."}]}]}
+    rs.strip_handle_before_other_name(beats)
+    assert rs.beat_segments(beats["beats"][0])[0]["line"] == "Dokja."
+
+
+def test_rule_three_forbids_a_handle_in_front_of_a_name():
+    low = " ".join(rs.RECAP_STYLE_RULES.lower().split())
+    assert "never put that handle in front of a name" in low

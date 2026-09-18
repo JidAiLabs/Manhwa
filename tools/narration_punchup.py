@@ -49,6 +49,7 @@ from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     cap_protagonist_name,
     collapse_name_stutter,
+    strip_handle_before_other_name,
     dedupe_consecutive_panel_lines,
     is_cold_opener,
     is_spoken_fragment,
@@ -850,6 +851,12 @@ def apply_post_punchup_backstop(
     # LAST cleaner: kill any degenerate proper-noun stutter the writer/persona
     # rewrite left ("Jang Jang Jang" → "Jang"). Deterministic, cast-agnostic.
     n_stutter = collapse_name_stutter(out)
+    # "The protagonist Kim, a second-year student…" — the lead's label glued to
+    # another character's name (ORV Ep6, after the identity fix)
+    n_handle = strip_handle_before_other_name(out)
+    if n_handle:
+        print("[punchup] stripped a protagonist handle fronting a name on "
+              "%d line(s)" % n_handle)
     stats = out.setdefault("stats", {})
     stats["protagonist_name_capped"] = n_name
     stats["identity_reveals_neutralized"] = n_ident

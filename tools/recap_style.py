@@ -61,7 +61,9 @@ name arriving every few lines reads as a label rather than recognition. Naming
 OTHER cast members is unaffected: name them as often as clarity needs.
 "Our guy"/"our boy"/"our man" refers to EXACTLY ONE person — the protagonist;
 never use it for any other character (a helper, ally, or stranger gets their
-cast name or a neutral handle).
+cast name or a neutral handle). NEVER put that handle in front of a name —
+"the protagonist Kim", "our guy Namwoon" — a name and the lead's label side by
+side claim they are the same person. Use one or the other.
 4. ADD TEXTURE, NOT JOKES: eligible connective lines should occasionally carry
 one dry observation, intimate aside, ironic understatement, or concise familiar
 comparison. Aim for roughly one textured touch per four eligible lines. Serious
@@ -1589,6 +1591,38 @@ _NAME_STUTTER_RE = re.compile(r"\b([A-Z][A-Za-z][A-Za-z'’\-]*)(?:\s+\1\b)+")
 _HANDLE_STUTTER_RE = re.compile(
     r"\b((?:the|our|a|an)\s+[A-Za-z'’\-]+(?:\s+[A-Za-z'’\-]+){0,2})\s+\1\b",
     re.IGNORECASE)
+
+
+# A protagonist handle glued onto a proper noun: "The protagonist Kim, a
+# second-year student…" (ORV Ep6, 2026-09-18) — the panel's character is
+# Namwoon Kim and the handle pinned the lead's label onto him. A cast name list
+# cannot catch this one: BOTH characters are surnamed Kim. So it keys on the
+# SHAPE — handle immediately followed by a proper noun — and drops the handle,
+# which is right either way: the name alone reads better than name+label, and
+# rule 3 wants fewer labels anyway. An apposition ("our protagonist, Kim,") is
+# untouched: the comma says the two refer to the same person.
+# NOTE the scoped (?i:...): a whole-pattern IGNORECASE would also fold the
+# [A-Z] lookahead, and the strip would fire before ANY word ("The protagonist
+# watches" -> "watches").
+_HANDLE_BEFORE_NAME_RE = re.compile(
+    r"\b(?i:(?:our|the)\s+(?:protagonist|mc|guy|boy|man|hero))\s+(?=[A-Z][a-z])")
+
+
+def strip_handle_before_other_name(beats_obj, cast=None) -> int:
+    """Drop a protagonist handle that fronts a proper noun. Returns the number
+    of lines changed; a strip that would empty a line is skipped."""
+    changed = 0
+    for b in (beats_obj or {}).get("beats") or []:
+        segs = beat_segments(b)
+        if not segs:
+            continue
+        lines = [s.get("line") or "" for s in segs]
+        new = [_HANDLE_BEFORE_NAME_RE.sub("", ln) for ln in lines]
+        new = [n if n.strip() else o for o, n in zip(lines, new)]
+        if new != lines:
+            write_segment_lines(b, new)
+            changed += sum(1 for a2, c in zip(lines, new) if a2 != c)
+    return changed
 
 
 def collapse_name_stutter(beats_obj) -> int:
