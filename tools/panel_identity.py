@@ -38,6 +38,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 from typing import Any, Callable, Dict, List, Optional
 
@@ -50,6 +51,10 @@ MODEL = os.environ.get("STUDIO_IDENTITY_MODEL", "gemma4:26b")
 # panels these kinds describe carry no drawn person to identify
 _SKIP_KINDS = frozenset({"system", "caption", "empty"})
 _LETTERS = "AB"
+
+
+def _norm(name: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
 
 
 def _members(registry: Any) -> List[Dict[str, Any]]:
@@ -166,6 +171,23 @@ def identify_panels(ep_dir: str, registry: Any, *,
     cands = candidates(registry)
     if not cands:
         return None
+    # A name is trusted only when THIS chapter's cast (built from its own
+    # dialogue) contains that character. ORV Ep128 has no Namwoon, yet the
+    # forced choice handed out "B" on 22 of 58 panels and the identity gate
+    # rewrote the chapter's real names toward them. The decoy stays in the
+    # PROMPT -- that is what keeps look-alikes off the lead (measured: one
+    # candidate alone drops precision to 0.70) -- only its NAME is dropped
+    # here, and the figure is counted as another person instead.
+    trusted = [c["name"] for c in cands]
+    try:
+        with open(os.path.join(ep_dir, "manifest.cast.json"), encoding="utf-8") as f:
+            chapter = json.load(f)
+        in_chapter = {_norm(m.get("canonical_name") or m.get("id"))
+                      for m in _members(chapter)}
+        if in_chapter:
+            trusted = [n for n in trusted if _norm(n) in in_chapter]
+    except (OSError, ValueError):
+        pass
     understood = os.path.join(ep_dir, "manifest.panels.understood.json")
     with open(understood, encoding="utf-8") as f:
         panels = (json.load(f) or {}).get("panels") or []
@@ -180,14 +202,17 @@ def identify_panels(ep_dir: str, registry: Any, *,
         path = os.path.join(ep_dir, "scenes", fn)
         if not os.path.exists(path):
             continue
-        out[fn] = identify_panel(path, cands, chat=chat, model=model,
-                                 exemplar_images=exemplar_images, load=load)
+        rec = identify_panel(path, cands, chat=chat, model=model,
+                             exemplar_images=exemplar_images, load=load)
+        kept = [n for n in rec["names"] if n in trusted]
+        out[fn] = {"names": kept,
+                   "others": rec["others"] + len(rec["names"]) - len(kept)}
     obj: Dict[str, Any] = {"panels": out}
     from manifest_io import write_manifest
     target = out_path or os.path.join(ep_dir, "manifest.identity.json")
     write_manifest(target, obj, inputs=[understood], tool="panel_identity",
                    extra_meta={"candidates": [c["name"] for c in cands],
-                               "model": model})
+                               "trusted": trusted, "model": model})
     return obj
 
 

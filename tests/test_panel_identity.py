@@ -115,3 +115,39 @@ def test_no_exemplars_means_no_manifest_at_all(tmp_path):
 
     assert pi.identify_panels(str(ep), {"cast": [{"canonical_name": "X"}]},
                               chat=chat, load=lambda p: b"IMG") is None
+
+
+# ---- a name is only trusted when the CHAPTER contains that character --------
+# ORV Ep128 (2026-09-19): its cast is Michio Shoji, Yuseung Shin, Izumi...  no
+# Namwoon. The forced A/B/OTHER question still handed out "B" on 22 of 58
+# panels, and the identity gate then rewrote the chapter's real names toward
+# them ("Michio Shoji Michio Shoji", "Namwoon Michio Shoji"). The decoy stays in
+# the PROMPT — that is what keeps look-alikes off the lead — but its name is not
+# trusted in a chapter the character is absent from.
+
+def _cast(*names):
+    return {"cast": [{"canonical_name": n} for n in names]}
+
+
+def test_a_confirmed_name_absent_from_the_chapter_cast_becomes_another_person(tmp_path):
+    ep = _stub_panels(tmp_path, [("p1.jpg", "story", ["a young man"])])
+    (ep / "manifest.cast.json").write_text(
+        __import__("json").dumps(_cast("our protagonist", "Michio Shoji")))
+
+    def chat(**kw):
+        return {"message": {"content": '{"people": ["A", "B"]}'}}
+
+    out = pi.identify_panels(str(ep), REG, chat=chat, load=lambda p: b"IMG")
+    # A (the protagonist) is in this chapter's cast; B (Namwoon) is not
+    assert out["panels"]["p1.jpg"] == {"names": ["our protagonist"], "others": 1}
+    assert out["_meta"]["trusted"] == ["our protagonist"]
+
+
+def test_without_a_chapter_cast_every_confirmed_name_still_counts(tmp_path):
+    ep = _stub_panels(tmp_path, [("p1.jpg", "story", ["a young man"])])
+
+    def chat(**kw):
+        return {"message": {"content": '{"people": ["B"]}'}}
+
+    out = pi.identify_panels(str(ep), REG, chat=chat, load=lambda p: b"IMG")
+    assert out["panels"]["p1.jpg"] == {"names": ["Namwoon Kim"], "others": 0}
