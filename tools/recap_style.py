@@ -1608,16 +1608,26 @@ _HANDLE_BEFORE_NAME_RE = re.compile(
     r"\b(?i:(?:our|the)\s+(?:protagonist|mc|guy|boy|man|hero))\s+(?=[A-Z][a-z])")
 
 
+# The mirror: a handle trailing a name ("Michio Shoji the protagonist looks
+# stunned", ORV Ep128). No "man" here — "the man" reads as a description after
+# a name far more often than as the lead's label.
+_HANDLE_AFTER_NAME_RE = re.compile(
+    r"(?<=[a-z])\s+(?i:(?:our|the)\s+(?:protagonist|mc|guy|boy|hero))(?=\s+[a-z])")
+
+
 def strip_handle_before_other_name(beats_obj, cast=None) -> int:
-    """Drop a protagonist handle that fronts a proper noun. Returns the number
-    of lines changed; a strip that would empty a line is skipped."""
+    """Drop a protagonist handle stacked on a proper noun, either side of it.
+    Returns the number of lines changed; a strip that would empty a line is
+    skipped. An apposition ("Michio Shoji, the protagonist,") is left alone:
+    the commas say the two refer to one person on purpose."""
     changed = 0
     for b in (beats_obj or {}).get("beats") or []:
         segs = beat_segments(b)
         if not segs:
             continue
         lines = [s.get("line") or "" for s in segs]
-        new = [_HANDLE_BEFORE_NAME_RE.sub("", ln) for ln in lines]
+        new = [_HANDLE_AFTER_NAME_RE.sub("", _HANDLE_BEFORE_NAME_RE.sub("", ln))
+               for ln in lines]
         new = [n if n.strip() else o for o, n in zip(lines, new)]
         if new != lines:
             write_segment_lines(b, new)

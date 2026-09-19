@@ -1392,3 +1392,22 @@ def test_handle_strip_keeps_a_line_speakable():
 def test_rule_three_forbids_a_handle_in_front_of_a_name():
     low = " ".join(rs.RECAP_STYLE_RULES.lower().split())
     assert "never put that handle in front of a name" in low
+
+
+def test_a_handle_after_a_name_is_stripped_too():
+    """ORV Ep128 shipped "Michio Shoji the protagonist looks stunned by the
+    name" — the mirror of the handle-before-name stack, same claim that the two
+    are one person."""
+    beats = {"beats": [{"group_id": 1, "segments": [
+        {"span": ["p1.jpg"], "line": "Michio Shoji the protagonist looks stunned."},
+        {"span": ["p2.jpg"], "line": "Dokja our guy steps back."},
+        {"span": ["p3.jpg"], "line": "Michio Shoji, the protagonist, says nothing."},
+        {"span": ["p4.jpg"], "line": "Michio Shoji looks stunned."},
+    ]}]}
+    n = rs.strip_handle_before_other_name(beats)
+    lines = [s["line"] for s in rs.beat_segments(beats["beats"][0])]
+    assert lines[0] == "Michio Shoji looks stunned."
+    assert lines[1] == "Dokja steps back."
+    assert lines[2] == "Michio Shoji, the protagonist, says nothing."   # apposition
+    assert lines[3] == "Michio Shoji looks stunned."                    # untouched
+    assert n == 2
