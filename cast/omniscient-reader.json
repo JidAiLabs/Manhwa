@@ -34,7 +34,11 @@
    ],
    "visual_description": "A young man with dark hair and glasses, wearing a black button-down shirt over a white t-shirt and a dark jacket.",
    "not": [],
-   "is_protagonist": false
+   "is_protagonist": false,
+   "exemplars": [
+    "ongoing/omniscient-reader/Episode_125/scenes/p000016.jpg",
+    "ongoing/omniscient-reader/Episode_128/scenes/p000060.jpg"
+   ]
   },
   {
    "canonical_name": "Namwoon Kim",

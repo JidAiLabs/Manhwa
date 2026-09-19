@@ -63,12 +63,20 @@ def _members(registry: Any) -> List[Dict[str, Any]]:
     return [m for m in (registry or []) if isinstance(m, dict)]
 
 
-def candidates(registry: Any, max_n: int = MAX_CANDIDATES) -> List[Dict[str, Any]]:
+def candidates(registry: Any, max_n: int = MAX_CANDIDATES,
+               chapter: Any = None) -> List[Dict[str, Any]]:
     """The <=2 registry members that carry exemplars, protagonist first.
 
     Capped hard: a third candidate measurably destroys recall and invents
-    appearances of the characters it was just shown.
+    appearances of the characters it was just shown. With more than two
+    available, the second slot goes to a character THIS chapter contains
+    (*chapter* = its manifest.cast.json): asking about someone absent wastes
+    the slot and the answer would be untrusted anyway. When nobody else is in
+    the chapter, any exemplar member still rides along as a DECOY — that is
+    what keeps look-alikes off the lead (one candidate alone: precision 0.70).
     """
+    in_chapter = {_norm(m.get("canonical_name") or m.get("id"))
+                  for m in _members(chapter)} if chapter else set()
     out = []
     for m in _members(registry):
         ex = [str(p) for p in (m.get("exemplars") or []) if str(p).strip()]
@@ -77,8 +85,9 @@ def candidates(registry: Any, max_n: int = MAX_CANDIDATES) -> List[Dict[str, Any
         out.append({"name": str(m.get("canonical_name") or m.get("id") or "").strip(),
                     "exemplars": ex,
                     "_prot": bool(m.get("is_protagonist"))})
-    out.sort(key=lambda m: 0 if m["_prot"] else 1)
-    return [{k: v for k, v in m.items() if k != "_prot"} for m in out[:max_n]]
+    out.sort(key=lambda m: (0 if m["_prot"] else 1,
+                            0 if _norm(m["name"]) in in_chapter else 1))
+    return [{k: v for k, v in m.items() if k not in ("_prot",)} for m in out[:max_n]]
 
 
 def build_prompt(names: List[str]) -> str:
@@ -168,7 +177,12 @@ def identify_panels(ep_dir: str, registry: Any, *,
     """Identify every panel of *ep_dir* that shows people; write
     manifest.identity.json. None when the series has no exemplars (the chapter
     then keeps today's keyword behaviour rather than a half-trusted mix)."""
-    cands = candidates(registry)
+    try:
+        with open(os.path.join(ep_dir, "manifest.cast.json"), encoding="utf-8") as f:
+            chapter = json.load(f)
+    except (OSError, ValueError):
+        chapter = None
+    cands = candidates(registry, chapter=chapter)
     if not cands:
         return None
     # A name is trusted only when THIS chapter's cast (built from its own
@@ -179,15 +193,10 @@ def identify_panels(ep_dir: str, registry: Any, *,
     # candidate alone drops precision to 0.70) -- only its NAME is dropped
     # here, and the figure is counted as another person instead.
     trusted = [c["name"] for c in cands]
-    try:
-        with open(os.path.join(ep_dir, "manifest.cast.json"), encoding="utf-8") as f:
-            chapter = json.load(f)
-        in_chapter = {_norm(m.get("canonical_name") or m.get("id"))
-                      for m in _members(chapter)}
-        if in_chapter:
-            trusted = [n for n in trusted if _norm(n) in in_chapter]
-    except (OSError, ValueError):
-        pass
+    in_chapter = {_norm(m.get("canonical_name") or m.get("id"))
+                  for m in _members(chapter)} if chapter else set()
+    if in_chapter:
+        trusted = [n for n in trusted if _norm(n) in in_chapter]
     understood = os.path.join(ep_dir, "manifest.panels.understood.json")
     with open(understood, encoding="utf-8") as f:
         panels = (json.load(f) or {}).get("panels") or []

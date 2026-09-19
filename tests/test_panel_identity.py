@@ -151,3 +151,46 @@ def test_without_a_chapter_cast_every_confirmed_name_still_counts(tmp_path):
 
     out = pi.identify_panels(str(ep), REG, chat=chat, load=lambda p: b"IMG")
     assert out["panels"]["p1.jpg"] == {"names": ["Namwoon Kim"], "others": 0}
+
+
+# ---- the second candidate comes from THIS chapter's cast -------------------
+# Only two candidates fit in one call (measured), and the registry may carry
+# many. ORV Ep128 is a Michio chapter: asking about Namwoon there wastes the
+# slot and the answer is untrusted anyway, so the slot goes to Michio.
+
+REG3 = {"cast": [
+    {"canonical_name": "our protagonist", "is_protagonist": True,
+     "exemplars": ["a1.jpg", "a2.jpg"]},
+    {"canonical_name": "Namwoon Kim", "exemplars": ["b1.jpg", "b2.jpg"]},
+    {"canonical_name": "Michio Shoji", "exemplars": ["c1.jpg", "c2.jpg"]},
+]}
+
+
+def test_the_second_candidate_is_a_character_the_chapter_contains():
+    assert [c["name"] for c in pi.candidates(
+        REG3, chapter=_cast("our protagonist", "Michio Shoji", "Izumi"))] == \
+        ["our protagonist", "Michio Shoji"]
+    assert [c["name"] for c in pi.candidates(
+        REG3, chapter=_cast("our protagonist", "Namwoon Kim"))] == \
+        ["our protagonist", "Namwoon Kim"]
+
+
+def test_with_nobody_else_in_the_chapter_a_decoy_is_still_asked():
+    """The decoy is what keeps look-alikes off the lead (one candidate alone:
+    precision 0.70). Its name is untrusted, which the census guard handles."""
+    c = pi.candidates(REG3, chapter=_cast("our protagonist", "Yuseung Shin"))
+    assert [x["name"] for x in c] == ["our protagonist", "Namwoon Kim"]
+
+
+def test_identify_panels_asks_about_the_chapter_s_own_second_character(tmp_path):
+    import json as _j
+    ep = _stub_panels(tmp_path, [("p1.jpg", "story", ["a young man"])])
+    (ep / "manifest.cast.json").write_text(
+        _j.dumps(_cast("our protagonist", "Michio Shoji")))
+
+    def chat(**kw):
+        return {"message": {"content": '{"people": ["B"]}'}}
+
+    out = pi.identify_panels(str(ep), REG3, chat=chat, load=lambda p: b"IMG")
+    assert out["_meta"]["candidates"] == ["our protagonist", "Michio Shoji"]
+    assert out["panels"]["p1.jpg"] == {"names": ["Michio Shoji"], "others": 0}
