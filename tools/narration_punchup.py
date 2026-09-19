@@ -49,6 +49,7 @@ from recap_style import (  # noqa: E402
     RECAP_STYLE_RULES,
     cap_protagonist_name,
     collapse_name_stutter,
+    ration_repeated_names,
     strip_handle_before_other_name,
     dedupe_consecutive_panel_lines,
     is_cold_opener,
@@ -857,6 +858,13 @@ def apply_post_punchup_backstop(
     if n_handle:
         print("[punchup] stripped a protagonist handle fronting a name on "
               "%d line(s)" % n_handle)
+    # image identity confirms a name on most panels and the writer then uses it
+    # every time (ORV Ep128: 7 name mentions -> 23). A repeat that OPENS the
+    # next line, with nobody else named in between, becomes a pronoun.
+    n_ration = ration_repeated_names(out, cast_obj or {"cast": []})
+    if n_ration:
+        print("[punchup] rationed a repeated name to a pronoun on %d line(s)"
+              % n_ration)
     stats = out.setdefault("stats", {})
     stats["protagonist_name_capped"] = n_name
     stats["identity_reveals_neutralized"] = n_ident

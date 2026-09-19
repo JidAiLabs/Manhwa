@@ -1411,3 +1411,64 @@ def test_a_handle_after_a_name_is_stripped_too():
     assert lines[2] == "Michio Shoji, the protagonist, says nothing."   # apposition
     assert lines[3] == "Michio Shoji looks stunned."                    # untouched
     assert n == 2
+
+
+# ---- a name repeated line after line becomes a pronoun ---------------------
+# Owner, 2026-09-17: "you use the names too much, you can also use he, she etc
+# to balance it". With image identity confirming a character on most panels,
+# ORV Ep128 went from 7 name mentions to 23: the writer uses the name the
+# payload hands it, every time. This rations the REPEAT, conservatively.
+
+_CAST_G = {"cast": [
+    {"canonical_name": "Michio Shoji", "aliases": ["Michio"],
+     "visual_description": "A young man with dark hair and glasses."},
+    {"canonical_name": "our protagonist", "is_protagonist": True,
+     "visual_description": "A young man with short dark hair."},
+    {"canonical_name": "Izumi", "visual_description": "A woman in a red coat."},
+]}
+
+
+def _ration_beats(*lines):
+    """Local to the rationing tests — `_beat` already means something else in
+    this file (a single beat dict), and shadowing it broke seven tests."""
+    return {"beats": [{"group_id": 1, "segments": [
+        {"span": ["p%d.jpg" % i], "line": l} for i, l in enumerate(lines)]}]}
+
+
+def test_a_repeated_name_at_line_start_becomes_a_pronoun():
+    b = _ration_beats("Michio Shoji stares at the body.",
+              "Michio Shoji clenches his fist in silence.")
+    n = rs.ration_repeated_names(b, _CAST_G)
+    lines = [s["line"] for s in rs.beat_segments(b["beats"][0])]
+    assert lines == ["Michio Shoji stares at the body.",
+                     "He clenches his fist in silence."]
+    assert n == 1
+
+
+def test_an_intervening_character_keeps_the_name():
+    b = _ration_beats("Michio Shoji stares at the body.",
+              "Izumi steps between them.",
+              "Michio Shoji clenches his fist.")
+    rs.ration_repeated_names(b, _CAST_G)
+    lines = [s["line"] for s in rs.beat_segments(b["beats"][0])]
+    assert lines[2] == "Michio Shoji clenches his fist."
+
+
+def test_two_names_in_one_line_are_untouched():
+    b = _ration_beats("Michio Shoji nods.",
+              "Michio Shoji looks at Izumi and says nothing.")
+    rs.ration_repeated_names(b, _CAST_G)
+    assert rs.beat_segments(b["beats"][0])[1]["line"].startswith("Michio Shoji")
+
+
+def test_a_name_mid_sentence_is_left_alone():
+    b = _ration_beats("Michio Shoji nods.", "Behind him, Michio Shoji hesitates.")
+    rs.ration_repeated_names(b, _CAST_G)
+    assert "Michio Shoji hesitates" in rs.beat_segments(b["beats"][0])[1]["line"]
+
+
+def test_an_unknown_gender_is_never_guessed():
+    cast = {"cast": [{"canonical_name": "the constellation",
+                      "visual_description": "A shape of light."}]}
+    b = _ration_beats("The constellation watches.", "The constellation speaks again.")
+    assert rs.ration_repeated_names(b, cast) == 0

@@ -1635,6 +1635,82 @@ def strip_handle_before_other_name(beats_obj, cast=None) -> int:
     return changed
 
 
+_GENDER_F_RE = re.compile(r"\b(woman|women|girl|lady|female|she|her)\b", re.I)
+_GENDER_M_RE = re.compile(r"\b(man|men|boy|guy|male|he|his)\b", re.I)
+
+
+def _gender_of(member) -> str:
+    """'m' / 'f' from the cast entry, else '' — never guessed. An entry that
+    says neither (a constellation, a system voice) keeps its name."""
+    g = str((member or {}).get("gender") or "").lower()[:1]
+    if g in ("m", "f"):
+        return g
+    d = str((member or {}).get("visual_description") or "")
+    f, m = bool(_GENDER_F_RE.search(d)), bool(_GENDER_M_RE.search(d))
+    return "f" if f and not m else "m" if m and not f else ""
+
+
+def ration_repeated_names(beats_obj, cast) -> int:
+    """A name repeated at the START of the next line, with nobody else named
+    in between, becomes a pronoun. Returns the number of lines changed.
+
+    Owner, 2026-09-17: "you use the names too much, you can also use he, she
+    etc to balance it". Image identity made this worse, not better: with a
+    confirmed name on most panels the writer uses it every time (ORV Ep128:
+    7 name mentions before, 23 after). The prompt asks for rationing; this is
+    the deterministic floor under it.
+
+    Deliberately narrow — it only fires when the line OPENS with the same
+    character's name, that line names nobody else, and the cast states a
+    gender. Anywhere else a name is doing work that a pronoun cannot.
+    """
+    members = cast.get("cast") if isinstance(cast, dict) else cast
+    members = [m for m in (members or []) if isinstance(m, dict)]
+    variants, gender = {}, {}
+    for m in members:
+        canonical = str(m.get("canonical_name") or m.get("id") or "").strip()
+        if not canonical:
+            continue
+        names = [canonical] + [str(a) for a in (m.get("aliases") or [])]
+        variants[canonical] = sorted({n for n in names if n}, key=len, reverse=True)
+        gender[canonical] = _gender_of(m)
+    if not variants:
+        return 0
+    changed = 0
+    for beat in (beats_obj or {}).get("beats") or []:
+        segs = beat_segments(beat)
+        if not segs:
+            continue
+        lines = [s.get("line") or "" for s in segs]
+        new = list(lines)
+        last = None
+        for i, ln in enumerate(lines):
+            hits = []                    # (position, canonical, variant)
+            for canonical, vs in variants.items():
+                for v in vs:
+                    m = re.search(r"(?<![A-Za-z])%s(?![A-Za-z])" % re.escape(v), ln)
+                    if m:
+                        hits.append((m.start(), canonical, v))
+                        break
+            if not hits:
+                continue                 # a pronoun line: the subject carries on
+            distinct = {c for _p, c, _v in hits}
+            opener = next((c for p_, c, v in hits
+                           if ln.startswith(v) or ln.startswith(v.capitalize())), None)
+            if (len(distinct) == 1 and opener and opener == last
+                    and gender.get(opener)):
+                v = next(v for _p, c, v in hits if c == opener)
+                pron = "He" if gender[opener] == "m" else "She"
+                cand = pron + ln[len(v):]
+                if cand.strip():
+                    new[i] = cand
+                    changed += 1
+            last = max(hits)[1] if len(distinct) > 1 else next(iter(distinct))
+        if new != lines:
+            write_segment_lines(beat, new)
+    return changed
+
+
 def collapse_name_stutter(beats_obj) -> int:
     """Collapse a degenerate repeat on every segment line: a proper noun
     ('Jang Jang Jang' → 'Jang') from writer sampling, AND a doubled handle
