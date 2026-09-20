@@ -59,6 +59,16 @@ def connect(path: Path | str) -> sqlite3.Connection:
         -- chapter-lease lookups (claim_next) filter running jobs by chapter on
         -- every claim attempt — index keeps that a cheap lookup, not a scan.
         CREATE INDEX IF NOT EXISTS job_state_chapter ON job(state, chapter_id);
+        -- per-series disk use, measured by the disk_scan job (scandir, no
+        -- model, no shell). Cached because a cold walk of 65 GB must never sit
+        -- inside a page load; the Series tab shows when it was measured.
+        CREATE TABLE IF NOT EXISTS series_disk (
+          series_id INTEGER PRIMARY KEY,
+          bytes INTEGER NOT NULL DEFAULT 0,
+          video_bytes INTEGER NOT NULL DEFAULT 0,
+          chapters INTEGER NOT NULL DEFAULT 0,
+          measured_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS stage_run (
           id INTEGER PRIMARY KEY,
           chapter_id INTEGER,

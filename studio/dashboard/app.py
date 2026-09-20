@@ -300,6 +300,12 @@ def _reconcile_throttled(con: sqlite3.Connection, sid: int) -> None:
 
 
 def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
+    from studio.catalog import disk as _disk
+    # cached by the disk_scan job: ongoing/ is ~65 GB and a cold walk must
+    # never sit inside a page load
+    measured = {r[0]: r for r in con.execute(
+        "SELECT series_id, bytes, video_bytes, chapters, measured_at "
+        "FROM series_disk").fetchall()}
     rows = []
     for sid, title, source, surl, autopilot, new_pending in con.execute(
             "SELECT id, title, source, series_url, autopilot, "
@@ -348,6 +354,14 @@ def _series_rows(con: sqlite3.Connection) -> List[Dict[str, Any]]:
             "avg_render": eta.fmt_eta(rp_render),
             "eta": eta.fmt_eta(eta.series_eta(con, sid, remaining)),
             "wall_spent": eta.fmt_eta(cost),
+        })
+        m = measured.get(sid)
+        rows[-1].update({
+            "disk": _disk.fmt_bytes(m[1]) if m else "",
+            "disk_video": _disk.fmt_bytes(m[2]) if m else "",
+            "disk_per_chapter": (_disk.fmt_bytes(m[1] // m[3])
+                                 if m and m[3] else ""),
+            "disk_measured": (m[4] or "")[:16] if m else "",
         })
     return rows
 
@@ -591,8 +605,25 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.get("/series", response_class=HTMLResponse)
     def series_page(request: Request, error: str = ""):
-        return page("series.html", request, series=_series_rows(con()),
-                    sources=_source_ids(), error=error)
+        """The Series tab also answers "what does this cost on disk": each
+        series' measured size, and whether the remaining backlog fits."""
+        c = con()
+        rows = _series_rows(c)
+        from studio.catalog import disk as _disk
+        measured = [(b, ch) for b, ch in c.execute(
+            "SELECT bytes, chapters FROM series_disk WHERE chapters > 0")]
+        per_chapter = (sum(b // ch for b, ch in measured) // len(measured)
+                       if measured else 0)
+        todo = sum(max(0, r["total"] - r["rendered"]) for r in rows)
+        try:
+            free = _disk.fmt_bytes(shutil.disk_usage(str(REPO)).free)
+        except OSError:
+            free = ""
+        return page("series.html", request, series=rows,
+                    sources=_source_ids(), error=error, disk_free=free,
+                    disk_todo=todo,
+                    disk_need=_disk.fmt_bytes(per_chapter * todo)
+                    if per_chapter else "")
 
     @app.get("/series/{sid}", response_class=HTMLResponse)
     def series_detail(request: Request, sid: int):

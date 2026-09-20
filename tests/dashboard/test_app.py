@@ -1417,3 +1417,33 @@ def test_label_candidates_switch_for_free_and_only_from_the_list(client, tmp_pat
     for bad in ({"option": "scene", "hook": "5"}, {"option": "../x", "hook": "0"}):
         assert c.post("/thumbnail/label", data=dict(bad, series_id=1),
                       follow_redirects=False).status_code == 404, bad
+
+
+def test_series_tab_shows_disk_use_and_free_space(client, tmp_path, monkeypatch):
+    """Owner, 2026-09-20: "what is the capacity cost of these manhwas... can
+    you add these in the series tab". Measured numbers, cached by the disk_scan
+    job — a cold walk of 65 GB must never sit inside a page load."""
+    c, con = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    con.execute("INSERT INTO series_disk (series_id, bytes, video_bytes, "
+                "chapters, measured_at) VALUES (1, ?, ?, 309, '2026-09-20')",
+                (48 * 1024 ** 3, 24 * 1024 ** 3))
+    con.commit()
+    page = c.get("/series").text
+    assert "48.0 GB" in page and "24.0 GB" in page      # total and video
+    assert "159" in page or "MB/ch" in page             # per-chapter cost
+    assert "free" in page.lower()                        # headroom on the box
+
+    r = c.post("/jobs", data={"type": "disk_scan"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='disk_scan'"
+                       ).fetchone()[0] == 1
+
+
+def test_a_series_never_measured_shows_no_number(client, tmp_path, monkeypatch):
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    page = c.get("/series").text
+    assert "not measured" in page.lower()

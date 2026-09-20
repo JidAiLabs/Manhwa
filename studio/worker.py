@@ -2086,6 +2086,35 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
                 "page to pick" % ", ".join(failed))
 
 
+def _h_disk_scan(con: sqlite3.Connection, job: Dict[str, Any],
+                 log: TextIO) -> None:
+    """Measure what each manhwa costs on disk. IO only: no model, no network.
+
+    Why a job and not a page load: ongoing/ is ~65 GB and a cold walk would
+    stall the dashboard. One row per series, re-measured on demand."""
+    from studio.catalog import disk
+    total_all = 0
+    for (sid,) in con.execute("SELECT id FROM series ORDER BY id").fetchall():
+        eps = [r[0] for r in con.execute(
+            "SELECT ep_dir FROM chapter WHERE series_id=? AND ep_dir IS NOT NULL",
+            (sid,)).fetchall() if r[0]]
+        paths = list(eps) + [str(REPO / "dist" / f"series_{sid}")]
+        total, video = disk.measure_dirs(paths)
+        total_all += total
+        con.execute(
+            "INSERT INTO series_disk (series_id, bytes, video_bytes, chapters, "
+            "measured_at) VALUES (?,?,?,?,datetime('now')) "
+            "ON CONFLICT(series_id) DO UPDATE SET bytes=excluded.bytes, "
+            "video_bytes=excluded.video_bytes, chapters=excluded.chapters, "
+            "measured_at=excluded.measured_at",
+            (sid, total, video, len(eps)))
+        log.write("[disk] series %d: %s (%s video) over %d chapters\n"
+                  % (sid, disk.fmt_bytes(total), disk.fmt_bytes(video), len(eps)))
+    con.commit()
+    log.write("[disk] measured %s across every series\n"
+              % disk.fmt_bytes(total_all))
+
+
 def _h_thumbnail_refs(con: sqlite3.Connection, job: Dict[str, Any],
                       log: TextIO) -> None:
     """SUGGEST reference panels for the series thumbnail; the owner picks on
@@ -2118,6 +2147,7 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
     "publish_meta": _h_publish_meta,
     "series_thumbnail": _h_series_thumbnail,
     "thumbnail_refs": _h_thumbnail_refs,
+    "disk_scan": _h_disk_scan,
     "add_series": _h_add_series,
     "branding_segments": _h_branding_segments,
     "chain": _h_chain,
