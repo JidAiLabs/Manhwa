@@ -16,10 +16,6 @@ One entry each: what, where, how it shows, why it waited. Delete an entry when i
   from stale manifests. The thumbnail now READS that manifest, so this matters more than it did.
 - **`videos.html` reads the legacy `bundle.teaser_state`** while the gate, the Series page and
   the rest read `series.teaser_state`; the two can disagree after the bundle->series migration.
-- **ORV's teaser on the Mini lives in `dist/series_1/teaser_src/`**, a name no code reads
-  (code: `dist/series_<id>/teaser/`). The dashboard review card cannot see it and the thumbnail
-  job falls back to the computed montage (same ranking, measured 2026-09-21). Rename on the
-  Mini after checking the `scenes/` symlinks are absolute; back up first.
 
 ## Thumbnail
 

@@ -93,8 +93,9 @@ Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), 
   until reviewed; `_h_concat` prepends it only when `approved`. Dashboard: Series page
   "Intro teaser" button + review card. `[teaser].enabled` gates ONLY the two automatic paths
   (auto-debut bundle, autopilot intro); the manual button always works. (This paragraph said
-  `dist/bundle_<id>/` and `bundle.teaser_state` for months after the migration; and ORV's own
-  teaser on the Mini sits in `dist/series_1/teaser_src/`, a name no code reads.)
+  `dist/bundle_<id>/` and `bundle.teaser_state` for months after the migration. ORV's own
+  teaser sat in `dist/series_1/teaser_src/`, a name no code reads, until it was renamed to
+  `teaser/` on 2026-09-21; the copy `teaser_src.bak_2026-09-21` beside it can be deleted.)
   Plan: `docs/plans/2026-06-28-teaser-planner.md`.
 - **Thumbnail follows the teaser (2026-09-21, `3c8bfa0`):** the series thumbnail takes its
   claim, climax and refs from the TEASER'S WINDOW (the same first-N chapters), reading a
