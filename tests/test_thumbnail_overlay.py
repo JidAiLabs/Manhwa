@@ -296,3 +296,16 @@ def test_no_card_lines_draws_no_empty_window(tmp_path):
     ov.render_overlay(_stub(tmp_path), out, hook="", style_overlay=_CARD_SPEC,
                       card=[])
     assert _box_pixels(out, _CARD_BOX, _not_base) == 0
+
+
+def test_one_card_line_is_drawn_big(tmp_path):
+    """The examples' system windows hold ONE short line in huge type. Measured
+    2026-09-22: the first card drew this line at 5,235 white pixels -- fine
+    print in a mostly empty box, unreadable at thumbnail size."""
+    out = str(tmp_path / "c.jpg")
+    spec = {"label_pos": "upper_left", "arrow": "none", "marks": [],
+            "speech_slots": 0, "card": {"pos": [0.04, 0.52], "size": [0.42, 0.30]}}
+    ov.render_overlay(_stub(tmp_path), out, hook="", style_overlay=spec,
+                      card=["THE MAIN SCENARIO HAS ARRIVED."])
+    white = _box_pixels(out, (0.0, 0.45, 0.5, 0.9), lambda px: min(px) > 200)
+    assert white > 12000, white

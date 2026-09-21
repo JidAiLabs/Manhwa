@@ -142,3 +142,37 @@ def test_render_thumbnail_art_prompt_carries_the_designs_clause(tmp_path, monkey
     tb.render_thumbnail(_design_concept(), ref_episode_dir=str(tmp_path),
                         out_dir=str(tmp_path / "b"), models=["m"])
     assert clause not in calls["prompt"]
+
+
+# --- the story's scene reaches the painter ----------------------------------
+# Owner, 2026-09-22: "we dont see a story on the thumbnail". The understanding
+# was good ("his commute turns into a death game; he alone has read the script")
+# and never reached the image model, which got the style's fixed paragraph: a
+# hero with an aura and recoiling onlookers, for every series.
+
+_SCENE = ("A crowded subway car; a blank glowing window hangs in the air; one "
+          "calm man reads his phone while passengers panic.")
+
+
+def test_a_scene_replaces_the_generic_composition(tmp_path, monkeypatch):
+    from thumbnail_styles import HOOK_DESIGNS, style_for
+    generic = style_for("power_reveal")["art_prompt"]
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    tb.render_thumbnail(_design_concept(design="nametag", scene=_SCENE),
+                        ref_episode_dir=str(tmp_path),
+                        out_dir=str(tmp_path / "a"), models=["m"])
+    assert _SCENE in calls["prompt"]
+    assert generic[:60] not in calls["prompt"]          # no lightning-man default
+    assert HOOK_DESIGNS["nametag"]["art_clause"] in calls["prompt"]   # placement stays
+    assert "blank" in calls["prompt"].lower()           # windows painted without letters
+
+
+def test_without_a_scene_the_style_composition_is_still_used(tmp_path, monkeypatch):
+    from thumbnail_styles import style_for
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    tb.render_thumbnail(_design_concept(design="nametag"),
+                        ref_episode_dir=str(tmp_path),
+                        out_dir=str(tmp_path / "b"), models=["m"])
+    assert style_for("power_reveal")["art_prompt"][:60] in calls["prompt"]

@@ -2605,12 +2605,13 @@ def _thumb_stream(calls, fail_style=None,
     def fake(cmd, log, **kw):
         s = [str(x) for x in cmd]
         calls.append(s)
-        if s[1].endswith("publish_concept.py") and "--rank-designs" in s:
+        if s[1].endswith("publish_concept.py") and "--write-claim" in s:
             if rank_rc:
                 return rank_rc
-            _j.dump({"designs": list(designs), "reason": {},
+            _j.dump({"designs": list(designs), "design_reason": {},
+                     "labels": ["HOOK"], "scene": "a scene",
                      "claim_source": "montage:computed"},
-                    open(s[s.index("--out") + 1], "w"))
+                    open(s[s.index("--write-claim") + 1], "w"))
         elif s[1].endswith("publish_concept.py"):
             style = s[s.index("--style") + 1] if "--style" in s else ""
             design = s[s.index("--design") + 1] if "--design" in s else ""
@@ -2643,16 +2644,22 @@ def test_series_thumbnail_builds_the_two_ranked_designs_and_leaves_live_alone(
     for name in ("system_window", "nametag"):
         assert (live / "options" / name / "thumbnail_yt.jpg").exists(), name
     concept_cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
-    # ranked FIRST and for free, then one build per ranked design, in rank order
-    assert "--rank-designs" in concept_cmds[0]
-    builds = concept_cmds[1:]
+    # ONE claim for the series (the only call that reads the story), then one
+    # card per ranked design built FROM that claim, in rank order
+    claim_cmd, builds = concept_cmds[0], concept_cmds[1:]
+    claim_path = str(live / "claim.json")
+    assert claim_cmd[claim_cmd.index("--write-claim") + 1] == claim_path
+    assert claim_cmd[claim_cmd.index("--teaser-scan-chapters") + 1] == "12"
+    assert "--teaser-min-panels" in claim_cmd and "--teaser-max-panels" in claim_cmd
+    assert "--teaser-payoff-tail-frac" in claim_cmd
     assert [c[c.index("--design") + 1] for c in builds] == ["system_window",
                                                             "nametag"]
+    for c in builds:
+        # a card is built from the claim: it never re-reads the story, so the
+        # two cards cannot disagree on labels, scene or refs
+        assert c[c.index("--claim") + 1] == claim_path
+        assert "--teaser-scan-chapters" not in c and "--write-claim" not in c
     for c in concept_cmds:
-        # the teaser's window and knobs reach the ranking AND every build
-        assert c[c.index("--teaser-scan-chapters") + 1] == "12"
-        assert "--teaser-min-panels" in c and "--teaser-max-panels" in c
-        assert "--teaser-payoff-tail-frac" in c
         assert "--style" not in c                 # a split is a variant only
     # nothing goes live until the owner picks: live image + approval untouched
     assert (live / "thumbnail_yt.jpg").read_bytes() == b"live"
@@ -2786,12 +2793,12 @@ def test_picked_refs_reach_both_options(tmp_path, monkeypatch):
     worker._h_series_thumbnail(
         con, {"series_id": 1, "payload": {"refs": ["/a/p1.jpg", "/b/p2.jpg"]}},
         io.StringIO())
-    builds = [c for c in calls
-              if c[1].endswith("publish_concept.py") and "--design" in c]
-    assert len(builds) == 2
-    for c in builds:
-        assert c[c.index("--refs") + 1] == "/a/p1.jpg,/b/p2.jpg"
-        assert "--before-ref" not in c
+    cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
+    claim_cmd = [c for c in cmds if "--write-claim" in c]
+    assert len(claim_cmd) == 1 and len([c for c in cmds if "--design" in c]) == 2
+    # the owner's picks go into the CLAIM, which every card is built from
+    assert claim_cmd[0][claim_cmd[0].index("--refs") + 1] == "/a/p1.jpg,/b/p2.jpg"
+    assert "--before-ref" not in claim_cmd[0]
 
 
 def test_a_stale_option_from_before_the_designs_is_removed(tmp_path, monkeypatch):
@@ -2820,7 +2827,7 @@ def test_a_failed_ranking_builds_nothing_and_is_not_retried(tmp_path, monkeypatc
     monkeypatch.setattr(worker, "REPO", tmp_path)
     calls = []
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls, rank_rc=2))
-    with pytest.raises(worker.NonRetryableError, match="rank"):
+    with pytest.raises(worker.NonRetryableError, match="claim"):
         worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
                                    io.StringIO())
     assert not [c for c in calls if c[1].endswith("thumbnail_build.py")]
@@ -2853,10 +2860,12 @@ def test_teaser_manifest_is_passed_only_for_a_reviewable_teaser(tmp_path,
         monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
         worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
                                    io.StringIO())
-        for c in [c for c in calls if c[1].endswith("publish_concept.py")]:
-            assert ("--teaser-manifest" in c) is expected, (state, write_file)
-            if expected:
-                assert c[c.index("--teaser-manifest") + 1] == str(man)
+        claim_cmd = [c for c in calls if "--write-claim" in c]
+        assert len(claim_cmd) == 1
+        c = claim_cmd[0]
+        assert ("--teaser-manifest" in c) is expected, (state, write_file)
+        if expected:
+            assert c[c.index("--teaser-manifest") + 1] == str(man)
 
 
 
@@ -2872,11 +2881,10 @@ def test_the_ranking_knows_the_banned_title_the_build_will_apply(tmp_path,
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
     worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
                                io.StringIO())
-    cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
-    titles = {c[c.index("--series-title") + 1] for c in cmds
-              if "--series-title" in c}
-    assert all("--series-title" in c for c in cmds)
-    assert len(titles) == 1
+    # the claim call is the ONLY one that writes copy, ranks designs and quotes
+    # the card, so it is the one that must know the banned title
+    claim_cmd = [c for c in calls if "--write-claim" in c]
+    assert len(claim_cmd) == 1 and "--series-title" in claim_cmd[0]
 
 
 def test_suggested_reference_panels_prefer_the_teaser_window(tmp_path, monkeypatch):
@@ -2894,3 +2902,70 @@ def test_suggested_reference_panels_prefer_the_teaser_window(tmp_path, monkeypat
     c = calls[0]
     assert "--ref-candidates" in c
     assert c[c.index("--teaser-scan-chapters") + 1] == "12"
+
+
+# ---- the series claim: previewed for free, then painted as read -------------
+# Owner, 2026-09-22: "where do i see all these new things you mentioned?" The
+# scene the painter gets, the summary and the system line existed only in a
+# chat message. A preview is only worth reading if generate then paints THAT
+# text, so generate reuses the claim on disk instead of writing a new one.
+
+def _claim_on_disk(root, **extra):
+    import json as _j
+    p = root / "dist" / "series_1" / "claim.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_j.dumps({"designs": ["system_window", "nametag"],
+                           "labels": ["HOOK"], "scene": "REVIEWED SCENE",
+                           "refs": ["/old/ref.jpg"], **extra}))
+    return p
+
+
+def test_series_claim_job_writes_the_claim_and_pays_for_nothing(tmp_path, monkeypatch):
+    import io
+    from studio.dashboard import jobs as _jobs
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_claim(con, {"series_id": 1, "payload": {}}, io.StringIO())
+    cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
+    assert len(cmds) == 1
+    c = cmds[0]
+    assert c[c.index("--write-claim") + 1] == str(tmp_path / "dist" / "series_1" / "claim.json")
+    assert c[c.index("--teaser-scan-chapters") + 1] == "12" and "--series-title" in c
+    assert not [x for x in calls if x[1].endswith("thumbnail_build.py")]   # no image, no cost
+    assert worker.HANDLERS["series_claim"] is worker._h_series_claim
+    assert _jobs.LANES["series_claim"] == "gpu"          # two local model calls
+
+
+def test_generate_paints_the_claim_the_owner_previewed(tmp_path, monkeypatch):
+    import io
+    import json as _j
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    claim = _claim_on_disk(tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}}, io.StringIO())
+    cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
+    assert not [c for c in cmds if "--write-claim" in c]      # NOT rewritten
+    assert [c[c.index("--design") + 1] for c in cmds] == ["system_window", "nametag"]
+    assert _j.loads(claim.read_text())["scene"] == "REVIEWED SCENE"
+
+
+def test_new_reference_picks_keep_the_reviewed_text(tmp_path, monkeypatch):
+    import io
+    import json as _j
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    claim = _claim_on_disk(tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_thumbnail(
+        con, {"series_id": 1, "payload": {"refs": ["/new/p22.jpg"]}}, io.StringIO())
+    assert not [c for c in calls if "--write-claim" in c]
+    got = _j.loads(claim.read_text())
+    assert got["scene"] == "REVIEWED SCENE" and got["refs"] == ["/new/p22.jpg"]

@@ -1603,3 +1603,132 @@ def test_design_run_copies_the_lead_from_clean_solo_shots_in_the_window(
     assert rc == 0
     refs = _j.loads((tmp_path / "b.json").read_text())["refs"]
     assert refs == [str(Path(eps[0]) / "scenes" / "a1.jpg")]
+
+
+# --- ONE claim per series: every card, the painted scene and the titles read it ---
+# Owner, 2026-09-22, on the first two ORV cards: "why left and right label
+# selections are different? ... we dont see a story on the thumbnail, the video
+# title, teaser and thumbnail must in complementary to eachother". Each option
+# had run its OWN two model calls: two summaries, two label lists, two titles;
+# and the summary never reached the image model, which got a fixed "hero with an
+# aura and shocked onlookers" for every series.
+
+def _a_claim(**extra):
+    return {"title": "T - Manhwa Recap", "style": "power_reveal",
+            "brief": {"premise": "P"},
+            "scene": "A crowded subway car; a blank glowing window hangs in the "
+                     "air; one calm man reads his phone while passengers panic.",
+            "labels": ["THE ONLY READER", "SCENARIO CLEARER"],
+            "headlines": ["READER -> LEGEND", "SPOILERS AS WEAPONS"],
+            "card": ["THE MAIN SCENARIO HAS ARRIVED.",
+                     "YOU HAVE EXCEEDED THE TIME LIMIT."],
+            "designs": ["system_window", "nametag_headline"],
+            "design_reason": {"system_panels": 6}, "claim_source": "teaser:manifest",
+            "teaser_panels": ["/abs/ch3/scenes/p1.jpg"], "refs": ["/abs/ep5/p22.jpg"],
+            "climax_chapter_index": 1, "badge": "3 CHAPTERS", **extra}
+
+
+def test_cards_built_from_one_claim_share_labels_scene_and_refs():
+    a = pc.concept_from_claim(_a_claim(), "system_window")
+    b = pc.concept_from_claim(_a_claim(), "nametag_headline")
+    for key in ("hooks", "hook", "scene", "refs", "title", "claim_source",
+                "climax_chapter_index", "badge"):
+        assert a[key] == b[key], key
+    assert a["hook"] == "THE ONLY READER"
+    assert a["design"] == "system_window" and b["design"] == "nametag_headline"
+
+
+def test_a_system_window_carries_ONE_quoted_line():
+    """The examples' windows hold one short line in huge type (the hook). Three
+    sentences of fine print in a mostly empty box read as nothing."""
+    assert pc.concept_from_claim(_a_claim(), "system_window")["card"] == [
+        "THE MAIN SCENARIO HAS ARRIVED."]
+    assert "card" not in pc.concept_from_claim(_a_claim(), "nametag_headline")
+
+
+def test_only_the_headline_design_gets_the_headline_tag():
+    from thumbnail_styles import HOOK_DESIGNS
+    b = pc.concept_from_claim(_a_claim(), "nametag_headline")
+    assert b["tags"] == [{"text": "READER -> LEGEND", "arrow": False,
+                          "pos": HOOK_DESIGNS["nametag_headline"]["overlay"]["headline_pos"]}]
+    assert not pc.concept_from_claim(_a_claim(), "system_window").get("tags")
+
+
+def test_concept_from_claim_refuses_a_design_the_claim_cannot_fill():
+    import pytest
+    with pytest.raises(ValueError, match="system_window"):
+        pc.concept_from_claim(_a_claim(card=[]), "system_window")
+    with pytest.raises(ValueError, match="unknown"):
+        pc.concept_from_claim(_a_claim(), "triptych")
+
+
+def test_claim_prompt_asks_for_one_paintable_scene():
+    p = pc.build_claim_prompt({"premise": "P"}, "Banned Title")
+    assert '"scene"' in p and '"labels"' in p and '"headlines"' in p
+    low = p.lower()
+    assert "blank" in low                   # any window or screen is painted BLANK
+    assert "no character names" in low or "no real character names" in low
+    assert "Banned Title" in p
+
+
+_CLAIM_REPLIES = [
+    {"premise": "A commuter's finished web novel becomes reality."},
+    {"title": "lonely reader becomes the only one who knows the script",
+     "description": "D", "hashtags": ["#m"],
+     "scene": "A crowded subway car; a blank glowing window hangs in the air; "
+              "one calm man reads his phone while passengers panic.",
+     "labels": ["WEAKEST HUNTER", "LEVEL 999 GOD"],
+     "headlines": ["NOBODY -> KING"]}]
+
+
+def _write_claim(tmp_path, monkeypatch, arc=_ARC, extra=()):
+    eps = _series(tmp_path, arc)
+    out = tmp_path / "claim.json"
+    rc, prompts = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--write-claim", str(out),
+        "--teaser-scan-chapters", "2", "--teaser-min-panels", "2", *extra],
+        replies=list(_CLAIM_REPLIES))
+    return eps, out, rc, prompts
+
+
+def test_write_claim_understands_once_and_saves_everything_a_card_needs(
+        tmp_path, monkeypatch):
+    import json as _j
+    eps, out, rc, prompts = _write_claim(tmp_path, monkeypatch)
+    assert rc == 0 and len(prompts) == 2          # understand, then claim: ONCE
+    assert "THE HOOK" in prompts[0] and '"scene"' in prompts[1]
+    c = _j.loads(out.read_text())
+    assert c["scene"].startswith("A crowded subway car")
+    assert c["labels"] == ["WEAKEST HUNTER"]      # the invented number is not offered
+    assert c["headlines"] == ["NOBODY -> KING"]
+    assert c["designs"][0] == "system_window" and len(c["designs"]) == 2
+    assert c["card"] and c["claim_source"] == "montage:computed"
+    assert c["climax_chapter_index"] == 1 and c["badge"] == "3 CHAPTERS"
+    assert c["title"].endswith(" - Manhwa Recap") and c["refs"]
+
+
+def test_cards_are_built_from_the_claim_without_a_model_call(tmp_path, monkeypatch):
+    import json as _j
+    eps, claim, rc, _ = _write_claim(tmp_path, monkeypatch)
+    assert rc == 0
+    got = {}
+    for design in ("system_window", "nametag_headline"):
+        out = tmp_path / (design + ".json")
+        rc, prompts = _run_main(monkeypatch, [
+            "--episode-dirs", ",".join(eps), "--claim", str(claim),
+            "--design", design, "--out", str(out)])
+        assert rc == 0 and prompts == [], design   # NO model call per card
+        got[design] = _j.loads(out.read_text())
+    a, b = got["system_window"], got["nametag_headline"]
+    assert a["hooks"] == b["hooks"] and a["scene"] == b["scene"]
+    assert a["title"] == b["title"]
+    assert len(a["card"]) == 1 and b["tags"][0]["text"] == "NOBODY -> KING"
+
+
+def test_write_claim_without_a_teaser_montage_fails_loud(tmp_path, monkeypatch):
+    eps = _series(tmp_path, [[_story("a1.jpg", "a quiet street")]])
+    out = tmp_path / "claim.json"
+    rc, prompts = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--write-claim", str(out),
+        "--teaser-scan-chapters", "12", "--teaser-min-panels", "4"])
+    assert rc == 2 and not out.exists() and prompts == []

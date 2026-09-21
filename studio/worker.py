@@ -1999,6 +1999,82 @@ def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
         raise RuntimeError(f"publish_concept exited {rc}")
 
 
+def _prepared_eps(con: sqlite3.Connection, sid: int) -> List[str]:
+    """The series' chapters that have narration, in reading order."""
+    rows = con.execute(
+        "SELECT ep_dir FROM chapter WHERE series_id=? AND ep_dir IS NOT NULL "
+        "ORDER BY number", (sid,)).fetchall()
+    return [r[0] for r in rows
+            if r[0] and (Path(r[0]) / "manifest.beats.json").exists()]
+
+
+def _teaser_args(con: sqlite3.Connection, sid: int) -> List[str]:
+    """The SAME window and knobs _h_teaser plans with, so the claim and the
+    cold open agree on the hook. The teaser's own manifest is passed only when
+    the owner can review that teaser: a declined one was rejected, and a state
+    with no file on disk is just a column."""
+    cfg = _beats_cfg()
+    args = ["--teaser-scan-chapters",
+            str(int(getattr(cfg, "publish_auto_after_chapters", 12) or 12)),
+            "--teaser-min-panels", str(cfg.teaser_min_panels),
+            "--teaser-max-panels", str(cfg.teaser_max_hook_panels),
+            "--teaser-payoff-tail-frac", str(cfg.teaser_payoff_tail_frac)]
+    manifest = REPO / "dist" / f"series_{sid}" / "teaser" / "manifest.teaser.json"
+    state = con.execute("SELECT teaser_state FROM series WHERE id=?",
+                        (sid,)).fetchone()
+    if state and state[0] in ("planned", "approved") and manifest.exists():
+        args += ["--teaser-manifest", str(manifest)]
+    return args
+
+
+def _write_series_claim(con: sqlite3.Connection, sid: int, eps: List[str],
+                        picked_args: List[str], log: TextIO) -> Path:
+    """ONE claim per series, written from the teaser's window: the
+    understanding, the labels, the headlines, the quoted card line, the SCENE to
+    paint, the ranked designs and the lead refs. Two local model calls, nothing
+    paid. Owner, 2026-09-22: the two cards had different label lists and titles
+    because each ran its own story pass, and neither painted the story."""
+    claim_path = REPO / "dist" / f"series_{sid}" / "claim.json"
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_path.unlink(missing_ok=True)
+    rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
+                  "--episode-dirs", ",".join(eps),
+                  # the BAN list: the claim writes the copy, ranks the designs
+                  # and quotes the card, so it must know the title
+                  "--series-title", _series_title(con, sid),
+                  *_teaser_args(con, sid), *picked_args,
+                  "--write-claim", str(claim_path)], log,
+                 env=_series_env(con, sid))
+    if rc != 0 or not claim_path.exists():
+        # NON-retryable, nothing paid: no montage means no teaser-based claim,
+        # and a retry would find the same chapters
+        raise NonRetryableError(
+            "could not write the series claim from the teaser window "
+            f"(publish_concept exited {rc}) — prepare more of the opening "
+            "chapters, then try again")
+    return claim_path
+
+
+def _h_series_claim(con: sqlite3.Connection, job: Dict[str, Any],
+                    log: TextIO) -> None:
+    """PREVIEW the series claim: write it, paint nothing, pay nothing. The
+    Series page shows it (the scene the painter gets, the summary, the labels,
+    the system line) so the owner reads the text BEFORE buying images; generate
+    then paints THIS file. Always rewrites: it is how the owner asks for a new
+    claim. Its own job type so it never dedupes against a paid generate."""
+    sid = job["series_id"]
+    if not sid:
+        raise RuntimeError("series_claim needs series_id")
+    eps = _prepared_eps(con, sid)
+    if not eps:
+        raise NonRetryableError("no processed chapters yet")
+    payload = job.get("payload") or {}
+    picked = [str(r) for r in (payload.get("refs") or []) if str(r).strip()]
+    with record_stage(con, chapter_id=None, stage="series_claim", series_id=sid):
+        _write_series_claim(con, sid, eps,
+                            ["--refs", ",".join(picked)] if picked else [], log)
+
+
 def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
                         log: TextIO) -> None:
     """ONE thumbnail per manhwa (series), reused across every video.
@@ -2022,11 +2098,7 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
     if not sid:
         raise RuntimeError("series_thumbnail needs series_id")
     title = _series_title(con, sid)
-    rows = con.execute(
-        "SELECT ep_dir FROM chapter WHERE series_id=? AND ep_dir IS NOT NULL "
-        "ORDER BY number", (sid,)).fetchall()
-    eps = [r[0] for r in rows
-           if r[0] and (Path(r[0]) / "manifest.beats.json").exists()]
+    eps = _prepared_eps(con, sid)
     if not eps:
         raise RuntimeError("no processed chapters yet — prepare at least one "
                            "chapter (narration) before generating a thumbnail")
@@ -2035,21 +2107,8 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
     # the owner's picks from the suggested reference panels (_h_thumbnail_refs)
     picked = [str(r) for r in (payload.get("refs") or []) if str(r).strip()]
     picked_args = ["--refs", ",".join(picked)] if picked else []
-    cfg = _beats_cfg()
-    # the SAME window and knobs _h_teaser plans with, so both agree on the hook
-    teaser_args = [
-        "--teaser-scan-chapters",
-        str(int(getattr(cfg, "publish_auto_after_chapters", 12) or 12)),
-        "--teaser-min-panels", str(cfg.teaser_min_panels),
-        "--teaser-max-panels", str(cfg.teaser_max_hook_panels),
-        "--teaser-payoff-tail-frac", str(cfg.teaser_payoff_tail_frac)]
-    # only a teaser the owner can review drives the thumbnail: a declined one
-    # was rejected, and a state with no file on disk is just a column
-    manifest = REPO / "dist" / f"series_{sid}" / "teaser" / "manifest.teaser.json"
-    state = con.execute("SELECT teaser_state FROM series WHERE id=?",
-                        (sid,)).fetchone()
-    if state and state[0] in ("planned", "approved") and manifest.exists():
-        teaser_args += ["--teaser-manifest", str(manifest)]
+
+    claim_path = REPO / "dist" / f"series_{sid}" / "claim.json"
 
     def build(out_dir: Path, style: str = "", design: str = "") -> None:
         # The paid image step needs GEMINI_API_KEY from the login keychain,
@@ -2060,9 +2119,13 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         # share one brief across options if this job ever gets slow.
         rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                       "--episode-dirs", ",".join(eps), "--series-title", title,
-                      *(["--style", style] if style else []),
-                      *(["--design", design, *teaser_args] if design else []),
-                      *picked_args,
+                      # a CARD is built from the series claim: no model call,
+                      # so two cards cannot disagree on labels, scene or refs
+                      # (the owner's picks are already in the claim). A VARIANT
+                      # still reads the story itself.
+                      *(["--claim", str(claim_path), "--design", design]
+                        if design else
+                        [*(["--style", style] if style else []), *picked_args]),
                       "--out", str(concept_path)], log, env=env)
         if rc != 0:
             raise RuntimeError(f"publish_concept exited {rc}")
@@ -2092,24 +2155,24 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         # from before the designs (scene / before_after) is dead weight
         shutil.rmtree(opts, ignore_errors=True)
         opts.mkdir(parents=True, exist_ok=True)
-        rank_path = opts / "designs.json"
-        rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
-                      "--episode-dirs", ",".join(eps), "--rank-designs",
-                      # the BAN list: ranking must refuse the same lines
-                      # the build will, or it promises an empty window
-                      "--series-title", title,
-                      *teaser_args, "--out", str(rank_path)], log, env=env)
-        if rc != 0 or not rank_path.exists():
-            # NON-retryable, nothing paid: no montage means no teaser-based
-            # claim, and a retry would find the same chapters
-            raise NonRetryableError(
-                "could not rank hook designs from the teaser window "
-                f"(publish_concept exited {rc}) — prepare more of the opening "
-                "chapters, then generate again")
-        designs = [d for d in json.loads(rank_path.read_text()).get("designs") or []
+        # PAINT WHAT THE OWNER READ. A claim previewed on the Series page is
+        # reused as it stands: rewriting it here (temperature 0.8) would paint a
+        # scene nobody reviewed. Different reference ticks change WHO is drawn,
+        # not the text, so only `refs` is updated. No claim yet = write one.
+        if claim_path.exists():
+            if picked:
+                reviewed = json.loads(claim_path.read_text())
+                reviewed["refs"] = picked
+                claim_path.write_text(json.dumps(reviewed, ensure_ascii=False,
+                                                 indent=2))
+            log.write("[thumbnail] painting the claim already on disk "
+                      "(preview it again for a new one)\n")
+        else:
+            _write_series_claim(con, sid, eps, picked_args, log)
+        designs = [d for d in json.loads(claim_path.read_text()).get("designs") or []
                    if d in gates.THUMBNAIL_OPTIONS]
         if not designs:
-            raise NonRetryableError("the ranking named no known hook design")
+            raise NonRetryableError("the claim named no known hook design")
         failed: List[str] = []
         for name in designs:
             opt_dir = opts / name
@@ -2193,6 +2256,7 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
     "publish_meta": _h_publish_meta,
     "series_thumbnail": _h_series_thumbnail,
     "thumbnail_refs": _h_thumbnail_refs,
+    "series_claim": _h_series_claim,
     "disk_scan": _h_disk_scan,
     "add_series": _h_add_series,
     "branding_segments": _h_branding_segments,

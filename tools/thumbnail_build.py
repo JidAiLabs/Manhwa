@@ -63,8 +63,22 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
     # them: the art has to be TOLD, or the overlay aims at nothing
     clause = (HOOK_DESIGNS.get(concept.get("design") or "") or {}).get(
         "art_clause", "")
+    # WHAT to paint. The series claim carries ONE scene sentence written from
+    # the teaser; it REPLACES the style's fixed paragraph, which painted every
+    # series as "a hero with an aura and recoiling onlookers" (owner,
+    # 2026-09-22: "we dont see a story on the thumbnail"). No scene = the old
+    # style composition, unchanged.
+    scene = " ".join(str(concept.get("scene") or "").split())
+    composition = (
+        "Paint this ONE moment as a single cohesive scene, the protagonist as "
+        "its clear visual focus:\n" + scene + "\n"
+        "Every window, screen, sign, book or card in the scene is BLANK and "
+        "softly glowing: no letters, no numbers, no symbols.\n"
+        "No letterbox bars, no blank strips, no panels or borders: the scene "
+        "runs to every edge of the frame."
+        if scene else style_for(style)["art_prompt"])
     art_prompt = tg.build_art_prompt(
-        style_for(style)["art_prompt"] + ("\n" + clause if clause else ""))
+        composition + ("\n" + clause if clause else ""))
 
     refs = refs or concept.get("refs") or []
     if not refs:

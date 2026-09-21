@@ -671,6 +671,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # judging (and nearly ticking) a panel that was no longer tile 0
         _rc = REPO / "dist" / f"series_{sid}" / "ref_candidates.json"
         ref_v = int(_rc.stat().st_mtime) if _rc.exists() else 0
+        # the series CLAIM: what the painter will be told and what every card
+        # and title says. Shown so the owner reads the text before buying art.
+        try:
+            claim = json.loads((REPO / "dist" / f"series_{sid}" /
+                                "claim.json").read_text())
+            claim = claim if isinstance(claim, dict) else None
+        except (OSError, ValueError):
+            claim = None
         # the planner reads cached beats/understanding, so it needs prepared
         # chapters — the same readiness the thumbnail requires
         teaser_ready = thumb_ready
@@ -694,7 +702,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     thumb_v=int(thumb.stat().st_mtime) if thumb_exists else 0,
                     thumb_approved=gates.thumbnail_approved(c, sid),
                     thumb_options=thumb_options,
-                    ref_cands=ref_cands, ref_v=ref_v,
+                    ref_cands=ref_cands, ref_v=ref_v, claim=claim,
                     teaser_card=_teaser_card(sid),
                     teaser_state=teaser_state, teaser_exists=teaser_exists,
                     teaser_ready=teaser_ready,
@@ -748,6 +756,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     @app.post("/thumbnail/candidates")
     def find_ref_candidates(series_id: int = Form(...)):
         jobs.enqueue(con(), "thumbnail_refs", series_id=series_id)
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
+
+    @app.post("/thumbnail/claim")
+    def preview_claim(series_id: int = Form(...)):
+        """Write the series claim and paint nothing: free. Owner-triggered and
+        tiny, so it jumps the prepare queue (a thumbnail job once sat behind 30
+        prepares); generate then paints the claim this leaves on disk."""
+        jobs.enqueue(con(), "series_claim", series_id=series_id, priority=30)
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.post("/thumbnail/generate")

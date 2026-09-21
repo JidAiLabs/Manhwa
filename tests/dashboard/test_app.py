@@ -1406,6 +1406,43 @@ def test_reference_tile_urls_change_when_the_suggestions_change(client, tmp_path
     assert stamp() and stamp() != first
 
 
+def test_the_series_claim_is_readable_on_the_page_and_previewed_for_free(
+        client, tmp_path, monkeypatch):
+    """Owner, 2026-09-22: "where do i see all these new things you mentioned?"
+    The scene the painter gets, the summary and the system line lived only in a
+    chat message. They belong on the Series page, with a FREE button that writes
+    them without buying an image; generate then paints that file."""
+    import json as _j
+    c, con = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    page = c.get("/series/1").text
+    assert "preview claim" in page and "No claim yet" in page
+    base = tmp_path / "dist" / "series_1"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "claim.json").write_text(_j.dumps({
+        "scene": "Inside a crowded subway car, a man reads his <blank> phone.",
+        "brief": {"premise": "His finished web novel becomes reality."},
+        "labels": ["THE ONLY READER", "SCENARIO SURVIVOR"],
+        "headlines": ["READER -> PLAYER"],
+        "card": ["THE MAIN SCENARIO HAS ARRIVED.", "SECOND LINE"],
+        "designs": ["system_window", "nametag_headline"],
+        "claim_source": "teaser:manifest"}))
+    page = c.get("/series/1").text
+    assert "Inside a crowded subway car" in page
+    assert "&lt;blank&gt;" in page and "<blank>" not in page     # model text is escaped
+    assert "His finished web novel becomes reality." in page
+    assert "SCENARIO SURVIVOR" in page and "THE MAIN SCENARIO HAS ARRIVED." in page
+    assert "SECOND LINE" not in page                # the card prints ONE line
+    assert "teaser:manifest" in page
+    r = c.post("/thumbnail/claim", data={"series_id": 1}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/series/1"
+    rows = con.execute("SELECT type, series_id, priority FROM job "
+                       "WHERE type='series_claim'").fetchall()
+    # owner-triggered, free and tiny: it must not wait behind a day of prepares
+    assert [tuple(x) for x in rows] == [("series_claim", 1, 30)]
+
+
 def test_generate_with_picks_rejects_bad_selections(client, tmp_path, monkeypatch):
     c, con = client
     from studio.dashboard import app as _app

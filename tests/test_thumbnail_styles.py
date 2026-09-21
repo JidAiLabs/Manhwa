@@ -69,3 +69,44 @@ def test_hook_design_grammar_carries_no_worked_example():
     import re
     for name, d in ts.HOOK_DESIGNS.items():
         assert not re.search(r'"[A-Z0-9][A-Z0-9 #!>\-]{2,}"', d["label_grammar"]), name
+
+
+# --- a design may not put its label where it puts the face ------------------
+# Owner, 2026-09-22, first system_window card: "the label cover the face on
+# right img?". The design said label_pos=upper_right AND told the art to put the
+# face at 68% across, 42% down: the corner label's column (40% of the width,
+# two stacked lines down to ~45% of the height) sat on it BY CONSTRUCTION.
+
+def _label_box(pos):
+    """The area a corner label can fill (thumbnail_overlay: a 40% column from
+    its edge, two stacked lines from y=0.08)."""
+    return {"upper_left": (0.00, 0.00, 0.45, 0.48),
+            "upper_right": (0.55, 0.00, 1.00, 0.48)}[pos]
+
+
+def test_no_design_puts_its_label_on_the_face():
+    for name, d in ts.HOOK_DESIGNS.items():
+        o = d["overlay"]
+        x0, y0, x1, y1 = _label_box(o["label_pos"])
+        fx, fy = o["arrow_to"]
+        assert not (x0 <= fx <= x1 and y0 <= fy <= y1), \
+            "%s: label %s covers the face at %s" % (name, o["label_pos"], o["arrow_to"])
+
+
+def test_a_card_sits_clear_of_the_label_and_of_the_face():
+    for name, d in ts.HOOK_DESIGNS.items():
+        card = d["overlay"].get("card")
+        if not card:
+            continue
+        (cx, cy), (cw, ch) = card["pos"], card["size"]
+        lx0, ly0, lx1, ly1 = _label_box(d["overlay"]["label_pos"])
+        overlaps_label = cx < lx1 and cx + cw > lx0 and cy < ly1 and cy + ch > ly0
+        assert not overlaps_label, name
+        fx, fy = d["overlay"]["arrow_to"]
+        assert not (cx <= fx <= cx + cw and cy <= fy <= cy + ch), name
+
+
+def test_the_headline_design_asks_for_a_painted_bottom_not_a_blank_bar():
+    clause = ts.HOOK_DESIGNS["nametag_headline"]["art_clause"].lower()
+    assert "bottom fifth" not in clause           # that wording painted an empty strip
+    assert "bottom edge" in clause

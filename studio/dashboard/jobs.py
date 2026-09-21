@@ -37,6 +37,8 @@ LANES = {
     # NOT beside a chapter prepare. They are infrequent (once per debut / per
     # series), so sharing the gpu queue costs a brief wait, never an OOM.
     "plan_teaser": "gpu", "series_thumbnail": "gpu", "publish_meta": "gpu",
+    # the free claim PREVIEW: two local gemma calls, no image
+    "series_claim": "gpu",
     # re-reading a chapter for its facts is one gemma call: same lane
     "refresh_facts": "gpu",
     # --- qwen TTS: its own lane, OVERLAPS a gemma prepare ---
@@ -550,7 +552,7 @@ def failed_chapters(con: sqlite3.Connection,
 _JOB_LABEL = {
     "prepare": "preparing", "voiceover": "voicing", "render_segment": "rendering",
     "qa_scan": "QA scan", "plan_teaser": "teaser", "series_thumbnail": "thumbnail",
-    "thumbnail_refs": "thumbnail refs",
+    "thumbnail_refs": "thumbnail refs", "series_claim": "series claim",
     "disk_scan": "measuring disk",
     "publish_meta": "meta", "concat": "concat", "branding_segments": "branding",
     "refresh": "refresh", "refresh_facts": "refreshing facts",

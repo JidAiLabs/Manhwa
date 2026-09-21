@@ -167,6 +167,16 @@ def _draw_card(img: Image.Image, slot: Dict[str, Any], lines: List[str],
                         fill=_CARD_FILL, outline=_CARD_EDGE,
                         width=max(4, H // 160))
     pad = int((x1 - x0) * 0.07)
+    if len(lines) == 1:
+        # ONE line is the hook, so it is drawn BIG: stacked on two balanced
+        # lines rather than shrunk (the examples' windows hold a few huge
+        # words; three sentences of fine print read as nothing).
+        rows, f = _label_lines(d, lines[0], int(H * 0.11), x1 - x0 - 2 * pad)
+        row_h = int(f.size * 1.12)
+        top = y0 + max(pad, ((y1 - y0) - row_h * len(rows)) // 2)
+        for i, row in enumerate(rows):
+            d.text((x0 + pad, top + i * row_h), row, font=f, fill=_WHITE)
+        return
     step = (y1 - y0 - 2 * pad) // max(len(lines), 1)
     for i, line in enumerate(lines):
         f = _fitted(d, line, min(int(H * 0.07), int(step * 0.8)),

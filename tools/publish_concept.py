@@ -326,6 +326,78 @@ def _design_labels_ask(design: str) -> str:
     return ask
 
 
+_SCENE_ASK = (
+    '  "scene": "ONE sentence an illustrator could paint: the single moment of '
+    'THE HOOK that shows what THIS story is. Say WHERE it happens, WHAT is '
+    'happening, what the protagonist is DOING and what the people around them '
+    'are doing. Concrete nouns from the story (the place, the object, the '
+    'creature), never a generic power pose. Any window, screen, sign or book in '
+    'it is BLANK and glowing: no letters, no numbers. Nothing from later than '
+    'the hook. No real character names",\n')
+
+
+def build_claim_prompt(brief: Dict[str, Any], banned: str) -> str:
+    """ONE claim per series: the title, the labels, the headlines AND the scene
+    to paint, written in a single call from the teaser-led understanding.
+
+    Every option card, the image prompt and the video titles read this one
+    answer. Before it, each option made its own two calls (two summaries, two
+    label lists, two titles for the same series), and the understanding never
+    reached the image model: every series was painted as "a hero with an aura
+    and shocked onlookers". Owner, 2026-09-22: "we dont see a story on the
+    thumbnail, the video title, teaser and thumbnail must in complementary".
+    """
+    return (
+        "You are writing the ONE publish claim for a manhwa recap series. You "
+        "have already read its opening; your understanding is below.\n"
+        f"NEVER use this licensed title or any part of it: {banned or '(none)'}\n"
+        "No real character names anywhere in the output.\n\n"
+        "STORY UNDERSTANDING:\n" + json.dumps(brief, indent=2) + "\n\n"
+        "Everything you write must belong to THIS story only. Anything that "
+        "would fit any manhwa is a failure.\n\n"
+        "Return ONLY JSON:\n{\n"
+        '  "title": "YouTube title, 45-80 characters: WHO the protagonist starts '
+        'as, the TURN, their specific EDGE, the PAYOFF. FULL CAPS on the 2-4 '
+        'status words. No emoji, no character names, no question marks. A number '
+        'must be one the story states",\n'
+        '  "description": "3-5 sentences a viewer reads to decide. Prose only",\n'
+        + _SCENE_ASK
+        + _design_labels_ask("nametag_headline")
+        + '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
+        "}")
+
+
+def concept_from_claim(claim: Dict[str, Any], design: str) -> Dict[str, Any]:
+    """One option card's concept, built from the series claim with NO model
+    call: the cards share labels, scene, refs and title by construction and
+    differ only in the label DESIGN."""
+    if design not in HOOK_DESIGNS:
+        raise ValueError("unknown hook design: %r" % design)
+    overlay = HOOK_DESIGNS[design]["overlay"]
+    labels = [str(x) for x in claim.get("labels") or []]
+    c = {k: claim.get(k) for k in (
+        "title", "style", "brief", "scene", "refs", "claim_source",
+        "teaser_panels", "design_reason", "climax_chapter_index", "badge",
+        "synopsis", "hashtags", "description", "pinned_comment", "parts")
+         if claim.get(k) is not None}
+    c.update({"design": design, "style_overlay": overlay,
+              "hook": labels[0] if labels else "", "hooks": labels})
+    heads = [str(x) for x in claim.get("headlines") or []]
+    if overlay.get("headline_pos") and heads:
+        c["headlines"] = heads
+        c["tags"] = [{"text": heads[0], "pos": overlay["headline_pos"],
+                      "arrow": False}]
+    if overlay.get("card"):
+        lines = [str(x) for x in claim.get("card") or [] if str(x).strip()]
+        if not lines:
+            raise ValueError("%s needs a printable system line and the claim "
+                             "has none" % design)
+        # ONE line: the examples' windows hold a single short line in huge
+        # type. Three sentences of fine print in a box read as nothing.
+        c["card"] = lines[:1]
+    return c
+
+
 def build_concept_prompt(digest: str, banned: str, style: str) -> str:
     hook_spec = _HOOK_SHAPE.get(style, _HOOK_DEFAULT)
     return (
@@ -1439,6 +1511,13 @@ def main() -> int:
     ap.add_argument("--design", default="", choices=[""] + sorted(HOOK_DESIGNS),
                     help="the hook DESIGN (label layer) to build; ranked "
                          "from the teaser by --rank-designs, never by the model")
+    ap.add_argument("--write-claim", default="", metavar="PATH",
+                    help="understand the series ONCE from its teaser window and "
+                         "save the claim every card, the painted scene and the "
+                         "titles read (2 local model calls, nothing paid)")
+    ap.add_argument("--claim", default="", metavar="PATH",
+                    help="build the --design card from a saved claim: no model "
+                         "call, so every card shares labels, scene and refs")
     ap.add_argument("--rank-designs", action="store_true",
                     help="write the two designs the teaser ranks first "
                          "(json) to --out and stop: no model call, nothing paid")
@@ -1471,6 +1550,21 @@ def main() -> int:
             with open(args.out, "w", encoding="utf-8") as f:
                 json.dump(cands, f, ensure_ascii=False, indent=2)
             print("[ok] wrote=%s refs=%d" % (args.out, len(cands["refs"])))
+            return 0
+        if args.claim:
+            if not (args.design and args.out):
+                ap.error("--claim needs --design and --out")
+            try:
+                with open(args.claim, encoding="utf-8") as f:
+                    concept = concept_from_claim(json.load(f), args.design)
+            except (OSError, ValueError) as e:
+                print("[err] cannot build %s from the claim: %s" % (args.design, e))
+                return 2
+            os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+            with open(args.out, "w", encoding="utf-8") as f:
+                json.dump(concept, f, ensure_ascii=False, indent=2)
+            print("[ok] wrote=%s design=%s hook=%r (from the claim, no model call)"
+                  % (args.out, args.design, concept["hook"]))
             return 0
         # The thumbnail sells what the teaser sells: claim, climax and refs
         # come from the TEASER'S WINDOW. (ORV: teaser in chapters 3-9, the
@@ -1506,6 +1600,10 @@ def main() -> int:
             for line in card:
                 print("[..] card line: %s" % line)
             return 0
+        if args.write_claim and not montage:
+            print("[err] --write-claim needs a teaser montage "
+                  "(--teaser-scan-chapters); window gave: %s" % claim_source)
+            return 2
         print("[..] claim source: %s (%d of %d chapters)"
               % (claim_source, len(w_eps), len(eps)))
         durations = [_plan_duration(e) for e in eps]
@@ -1524,6 +1622,66 @@ def main() -> int:
             print(f"[..] digest: sampled {args.digest_chapters} of "
                   f"{len(w_beats)} chapters (climax #{climax_ci + 1} kept) "
                   f"— {len(digest):,} chars")
+        def _lead_refs(layout: str) -> List[str]:
+            auto_refs = _sc[1] if _sc else select_bundle_climax(w_beats)[1]
+            if montage:
+                # WHO to draw: the same clean-solo-shot rule the suggestion tiles
+                # use, over the teaser's window (absolute paths). The climax
+                # chapter's "lead" panels were, on ORV, the back of a head, a
+                # half profile and a close-up of someone else.
+                clean = [r["path"] for r in ref_candidates(w_eps, n=3)["refs"]]
+                if clean:
+                    auto_refs = clean
+                print("[..] lead refs: %s" % ("clean solo shots from the window"
+                                              if clean else "climax-chapter "
+                                              "panels (no clean solo shot found)"))
+            return choose_refs(layout, w_beats, w_eps, climax_ci=climax_ci,
+                               auto_refs=auto_refs,
+                               picked=[r for r in args.refs.split(",") if r.strip()])
+
+        if args.write_claim:
+            # ONE understanding per series. Every card is then built from this
+            # file with no further model call (concept_from_claim).
+            hook_block = teaser_hook_block(montage, _teaser_reason(args.teaser_manifest))
+            brief = _gemma(build_brief_prompt(digest, args.series_title,
+                                              hook_block=hook_block),
+                           args.ollama_model)
+            print("[..] brief: %s" % str(brief.get("premise") or "")[:110])
+            pkg = _gemma(build_claim_prompt(brief, args.series_title),
+                         args.ollama_model)
+            corpus = beats_text_corpus(w_beats[climax_ci] if w_beats else {})
+            grounded = lambda raw: [x for x in (t.replace("|", " -> ")
+                                                for t in _clean_labels(raw))
+                                    if hook_is_grounded(x, corpus)]
+            names, why = rank_designs(montage, banned=args.series_title,
+                                      card_lines=card)
+            synopsis = str(pkg.get("description") or "").strip()
+            hashtags = pkg.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
+            claim = {
+                "title": normalize_title(pkg.get("title")),
+                "style": SCENE_STYLES[0], "brief": brief,
+                "scene": re.sub(r"\s+", " ", str(pkg.get("scene") or "")).strip(),
+                "labels": grounded(pkg.get("labels")),
+                "headlines": grounded(pkg.get("headlines")),
+                "card": card, "designs": names, "design_reason": why,
+                "claim_source": claim_source,
+                "teaser_panels": [str(p.get("scene_file") or "") for p in montage],
+                "climax_chapter_index": climax_ci,
+                "refs": _lead_refs(SCENE_STYLES[0]),
+                "badge": "%d CHAPTERS" % len(beats_list),
+                "synopsis": synopsis, "hashtags": hashtags,
+                "description": build_description(synopsis, hashtags),
+                "pinned_comment": pinned_comment(args.series_title,
+                                                 args.official_link)}
+            os.makedirs(os.path.dirname(os.path.abspath(args.write_claim)),
+                        exist_ok=True)
+            with open(args.write_claim, "w", encoding="utf-8") as f:
+                json.dump(claim, f, ensure_ascii=False, indent=2)
+            print("[ok] wrote=%s designs=%s labels=%d scene=%r"
+                  % (args.write_claim, names, len(claim["labels"]),
+                     claim["scene"][:90]))
+            return 0
+
         if args.single_shot:
             llm = _gemma(build_concept_prompt(digest, args.series_title, style),
                          args.ollama_model)
@@ -1569,22 +1727,7 @@ def main() -> int:
                                             for p in montage]
                 concept["design_reason"] = rank_designs(
                     montage, banned=args.series_title, card_lines=card)[1]
-            auto_refs = _sc[1] if _sc else select_bundle_climax(w_beats)[1]
-            if montage:
-                # WHO to draw: the same clean-solo-shot rule the suggestion tiles
-                # use, over the teaser's window (absolute paths). The climax
-                # chapter's "lead" panels were, on ORV, the back of a head, a
-                # half profile and a close-up of someone else.
-                clean = [r["path"] for r in ref_candidates(w_eps, n=3)["refs"]]
-                if clean:
-                    auto_refs = clean
-                print("[..] lead refs: %s" % ("clean solo shots from the window"
-                                              if clean else "climax-chapter "
-                                              "panels (no clean solo shot found)"))
-            concept["refs"] = choose_refs(
-                concept["style"], w_beats, w_eps, climax_ci=climax_ci,
-                auto_refs=auto_refs,
-                picked=[r for r in args.refs.split(",") if r.strip()])
+            concept["refs"] = _lead_refs(concept["style"])
             if concept["style"] == "before_after" and not (
                     concept["refs"] and os.path.isabs(concept["refs"][0])):
                 # both halves would be painted from the climax: refuse before

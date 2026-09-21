@@ -108,9 +108,12 @@ HOOK_DESIGNS: Dict[str, Dict[str, Any]] = {
                           "5 candidate HEADLINES: 2-3 words that land the "
                           "promise of the hook, or the lead's change written "
                           "as LOW -> HIGH. Only facts of this story."),
+        # "keep the bottom fifth calm and uncluttered" painted an EMPTY BAR
+        # under the scene (owner's first card, 2026-09-22)
         "art_clause": ("Place the hero's face right of centre, about 60% "
-                       "across and 38% down. Keep the upper-left third and "
-                       "the bottom fifth of the frame calm and uncluttered."),
+                       "across and 38% down. Keep the upper-left third calm. "
+                       "The scene continues to the bottom edge; keep the "
+                       "lower-left area darker and free of faces."),
         "overlay": {"label_pos": "upper_left", "arrow": "to_hero",
                     "arrow_to": [0.60, 0.38], "marks": [], "speech_slots": 0,
                     "headline_pos": "lower_left"},
@@ -119,13 +122,17 @@ HOOK_DESIGNS: Dict[str, Dict[str, Any]] = {
         "label_grammar": (_NAMETAG_GRAMMAR + "Write 5 candidate nametags. The "
                           "system window's words are QUOTED from the story "
                           "by code; do not write them."),
-        "art_clause": ("Place the hero on the right half, face about 68% "
-                       "across and 42% down. Leave the LEFT third of the "
-                       "frame dark, empty and uncluttered: no figures, no "
-                       "panels, no glyphs there."),
-        "overlay": {"label_pos": "upper_right", "arrow": "to_hero",
-                    "arrow_to": [0.68, 0.42], "marks": [], "speech_slots": 0,
-                    "card": {"pos": [0.04, 0.22], "size": [0.36, 0.46]}},
+        # The label and the face may never share a corner. The first build had
+        # label_pos=upper_right with the face at 68%/42%: the corner label's
+        # column covered it BY CONSTRUCTION (tests pin the geometry now). Label
+        # upper-left, the window below it, the lead alone on the right.
+        "art_clause": ("Place the hero on the right half, face about 70% "
+                       "across and 40% down, nothing in front of the face. "
+                       "Leave the LEFT 45% of the frame dark and uncluttered: "
+                       "no figures, no faces, no panels, no glyphs there."),
+        "overlay": {"label_pos": "upper_left", "arrow": "to_hero",
+                    "arrow_to": [0.70, 0.40], "marks": [], "speech_slots": 0,
+                    "card": {"pos": [0.04, 0.52], "size": [0.42, 0.30]}},
     },
 }
 

@@ -70,6 +70,24 @@
 <span class="kv">no live thumbnail yet — generate the options, then pick one{% if not thumb_ready %} (prepare at least one chapter first){% endif %}</span>
 {% endif %}
 </div>
+<h3 style="margin:.8em 0 .3em">Series claim <small class="kv">— what the painter is told and what every card and title says, written once from the teaser. Read it BEFORE buying images: generate paints exactly this.</small></h3>
+{% if claim %}
+<div class="kv" style="max-width:900px;line-height:1.5;border:1px solid var(--line);border-radius:8px;padding:.6em .8em">
+<div><b>Scene to paint:</b> {{ claim.scene or '— none —' }}</div>
+<div><b>Story:</b> {{ (claim.brief or {}).premise or '—' }}</div>
+<div><b>Labels</b> (same on every card): {{ (claim.labels or [])|join(' · ') or '—' }}</div>
+{% if claim.headlines %}<div><b>Headline:</b> {{ claim.headlines[0] }}</div>{% endif %}
+{% if claim.card %}<div><b>System window line:</b> {{ claim.card[0] }}</div>{% endif %}
+<div><b>Designs to build:</b> {{ (claim.designs or [])|join(', ')|replace('_', ' ') or '—' }} · <b>from:</b> {{ claim.claim_source or '—' }}</div>
+</div>
+{% else %}
+<span class="kv">No claim yet — preview it (free) to read the scene and labels before generating.</span>
+{% endif %}
+<div class="row">
+<form class="inline" method="post" action="/thumbnail/claim"><input type="hidden" name="series_id" value="{{ sid }}">
+<button class="ghost"{% if not thumb_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 'preview claim again' if claim else 'preview claim' }}</button></form>
+<span class="kv">free: two local model calls, no image. Writes a NEW claim; generate reuses whatever claim is shown here.</span>
+</div>
 {% if thumb_options %}
 <div class="row" style="align-items:flex-start;gap:1em;flex-wrap:wrap">
 {% for o in thumb_options %}
