@@ -75,7 +75,8 @@
 {% for o in thumb_options %}
 <div style="max-width:420px">
 <img src="/thumb/series/{{ sid }}/option/{{ o.name }}?v={{ o.v }}" alt="thumbnail option {{ o.name }}" style="width:100%;border:1px solid var(--line);border-radius:8px">
-<div class="kv">{{ o.style }} · {{ o.hook }}</div>
+{# both designs paint on the same art STYLE; the caption names the DESIGN #}
+<div class="kv">{{ o.name|replace('_', ' ') }} · {{ o.hook }}</div>
 {% if o.hooks|length > 1 %}
 <form method="post" action="/thumbnail/label"><input type="hidden" name="series_id" value="{{ sid }}"><input type="hidden" name="option" value="{{ o.name }}">
 {% for hk in o.hooks %}<label style="display:block"><input type="radio" name="hook" value="{{ loop.index0 }}"{% if hk == o.hook %} checked{% endif %}> {{ hk }}</label>{% endfor %}
@@ -108,7 +109,7 @@
 <form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="series_thumbnail">
 <input type="hidden" name="series_id" value="{{ sid }}">
 <button class="ghost"{% if not thumb_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 'regenerate options' if thumb_options else 'generate options' }}</button></form>
-<span class="kv">builds a single-scene and a before/after option (~0.13 USD each); the live thumbnail only changes when you pick</span>
+<span class="kv">builds the two label designs this series' teaser ranks first (~0.13 USD each), using its own choice of reference panels; the live thumbnail only changes when you pick</span>
 </div>
 
 <h3 style="margin:.8em 0 .3em">Intro teaser <small class="kv">— one per manhwa, built from the first chapters; it opens this manhwa's FIRST video only</small></h3>

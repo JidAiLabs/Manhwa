@@ -137,7 +137,7 @@ def ensure_approval(con: sqlite3.Connection, gate: str, *,
 # dist/series_<id>/options/<name>/. Each run builds the TWO the series' teaser
 # ranks first (code ranks, never the model); the owner picks one and nothing
 # goes live without that pick. Owner, 2026-09-21: before/after left the options
-# (1 of 47 example thumbnails is a split) and is a manual variant only; never 3
+# (1 of 46 unique example thumbnails is a split) and is a manual variant only; never 3
 # panels (owner, 2026-09-17). Routes check membership here, so an option name
 # from a URL can never become a path.
 THUMBNAIL_OPTIONS = ("nametag", "nametag_headline", "system_window")

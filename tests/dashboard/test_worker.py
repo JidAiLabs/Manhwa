@@ -2877,3 +2877,20 @@ def test_the_ranking_knows_the_banned_title_the_build_will_apply(tmp_path,
               if "--series-title" in c}
     assert all("--series-title" in c for c in cmds)
     assert len(titles) == 1
+
+
+def test_suggested_reference_panels_prefer_the_teaser_window(tmp_path, monkeypatch):
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+
+    def stream(cmd, log, **kw):
+        calls.append([str(x) for x in cmd])
+        return 0
+    monkeypatch.setattr(worker, "_stream", stream)
+    worker._h_thumbnail_refs(con, {"series_id": 1, "payload": {}}, io.StringIO())
+    c = calls[0]
+    assert "--ref-candidates" in c
+    assert c[c.index("--teaser-scan-chapters") + 1] == "12"

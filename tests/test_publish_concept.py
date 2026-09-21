@@ -1313,6 +1313,10 @@ def test_rank_designs_run_is_free_and_writes_the_ranking(tmp_path, monkeypatch):
     assert got["claim_source"] == "montage:computed"
     assert got["reason"]["system_panels"] == 2
     assert got["reason"]["card_lines"] == 2
+    # the LINES, not just their count: "text is reviewed before art is bought"
+    # cannot be done from a number (verifier, 2026-09-21)
+    assert got["card"] == ["Main scenario has begun.",
+                           "YOU HAVE EXCEEDED THE TIME LIMIT."]
 
 
 def test_rank_designs_run_without_a_montage_fails_loud(tmp_path, monkeypatch):
@@ -1530,3 +1534,24 @@ def test_rank_designs_a_story_without_system_panels_gets_no_window():
     names, _ = pc.rank_designs(
         montage, card_lines=["THE MAIN SCENARIO HAS ARRIVED."])
     assert "system_window" not in names
+
+
+def test_ref_candidates_prefer_the_teaser_window(tmp_path, monkeypatch):
+    """The claim and climax come from the first N chapters, so the LOOK the art
+    copies should too: ORV's late chapters draw the lead with longer hair, and a
+    better-ranked tile from chapter 300 would bring that look back."""
+    import json as _j
+    ok = {"text_coverage": 0.0, "width": 800, "height": 900}
+    eps = _cand_arc(tmp_path, monkeypatch, n=6,
+                    panels=[("p.jpg", ["a young man"], {}, ok)])
+    for late in eps[2:]:                 # late chapters rank BETTER on the old rules
+        man = Path(late) / "manifest.panels.understood.json"
+        u = _j.loads(man.read_text())
+        u["panels"][0]["description"] = "A close-up of his face"
+        man.write_text(_j.dumps(u))
+    assert [x["chapter"] for x in pc.ref_candidates(eps, n=2)["refs"]] == [2, 3]
+    assert [x["chapter"] for x in
+            pc.ref_candidates(eps, n=2, prefer_first=2)["refs"]] == [0, 1]
+    # the window fills first; later chapters only top it up
+    assert [x["chapter"] for x in
+            pc.ref_candidates(eps, n=3, prefer_first=2)["refs"]] == [0, 1, 2]

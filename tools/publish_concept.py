@@ -1225,7 +1225,7 @@ _CLOSE_UP_RE = re.compile(r"close-up|closeup|portrait|\\bface\\b", re.IGNORECASE
 
 
 def ref_candidates(ep_dirs: List[str], beats_list: Any = None, *,
-                   n: int = 8) -> Dict[str, Any]:
+                   n: int = 8, prefer_first: int = 0) -> Dict[str, Any]:
     """Reference panels to SUGGEST to the owner, who ticks 1-3 for both options.
 
     Owner, 2026-09-17: the first suggestions were "wierd", not clear images of
@@ -1239,6 +1239,11 @@ def ref_candidates(ep_dirs: List[str], beats_list: Any = None, *,
     returned rather than padding with unclear panels. Measured on ORV: 10 such
     panels among the look-matched ones, so all lead panels are considered.
     ponytail: identity for every chapter (~1-2 min on 309), so it runs as a job.
+
+    *prefer_first* is the teaser's window: tiles from the first N chapters rank
+    ahead of every other, and later chapters only top the list up. The claim and
+    climax come from that window, so the LOOK should too -- ORV's late chapters
+    draw the lead with longer hair. 0 = no preference (the old order, exactly).
     """
     cands: List[Dict[str, Any]] = []
     for i, d in enumerate(ep_dirs or []):
@@ -1266,7 +1271,8 @@ def ref_candidates(ep_dirs: List[str], beats_list: Any = None, *,
                 "path": os.path.abspath(os.path.join(d, "scenes", fn)),
                 "chapter": i, "label": os.path.basename(d.rstrip("/")),
                 "file": fn, "subjects": p.get("subjects") or [],
-                "_rank": (0 if fn in look else 1,
+                "_rank": (0 if i < prefer_first else 1,
+                          0 if fn in look else 1,
                           0 if _CLOSE_UP_RE.search(str(p.get("description") or "")) else 1,
                           -(w * h))})
     cands.sort(key=lambda c: c["_rank"])
@@ -1455,7 +1461,8 @@ def main() -> int:
         if args.ref_candidates:
             if not args.out:
                 ap.error("--ref-candidates needs --out")
-            cands = ref_candidates(eps, beats_list)
+            cands = ref_candidates(eps, beats_list,
+                                   prefer_first=args.teaser_scan_chapters)
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             with open(args.out, "w", encoding="utf-8") as f:
                 json.dump(cands, f, ensure_ascii=False, indent=2)
@@ -1485,10 +1492,15 @@ def main() -> int:
                                       card_lines=card)
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             with open(args.out, "w", encoding="utf-8") as f:
-                json.dump({"designs": names, "reason": why,
-                           "claim_source": claim_source}, f, indent=2)
+                # the card LINES, not a count: the owner reviews the words a
+                # system window would print BEFORE any image is paid for
+                json.dump({"designs": names, "reason": why, "card": card,
+                           "claim_source": claim_source}, f, indent=2,
+                          ensure_ascii=False)
             print("[ok] wrote=%s designs=%s source=%s"
                   % (args.out, names, claim_source))
+            for line in card:
+                print("[..] card line: %s" % line)
             return 0
         print("[..] claim source: %s (%d of %d chapters)"
               % (claim_source, len(w_eps), len(eps)))

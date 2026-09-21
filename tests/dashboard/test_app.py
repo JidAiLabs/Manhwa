@@ -1303,6 +1303,11 @@ def test_series_page_shows_both_thumbnail_options_and_pick_makes_one_live(
     assert "/thumb/series/1/option/nametag" in page
     assert "/thumb/series/1/option/system_window" in page
     assert "F-RANK SUMMONER" in page and "THE ONLY READER" in page
+    # both designs paint on the same art style, so a card captioned by STYLE
+    # would read "power_reveal" twice: the caption names the DESIGN
+    assert "nametag ·" in page and "system window ·" in page
+    # and the page no longer describes the job it replaced
+    assert "before/after option" not in page
     assert c.get("/thumb/series/1/option/nametag").content == b"nametag"
     assert not gates.thumbnail_approved(con, 1)
 

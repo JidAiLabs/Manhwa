@@ -2160,8 +2160,10 @@ def _h_thumbnail_refs(con: sqlite3.Connection, job: Dict[str, Any],
                       log: TextIO) -> None:
     """SUGGEST reference panels for the series thumbnail; the owner picks on
     the Series page and generates with them. Local and free: identity +
-    scoring over every chapter, no model, no image call. Its own job type so
-    it never dedupes against (and silently swallows) a paid generate."""
+    scoring over every chapter, no model, no image call. Tiles from the
+    TEASER'S WINDOW come first (the thumbnail's claim lives there, so its look
+    should too); later chapters only top the list up. Its own job type so it
+    never dedupes against (and silently swallows) a paid generate."""
     sid = job["series_id"]
     if not sid:
         raise RuntimeError("thumbnail_refs needs series_id")
@@ -2176,6 +2178,9 @@ def _h_thumbnail_refs(con: sqlite3.Connection, job: Dict[str, Any],
     out.parent.mkdir(parents=True, exist_ok=True)
     rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                   "--episode-dirs", ",".join(eps), "--ref-candidates",
+                  "--teaser-scan-chapters",
+                  str(int(getattr(_beats_cfg(), "publish_auto_after_chapters",
+                                  12) or 12)),
                   "--out", str(out)], log, env=_series_env(con, sid))
     if rc != 0:
         raise NonRetryableError(f"ref candidates exited {rc}")
