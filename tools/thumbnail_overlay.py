@@ -142,12 +142,45 @@ def _arrow(draw: ImageDraw.ImageDraw, start: Tuple[int, int],
                   fill=_YELLOW, width=width)
 
 
+def _target(spec: Dict[str, Any], W: int, H: int,
+            default: Tuple[float, float]) -> Tuple[int, int]:
+    """Where an arrow lands. A hook design fixes where its subject stands and
+    says so in ``arrow_to`` (frame fractions); without one the arrow keeps the
+    old frame-centre aim, so existing callers render byte-identically."""
+    fx, fy = spec.get("arrow_to") or default
+    return int(W * fx), int(H * fy)
+
+
+_CARD_FILL = (8, 20, 40, 205)
+_CARD_EDGE = (80, 200, 255, 255)
+
+
+def _draw_card(img: Image.Image, slot: Dict[str, Any], lines: List[str],
+               W: int, H: int) -> None:
+    """A system window holding the story's OWN printed words (quoted by code
+    upstream, never written by a model). Drawn here, not in the art: every word
+    on a thumbnail is an overlay."""
+    (fx, fy), (fw, fh) = slot["pos"], slot["size"]
+    x0, y0, x1, y1 = int(W * fx), int(H * fy), int(W * (fx + fw)), int(H * (fy + fh))
+    d = ImageDraw.Draw(img, "RGBA")           # RGBA draw blends the fill
+    d.rounded_rectangle((x0, y0, x1, y1), radius=int(H * 0.025),
+                        fill=_CARD_FILL, outline=_CARD_EDGE,
+                        width=max(4, H // 160))
+    pad = int((x1 - x0) * 0.07)
+    step = (y1 - y0 - 2 * pad) // max(len(lines), 1)
+    for i, line in enumerate(lines):
+        f = _fitted(d, line, min(int(H * 0.07), int(step * 0.8)),
+                    x1 - x0 - 2 * pad)
+        d.text((x0 + pad, y0 + pad + i * step), line, font=f, fill=_WHITE)
+
+
 def render_overlay(base_image: str, out_path: str, *, hook: str,
                    style_overlay: Dict[str, Any],
                    speech: Optional[List[str]] = None,
                    size: Tuple[int, int] = (1280, 720),
                    badge: str = "",
-                   tags: Optional[List[Dict[str, Any]]] = None) -> str:
+                   tags: Optional[List[Dict[str, Any]]] = None,
+                   card: Optional[List[str]] = None) -> str:
     """Composite the branded text layer onto *base_image*. Returns *out_path*.
 
     A single centred phrase reads as a caption on a picture; the thumbnails that
@@ -163,10 +196,16 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
       positions, each optionally arrowed toward the subject. "A -> B" in any
       label renders as a transformation with the arrow between the states.
 
-    Both are optional and default to nothing, so existing single-hook callers
+    *card*  — the quoted system-window lines, drawn only when the style's
+      overlay declares a ``card`` slot AND there are lines: never an empty box.
+
+    All are optional and default to nothing, so existing single-hook callers
     render byte-identically."""
     W, H = size
     img = Image.open(base_image).convert("RGB").resize((W, H))
+    card = [str(x).strip() for x in (card or []) if str(x).strip()]
+    if card and style_overlay.get("card"):
+        _draw_card(img, style_overlay["card"], card, W, H)   # under the labels
     draw = ImageDraw.Draw(img)
     hook = (hook or "").strip().upper()
 
@@ -202,7 +241,7 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
                 int(W * 0.10) if anc == "ra" else -int(W * 0.10))
             sy = (ly + len(lines) * step + int(H * 0.02) if ly < H * 0.5
                   else ly - int(H * 0.03))
-            _arrow(draw, (sx, sy), (int(W * 0.52), int(H * 0.46)),
+            _arrow(draw, (sx, sy), _target(style_overlay, W, H, (0.52, 0.46)),
                    max(6, H // 90))
 
     # status badge: a FACT about the upload (chapter range, full recap), never a
@@ -235,7 +274,7 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
             if t.get("arrow"):
                 sx = tx - (int(W * 0.06) if tanc == "ra" else -int(W * 0.06))
                 _arrow(draw, (sx, ty + int(H * 0.09)),
-                       (int(W * 0.50), int(H * 0.50)), max(5, H // 110))
+                       _target(t, W, H, (0.50, 0.50)), max(5, H // 110))
 
     # floating reaction marks
     f_mark = _font(int(H * 0.14))

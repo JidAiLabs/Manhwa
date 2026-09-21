@@ -1006,3 +1006,527 @@ def test_lead_panels_trust_the_image_pass_when_it_exists(tmp_path, monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "cast_identity", fake)
     portraits, look = pc._lead_panels(str(ep))
     assert portraits == {"p1.jpg"} and look == {"p1.jpg"}
+
+
+# --- the teaser window is the thumbnail's universe --------------------------
+
+def _understood_chapters(tmp_path, chapters):
+    """Chapter dirs named so load_bundle_panels parses their number."""
+    import json as _json
+    eps = []
+    for i, panels in enumerate(chapters, start=1):
+        d = tmp_path / f"Chapter_{i}"
+        d.mkdir()
+        # `printed` is a FIXTURE key: it is written as the vision manifest's OCR
+        # and stripped from the understood copy, exactly as production has it
+        (d / "manifest.panels.understood.json").write_text(_json.dumps(
+            {"panels": [{k: v for k, v in p.items() if k != "printed"}
+                        for p in panels]}))
+        (d / "manifest.vision.json").write_text(_json.dumps({"items": [
+            {"scene_file": p["scene_file"], "ocr_clean": p.get("printed", "")}
+            for p in panels]}))
+        eps.append(str(d))
+    return eps
+
+
+def _story(name, desc, intensity="tense"):
+    return {"scene_file": name, "panel_kind": "story", "intensity": intensity,
+            "description": desc, "action": desc}
+
+
+def test_teaser_montage_computed_stays_inside_the_scan_window(tmp_path):
+    """No teaser manifest: the montage is computed with the teaser's own
+    selector over the teaser's own window. A bigger reveal in a chapter past
+    the window must not be reachable -- that is how the ORV thumbnail landed
+    on Episode 124 while its teaser lives in chapters 3-9."""
+    eps = _understood_chapters(tmp_path, [
+        [_story("a1.jpg", "he is mocked as the weakest hunter"),
+         _story("a2.jpg", "a countdown appears above the city")],
+        [_story("b1.jpg", "his hidden power awakens, he is transformed",
+                "intense"),
+         _story("b2.jpg", "onlookers stare in shock")],
+        [_story("z1.jpg", "he awakens as a god, reborn and transformed, "
+                "ultimate power unlocked", "explosive")],
+    ])
+    montage, source = pc.teaser_montage(
+        eps, "", scan=2, min_panels=2, max_panels=4, tail_frac=0.0)
+    assert source == "montage:computed"
+    files = [p["scene_file"] for p in montage]
+    assert not any(f.endswith("z1.jpg") for f in files)   # outside the window
+    assert files[-1].endswith("b1.jpg")                   # climax LAST
+
+
+def _teaser_manifest(tmp_path, eps, picks, lines):
+    """A manifest.teaser.json in the shape teaser_planner.select_and_write
+    emits: namespaced ids, absolute panel_sources, climax LAST."""
+    import json as _json
+    import os as _os
+    scene_files, sources, narration = [], {}, []
+    for (ci, name), line in zip(picks, lines):
+        ns = f"ch{ci + 1}__{name}"
+        scenes = Path(eps[ci]) / "scenes"
+        scenes.mkdir(exist_ok=True)
+        (scenes / name).write_bytes(b"")
+        scene_files.append(ns)
+        sources[ns] = _os.path.join(eps[ci], "scenes", name)
+        narration.append({"scene_file": ns, "line": line})
+    out = tmp_path / "teaser"
+    out.mkdir()
+    man = out / "manifest.teaser.json"
+    man.write_text(_json.dumps({
+        "source_chapters": sorted({ci + 1 for ci, _ in picks}),
+        "scene_files": scene_files, "panel_sources": sources,
+        "panel_narration": narration, "reason": "the countdown hooks"}))
+    return str(man)
+
+
+def test_teaser_montage_too_few_panels_says_digest(tmp_path):
+    """Never a silent empty set: the caller must be able to record that the
+    teaser window could not supply a montage."""
+    eps = _understood_chapters(tmp_path, [[_story("a1.jpg", "a quiet street")]])
+    montage, source = pc.teaser_montage(
+        eps, "", scan=12, min_panels=4, max_panels=10, tail_frac=0.0)
+    assert montage is None and source == "digest"
+
+
+def test_teaser_montage_prefers_the_planned_teaser(tmp_path):
+    """A planned/approved teaser is what the owner reviewed: its panels, in its
+    order, with its lines -- not a fresh re-selection that may differ."""
+    eps = _understood_chapters(tmp_path, [
+        [_story("a1.jpg", "he is mocked as the weakest hunter"),
+         _story("a2.jpg", "a countdown appears above the city")],
+        [_story("b1.jpg", "his hidden power awakens, he is transformed",
+                "intense"),
+         _story("b2.jpg", "onlookers stare in shock")],
+    ])
+    man = _teaser_manifest(tmp_path, eps, [(0, "a1.jpg"), (0, "a2.jpg")],
+                           ["Nobody believed in him.", "The countdown began."])
+    montage, source = pc.teaser_montage(
+        eps, man, scan=12, min_panels=2, max_panels=4, tail_frac=0.0)
+    assert source == "teaser:manifest"
+    assert [Path(p["scene_file"]).name for p in montage] == ["a1.jpg", "a2.jpg"]
+    assert montage[-1]["line"] == "The countdown began."
+    assert "countdown" in montage[-1]["description"]      # understood fields ride
+
+
+def test_teaser_montage_ignores_a_manifest_with_dangling_panels(tmp_path):
+    """panel_sources are absolute paths from whichever run planned the teaser;
+    a panel that no longer exists cannot be a thumbnail reference."""
+    import os as _os
+    eps = _understood_chapters(tmp_path, [
+        [_story("a1.jpg", "he is mocked as the weakest hunter"),
+         _story("a2.jpg", "a countdown appears above the city")],
+        [_story("b1.jpg", "his hidden power awakens, he is transformed",
+                "intense"),
+         _story("b2.jpg", "onlookers stare in shock")],
+    ])
+    man = _teaser_manifest(tmp_path, eps, [(0, "a1.jpg"), (0, "a2.jpg")],
+                           ["x", "y"])
+    _os.remove(_os.path.join(eps[0], "scenes", "a2.jpg"))
+    montage, source = pc.teaser_montage(
+        eps, man, scan=12, min_panels=2, max_panels=4, tail_frac=0.0)
+    assert source == "montage:computed"
+
+
+# --- the hook DESIGN is ranked from the teaser, never chosen by the model ---
+
+def _system(name, text):
+    """Measured on ORV's teaser (2026-09-21): all six system panels carry an
+    EMPTY dialogue; the window's words are OCR in manifest.vision.json."""
+    return {"scene_file": name, "panel_kind": "system", "intensity": "tense",
+            "description": "a glowing blue system window", "dialogue": "",
+            "printed": text}
+
+
+def test_rank_designs_system_teaser_leads_with_the_system_window():
+    montage = [_system("s1.jpg", "The free service has ended."),
+               _story("p1.jpg", "a man stares at the window in shock"),
+               _system("s2.jpg", "Main scenario has begun."),
+               _story("p2.jpg", "he grips a blade as the crowd panics")]
+    names, reason = pc.rank_designs(montage)
+    assert names[0] == "system_window" and len(names) == 2
+    assert reason["system_panels"] == 2 and reason["card_lines"] == 2
+    assert reason["system_share"] == 0.5
+
+
+def test_rank_designs_transformation_climax_prefers_the_headline():
+    montage = [_story("p1.jpg", "he is mocked as the weakest hunter"),
+               _story("p2.jpg", "onlookers laugh at him"),
+               _story("p3.jpg", "his hidden power awakens, he is transformed",
+                      "intense")]                       # climax is LAST
+    names, reason = pc.rank_designs(montage)
+    assert names == ["nametag_headline", "nametag"]
+    assert reason["climax_transform_hits"] >= 1
+
+
+def test_rank_designs_quiet_montage_still_offers_two_known_designs():
+    from thumbnail_styles import HOOK_DESIGNS
+    montage = [_story("p1.jpg", "a quiet street at dusk"),
+               _story("p2.jpg", "he walks home alone")]
+    names, _ = pc.rank_designs(montage)
+    assert names == ["nametag", "nametag_headline"]
+    assert all(n in HOOK_DESIGNS for n in names)
+
+
+def test_rank_designs_null_system_text_does_not_earn_a_window():
+    """'None.' is a non-empty string that passes every `if x:` -- a card built
+    from it would print a null value on the thumbnail."""
+    montage = [_system("s1.jpg", "None."), _system("s2.jpg", ""),
+               _story("p1.jpg", "he walks home alone")]
+    names, reason = pc.rank_designs(montage)
+    assert "system_window" not in names
+    assert reason["system_panels"] == 2 and reason["card_lines"] == 0
+
+
+# --- a design reaches the concept: overlay, second label, quoted card -------
+
+def _pkg(**extra):
+    return {"title": "T", "description": "D", "thumbnail_style": "power_reveal",
+            "labels": ["WEAKEST HUNTER"], "hashtags": ["#m"], **extra}
+
+
+def test_assemble_package_design_sets_the_overlay_and_is_recorded():
+    from thumbnail_styles import HOOK_DESIGNS
+    c = pc.assemble_package({}, {}, _pkg(), series_title="X", design="nametag")
+    assert c["design"] == "nametag"
+    assert c["style"] == "power_reveal"              # the ART stays a scene style
+    assert c["style_overlay"] == HOOK_DESIGNS["nametag"]["overlay"]
+
+
+def test_assemble_package_headline_becomes_a_tag_without_an_arrow():
+    """The second label was unreachable: the two-stage path never wrote tags."""
+    from thumbnail_styles import HOOK_DESIGNS
+    c = pc.assemble_package(
+        {}, {}, _pkg(headlines=["BACK FROM THE DEAD", "NOBODY -> KING"]),
+        series_title="X", design="nametag_headline")
+    pos = HOOK_DESIGNS["nametag_headline"]["overlay"]["headline_pos"]
+    assert c["tags"] == [{"text": "BACK FROM THE DEAD", "pos": pos,
+                          "arrow": False}]
+    assert c["headlines"] == ["BACK FROM THE DEAD", "NOBODY -> KING"]
+
+
+def test_assemble_package_invented_number_headline_is_not_offered():
+    beats = {"beats": [{"segments": [{"line": "he reaches level 3"}]}]}
+    c = pc.assemble_package(
+        beats, {}, _pkg(headlines=["LEVEL 999 GOD", "BACK FROM THE DEAD"]),
+        series_title="X", design="nametag_headline")
+    assert c["headlines"] == ["BACK FROM THE DEAD"]
+    assert c["tags"][0]["text"] == "BACK FROM THE DEAD"
+
+
+def test_package_prompt_asks_for_headlines_only_for_that_design():
+    plain = pc.build_package_prompt({"premise": "P"}, "B")
+    head = pc.build_package_prompt({"premise": "P"}, "B",
+                                   design="nametag_headline")
+    assert '"headlines"' in head and '"headlines"' not in plain
+
+
+def test_system_card_lines_quote_the_story_verbatim():
+    """The card QUOTES printed system text: usable lines only, no repeats,
+    at most three -- never a word the story did not print."""
+    montage = [_system("s1.jpg", "The free service has ended."),
+               _system("s2.jpg", "None."),
+               _story("p1.jpg", "a man stares in shock"),
+               _system("s3.jpg", "The free service has ended."),
+               _system("s4.jpg", "Main scenario has begun."),
+               _system("s5.jpg", "Kill one or more living things."),
+               _system("s6.jpg", "Time limit: 30 minutes.")]
+    assert pc.system_card_lines(montage) == [
+        "The free service has ended.", "Main scenario has begun.",
+        "Kill one or more living things."]
+
+
+def test_assemble_package_system_window_carries_the_quoted_card():
+    c = pc.assemble_package({}, {}, _pkg(), series_title="X",
+                            design="system_window",
+                            card_lines=["Main scenario has begun."])
+    assert c["card"] == ["Main scenario has begun."]
+
+
+# --- main(): the teaser window drives the run -------------------------------
+
+def test_brief_prompt_puts_the_hook_block_above_the_narration():
+    plain = pc.build_brief_prompt("NARRATION", "B")
+    hooked = pc.build_brief_prompt("NARRATION", "B", hook_block="THE HOOK\nx")
+    assert hooked.index("THE HOOK") < hooked.index("STORY NARRATION")
+    assert "THE HOOK" not in plain
+
+
+def test_teaser_hook_block_lists_the_montage_and_marks_the_climax():
+    montage = [{**_story("p1.jpg", "he is mocked as the weakest hunter"),
+                "line": "Nobody believed in him."},
+               {**_story("p2.jpg", "his hidden power awakens"),
+                "line": "Until the day it woke."}]
+    block = pc.teaser_hook_block(montage, "the awakening hooks")
+    assert "the awakening hooks" in block
+    assert "Nobody believed in him." in block
+    assert block.index("weakest hunter") < block.index("power awakens")
+    assert "CLIMAX" in block.splitlines()[-1]          # the LAST panel
+    assert pc.teaser_hook_block([], "") == ""
+
+
+def _series(tmp_path, chapters):
+    """Chapter dirs carrying both manifests main() and the teaser loader read."""
+    import json as _j
+    eps = _understood_chapters(tmp_path, chapters)
+    for e, panels in zip(eps, chapters):
+        (Path(e) / "manifest.beats.json").write_text(_j.dumps({"beats": [{
+            "segments": [{"line": p.get("description", "")} for p in panels],
+            "scene_selection": [{"scene_file": p["scene_file"],
+                                 "intensity": p["intensity"]} for p in panels]}]}))
+    return eps
+
+
+_ARC = [
+    [_story("a1.jpg", "he is mocked as the weakest hunter"),
+     _system("a2.jpg", "Main scenario has begun.")],
+    [_story("b1.jpg", "his hidden power awakens, he is transformed", "intense"),
+     _system("b2.jpg", "[YOU HAVE EXCEEDED THE TIME LIMIT.]")],
+    [_story("z1.jpg", "he awakens as a god, reborn and transformed, ultimate "
+            "power unlocked", "explosive")],
+]
+
+
+def _run_main(monkeypatch, argv, replies=()):
+    import sys as _s
+    prompts, it = [], iter(replies)
+
+    def fake(prompt, model):
+        prompts.append(prompt)
+        return next(it)
+    monkeypatch.setattr(pc, "_gemma", fake)
+    monkeypatch.setattr(_s, "argv", ["publish_concept.py", *argv])
+    return pc.main(), prompts
+
+
+def test_rank_designs_run_is_free_and_writes_the_ranking(tmp_path, monkeypatch):
+    import json as _j
+    eps = _series(tmp_path, _ARC)
+    out = tmp_path / "rank.json"
+    rc, prompts = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--rank-designs",
+        "--teaser-scan-chapters", "2", "--teaser-min-panels", "2",
+        "--out", str(out)])
+    assert rc == 0 and prompts == []                   # no model call, nothing paid
+    got = _j.loads(out.read_text())
+    assert got["designs"][0] == "system_window" and len(got["designs"]) == 2
+    assert got["claim_source"] == "montage:computed"
+    assert got["reason"]["system_panels"] == 2
+    assert got["reason"]["card_lines"] == 2
+
+
+def test_rank_designs_run_without_a_montage_fails_loud(tmp_path, monkeypatch):
+    eps = _series(tmp_path, [[_story("a1.jpg", "a quiet street")]])
+    out = tmp_path / "rank.json"
+    rc, _ = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--rank-designs",
+        "--teaser-scan-chapters", "12", "--teaser-min-panels", "4",
+        "--out", str(out)])
+    assert rc == 2 and not out.exists()
+
+
+def test_design_run_takes_its_claim_and_climax_from_the_teaser_window(
+        tmp_path, monkeypatch):
+    import json as _j
+    eps = _series(tmp_path, _ARC)
+    out = tmp_path / "c.json"
+    rc, prompts = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--design", "nametag_headline",
+        "--teaser-scan-chapters", "2", "--teaser-min-panels", "2",
+        "--out", str(out)],
+        replies=[{"premise": "P"},
+                 {"title": "T", "thumbnail_style": "power_reveal",
+                  "labels": ["WEAKEST HUNTER"], "headlines": ["NOBODY -> KING"],
+                  "hashtags": []}])
+    assert rc == 0
+    c = _j.loads(out.read_text())
+    assert c["design"] == "nametag_headline"
+    assert c["claim_source"] == "montage:computed"
+    assert c["climax_chapter_index"] == 1             # NOT chapter 3's bigger reveal
+    assert c["tags"][0]["text"] == "NOBODY -> KING"
+    assert c["design_reason"]["climax_transform_hits"] >= 1
+    assert all(not p.endswith("z1.jpg") for p in c["teaser_panels"])
+    assert "THE HOOK" in prompts[0] and "power awakens" in prompts[0]
+    assert "reborn" not in prompts[0]                  # chapter 3 never reaches the brief
+    assert c["badge"] == "3 CHAPTERS"                  # the upload's facts stay whole
+
+
+def test_system_window_run_quotes_the_card_from_the_teaser(tmp_path, monkeypatch):
+    import json as _j
+    eps = _series(tmp_path, _ARC)
+    out = tmp_path / "c.json"
+    rc, _ = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--design", "system_window",
+        "--teaser-scan-chapters", "2", "--teaser-min-panels", "2",
+        "--out", str(out)],
+        replies=[{"premise": "P"},
+                 {"title": "T", "thumbnail_style": "power_reveal",
+                  "labels": ["WEAKEST HUNTER"], "hashtags": []}])
+    assert rc == 0
+    assert _j.loads(out.read_text())["card"] == [
+        "Main scenario has begun.", "YOU HAVE EXCEEDED THE TIME LIMIT."]
+
+
+def test_title_reuses_the_picked_thumbnails_headline_too():
+    """The title repeats the thumbnail's status words so both make one claim.
+    With a hook design the headline lives in `tags`, not in `hook`."""
+    picked = {"hook": "WEAKEST HUNTER",
+              "tags": [{"text": "NOBODY -> KING", "pos": "lower_left",
+                        "arrow": False}, {"text": "  "}]}
+    assert pc.thumb_label_words(picked) == "WEAKEST HUNTER / NOBODY -> KING"
+    assert pc.thumb_label_words({"hook": "WEAK|KING"}) == "WEAK / KING"
+    assert pc.thumb_label_words({}) == ""
+
+
+# --- the card quotes OCR, and raw OCR is not printable ----------------------
+# Measured over 8 series' teaser windows: ORV 66 system panels -> 16 printable
+# lines. The rest is markup, mirrored text read as Cyrillic, multi-window blobs.
+
+def test_printable_card_line_keeps_a_clean_line_without_its_brackets():
+    assert pc.printable_card_line("[THE MAIN SCENARIO HAS ARRIVED.]") == \
+        "THE MAIN SCENARIO HAS ARRIVED."
+
+
+def test_printable_card_line_repairs_brackets_ocr_read_as_letters():
+    """'[' and ']' are read as 'I' and 'J' glued to the first and last word."""
+    assert pc.printable_card_line(
+        "INO ONE MAY ENTER OR LEAVE THE CABIN.J") == \
+        "NO ONE MAY ENTER OR LEAVE THE CABIN."
+
+
+def test_printable_card_line_refuses_what_must_never_be_printed():
+    for junk in ("?! DING \u0418\u041790 \u04178 \u0422\u041e\u0419\u041c\u0410\u0417",  # mirrored text -> Cyrillic
+                 "<SKILL> KNIFE FIGHTING LV. 1 E0x",         # crop debris
+                 "IS** CLEAR REWARD: YOU HAVE BEEN AWARDED A BADGE.",  # markup debris
+                 "DING YOU HAVE RECEIVED AN EXCLUSIVE ATTRIBUTE AND A SKILL SLOT "
+                 "HAS BEEN UNLOCKED AND EACH OF THE SURVIVORS RECEIVES ONE",  # a blob
+                 "None.", "", "OK"):
+        assert pc.printable_card_line(junk) == "", junk
+
+
+def test_teaser_montage_attaches_the_printed_words_from_the_vision_manifest(tmp_path):
+    eps = _understood_chapters(tmp_path, [
+        [_system("s1.jpg", "[THE MAIN SCENARIO HAS ARRIVED.]"),
+         _story("a1.jpg", "he is mocked as the weakest hunter")],
+        [_story("b1.jpg", "his hidden power awakens, he is transformed",
+                "intense"),
+         _story("b2.jpg", "onlookers stare in shock")]])
+    montage, _ = pc.teaser_montage(eps, "", scan=12, min_panels=2,
+                                   max_panels=4, tail_frac=0.0)
+    by_name = {Path(p["scene_file"]).name: p for p in montage}
+    assert by_name["s1.jpg"]["printed"] == "[THE MAIN SCENARIO HAS ARRIVED.]"
+    assert by_name["b1.jpg"]["printed"] == ""
+
+
+def test_printable_card_line_refuses_two_things_glued_into_one():
+    """Measured on the tower series: a system line, a bracket misread as '1',
+    then a character's speech -- every token a real word, the line garbage."""
+    for glued in ("TRAITS AND COMBAT SKILLS ARE NOW AVAILABLE.1 LET'S MAKE THIS WORK...!!",
+                  "THE SCENARIO HAS ENDED. WHAT IS GOING ON HERE",
+                  "YOU HAVE LEVELED UP...!!"):
+        assert pc.printable_card_line(glued) == "", glued
+    # one sentence with its own full stop is still fine
+    assert pc.printable_card_line("[THE SCENARIO HAS ENDED.]") == \
+        "THE SCENARIO HAS ENDED."
+
+
+def test_system_card_never_prints_the_licensed_title():
+    """Integrity rule 1, the one with legal weight: the series name is never
+    rendered. ORV's only printable montage line names the series' own skill."""
+    montage = [_system("s1.jpg", "[YOU HAVE UNLOCKED YOUR PERSONAL SKILL, "
+                       "OMNISCIENT READER'S VIEWPOINT.]"),
+               _system("s2.jpg", "[THE MAIN SCENARIO HAS ARRIVED.]")]
+    assert pc.system_card_lines(montage, banned="Omniscient Reader") == [
+        "THE MAIN SCENARIO HAS ARRIVED."]
+    # a one-word overlap is the story's own vocabulary, not the title
+    reader = [_system("s3.jpg", "[THE READER HAS ENTERED THE SCENARIO.]")]
+    assert pc.system_card_lines(reader, banned="Omniscient Reader") == [
+        "THE READER HAS ENTERED THE SCENARIO."]
+
+
+def test_rank_designs_does_not_count_a_line_the_ban_will_refuse():
+    """Ranking and building must agree: a window whose only line names the
+    series is not a window the build can fill."""
+    montage = [_system("s1.jpg", "[YOU HAVE UNLOCKED YOUR PERSONAL SKILL, "
+                       "OMNISCIENT READER'S VIEWPOINT.]"),
+               _system("s2.jpg", "?! DING E0x"),
+               _story("p1.jpg", "he walks home alone")]
+    assert "system_window" in pc.rank_designs(montage)[0]
+    assert "system_window" not in pc.rank_designs(
+        montage, banned="Omniscient Reader")[0]
+
+
+def test_system_window_run_without_a_printable_line_fails_loud(tmp_path, monkeypatch):
+    """Never ship a system-window design with an empty left third."""
+    eps = _series(tmp_path, [
+        [_story("a1.jpg", "he is mocked as the weakest hunter"),
+         _system("a2.jpg", "?! DING E0x")],
+        [_story("b1.jpg", "his hidden power awakens, he is transformed", "intense"),
+         _story("b2.jpg", "onlookers stare in shock")]])
+    out = tmp_path / "c.json"
+    rc, _ = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--design", "system_window",
+        "--teaser-scan-chapters", "2", "--teaser-min-panels", "2",
+        "--out", str(out)],
+        replies=[{"premise": "P"},
+                 {"title": "T", "thumbnail_style": "power_reveal",
+                  "labels": ["WEAKEST HUNTER"], "hashtags": []}])
+    assert rc == 2 and not out.exists()
+
+
+# --- the card quotes the teaser WINDOW; the montage decides eligibility -----
+# ORV, measured: 6 of 10 montage panels are system windows, but their own OCR
+# yields one line (and it names the series). The window holds 16 printable ones.
+
+_WINDOW = [
+    [_system("s1.jpg", "?! DING E0x"),                       # montage, junk OCR
+     _story("a1.jpg", "he is mocked as the weakest hunter"),
+     _system("s2.jpg", "[THE MAIN SCENARIO HAS ARRIVED.]")],
+    [_story("b1.jpg", "his hidden power awakens, he is transformed", "intense"),
+     _system("s3.jpg", "[YOU HAVE EXCEEDED THE TIME LIMIT.]")],
+]
+
+
+def test_window_card_lines_take_the_montage_first_then_the_window(tmp_path):
+    eps = _understood_chapters(tmp_path, _WINDOW)
+    montage = pc._attach_printed([
+        {**_system("s3.jpg", ""), "scene_file": eps[1] + "/scenes/s3.jpg"},
+        {**_story("b1.jpg", "his hidden power awakens"),
+         "scene_file": eps[1] + "/scenes/b1.jpg"}])
+    assert pc.window_card_lines(eps, montage) == [
+        "YOU HAVE EXCEEDED THE TIME LIMIT.",          # the montage's own line
+        "THE MAIN SCENARIO HAS ARRIVED."]             # then the window, in order
+    assert pc.window_card_lines(eps, montage, max_lines=1) == [
+        "YOU HAVE EXCEEDED THE TIME LIMIT."]
+
+
+def test_rank_designs_offers_the_window_when_the_window_can_fill_it():
+    montage = [_system("s1.jpg", "?! DING E0x"), _system("s2.jpg", ""),
+               _story("p1.jpg", "he walks home alone"),
+               _story("p2.jpg", "a quiet street at dusk")]
+    names, reason = pc.rank_designs(
+        montage, card_lines=["THE MAIN SCENARIO HAS ARRIVED."])
+    assert names[0] == "system_window"
+    assert reason["system_panels"] == 2 and reason["system_share"] == 0.5
+    assert reason["card_lines"] == 1
+
+
+def test_rank_designs_one_incidental_system_panel_is_not_a_system_story():
+    """Measured on the Mini (2026-09-21), system panels per 10-panel montage:
+    ORV 6, the tower series 2, Nano Machine 1, Infinite Evolution 1 -- and that
+    last one's "window" is a TV news broadcast. One panel is incidental."""
+    one = [_system("s1.jpg", "[WE HAVE SOME BREAKING NEWS.]"),
+           _story("p1.jpg", "he walks home alone"),
+           _story("p2.jpg", "a quiet street at dusk")]
+    assert "system_window" not in pc.rank_designs(one)[0]
+    two = one + [_system("s2.jpg", "[THE MAIN SCENARIO HAS ARRIVED.]")]
+    assert pc.rank_designs(two)[0][0] == "system_window"
+
+
+def test_rank_designs_a_story_without_system_panels_gets_no_window():
+    """One title card somewhere in chapter 2 does not make a system story."""
+    montage = [_story("p1.jpg", "a quiet street at dusk"),
+               _story("p2.jpg", "he walks home alone")]
+    names, _ = pc.rank_designs(
+        montage, card_lines=["THE MAIN SCENARIO HAS ARRIVED."])
+    assert "system_window" not in names

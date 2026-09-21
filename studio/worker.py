@@ -2003,10 +2003,14 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
                         log: TextIO) -> None:
     """ONE thumbnail per manhwa (series), reused across every video.
 
-    Builds EVERY option in gates.THUMBNAIL_OPTIONS side by side under
-    dist/series_<id>/options/<name>/ -- a single-scene composition and a
-    before/after split -- and makes NONE of them live. The owner picks one on
-    the Series page (POST /thumbnail/pick copies it live and approves it).
+    Builds the TWO hook designs the series' TEASER ranks first, side by side
+    under dist/series_<id>/options/<design>/, and makes NONE of them live. The
+    owner picks one on the Series page (POST /thumbnail/pick copies it live and
+    approves it). The thumbnail sells what the teaser sells: claim, climax and
+    refs come from the teaser's window; a planned/approved teaser's own
+    manifest is used, otherwise its montage is computed on the fly (free).
+    Owner, 2026-09-21: the ranking is code, never the model's layout choice;
+    before/after is a variant only (payload style).
     Owner, 2026-09-17: "i should see both options created and i can select 1
     of them." The job used to let the model pick the layout (it picked a
     3-panel triptych nobody wanted) and wrote straight over the live image.
@@ -2031,8 +2035,23 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
     # the owner's picks from the suggested reference panels (_h_thumbnail_refs)
     picked = [str(r) for r in (payload.get("refs") or []) if str(r).strip()]
     picked_args = ["--refs", ",".join(picked)] if picked else []
+    cfg = _beats_cfg()
+    # the SAME window and knobs _h_teaser plans with, so both agree on the hook
+    teaser_args = [
+        "--teaser-scan-chapters",
+        str(int(getattr(cfg, "publish_auto_after_chapters", 12) or 12)),
+        "--teaser-min-panels", str(cfg.teaser_min_panels),
+        "--teaser-max-panels", str(cfg.teaser_max_hook_panels),
+        "--teaser-payoff-tail-frac", str(cfg.teaser_payoff_tail_frac)]
+    # only a teaser the owner can review drives the thumbnail: a declined one
+    # was rejected, and a state with no file on disk is just a column
+    manifest = REPO / "dist" / f"series_{sid}" / "teaser" / "manifest.teaser.json"
+    state = con.execute("SELECT teaser_state FROM series WHERE id=?",
+                        (sid,)).fetchone()
+    if state and state[0] in ("planned", "approved") and manifest.exists():
+        teaser_args += ["--teaser-manifest", str(manifest)]
 
-    def build(out_dir: Path, style: str) -> None:
+    def build(out_dir: Path, style: str = "", design: str = "") -> None:
         # The paid image step needs GEMINI_API_KEY from the login keychain,
         # which only this launchd-run worker can reach.
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -2042,6 +2061,7 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                       "--episode-dirs", ",".join(eps), "--series-title", title,
                       *(["--style", style] if style else []),
+                      *(["--design", design, *teaser_args] if design else []),
                       *picked_args,
                       "--out", str(concept_path)], log, env=env)
         if rc != 0:
@@ -2067,13 +2087,34 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
             except (RuntimeError, ValueError, OSError) as e:
                 raise NonRetryableError(f"variant {style} failed: {e}") from e
             return
+        opts = REPO / "dist" / f"series_{sid}" / "options"
+        # a failed rebuild must not leave an OLD image pickable -- and an option
+        # from before the designs (scene / before_after) is dead weight
+        shutil.rmtree(opts, ignore_errors=True)
+        opts.mkdir(parents=True, exist_ok=True)
+        rank_path = opts / "designs.json"
+        rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
+                      "--episode-dirs", ",".join(eps), "--rank-designs",
+                      # the BAN list: ranking must refuse the same lines
+                      # the build will, or it promises an empty window
+                      "--series-title", title,
+                      *teaser_args, "--out", str(rank_path)], log, env=env)
+        if rc != 0 or not rank_path.exists():
+            # NON-retryable, nothing paid: no montage means no teaser-based
+            # claim, and a retry would find the same chapters
+            raise NonRetryableError(
+                "could not rank hook designs from the teaser window "
+                f"(publish_concept exited {rc}) — prepare more of the opening "
+                "chapters, then generate again")
+        designs = [d for d in json.loads(rank_path.read_text()).get("designs") or []
+                   if d in gates.THUMBNAIL_OPTIONS]
+        if not designs:
+            raise NonRetryableError("the ranking named no known hook design")
         failed: List[str] = []
-        for name, opt_style in gates.THUMBNAIL_OPTIONS.items():
-            opt_dir = REPO / "dist" / f"series_{sid}" / "options" / name
-            # a failed rebuild must not leave the OLD image pickable
-            shutil.rmtree(opt_dir, ignore_errors=True)
+        for name in designs:
+            opt_dir = opts / name
             try:
-                build(opt_dir, opt_style)
+                build(opt_dir, design=name)
             except (RuntimeError, ValueError, OSError) as e:  # ValueError: bad json
                 log.write(f"[thumbnail] option {name} failed: {e}\n")
                 failed.append(name)

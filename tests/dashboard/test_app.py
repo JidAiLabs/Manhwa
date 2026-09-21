@@ -1293,24 +1293,24 @@ def test_series_page_shows_both_thumbnail_options_and_pick_makes_one_live(
     from studio.dashboard import app as _app, gates
     monkeypatch.setattr(_app, "REPO", tmp_path)
     base = tmp_path / "dist" / "series_1"
-    for name, hook in (("scene", "F-RANK SUMMONER"),
-                       ("before_after", "READER|AUTHOR")):
+    for name, hook in (("nametag", "F-RANK SUMMONER"),
+                       ("system_window", "THE ONLY READER")):
         d = base / "options" / name
         d.mkdir(parents=True)
         (d / "thumbnail_yt.jpg").write_bytes(name.encode())
         (d / "concept.json").write_text(_j.dumps({"hook": hook, "style": name}))
     page = c.get("/series/1").text
-    assert "/thumb/series/1/option/scene" in page
-    assert "/thumb/series/1/option/before_after" in page
-    assert "F-RANK SUMMONER" in page and "READER|AUTHOR" in page
-    assert c.get("/thumb/series/1/option/scene").content == b"scene"
+    assert "/thumb/series/1/option/nametag" in page
+    assert "/thumb/series/1/option/system_window" in page
+    assert "F-RANK SUMMONER" in page and "THE ONLY READER" in page
+    assert c.get("/thumb/series/1/option/nametag").content == b"nametag"
     assert not gates.thumbnail_approved(con, 1)
 
-    r = c.post("/thumbnail/pick", data={"series_id": 1, "option": "before_after"},
+    r = c.post("/thumbnail/pick", data={"series_id": 1, "option": "system_window"},
                follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/series/1"
-    assert (base / "thumbnail_yt.jpg").read_bytes() == b"before_after"
-    assert _j.loads((base / "concept.json").read_text())["hook"] == "READER|AUTHOR"
+    assert (base / "thumbnail_yt.jpg").read_bytes() == b"system_window"
+    assert _j.loads((base / "concept.json").read_text())["hook"] == "THE ONLY READER"
     assert gates.thumbnail_approved(con, 1)
 
 
@@ -1323,7 +1323,7 @@ def test_thumbnail_option_names_are_a_closed_set(client, tmp_path, monkeypatch):
     assert c.post("/thumbnail/pick", data={"series_id": 1, "option": "../x"},
                   follow_redirects=False).status_code == 404
     # a valid name with nothing built yet is also a 404, never a half-copy
-    assert c.post("/thumbnail/pick", data={"series_id": 1, "option": "scene"},
+    assert c.post("/thumbnail/pick", data={"series_id": 1, "option": "nametag"},
                   follow_redirects=False).status_code == 404
 
 
@@ -1335,8 +1335,8 @@ def test_an_unpicked_old_live_thumbnail_is_hidden_once_options_exist(
     from studio.dashboard import app as _app, gates
     monkeypatch.setattr(_app, "REPO", tmp_path)
     base = tmp_path / "dist" / "series_1"
-    (base / "options" / "scene").mkdir(parents=True)
-    (base / "options" / "scene" / "thumbnail_yt.jpg").write_bytes(b"s")
+    (base / "options" / "nametag").mkdir(parents=True)
+    (base / "options" / "nametag" / "thumbnail_yt.jpg").write_bytes(b"s")
     (base / "thumbnail_yt.jpg").write_bytes(b"old triptych")
     page = c.get("/series/1").text
     assert 'src="/thumb/series/1?v=' not in page and "approve this one" not in page
@@ -1400,7 +1400,7 @@ def test_label_candidates_switch_for_free_and_only_from_the_list(client, tmp_pat
     c, _ = client
     from studio.dashboard import app as _app
     monkeypatch.setattr(_app, "REPO", tmp_path)
-    d = tmp_path / "dist" / "series_1" / "options" / "scene"; d.mkdir(parents=True)
+    d = tmp_path / "dist" / "series_1" / "options" / "nametag"; d.mkdir(parents=True)
     Image.new("RGB", (1280, 720), (20, 30, 40)).save(d / "thumbnail_art.png")
     (d / "thumbnail_yt.jpg").write_bytes(b"old")
     (d / "concept.json").write_text(_j.dumps({
@@ -1409,14 +1409,47 @@ def test_label_candidates_switch_for_free_and_only_from_the_list(client, tmp_pat
         "style_overlay": {"label_pos": "upper_right", "arrow": "none", "marks": []}}))
     page = c.get("/series/1").text
     assert "F-RANK -&gt; KING" in page or "F-RANK -> KING" in page
-    r = c.post("/thumbnail/label", data={"series_id": 1, "option": "scene", "hook": "1"},
+    r = c.post("/thumbnail/label", data={"series_id": 1, "option": "nametag", "hook": "1"},
                follow_redirects=False)
     assert r.status_code == 303
     assert (d / "thumbnail_yt.jpg").read_bytes() != b"old"
     assert _j.loads((d / "concept.json").read_text())["hook"] == "SECRET RANK"
-    for bad in ({"option": "scene", "hook": "5"}, {"option": "../x", "hook": "0"}):
+    for bad in ({"option": "nametag", "hook": "5"}, {"option": "../x", "hook": "0"},
+                {"option": "scene", "hook": "0"}):      # left the closed set
         assert c.post("/thumbnail/label", data=dict(bad, series_id=1),
                       follow_redirects=False).status_code == 404, bad
+
+
+def test_a_free_relabel_keeps_the_quoted_system_window(client, tmp_path, monkeypatch):
+    """The re-label redraws the whole text layer from concept.json. Dropping the
+    card there would erase the window the owner was looking at, for free and
+    without a word."""
+    import json as _j
+    from PIL import Image
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    d = tmp_path / "dist" / "series_1" / "options" / "system_window"
+    d.mkdir(parents=True)
+    Image.new("RGB", (1280, 720), (20, 30, 40)).save(d / "thumbnail_art.png")
+    (d / "thumbnail_yt.jpg").write_bytes(b"old")
+    (d / "concept.json").write_text(_j.dumps({
+        "style": "power_reveal", "design": "system_window", "hook": "A",
+        "hooks": ["A", "THE ONLY READER"],
+        "card": ["Main scenario has begun."],
+        "style_overlay": {"label_pos": "upper_right", "arrow": "none",
+                          "marks": [], "card": {"pos": [0.04, 0.22],
+                                                "size": [0.36, 0.46]}}}))
+    r = c.post("/thumbnail/label", data={"series_id": 1,
+                                         "option": "system_window", "hook": "1"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    im = Image.open(d / "thumbnail_yt.jpg").convert("RGB")
+    drawn = sum(1 for y in range(int(720 * 0.24), int(720 * 0.66), 4)
+                for x in range(int(1280 * 0.05), int(1280 * 0.39), 4)
+                if any(abs(a - b) > 40 for a, b in zip(im.getpixel((x, y)),
+                                                       (20, 30, 40))))
+    assert drawn > 200
 
 
 def test_series_tab_shows_disk_use_and_free_space(client, tmp_path, monkeypatch):

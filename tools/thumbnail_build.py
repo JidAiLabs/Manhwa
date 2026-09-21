@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
-from thumbnail_styles import style_for                                  # noqa: E402
+from thumbnail_styles import HOOK_DESIGNS, style_for                    # noqa: E402
 from thumbnail_overlay import render_overlay                            # noqa: E402
 import thumbnail_gen as tg                                              # noqa: E402
 
@@ -59,7 +59,12 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
     overlay -> <out_dir>/thumbnail_yt.jpg. ref_episode_dir only resolves the
     scene crops; out_dir is independent (a chapter's render/ OR a series dir)."""
     style = concept.get("style", "power_reveal")
-    art_prompt = tg.build_art_prompt(style_for(style)["art_prompt"])
+    # a hook design fixes where the lead stands, so its arrow_to can land on
+    # them: the art has to be TOLD, or the overlay aims at nothing
+    clause = (HOOK_DESIGNS.get(concept.get("design") or "") or {}).get(
+        "art_clause", "")
+    art_prompt = tg.build_art_prompt(
+        style_for(style)["art_prompt"] + ("\n" + clause if clause else ""))
 
     refs = refs or concept.get("refs") or []
     if not refs:
@@ -89,7 +94,8 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
                    or style_for(style)["overlay"],
                    speech=concept.get("speech") or [],
                    badge=concept.get("badge") or "",
-                   tags=concept.get("tags") or [])
+                   tags=concept.get("tags") or [],
+                   card=concept.get("card") or [])
     return {"style": style, "hook": concept.get("hook"), "model": used,
             "art": art_path, "thumbnail": out, "refs": refs}
 

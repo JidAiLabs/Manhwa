@@ -26,6 +26,7 @@ if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from thumbnail_styles import (  # noqa: E402
     DEFAULT_STYLE,
+    HOOK_DESIGNS,
     STYLE_MODULES,
     select_style,
     style_for,
@@ -98,7 +99,10 @@ _HOOK_DEFAULT = (_HOOK_GRAMMAR +
 def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
                      pkg: Dict[str, Any], *, series_title: str,
                      official_link: str = "",
-                     styles: Optional[List[str]] = None) -> Dict[str, Any]:
+                     styles: Optional[List[str]] = None,
+                     design: str = "",
+                     card_lines: Optional[List[str]] = None
+                     ) -> Dict[str, Any]:
     """Concept from the two-stage understanding. Pure/testable.
 
     The model's own layout choice wins, validated against the registry (an
@@ -113,17 +117,13 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
     style = str(pkg.get("thumbnail_style") or "").strip()
     if style not in allowed:
         style = allowed[0]
-    # `labels` may come back as a bare STRING ("READER|SURVIVOR|AUTHOR") rather
-    # than a list -- iterating that yields one CHARACTER per label and the hook
-    # becomes "R". A JSON schema in a prompt is a request, not a guarantee.
-    raw_labels = pkg.get("labels") or []
-    if isinstance(raw_labels, str):
-        raw_labels = [raw_labels]
-    labels = [str(x).strip() for x in raw_labels if str(x).strip()]
+    labels = _clean_labels(pkg.get("labels"))
     # a pair written as "A|B" on a one-scene layout is a transformation label
     # ("DEAD -> KING"), never a literal pipe. (The split's labels are fixed
     # BEFORE / AFTER below, so no model label is ever joined for it.)
     labels = [s.replace("|", " -> ") for s in labels]
+    if design and design not in HOOK_DESIGNS:
+        raise ValueError("unknown hook design: %r" % design)
 
     corpus = beats_text_corpus(beats_obj)
     # numbers stay guarded: a rank or level is a checkable claim about the
@@ -137,7 +137,7 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
     hook = labels[0] if labels else ""
     synopsis = str(pkg.get("description") or "").strip()
     hashtags = pkg.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
-    return {
+    c = {
         "title": normalize_title(pkg.get("title")),
         "style": style,
         "style_reason": str(pkg.get("style_reason") or "").strip(),
@@ -150,9 +150,66 @@ def assemble_package(beats_obj: Dict[str, Any], brief: Dict[str, Any],
         "description": build_description(synopsis, hashtags),
         "pinned_comment": pinned_comment(series_title, official_link),
     }
+    if design:
+        # the DESIGN owns the label layer; the style still owns the art
+        overlay = HOOK_DESIGNS[design]["overlay"]
+        c["design"] = design
+        c["style_overlay"] = overlay
+        heads = [s.replace("|", " -> ")
+                 for s in _clean_labels(pkg.get("headlines"))]
+        heads = [s for s in heads if hook_is_grounded(s, corpus)]
+        if overlay.get("headline_pos") and heads:
+            c["headlines"] = heads
+            c["tags"] = [{"text": heads[0], "pos": overlay["headline_pos"],
+                          "arrow": False}]
+        if card_lines:
+            c["card"] = list(card_lines)
+    return c
 
 
-def build_brief_prompt(digest: str, banned: str) -> str:
+def _clean_labels(raw: Any) -> List[str]:
+    """`labels` may come back as a bare STRING ("READER|SURVIVOR|AUTHOR")
+    rather than a list -- iterating that yields one CHARACTER per label and
+    the hook becomes "R". A JSON schema in a prompt is a request, not a
+    guarantee."""
+    raw = raw or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(x).strip() for x in raw if str(x).strip()]
+
+
+def _names_the_title(line: str, banned: str) -> bool:
+    """True when *line* carries the licensed title: the whole phrase, or any
+    two consecutive title words. ONE shared word is the story's own vocabulary
+    ("reader"), not the name."""
+    norm = lambda x: re.sub(r"[^a-z0-9]+", " ", str(x or "").lower()).split()
+    title, text = norm(banned), " " + " ".join(norm(line)) + " "
+    if not title:
+        return False
+    pairs = ([title] if len(title) == 1
+             else [title[i:i + 2] for i in range(len(title) - 1)])
+    return any(" " + " ".join(p) + " " in text for p in pairs)
+
+
+def system_card_lines(montage: List[Dict[str, Any]], *,
+                      max_lines: int = 3, banned: str = "") -> List[str]:
+    """The system window's words, QUOTED from the teaser's system panels:
+    usable printed text only, no repeats, in teaser order. Code quotes;
+    the model never writes a card (an invented stat shipped once)."""
+    out: List[str] = []
+    for p in montage:
+        if str(p.get("panel_kind") or "") != "system":
+            continue
+        text = printable_card_line(p.get("printed"))
+        # integrity rule 1, the one with legal weight: the licensed series name
+        # is never rendered, and a system window can name it
+        if text and text not in out and not _names_the_title(text, banned):
+            out.append(text)
+    return out[:max_lines]
+
+
+def build_brief_prompt(digest: str, banned: str,
+                       hook_block: str = "") -> str:
     """STAGE 1: understand the story before writing a word of copy.
 
     The digest is raw narration prose -- 17k chars of moment-to-moment
@@ -179,12 +236,14 @@ def build_brief_prompt(digest: str, banned: str) -> str:
         '  "distinctive": ["2-4 things a reader would remember about THIS '
         'series that they would not find in a generic power-fantasy manhwa"],\n'
         '  "why_watch": "the curiosity a viewer would click to satisfy"\n'
-        "}\n\nSTORY NARRATION:\n" + digest)
+        "}\n\n" + (hook_block + "\n\n" if hook_block else "")
+        + "STORY NARRATION:\n" + digest)
 
 
 def build_package_prompt(brief: Dict[str, Any], banned: str,
                          styles: Optional[List[str]] = None,
-                         thumb_labels: str = "") -> str:
+                         thumb_labels: str = "",
+                         design: str = "") -> str:
     """STAGE 2: write the whole publish package FROM the understanding.
 
     Takes the stage-1 brief, not the raw narration -- the model is now writing
@@ -231,7 +290,8 @@ def build_package_prompt(brief: Dict[str, Any], banned: str,
         f'  "thumbnail_style": "ONE of: {", ".join(opts)} — choose the '
         'composition that fits THIS story\'s shape, and say why in reason",\n'
         '  "style_reason": "one sentence: why that composition suits it",\n'
-        + ('' if opts == ["before_after"] else
+        + (_design_labels_ask(design) if design else
+           '' if opts == ["before_after"] else
            # before_after is always labelled BEFORE / AFTER (owner), so it asks
            # for no labels at all
            '  "labels": ["5 candidate labels for the thumbnail, 1-4 words each. '
@@ -243,6 +303,27 @@ def build_package_prompt(brief: Dict[str, Any], banned: str,
            'plain role or job name that any story could have, never a mood"],\n')
         + '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
         "}")
+
+
+def thumb_label_words(concept: Dict[str, Any]) -> str:
+    """Every word the PICKED thumbnail shows, for the title to reuse so both
+    make one claim. A hook design draws its headline as a tag, so the hook
+    alone would leave the title blind to half the thumbnail."""
+    words = [x.strip() for x in str(concept.get("hook") or "").split("|")]
+    words += [str((t or {}).get("text") or "").strip()
+              for t in concept.get("tags") or []]
+    return " / ".join(w for w in words if w)
+
+
+def _design_labels_ask(design: str) -> str:
+    """The labels ask for a ranked hook design: its own grammar, plus a
+    headlines key only when the design draws one."""
+    d = HOOK_DESIGNS[design]
+    ask = '  "labels": ["' + d["label_grammar"] + '"],\n'
+    if d["overlay"].get("headline_pos"):
+        ask += ('  "headlines": ["the 5 candidate headlines described '
+                'above, 2-3 words each"],\n')
+    return ask
 
 
 def build_concept_prompt(digest: str, banned: str, style: str) -> str:
@@ -829,6 +910,220 @@ def select_bundle_climax_scored(ep_dirs: List[str]):
     return ep_i, [sf] + extra[:2]
 
 
+# '[' and ']' drawn on a system window are read by OCR as 'I' and 'J' glued to
+# the first and last word ("INO ONE MAY ENTER ... COMPLETE.J"). BOTH ends must
+# agree, so a line that really starts with "INSIDE" is left alone.
+_MISREAD_OPEN_RE = re.compile(r"^I(?=[A-Z]{2})")
+_MISREAD_CLOSE_RE = re.compile(r"(?<=[A-Za-z.!?])J$")
+_CARD_CHARS_RE = re.compile(r"[A-Za-z0-9 .,:;!?'%+\-]*")
+_CARD_MIN_WORDS, _CARD_MAX_WORDS = 2, 12
+
+
+def printable_card_line(raw: Any) -> str:
+    """A system window's OCR, fit to PRINT on a thumbnail -- or "".
+
+    The card QUOTES the story, but raw OCR is not printable. Measured on the
+    Mini (2026-09-21) over 8 series' teaser windows: ORV has 66 system panels
+    and 16 printable lines; the rest is window markup, mirrored text read as
+    Cyrillic, crop debris ("E0x") and several windows run into one blob. For
+    words a viewer reads at a glance, losing a line beats printing garbage, so
+    everything doubtful is refused. Reuses the narration pipeline's own card
+    cleaners rather than a second opinion on what a card word is.
+    """
+    from narration_consistency import is_unvoiceable_line
+    import gemini_narrative_pass as _gnp          # heavy: lazy, like the teaser
+    t = str(raw or "").strip()
+    if _MISREAD_OPEN_RE.search(t) and _MISREAD_CLOSE_RE.search(t):
+        t = _MISREAD_CLOSE_RE.sub("", _MISREAD_OPEN_RE.sub("", t))
+    t = _gnp.clean_card_text(t)
+    words = t.split()
+    # ONE sentence: text after a full stop is a second window, a bracket read
+    # as a digit ("AVAILABLE.1") or a character's speech glued on; a run of
+    # terminal marks ("...!!") is speech, not a system line
+    if re.search(r"[.!?]\s*[A-Za-z0-9]|[.!?]{2,}", t):
+        return ""
+    if (is_unvoiceable_line(t) or not _CARD_CHARS_RE.fullmatch(t)
+            or not _CARD_MIN_WORDS <= len(words) <= _CARD_MAX_WORDS):
+        return ""
+    for tok in re.findall(r"[A-Za-z0-9']+", t):
+        letters = re.sub(r"[^A-Za-z]", "", tok.split("'")[0])
+        if any(c.isdigit() for c in tok) and letters:
+            return ""                              # "E0x": a crop, not a word
+        if len(letters) >= 3 and not _gnp._is_card_word(letters):
+            return ""
+    return t
+
+
+def _attach_printed(panels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Give each montage panel its PRINTED words. They are OCR in the chapter's
+    manifest.vision.json; the understood manifest carries none for a system
+    window (dialogue is empty on all six of ORV's teaser system panels)."""
+    cache: Dict[str, Dict[str, str]] = {}
+    for p in panels:
+        path = str(p.get("scene_file") or "")
+        ep = os.path.dirname(os.path.dirname(path))
+        if ep not in cache:
+            try:
+                with open(os.path.join(ep, "manifest.vision.json"),
+                          encoding="utf-8") as f:
+                    items = json.load(f).get("items") or []
+            except (OSError, ValueError):
+                items = []
+            cache[ep] = {os.path.basename(str(i.get("scene_file") or "")):
+                         str(i.get("ocr_clean") or "") for i in items}
+        p["printed"] = cache[ep].get(os.path.basename(path), "")
+    return panels
+
+
+def _panel_key(path: Any):
+    """(chapter dir, basename): absolute prefixes differ between the run that
+    planned a teaser and the run reading it."""
+    path = str(path)
+    return (os.path.basename(os.path.dirname(os.path.dirname(path))),
+            os.path.basename(path))
+
+
+def _teaser_manifest_panels(eps: List[str], manifest_path: str):
+    """The PLANNED teaser's panels in its own order, each carrying its
+    understood fields and its narration line. None when it can't be used."""
+    import teaser_planner as _tp
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            man = json.load(f)
+    except (OSError, ValueError):
+        return None
+    sources = man.get("panel_sources") or {}
+    lines = {str(n.get("scene_file")): str(n.get("line") or "")
+             for n in (man.get("panel_narration") or []) if isinstance(n, dict)}
+    chapters = {_panel_key(src)[0] for src in sources.values()}
+    used = [e for e in eps
+            if os.path.basename(os.path.normpath(e)) in chapters]
+    understood = {_panel_key(p["scene_file"]): p
+                  for p in _tp.load_bundle_panels(used)}
+    out = []
+    for ns in man.get("scene_files") or []:
+        src = sources.get(ns)
+        # a panel that is gone from disk cannot be a thumbnail reference
+        if not src or not os.path.exists(src):
+            return None
+        panel = understood.get(_panel_key(src))
+        if panel is None:
+            return None
+        out.append({**panel, "line": lines.get(ns, "")})
+    return out or None
+
+
+def teaser_montage(eps: List[str], manifest_path: str = "", *, scan: int,
+                   min_panels: int, max_panels: int, tail_frac: float = 0.0):
+    """The teaser's montage (climax LAST) and where it came from.
+
+    The thumbnail sells what the teaser sells, so it reads the same window with
+    the same selector. With no planned teaser the montage is computed on the
+    fly: pure Python, no model, no state touched. Returns (None, "digest") when
+    the window holds too few eligible panels, so the caller can fall back to
+    the whole series and SAY that it did.
+    """
+    if manifest_path:
+        planned = _teaser_manifest_panels(eps, manifest_path)
+        if planned:
+            return _attach_printed(planned), "teaser:manifest"
+    import teaser_planner as _tp
+    panels = _tp.load_bundle_panels(eps, max_scan_chapters=scan)
+    montage = _tp.select_montage(panels, max_panels=max_panels,
+                                 min_panels=min_panels,
+                                 payoff_tail_frac=tail_frac)
+    if not montage:
+        return None, "digest"
+    return _attach_printed(montage), "montage:computed"
+
+
+def teaser_hook_block(montage: List[Dict[str, Any]], reason: str = "") -> str:
+    """The teaser's montage as the brief's THE HOOK: what each panel shows and
+    the line the teaser speaks over it, climax LAST. The thumbnail sells what
+    the cold open sells, so the model reads the same moments first."""
+    if not montage:
+        return ""
+    rows = []
+    for i, p in enumerate(montage):
+        what = str(p.get("description") or p.get("action") or "").strip()
+        said = (str(p.get("dialogue") or "").strip()
+                or printable_card_line(p.get("printed")))
+        line = str(p.get("line") or "").strip()
+        rows.append("%d. %s%s%s%s" % (
+            i + 1, what, ' | printed: "%s"' % said if said else "",
+            " | teaser says: %s" % line if line else "",
+            "  <-- CLIMAX: what the lead becomes" if i == len(montage) - 1 else ""))
+    head = ("THE HOOK -- the moments this series' teaser is built from, in "
+            "order. The thumbnail and title must sell THIS promise.")
+    return "\n".join([head] + ([("Why it hooks: " + reason)] if reason else [])
+                     + rows)
+
+
+def _teaser_reason(manifest_path: str) -> str:
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            return str(json.load(f).get("reason") or "").strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def window_card_lines(w_eps: List[str], montage: List[Dict[str, Any]], *,
+                      banned: str = "", max_lines: int = 3) -> List[str]:
+    """The card's words from the teaser WINDOW: the montage's own lines first
+    (they are what the teaser shows), then the rest of the window's system
+    panels in reading order. ORV, measured: 6 of 10 montage panels are system
+    windows yet yield one line, and it names the series; the window holds 16."""
+    import teaser_planner as _tp
+    lines = system_card_lines(montage, max_lines=len(montage) or 1, banned=banned)
+    rest = [p for p in _tp.load_bundle_panels(w_eps)
+            if str(p.get("panel_kind") or "") == "system"]
+    for text in system_card_lines(_attach_printed(rest),
+                                  max_lines=len(rest) or 1, banned=banned):
+        if text not in lines:
+            lines.append(text)
+    return lines[:max_lines]
+
+
+# System panels a montage needs before the teaser counts as being ABOUT system
+# windows. Measured on the Mini, 2026-09-21, per 10-panel montage: ORV 6, the
+# tower series 2, Nano Machine 1, Infinite Evolution 1 (a TV news broadcast),
+# Death Knight 0. One panel is incidental; the gap sits between 1 and 2.
+# ponytail: a count, not a share -- re-measure if max_hook_panels changes.
+_MIN_SYSTEM_PANELS = 2
+
+
+def rank_designs(montage: List[Dict[str, Any]], banned: str = "",
+                 card_lines: Optional[List[str]] = None):
+    """The two hook designs to BUILD, ranked from the teaser's montage by code.
+
+    The model never picks the design (the owner picks between built options).
+    A system window is only offered when the montage holds a system panel whose
+    printed text is usable -- the card QUOTES the story, it never invents. A
+    transformation cue on the climax (the LAST panel) puts the headline ahead
+    of the plain nametag. Returns (names, reason); reason carries the raw
+    signal values so a concept can explain its own design.
+    """
+    import teaser_planner as _tp
+    # A window is offered when the TEASER is about system windows (its montage
+    # holds one) AND there is something to print in it. *card_lines* are the
+    # SAME lines the build will get (the caller's window_card_lines), or the
+    # ranking promises an empty window; without them, the montage's own.
+    n_sys = sum(1 for p in montage
+                if str(p.get("panel_kind") or "") == "system")
+    if card_lines is None:
+        card_lines = system_card_lines(montage, max_lines=len(montage) or 1,
+                                       banned=banned)
+    sys_text = card_lines if n_sys >= _MIN_SYSTEM_PANELS else []
+    hits = int(_tp.score_panel(montage[-1])["transform_hits"]) if montage else 0
+    reason = {"system_panels": n_sys,
+              "system_share": round(n_sys / (len(montage) or 1), 3),
+              "card_lines": len(card_lines),
+              "climax_transform_hits": hits}
+    rest = (["nametag_headline", "nametag"] if hits
+            else ["nametag", "nametag_headline"])
+    return ((["system_window"] if sys_text else []) + rest)[:2], reason
+
+
 def _kept_panels(beats_obj: Dict[str, Any]):
     """(scene_file, intensity) for kept panels, in reading order."""
     out = []
@@ -1131,6 +1426,21 @@ def main() -> int:
     ap.add_argument("--refs", default="",
                     help="comma-separated ABSOLUTE ref paths the owner picked "
                          "(overrides the automatic choice)")
+    ap.add_argument("--design", default="", choices=[""] + sorted(HOOK_DESIGNS),
+                    help="the hook DESIGN (label layer) to build; ranked "
+                         "from the teaser by --rank-designs, never by the model")
+    ap.add_argument("--rank-designs", action="store_true",
+                    help="write the two designs the teaser ranks first "
+                         "(json) to --out and stop: no model call, nothing paid")
+    ap.add_argument("--teaser-manifest", default="",
+                    help="a PLANNED/APPROVED teaser's manifest.teaser.json; "
+                         "without one the montage is computed on the fly")
+    ap.add_argument("--teaser-scan-chapters", type=int, default=0,
+                    help="the teaser's window: thumbnail claim, climax and "
+                         "refs come from the first N chapters. 0 = off")
+    ap.add_argument("--teaser-min-panels", type=int, default=4)
+    ap.add_argument("--teaser-max-panels", type=int, default=10)
+    ap.add_argument("--teaser-payoff-tail-frac", type=float, default=0.0)
     ap.add_argument("--ollama-model", default="gemma4:26b")
     ap.add_argument("--digest-chapters", type=int, default=24,
                     help="max chapters described to the LLM (bundle mode). "
@@ -1151,21 +1461,52 @@ def main() -> int:
                 json.dump(cands, f, ensure_ascii=False, indent=2)
             print("[ok] wrote=%s refs=%d" % (args.out, len(cands["refs"])))
             return 0
+        # The thumbnail sells what the teaser sells: claim, climax and refs
+        # come from the TEASER'S WINDOW. (ORV: teaser in chapters 3-9, the
+        # thumbnail's climax 115 chapters later, in Episode 124.) The window
+        # is a PREFIX, so climax_ci still indexes the caller's full list.
+        montage, claim_source = None, "digest"
+        if args.teaser_scan_chapters > 0:
+            montage, claim_source = teaser_montage(
+                eps, args.teaser_manifest, scan=args.teaser_scan_chapters,
+                min_panels=args.teaser_min_panels,
+                max_panels=args.teaser_max_panels,
+                tail_frac=args.teaser_payoff_tail_frac)
+        win = args.teaser_scan_chapters if montage else len(eps)
+        w_eps, w_beats = eps[:win], beats_list[:win]
+        card = (window_card_lines(w_eps, montage, banned=args.series_title)
+                if montage else [])
+        if args.rank_designs:
+            if not montage or not args.out:
+                print("[err] --rank-designs needs --out and a teaser montage "
+                      "(--teaser-scan-chapters); window gave: %s" % claim_source)
+                return 2
+            names, why = rank_designs(montage, banned=args.series_title,
+                                      card_lines=card)
+            os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+            with open(args.out, "w", encoding="utf-8") as f:
+                json.dump({"designs": names, "reason": why,
+                           "claim_source": claim_source}, f, indent=2)
+            print("[ok] wrote=%s designs=%s source=%s"
+                  % (args.out, names, claim_source))
+            return 0
+        print("[..] claim source: %s (%d of %d chapters)"
+              % (claim_source, len(w_eps), len(eps)))
         durations = [_plan_duration(e) for e in eps]
         # the climax scan is exhaustive (cheap, pure Python over every
         # chapter); only the LLM DIGEST is bounded — see bundle_digest. Same
         # scorer build_bundle_concept uses, so style/digest/refs all agree on
         # which chapter is the peak.
-        _sc = select_bundle_climax_scored(eps)
+        _sc = select_bundle_climax_scored(w_eps)
         climax_ci = (_sc[0] if _sc
-                     else (select_bundle_climax(beats_list)[0] if beats_list else 0))
+                     else (select_bundle_climax(w_beats)[0] if w_beats else 0))
         style = args.style or select_style(
-            beats_list[climax_ci] if beats_list else {}, genre=args.genre)
-        digest = bundle_digest(beats_list, max_chapters=args.digest_chapters,
+            w_beats[climax_ci] if w_beats else {}, genre=args.genre)
+        digest = bundle_digest(w_beats, max_chapters=args.digest_chapters,
                                climax_index=climax_ci)
-        if len(beats_list) > args.digest_chapters:
+        if len(w_beats) > args.digest_chapters:
             print(f"[..] digest: sampled {args.digest_chapters} of "
-                  f"{len(beats_list)} chapters (climax #{climax_ci + 1} kept) "
+                  f"{len(w_beats)} chapters (climax #{climax_ci + 1} kept) "
                   f"— {len(digest):,} chars")
         if args.single_shot:
             llm = _gemma(build_concept_prompt(digest, args.series_title, style),
@@ -1176,29 +1517,46 @@ def main() -> int:
                 official_link=args.official_link, ep_dirs=eps, style=style)
         else:
             # STAGE 1 — understand the series, STAGE 2 — write from that.
-            brief = _gemma(build_brief_prompt(digest, args.series_title),
-                           args.ollama_model)
+            brief = _gemma(build_brief_prompt(
+                digest, args.series_title,
+                hook_block=teaser_hook_block(
+                    montage or [], _teaser_reason(args.teaser_manifest))),
+                args.ollama_model)
             print("[..] brief: %s" % str(brief.get("premise") or "")[:110])
             thumb_labels = ""
             if args.thumbnail_concept and os.path.exists(args.thumbnail_concept):
                 tc = json.load(open(args.thumbnail_concept))
-                thumb_labels = " / ".join(
-                    x for x in str(tc.get("hook") or "").split("|") if x.strip())
+                thumb_labels = thumb_label_words(tc)
             pkg = _gemma(
                 build_package_prompt(brief, args.series_title,
                                      [args.style] if args.style else None,
-                                     thumb_labels=thumb_labels),
+                                     thumb_labels=thumb_labels,
+                                     design=args.design),
                 args.ollama_model)
-            style_beats = beats_list[climax_ci] if beats_list else {}
+            style_beats = w_beats[climax_ci] if w_beats else {}
             concept = assemble_package(
                 style_beats, brief, pkg, series_title=args.series_title,
                 official_link=args.official_link,
-                styles=[args.style] if args.style else None)
+                styles=[args.style] if args.style else None,
+                design=args.design,
+                card_lines=(card if args.design == "system_window" else None))
+            if args.design == "system_window" and not concept.get("card"):
+                # an empty left third is not a system window: refuse before
+                # paying for the image
+                print("[err] system_window needs a printable system line in the "
+                      "teaser window; none survived (OCR junk or the banned title)")
+                return 2
             concept["climax_chapter_index"] = climax_ci
+            concept["claim_source"] = claim_source
+            if montage:
+                concept["teaser_panels"] = [str(p.get("scene_file") or "")
+                                            for p in montage]
+                concept["design_reason"] = rank_designs(
+                    montage, banned=args.series_title, card_lines=card)[1]
             concept["refs"] = choose_refs(
-                concept["style"], beats_list, eps, climax_ci=climax_ci,
+                concept["style"], w_beats, w_eps, climax_ci=climax_ci,
                 auto_refs=(_sc[1] if _sc
-                           else select_bundle_climax(beats_list)[1]),
+                           else select_bundle_climax(w_beats)[1]),
                 picked=[r for r in args.refs.split(",") if r.strip()])
             if concept["style"] == "before_after" and not (
                     concept["refs"] and os.path.isabs(concept["refs"][0])):

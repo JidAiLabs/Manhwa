@@ -2595,17 +2595,27 @@ def test_h_prepare_blocking_verdict_outlives_a_stale_green_row(tmp_path, monkeyp
 # Owner, 2026-09-17: "i should see both options created and i can select 1 of
 # them. I am telling this many times." The job used to let the model choose the
 # layout (it chose a 3-panel triptych) and wrote straight over the live image.
+# Owner, 2026-09-21: the two options are the two hook DESIGNS the series' teaser
+# ranks first (code ranks, never the model); before/after is a variant only.
 
-def _thumb_stream(calls, fail_style=None):
+def _thumb_stream(calls, fail_style=None,
+                  designs=("system_window", "nametag"), rank_rc=0):
     import json as _j
 
     def fake(cmd, log, **kw):
         s = [str(x) for x in cmd]
         calls.append(s)
-        if s[1].endswith("publish_concept.py"):
+        if s[1].endswith("publish_concept.py") and "--rank-designs" in s:
+            if rank_rc:
+                return rank_rc
+            _j.dump({"designs": list(designs), "reason": {},
+                     "claim_source": "montage:computed"},
+                    open(s[s.index("--out") + 1], "w"))
+        elif s[1].endswith("publish_concept.py"):
             style = s[s.index("--style") + 1] if "--style" in s else ""
+            design = s[s.index("--design") + 1] if "--design" in s else ""
             _j.dump({"style": style or "power_reveal", "hook": "HOOK",
-                     "climax_chapter_index": 0},
+                     "design": design, "climax_chapter_index": 0},
                     open(s[s.index("--out") + 1], "w"))
         elif s[1].endswith("thumbnail_build.py"):
             out = s[s.index("--out-dir") + 1]
@@ -2616,8 +2626,8 @@ def _thumb_stream(calls, fail_style=None):
     return fake
 
 
-def test_series_thumbnail_builds_both_options_and_leaves_live_alone(tmp_path,
-                                                                   monkeypatch):
+def test_series_thumbnail_builds_the_two_ranked_designs_and_leaves_live_alone(
+        tmp_path, monkeypatch):
     import io
     con = _con(tmp_path)
     _series_with_prepared(con, tmp_path, 2)
@@ -2630,11 +2640,20 @@ def test_series_thumbnail_builds_both_options_and_leaves_live_alone(tmp_path,
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
     worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
                                io.StringIO())
-    for name in ("scene", "before_after"):
+    for name in ("system_window", "nametag"):
         assert (live / "options" / name / "thumbnail_yt.jpg").exists(), name
     concept_cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
-    assert ["--style", "before_after"] == [
-        x for c in concept_cmds for x in c if x in ("--style", "before_after")]
+    # ranked FIRST and for free, then one build per ranked design, in rank order
+    assert "--rank-designs" in concept_cmds[0]
+    builds = concept_cmds[1:]
+    assert [c[c.index("--design") + 1] for c in builds] == ["system_window",
+                                                            "nametag"]
+    for c in concept_cmds:
+        # the teaser's window and knobs reach the ranking AND every build
+        assert c[c.index("--teaser-scan-chapters") + 1] == "12"
+        assert "--teaser-min-panels" in c and "--teaser-max-panels" in c
+        assert "--teaser-payoff-tail-frac" in c
+        assert "--style" not in c                 # a split is a variant only
     # nothing goes live until the owner picks: live image + approval untouched
     assert (live / "thumbnail_yt.jpg").read_bytes() == b"live"
     assert gates.thumbnail_approved(con, 1) is True
@@ -2648,16 +2667,16 @@ def test_one_failed_option_still_builds_the_other_then_fails_loud(tmp_path,
     _series_with_prepared(con, tmp_path, 2)
     monkeypatch.setattr(worker, "REPO", tmp_path)
     opts = tmp_path / "dist" / "series_1" / "options"
-    (opts / "before_after").mkdir(parents=True)
-    (opts / "before_after" / "thumbnail_yt.jpg").write_bytes(b"stale")
+    (opts / "nametag").mkdir(parents=True)
+    (opts / "nametag" / "thumbnail_yt.jpg").write_bytes(b"stale")
     monkeypatch.setattr(worker, "_stream",
-                        _thumb_stream([], fail_style="before_after"))
-    with pytest.raises(RuntimeError, match="before_after"):
+                        _thumb_stream([], fail_style="nametag"))
+    with pytest.raises(RuntimeError, match="nametag"):
         worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
                                    io.StringIO())
-    assert (opts / "scene" / "thumbnail_yt.jpg").exists()
+    assert (opts / "system_window" / "thumbnail_yt.jpg").exists()
     # a failed rebuild never leaves the OLD image pickable under the new label
-    assert not (opts / "before_after" / "thumbnail_yt.jpg").exists()
+    assert not (opts / "nametag" / "thumbnail_yt.jpg").exists()
 
 
 def test_failed_option_is_not_auto_retried(tmp_path, monkeypatch):
@@ -2668,7 +2687,7 @@ def test_failed_option_is_not_auto_retried(tmp_path, monkeypatch):
     _series_with_prepared(con, tmp_path, 2)
     monkeypatch.setattr(worker, "REPO", tmp_path)
     monkeypatch.setattr(worker, "_stream",
-                        _thumb_stream([], fail_style="scene"))
+                        _thumb_stream([], fail_style="system_window"))
     with pytest.raises(worker.NonRetryableError):
         worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
                                    io.StringIO())
@@ -2686,15 +2705,16 @@ def test_a_corrupt_concept_in_one_option_still_builds_the_other(tmp_path,
     def stream(cmd, log, **kw):
         s = [str(x) for x in cmd]
         rc = good(cmd, log, **kw)
-        if s[1].endswith("publish_concept.py") and "--style" not in s:
+        if (s[1].endswith("publish_concept.py") and "--design" in s
+                and s[s.index("--design") + 1] == "system_window"):
             open(s[s.index("--out") + 1], "w").write("{not json")
         return rc
     monkeypatch.setattr(worker, "_stream", stream)
-    with pytest.raises(worker.NonRetryableError, match="scene"):
+    with pytest.raises(worker.NonRetryableError, match="system_window"):
         worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
                                    io.StringIO())
     opts = tmp_path / "dist" / "series_1" / "options"
-    assert (opts / "before_after" / "thumbnail_yt.jpg").exists()
+    assert (opts / "nametag" / "thumbnail_yt.jpg").exists()
 
 
 def test_publish_meta_reuses_thumbnail_words_only_after_an_owner_pick(tmp_path,
@@ -2766,9 +2786,94 @@ def test_picked_refs_reach_both_options(tmp_path, monkeypatch):
     worker._h_series_thumbnail(
         con, {"series_id": 1, "payload": {"refs": ["/a/p1.jpg", "/b/p2.jpg"]}},
         io.StringIO())
-    concept_cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
-    assert len(concept_cmds) == 2
-    for c in concept_cmds:
+    builds = [c for c in calls
+              if c[1].endswith("publish_concept.py") and "--design" in c]
+    assert len(builds) == 2
+    for c in builds:
         assert c[c.index("--refs") + 1] == "/a/p1.jpg,/b/p2.jpg"
         assert "--before-ref" not in c
 
+
+def test_a_stale_option_from_before_the_designs_is_removed(tmp_path, monkeypatch):
+    """options/scene can no longer be picked (the option set is closed), so a
+    leftover one is dead weight that reads as a third choice on disk."""
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    old = tmp_path / "dist" / "series_1" / "options" / "scene"
+    old.mkdir(parents=True)
+    (old / "thumbnail_yt.jpg").write_bytes(b"old")
+    monkeypatch.setattr(worker, "_stream", _thumb_stream([]))
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+                               io.StringIO())
+    assert not old.exists()
+
+
+def test_a_failed_ranking_builds_nothing_and_is_not_retried(tmp_path, monkeypatch):
+    """No montage = no teaser-based claim. Say so; never pay for an image built
+    on a guess, and never let an auto-retry loop on it."""
+    import io
+    import pytest
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls, rank_rc=2))
+    with pytest.raises(worker.NonRetryableError, match="rank"):
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+                                   io.StringIO())
+    assert not [c for c in calls if c[1].endswith("thumbnail_build.py")]
+
+
+def test_teaser_manifest_is_passed_only_for_a_reviewable_teaser(tmp_path,
+                                                                monkeypatch):
+    """A planned/approved teaser is what the owner reviewed, so it drives the
+    thumbnail. A declined one was rejected, and a state with no file is just a
+    column: both fall back to the computed montage."""
+    import io
+    import pytest
+    for state, write_file, expected in [("approved", True, True),
+                                        ("planned", True, True),
+                                        ("declined", True, False),
+                                        ("approved", False, False),
+                                        ("none", True, False)]:
+        root = tmp_path / f"{state}_{write_file}"
+        root.mkdir()
+        con = _con(root)
+        _series_with_prepared(con, root, 2)
+        monkeypatch.setattr(worker, "REPO", root)
+        con.execute("UPDATE series SET teaser_state=? WHERE id=1", (state,))
+        con.commit()
+        man = root / "dist" / "series_1" / "teaser" / "manifest.teaser.json"
+        if write_file:
+            man.parent.mkdir(parents=True)
+            man.write_text("{}")
+        calls = []
+        monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+                                   io.StringIO())
+        for c in [c for c in calls if c[1].endswith("publish_concept.py")]:
+            assert ("--teaser-manifest" in c) is expected, (state, write_file)
+            if expected:
+                assert c[c.index("--teaser-manifest") + 1] == str(man)
+
+
+
+def test_the_ranking_knows_the_banned_title_the_build_will_apply(tmp_path,
+                                                                 monkeypatch):
+    """Rank and build are two calls. If only the build knows the licensed title,
+    the ranking can promise a system window whose only line the build refuses."""
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+                               io.StringIO())
+    cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
+    titles = {c[c.index("--series-title") + 1] for c in cmds
+              if "--series-title" in c}
+    assert all("--series-title" in c for c in cmds)
+    assert len(titles) == 1

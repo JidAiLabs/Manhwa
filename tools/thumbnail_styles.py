@@ -77,6 +77,58 @@ STYLE_MODULES: Dict[str, Dict[str, Any]] = {
 
 DEFAULT_STYLE = "power_reveal"
 
+# HOOK DESIGNS: the LABEL layer on a one-scene thumbnail, counted from the
+# owner's examples (20 on 2026-09-21: nametag+arrow 3, contrast pair 4,
+# nametag+headline 4, system window 4, roll-call 2, split 1, no text 2).
+# A design is ranked from the TEASER by code (publish_concept.rank_designs),
+# never chosen by the model. Only designs whose cast is the LEAD alone are
+# here: contrast_pair and roll_call need a counterpart ref no code can find yet.
+# ponytail: add each one when its counterpart ref finder exists.
+# The arrow lands on its subject BY CONSTRUCTION: art_clause fixes where the
+# lead stands and overlay.arrow_to aims there (face detection misses anime
+# faces). No grammar carries a sample label: an example is an answer.
+_NAMETAG_GRAMMAR = (
+    "A label is a NAMETAG, not a caption: it names WHAT THE LEAD IS or WHAT "
+    "THEY BECAME -- a role, a title, a rank, a status -- so a viewer could "
+    "draw an arrow from it to the person. 1-3 words, this story's OWN words, "
+    "at an EXTREME of a ladder a viewer reads instantly. Never a mood, never "
+    "a sentence. A number or rank must be one the story states. ")
+
+HOOK_DESIGNS: Dict[str, Dict[str, Any]] = {
+    "nametag": {
+        "label_grammar": _NAMETAG_GRAMMAR + "Write 5 candidate nametags.",
+        "art_clause": ("Place the hero's face right of centre, about 60% "
+                       "across and 40% down. Keep the upper-left third calm "
+                       "and uncluttered."),
+        "overlay": {"label_pos": "upper_left", "arrow": "to_hero",
+                    "arrow_to": [0.60, 0.40], "marks": [], "speech_slots": 0},
+    },
+    "nametag_headline": {
+        "label_grammar": (_NAMETAG_GRAMMAR + "Write 5 candidate nametags, and "
+                          "5 candidate HEADLINES: 2-3 words that land the "
+                          "promise of the hook, or the lead's change written "
+                          "as LOW -> HIGH. Only facts of this story."),
+        "art_clause": ("Place the hero's face right of centre, about 60% "
+                       "across and 38% down. Keep the upper-left third and "
+                       "the bottom fifth of the frame calm and uncluttered."),
+        "overlay": {"label_pos": "upper_left", "arrow": "to_hero",
+                    "arrow_to": [0.60, 0.38], "marks": [], "speech_slots": 0,
+                    "headline_pos": "lower_left"},
+    },
+    "system_window": {
+        "label_grammar": (_NAMETAG_GRAMMAR + "Write 5 candidate nametags. The "
+                          "system window's words are QUOTED from the story "
+                          "by code; do not write them."),
+        "art_clause": ("Place the hero on the right half, face about 68% "
+                       "across and 42% down. Leave the LEFT third of the "
+                       "frame dark, empty and uncluttered: no figures, no "
+                       "panels, no glyphs there."),
+        "overlay": {"label_pos": "upper_right", "arrow": "to_hero",
+                    "arrow_to": [0.68, 0.42], "marks": [], "speech_slots": 0,
+                    "card": {"pos": [0.04, 0.22], "size": [0.36, 0.46]}},
+    },
+}
+
 
 def _genre_key(genre: str) -> str:
     g = (genre or "").lower()

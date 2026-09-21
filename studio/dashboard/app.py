@@ -778,7 +778,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                        style_overlay=concept.get("style_overlay") or {},
                        speech=concept.get("speech") or [],
                        badge=concept.get("badge") or "",
-                       tags=concept.get("tags") or [])
+                       tags=concept.get("tags") or [],
+                       # the whole text layer is redrawn: without the card a
+                       # free re-label would erase the system window
+                       card=concept.get("card") or [])
         concept["hook"] = hooks[hook]
         (d / "concept.json").write_text(json.dumps(concept, ensure_ascii=False,
                                                    indent=2))

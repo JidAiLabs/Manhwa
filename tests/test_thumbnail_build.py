@@ -27,9 +27,10 @@ def _patch(monkeypatch, calls):
         return models[0]
 
     def fake_overlay(art, out, *, hook, style_overlay, speech,
-                     badge="", tags=None):
+                     badge="", tags=None, card=None):
         calls.update(overlay_hook=hook, overlay_art=art,
-                     overlay_badge=badge, overlay_tags=tags)
+                     overlay_badge=badge, overlay_tags=tags,
+                     overlay_card=card)
         with open(out, "wb") as f:
             f.write(b"JPG")
 
@@ -106,3 +107,38 @@ def test_render_thumbnail_refuses_art_with_drawn_text(tmp_path, monkeypatch):
                             out_dir=str(tmp_path / "o"), models=["m1"])
     assert "overlay_hook" not in calls           # never overlaid, never shipped
     assert not (tmp_path / "o" / "thumbnail_yt.jpg").exists()
+
+
+# --- a hook design reaches the art prompt and the overlay -------------------
+
+def _design_concept(**extra):
+    return {"style": "power_reveal", "hook": "OUTCAST", "refs": ["s1.jpg"],
+            **extra}
+
+
+def test_render_thumbnail_passes_the_quoted_card_to_the_overlay(tmp_path, monkeypatch):
+    """The card is drawn by the overlay from concept.json; a build that drops
+    it ships a system-window design with an empty left third."""
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    tb.render_thumbnail(
+        _design_concept(design="system_window",
+                        card=["Main scenario has begun."]),
+        ref_episode_dir=str(tmp_path), out_dir=str(tmp_path / "o"), models=["m"])
+    assert calls["overlay_card"] == ["Main scenario has begun."]
+
+
+def test_render_thumbnail_art_prompt_carries_the_designs_clause(tmp_path, monkeypatch):
+    """The arrow lands on the lead BY CONSTRUCTION: the art must be told where
+    the lead stands, or arrow_to aims at nothing."""
+    from thumbnail_styles import HOOK_DESIGNS
+    clause = HOOK_DESIGNS["system_window"]["art_clause"]
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    tb.render_thumbnail(_design_concept(design="system_window"),
+                        ref_episode_dir=str(tmp_path),
+                        out_dir=str(tmp_path / "a"), models=["m"])
+    assert clause in calls["prompt"]
+    tb.render_thumbnail(_design_concept(), ref_episode_dir=str(tmp_path),
+                        out_dir=str(tmp_path / "b"), models=["m"])
+    assert clause not in calls["prompt"]

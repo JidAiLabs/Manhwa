@@ -229,3 +229,70 @@ def test_an_arrow_never_crosses_a_bottom_label(tmp_path):
     diff = sum(1 for p, q in zip(ia.getdata(), ib.getdata())
                if abs(p[0] - q[0]) + abs(p[1] - q[1]) + abs(p[2] - q[2]) > 60)
     assert diff < 50
+
+
+# ---- arrows land on their subject BY CONSTRUCTION; the quoted system card ---
+# The design fixes where the lead stands (art_clause) and tells the overlay
+# where to aim (arrow_to). About 13 of the owner's 20 examples land an arrow on
+# its own subject; ours all aimed at frame centre.
+
+def _box_pixels(path, box, pred):
+    im = Image.open(path).convert("RGB")
+    W, H = im.size
+    x0, y0, x1, y1 = (int(box[0] * W), int(box[1] * H),
+                      int(box[2] * W), int(box[3] * H))
+    return sum(1 for y in range(y0, y1) for x in range(x0, x1)
+               if pred(im.getpixel((x, y))))
+
+
+def _is_yellow(px):
+    r, g, b = px
+    return r > 200 and g > 170 and b < 90
+
+
+_FAR_BOX = (0.78, 0.70, 0.92, 0.86)      # nowhere near frame centre or the label
+
+
+def test_arrow_to_moves_the_style_arrow_onto_its_target(tmp_path):
+    spec = {"label_pos": "upper_left", "arrow": "to_hero", "marks": [],
+            "speech_slots": 0}
+    plain, aimed = str(tmp_path / "a.jpg"), str(tmp_path / "b.jpg")
+    ov.render_overlay(_stub(tmp_path), plain, hook="OUTCAST", style_overlay=spec)
+    ov.render_overlay(_stub(tmp_path), aimed, hook="OUTCAST",
+                      style_overlay={**spec, "arrow_to": [0.85, 0.78]})
+    assert _box_pixels(plain, _FAR_BOX, _is_yellow) == 0
+    assert _box_pixels(aimed, _FAR_BOX, _is_yellow) > 50
+
+
+def test_tag_arrow_to_lands_on_the_tags_own_subject(tmp_path):
+    spec = {"label_pos": "upper_left", "arrow": "none", "marks": [],
+            "speech_slots": 0}
+    out = str(tmp_path / "t.jpg")
+    ov.render_overlay(_stub(tmp_path), out, hook="", style_overlay=spec,
+                      tags=[{"text": "RIVAL", "pos": "mid_left", "arrow": True,
+                             "arrow_to": [0.85, 0.78]}])
+    assert _box_pixels(out, _FAR_BOX, _is_yellow) > 50
+
+
+_CARD_SPEC = {"label_pos": "upper_right", "arrow": "none", "marks": [],
+              "speech_slots": 0,
+              "card": {"pos": [0.04, 0.22], "size": [0.36, 0.46]}}
+_CARD_BOX = (0.05, 0.24, 0.39, 0.66)
+
+
+def _not_base(px, base=(20, 30, 40)):
+    return any(abs(c - b) > 40 for c, b in zip(px, base))
+
+
+def test_card_draws_the_quoted_lines_in_its_slot(tmp_path):
+    out = str(tmp_path / "c.jpg")
+    ov.render_overlay(_stub(tmp_path), out, hook="", style_overlay=_CARD_SPEC,
+                      card=["Main scenario has begun.", "Time limit: 30 minutes."])
+    assert _box_pixels(out, _CARD_BOX, _not_base) > 2000
+
+
+def test_no_card_lines_draws_no_empty_window(tmp_path):
+    out = str(tmp_path / "c.jpg")
+    ov.render_overlay(_stub(tmp_path), out, hook="", style_overlay=_CARD_SPEC,
+                      card=[])
+    assert _box_pixels(out, _CARD_BOX, _not_base) == 0
