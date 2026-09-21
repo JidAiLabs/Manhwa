@@ -1552,6 +1552,54 @@ def test_ref_candidates_prefer_the_teaser_window(tmp_path, monkeypatch):
     assert [x["chapter"] for x in pc.ref_candidates(eps, n=2)["refs"]] == [2, 3]
     assert [x["chapter"] for x in
             pc.ref_candidates(eps, n=2, prefer_first=2)["refs"]] == [0, 1]
-    # the window fills first; later chapters only top it up
+    # ONLY the window, never a top-up. Measured on ORV 2026-09-21: the window has
+    # 2 clean tiles, and "top up to 8" refilled the page with Episodes 100-262 --
+    # other characters, the exact tiles the owner had just rejected. Two right
+    # tiles beat two right and six wrong.
     assert [x["chapter"] for x in
-            pc.ref_candidates(eps, n=3, prefer_first=2)["refs"]] == [0, 1, 2]
+            pc.ref_candidates(eps, n=8, prefer_first=2)["refs"]] == [0, 1]
+
+
+def test_design_run_copies_the_lead_from_clean_solo_shots_in_the_window(
+        tmp_path, monkeypatch):
+    """The automatic refs used to be whatever 'lead' panels sat in the CLIMAX
+    chapter. Looked at on ORV (2026-09-21): the back of a head, a half profile,
+    and a close-up of a different character. The clean-solo-shot rule the
+    suggestion tiles use already finds the right panel (Episode_5 p000022), so
+    the automatic path uses it too, and keeps the old choice only when the
+    window has no clean shot."""
+    import json as _j
+    eps = _series(tmp_path, _ARC)
+
+    def run(out):
+        return _run_main(monkeypatch, [
+            "--episode-dirs", ",".join(eps), "--design", "nametag",
+            "--teaser-scan-chapters", "2", "--teaser-min-panels", "2",
+            "--out", str(out)],
+            replies=[{"premise": "P"},
+                     {"title": "T", "thumbnail_style": "power_reveal",
+                      "labels": ["WEAKEST HUNTER"], "hashtags": []}])
+
+    # no clean solo shot anywhere: the old climax refs are kept
+    monkeypatch.setattr(pc, "_lead_panels", lambda d, max_figures=2: (set(), set()))
+    rc, _ = run(tmp_path / "a.json")
+    assert rc == 0
+    assert _j.loads((tmp_path / "a.json").read_text())["refs"] == ["b1.jpg"]
+
+    # chapter 1 holds a clean solo shot of the lead; chapter 3 (outside the
+    # window) holds a better-looking one that must never be used
+    for ep, name in ((eps[0], "a1.jpg"), (eps[2], "z1.jpg")):
+        (Path(ep) / "manifest.vision.json").write_text(_j.dumps({"items": [
+            {"scene_file": name, "ocr_clean": "", "text_coverage": 0.0,
+             "width": 800, "height": 900}]}))
+        u = _j.loads((Path(ep) / "manifest.panels.understood.json").read_text())
+        for pnl in u["panels"]:
+            pnl["subjects"] = ["a young man with short black hair"]
+        (Path(ep) / "manifest.panels.understood.json").write_text(_j.dumps(u))
+    monkeypatch.setattr(pc, "_lead_panels",
+                        lambda d, max_figures=2: ({"a1.jpg", "z1.jpg"},
+                                                  {"a1.jpg", "z1.jpg"}))
+    rc, _ = run(tmp_path / "b.json")
+    assert rc == 0
+    refs = _j.loads((tmp_path / "b.json").read_text())["refs"]
+    assert refs == [str(Path(eps[0]) / "scenes" / "a1.jpg")]

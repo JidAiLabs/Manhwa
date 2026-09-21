@@ -1240,13 +1240,18 @@ def ref_candidates(ep_dirs: List[str], beats_list: Any = None, *,
     panels among the look-matched ones, so all lead panels are considered.
     ponytail: identity for every chapter (~1-2 min on 309), so it runs as a job.
 
-    *prefer_first* is the teaser's window: tiles from the first N chapters rank
-    ahead of every other, and later chapters only top the list up. The claim and
-    climax come from that window, so the LOOK should too -- ORV's late chapters
-    draw the lead with longer hair. 0 = no preference (the old order, exactly).
+    *prefer_first* is the teaser's window: ONLY the first N chapters are
+    considered. The claim and climax come from that window, so the LOOK does
+    too. It first topped the list up from later chapters; measured on ORV
+    (2026-09-21) the window holds 2 clean tiles and the top-up refilled the page
+    with Episodes 100-262 -- other characters, the tiles the owner had just
+    rejected. Two right tiles beat two right and six wrong. 0 = every chapter.
     """
     cands: List[Dict[str, Any]] = []
-    for i, d in enumerate(ep_dirs or []):
+    window = list(ep_dirs or [])
+    if prefer_first > 0:
+        window = window[:prefer_first]
+    for i, d in enumerate(window):
         try:
             u = json.load(open(os.path.join(d, "manifest.panels.understood.json")))
         except Exception:
@@ -1271,8 +1276,7 @@ def ref_candidates(ep_dirs: List[str], beats_list: Any = None, *,
                 "path": os.path.abspath(os.path.join(d, "scenes", fn)),
                 "chapter": i, "label": os.path.basename(d.rstrip("/")),
                 "file": fn, "subjects": p.get("subjects") or [],
-                "_rank": (0 if i < prefer_first else 1,
-                          0 if fn in look else 1,
+                "_rank": (0 if fn in look else 1,
                           0 if _CLOSE_UP_RE.search(str(p.get("description") or "")) else 1,
                           -(w * h))})
     cands.sort(key=lambda c: c["_rank"])
@@ -1565,10 +1569,21 @@ def main() -> int:
                                             for p in montage]
                 concept["design_reason"] = rank_designs(
                     montage, banned=args.series_title, card_lines=card)[1]
+            auto_refs = _sc[1] if _sc else select_bundle_climax(w_beats)[1]
+            if montage:
+                # WHO to draw: the same clean-solo-shot rule the suggestion tiles
+                # use, over the teaser's window (absolute paths). The climax
+                # chapter's "lead" panels were, on ORV, the back of a head, a
+                # half profile and a close-up of someone else.
+                clean = [r["path"] for r in ref_candidates(w_eps, n=3)["refs"]]
+                if clean:
+                    auto_refs = clean
+                print("[..] lead refs: %s" % ("clean solo shots from the window"
+                                              if clean else "climax-chapter "
+                                              "panels (no clean solo shot found)"))
             concept["refs"] = choose_refs(
                 concept["style"], w_beats, w_eps, climax_ci=climax_ci,
-                auto_refs=(_sc[1] if _sc
-                           else select_bundle_climax(w_beats)[1]),
+                auto_refs=auto_refs,
                 picked=[r for r in args.refs.split(",") if r.strip()])
             if concept["style"] == "before_after" and not (
                     concept["refs"] and os.path.isabs(concept["refs"][0])):
