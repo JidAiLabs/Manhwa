@@ -83,17 +83,30 @@ Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), 
   only QA-flagged groups from panels until 0 ERRORs), prep_qa blank-crop validity gate (no
   sys/doc exemption), bundle-level title/desc (`publish_meta` job), series-level thumbnail +
   Series-page approve UI.
-- **Arc teaser (2026-06-28):** a bundle-level cold open. `tools/teaser_planner.py` scores a
-  high-stakes window across the bundle's chapters (deterministic signal scoring over cached
-  `understood.json` + one model call to pick + write spoiler-safe narration), materializes a
-  SYNTHETIC episode dir (`dist/bundle_<id>/teaser/`, scenes symlinked) and the worker
-  `_h_teaser` runs the normal render/TTS tools on it → `dist/bundle_<id>/teaser.mp4`. New
-  `bundle.teaser_state` (none|planned|approved|declined) gates concat: a `planned` teaser
-  blocks the bundle until reviewed; `_h_concat` prepends it only when `approved`. Dashboard:
-  Videos page "Plan teaser" button + review card (approve/decline/re-plan) on the bundle row.
-  Config in `studio.toml [teaser]`. Plan: `docs/plans/2026-06-28-teaser-planner.md`. NOTE: this
-  touched `studio/worker.py` + `studio/dashboard/**`, so deploying it needs a daemon restart
-  (`launchctl kickstart -k`); `tools/teaser_planner.py` is a subprocess → fresh on pull.
+- **Arc teaser (2026-06-28; ONE PER SERIES since the bundle→series migration):** the cold
+  open. `tools/teaser_planner.py` selects an arc MONTAGE over the series' first
+  `[publish].auto_after_chapters` (12) chapters — deterministic scoring over cached
+  `understood.json`, climax LAST, then one model call writes spoiler-safe lines — materializes
+  a SYNTHETIC episode dir `dist/series_<id>/teaser/` (scenes symlinked) and the worker
+  `_h_teaser` (job `plan_teaser`) renders `dist/series_<id>/teaser.mp4`. `series.teaser_state`
+  (none|planned|approved|declined): a `planned` teaser blocks the series' FIRST bundle's concat
+  until reviewed; `_h_concat` prepends it only when `approved`. Dashboard: Series page
+  "Intro teaser" button + review card. `[teaser].enabled` gates ONLY the two automatic paths
+  (auto-debut bundle, autopilot intro); the manual button always works. (This paragraph said
+  `dist/bundle_<id>/` and `bundle.teaser_state` for months after the migration; and ORV's own
+  teaser on the Mini sits in `dist/series_1/teaser_src/`, a name no code reads.)
+  Plan: `docs/plans/2026-06-28-teaser-planner.md`.
+- **Thumbnail follows the teaser (2026-09-21, `3c8bfa0`):** the series thumbnail takes its
+  claim, climax and refs from the TEASER'S WINDOW (the same first-N chapters), reading a
+  planned/approved teaser's manifest or computing the montage on the fly (free).
+  `publish_concept.rank_designs` — code, never the model — ranks the two HOOK DESIGNS to build
+  (`thumbnail_styles.HOOK_DESIGNS`: `nametag`, `nametag_headline`, `system_window`; counted
+  from the owner's example thumbnails in `assets/thumbnail_refs/`) into
+  `dist/series_<id>/options/<design>/`; the owner picks. before/after is a manual variant only.
+  The system-window card QUOTES printed system text from `manifest.vision.json` OCR
+  (`printable_card_line`: one clean sentence of real words; never the licensed title) and a
+  montage needs 2+ system panels to be offered one. Skill: `manhwa-thumbnail`. Touches
+  `studio/worker.py` + `studio/dashboard/**` → daemon restart on deploy.
 - **Adaptive flow narration (2026-07-02):** beats carry `segments[] = [{span, line}]` — one
   line spans 1–4 consecutive panels, voiced as ONE clip (consumers read/write via
   `tools/beats_segments.py`; `narration` stays the join). One paragraph+shot per segment

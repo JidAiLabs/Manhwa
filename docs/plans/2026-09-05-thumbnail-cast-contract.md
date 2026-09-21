@@ -24,6 +24,19 @@ styles usable at all; 6 attacks the unresolved problem; 7 is bookkeeping.
 
 ---
 
+> **2026-09-21 update (commit `3c8bfa0`).** Two items from the open list are BUILT: the SECOND
+> LABEL (a hook design's headline is written to `concept.tags`, which the two-stage path never
+> set) and the ARROW ONTO ITS SUBJECT — by construction, not detection: each entry of
+> `thumbnail_styles.HOOK_DESIGNS` carries an `art_clause` that fixes where the lead stands and an
+> `overlay.arrow_to` that aims there (face detection misses anime faces). The options are now the
+> two hook designs the series' TEASER ranks first (`publish_concept.rank_designs`); `scene` +
+> `before_after` are gone as options and before/after is a variant. §7 (licensed-text scanner) is
+> PARTLY built: `_names_the_title` keeps the series name off the system-window card and out of
+> the ranking; title, labels and description are still prompt-only. Still open and now the
+> blocker for two more example designs (`contrast_pair`, `roll_call`): a COUNTERPART ref finder
+> (§4 generalised from objects to a second person). `concept.json` gained `design`,
+> `design_reason`, `claim_source`, `teaser_panels`, `card` — a start on §1's audit trail.
+
 ## 1. Ref audit trail in `concept.json`
 
 **Why first:** diagnose mode cannot work without it, and every other item below is easier
