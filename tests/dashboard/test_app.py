@@ -1384,6 +1384,28 @@ def test_suggested_refs_are_one_set_and_a_pick_queues_generation(client, tmp_pat
     assert [_j.loads(x[0]) for x in rows] == [{"refs": [refs[0]["path"], refs[2]["path"]]}]
 
 
+def test_reference_tile_urls_change_when_the_suggestions_change(client, tmp_path,
+                                                                 monkeypatch):
+    """Tiles are addressed by POSITION (/ref/0, /ref/1). Without a version stamp
+    the browser keeps showing the OLD picture for a position under the NEW
+    label -- and a tick sends the position, so the owner approves a panel they
+    never saw. Owner, 2026-09-21: "p22 is not the MC": it was the cached image of
+    a 09-17 tile shown under the refreshed label."""
+    import os
+    import re
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    _refs_json(tmp_path)
+    stamp = lambda: re.findall(r"/thumb/series/1/ref/0\?v=(\d+)", c.get("/series/1").text)
+    first = stamp()
+    assert first, "tile URLs carry no version stamp"
+    f = tmp_path / "dist" / "series_1" / "ref_candidates.json"
+    st = f.stat()
+    os.utime(f, (st.st_atime, st.st_mtime + 100))        # a refresh rewrote the file
+    assert stamp() and stamp() != first
+
+
 def test_generate_with_picks_rejects_bad_selections(client, tmp_path, monkeypatch):
     c, con = client
     from studio.dashboard import app as _app

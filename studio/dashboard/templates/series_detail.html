@@ -98,7 +98,7 @@
 <input type="hidden" name="series_id" value="{{ sid }}">
 <div class="row" style="flex-wrap:wrap;gap:.6em;align-items:flex-start">
 {% for r in ref_cands %}
-<label style="max-width:170px;text-align:center"><img src="/thumb/series/{{ sid }}/ref/{{ loop.index0 }}" alt="reference panel {{ loop.index0 }}" style="width:170px;height:220px;object-fit:contain;background:#000;border:1px solid var(--line);border-radius:6px"><br>
+<label style="max-width:170px;text-align:center"><img src="/thumb/series/{{ sid }}/ref/{{ loop.index0 }}?v={{ ref_v }}" alt="reference panel {{ loop.index0 }}" style="width:170px;height:220px;object-fit:contain;background:#000;border:1px solid var(--line);border-radius:6px"><br>
 <input type="checkbox" name="ref" value="{{ loop.index0 }}"> {{ r.label }} · {{ r.file }}</label>
 {% endfor %}
 </div>

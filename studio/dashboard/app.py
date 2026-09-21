@@ -666,6 +666,11 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     "style": oc.get("style") or name,
                     "v": int((od / "thumbnail_yt.jpg").stat().st_mtime)})
         ref_cands = _ref_candidates(sid)
+        # tiles are addressed by POSITION, so their URL must change when the
+        # suggestions do: a cached /ref/0 under a refreshed label had the owner
+        # judging (and nearly ticking) a panel that was no longer tile 0
+        _rc = REPO / "dist" / f"series_{sid}" / "ref_candidates.json"
+        ref_v = int(_rc.stat().st_mtime) if _rc.exists() else 0
         # the planner reads cached beats/understanding, so it needs prepared
         # chapters — the same readiness the thumbnail requires
         teaser_ready = thumb_ready
@@ -689,7 +694,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     thumb_v=int(thumb.stat().st_mtime) if thumb_exists else 0,
                     thumb_approved=gates.thumbnail_approved(c, sid),
                     thumb_options=thumb_options,
-                    ref_cands=ref_cands,
+                    ref_cands=ref_cands, ref_v=ref_v,
                     teaser_card=_teaser_card(sid),
                     teaser_state=teaser_state, teaser_exists=teaser_exists,
                     teaser_ready=teaser_ready,
