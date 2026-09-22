@@ -395,13 +395,17 @@ def concept_from_claim(claim: Dict[str, Any], design: str) -> Dict[str, Any]:
         c["tags"] = [{"text": heads[0], "pos": overlay["headline_pos"],
                       "arrow": False}]
     if overlay.get("card"):
-        lines = [str(x) for x in claim.get("card") or [] if str(x).strip()]
-        if not lines:
+        cards = [x for x in claim.get("card") or []
+                 if (x.get("line") if isinstance(x, dict) else str(x).strip())]
+        if not cards:
             raise ValueError("%s needs a printable system line and the claim "
                              "has none" % design)
-        # ONE line: the examples' windows hold a single short line in huge
-        # type. Three sentences of fine print in a box read as nothing.
-        c["card"] = lines[:1]
+        # ONE window: the examples hold a single short line in huge type (plus
+        # a header and stat lines). Three sentences of fine print read as
+        # nothing. A window dict passes through; an older plain line stays a
+        # one-item list.
+        first = cards[0]
+        c["card"] = first if isinstance(first, dict) else [str(first)]
     return c
 
 
@@ -1033,6 +1037,79 @@ def printable_card_line(raw: Any) -> str:
     return t
 
 
+# A system WINDOW as the story prints it: a header ("MAIN SCENARIO #1"), the
+# command, and stat lines ("TIME LIMIT: 30 MINUTES"). The example thumbnails
+# draw exactly that shape ("[SYSTEM MESSAGE] MARRY HER", "SQUATS COMPLETED:
+# 47/10,000"); the one-clean-sentence rule could only see single lines.
+_WIN_HEADER_RE = re.compile(r"^\s*\[?\s*((?:MAIN|SUB)?\s*SCENARIO\s*#?\s*\d+|SYSTEM(?: MESSAGE)?)\s*\]?",
+                            re.IGNORECASE)
+# the stat keys a story's window prints; the split is on THESE, not on "any
+# capitalised words before a colon" (that read "30 MINUTES REWARD" as a key)
+_WIN_STAT_KEYS = ("PENALTY FOR FAILURE", "TIME LIMIT", "REWARD", "DIFFICULTY", "CATEGORY")
+_WIN_STAT_SPLIT_RE = re.compile(r"\b(" + "|".join(_WIN_STAT_KEYS) + r")\s*:\s*", re.IGNORECASE)
+_WIN_FOOTER_ORDER = ("TIME LIMIT", "PENALTY FOR FAILURE", "REWARD", "DIFFICULTY")
+
+
+def window_from_ocr(raw: Any, *, banned: str = "") -> Optional[Dict[str, Any]]:
+    """{header, line, footer[]} from one system panel's OCR, or None.
+
+    header = a leading "MAIN SCENARIO #1" / "SYSTEM"; a bracketed scenario name
+    ("[PROVE YOUR VALUE]") is dropped from the body; the big line is the first
+    printable SENTENCE before any stat key (printable_card_line's rule); the
+    footer keeps up to two stats, TIME LIMIT and PENALTY FOR FAILURE first.
+    Everything is quoted; nothing is written.
+    """
+    import gemini_narrative_pass as _gnp
+    t = str(raw or "").strip()
+    if not t:
+        return None
+    header = ""
+    m = _WIN_HEADER_RE.match(t)
+    if m:
+        header = re.sub(r"\s*#\s*", " #", " ".join(m.group(1).split())).upper()
+        t = t[m.end():]
+    # the scenario's NAME ("[PROVE YOUR VALUE]"): a short bracket group with no
+    # sentence punctuation. A whole bracketed sentence is the line itself.
+    t = re.sub(r"\[\s*(?:[^\].!?]{1,40})\s*\]", " ", t, count=1)
+    parts = _WIN_STAT_SPLIT_RE.split(t)
+    body, stats = parts[0], {}
+    for key, val in zip(parts[1::2], parts[2::2]):
+        val = _gnp.clean_card_text(val).strip(" .")
+        if val and 1 <= len(val.split()) <= 4:
+            stats.setdefault(key.upper(), "%s: %s" % (key.upper(), val.upper()))
+    line = ""
+    for sent in re.split(r"(?<=[.!?])\s+", _gnp.clean_card_text(body)):
+        line = printable_card_line(sent)
+        if line:
+            break
+    if not line or _names_the_title(line, banned):
+        return None
+    return {"header": header, "line": line,
+            "footer": [stats[k] for k in _WIN_FOOTER_ORDER if k in stats][:2]}
+
+
+def window_options(w_eps: List[str], montage: List[Dict[str, Any]], *,
+                   banned: str = "", max_options: int = 12) -> List[Dict[str, Any]]:
+    """Every system window the teaser's chapters print, as {header, line,
+    footer}: the richest first (a window with a header and stats over a bare
+    line), then the montage's own, then reading order. The owner picks."""
+    import teaser_planner as _tp
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    in_montage = {str(p.get("scene_file") or "") for p in montage}
+    panels = [p for p in _tp.load_bundle_panels(w_eps)
+              if str(p.get("panel_kind") or "") == "system"]
+    for i, p in enumerate(_attach_printed(panels)):
+        w = window_from_ocr(p.get("printed"), banned=banned)
+        if not w or w["line"] in seen:
+            continue
+        seen.add(w["line"])
+        richness = (1 if w["header"] else 0) + len(w["footer"])
+        out.append((-richness, 0 if str(p.get("scene_file")) in in_montage else 1, i, w))
+    out.sort(key=lambda x: x[:3])
+    return [w for *_, w in out[:max_options]]
+
+
 def _attach_printed(panels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Give each montage panel its PRINTED words. They are OCR in the chapter's
     manifest.vision.json; the understood manifest carries none for a system
@@ -1591,16 +1668,16 @@ def main() -> int:
         w_eps, w_beats = eps[:win], beats_list[:win]
         # EVERY printable window line is offered (the owner picks the one the
         # window prints); the first three stay the default card
-        card_options = (window_card_lines(w_eps, montage, banned=args.series_title,
-                                          max_lines=100) if montage else [])
-        card = card_options[:3]
+        card_options = (window_options(w_eps, montage, banned=args.series_title)
+                        if montage else [])
+        card = card_options[:1]
         if args.rank_designs:
             if not montage or not args.out:
                 print("[err] --rank-designs needs --out and a teaser montage "
                       "(--teaser-scan-chapters); window gave: %s" % claim_source)
                 return 2
             names, why = rank_designs(montage, banned=args.series_title,
-                                      card_lines=card)
+                                      card_lines=card_options)
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             with open(args.out, "w", encoding="utf-8") as f:
                 # the card LINES, not a count: the owner reviews the words a
@@ -1668,7 +1745,7 @@ def main() -> int:
                                                 for t in _clean_labels(raw))
                                     if hook_is_grounded(x, corpus)]
             names, why = rank_designs(montage, banned=args.series_title,
-                                      card_lines=card)
+                                      card_lines=card_options)
             synopsis = str(pkg.get("description") or "").strip()
             hashtags = pkg.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
             claim = {
@@ -1741,7 +1818,7 @@ def main() -> int:
                 concept["teaser_panels"] = [str(p.get("scene_file") or "")
                                             for p in montage]
                 concept["design_reason"] = rank_designs(
-                    montage, banned=args.series_title, card_lines=card)[1]
+                    montage, banned=args.series_title, card_lines=card_options)[1]
             concept["refs"] = _lead_refs(concept["style"])
             if concept["style"] == "before_after" and not (
                     concept["refs"] and os.path.isabs(concept["refs"][0])):

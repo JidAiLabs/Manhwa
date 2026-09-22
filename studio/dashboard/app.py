@@ -679,6 +679,17 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             claim = claim if isinstance(claim, dict) else None
         except (OSError, ValueError):
             claim = None
+        if claim:
+            # a card is a WINDOW ({header, line, footer}) or, from an older
+            # claim, a plain line; the page shows "header · line", never a dict
+            def _win(x):
+                if isinstance(x, dict):
+                    return " · ".join(p for p in (x.get("header"), x.get("line"))
+                                      if p) + ("  (" + " · ".join(x.get("footer") or [])
+                                               + ")" if x.get("footer") else "")
+                return str(x)
+            claim["card_text"] = _win((claim.get("card") or [""])[0])
+            claim["option_texts"] = [_win(x) for x in claim.get("card_options") or []]
         # the planner reads cached beats/understanding, so it needs prepared
         # chapters — the same readiness the thumbnail requires
         teaser_ready = thumb_ready
@@ -781,11 +792,31 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             claim = json.loads(p.read_text())
         except (OSError, ValueError):
             return PlainTextResponse("no claim", status_code=404)
-        options = [str(x) for x in claim.get("card_options") or []]
+        options = claim.get("card_options") or []
         if not 0 <= line < len(options):
             return PlainTextResponse("no such line", status_code=404)
         claim["card"] = [options[line]]
         p.write_text(json.dumps(claim, ensure_ascii=False, indent=2))
+        # the window is an overlay on art already paid for: redraw the painted
+        # system_window card now, free, rather than at the next generate
+        d = REPO / "dist" / f"series_{series_id}" / "options" / "system_window"
+        try:
+            concept = json.loads((d / "concept.json").read_text())
+        except (OSError, ValueError):
+            concept = None
+        if concept and (d / "thumbnail_art.png").exists():
+            chosen = options[line]
+            concept["card"] = chosen if isinstance(chosen, dict) else [str(chosen)]
+            from thumbnail_overlay import render_overlay
+            render_overlay(str(d / "thumbnail_art.png"), str(d / "thumbnail_yt.jpg"),
+                           hook=str(concept.get("hook") or ""),
+                           style_overlay=concept.get("style_overlay") or {},
+                           speech=concept.get("speech") or [],
+                           badge=concept.get("badge") or "",
+                           tags=concept.get("tags") or [],
+                           card=concept["card"])
+            (d / "concept.json").write_text(json.dumps(concept, ensure_ascii=False,
+                                                       indent=2))
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.post("/thumbnail/generate")
@@ -803,7 +834,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.post("/thumbnail/label")
     def switch_label(series_id: int = Form(...), option: str = Form(...),
-                     hook: int = Form(...), text: str = Form("")):
+                     hook: int = Form(...), text: str = Form(""),
+                     headline: str = Form("")):
         """Redraw an option's label with another of its candidates -- or with
         words the owner TYPED (*text*, up to 40 characters; it joins the
         candidates so it stays switchable). The same art, a new text layer, no
@@ -827,6 +859,19 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                 hooks.append(text)
                 concept["hooks"] = hooks
             hook = hooks.index(text)
+        headline = " ".join(headline.split())
+        if len(headline) > 40:
+            return PlainTextResponse("a headline is at most 40 characters",
+                                     status_code=400)
+        if headline:
+            # the headline is the design's `tags[0]`; typed words replace it
+            pos = (concept.get("style_overlay") or {}).get("headline_pos") or "lower_left"
+            tags = [t for t in concept.get("tags") or [] if isinstance(t, dict)]
+            if tags:
+                tags[0] = {**tags[0], "text": headline}
+            else:
+                tags = [{"text": headline, "pos": pos, "arrow": False}]
+            concept["tags"] = tags
         from thumbnail_overlay import render_overlay
         render_overlay(str(d / "thumbnail_art.png"), str(d / "thumbnail_yt.jpg"),
                        hook=hooks[hook],

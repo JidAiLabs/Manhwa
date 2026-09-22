@@ -1312,11 +1312,10 @@ def test_rank_designs_run_is_free_and_writes_the_ranking(tmp_path, monkeypatch):
     assert got["designs"][0] == "system_window" and len(got["designs"]) == 2
     assert got["claim_source"] == "montage:computed"
     assert got["reason"]["system_panels"] == 2
-    assert got["reason"]["card_lines"] == 2
-    # the LINES, not just their count: "text is reviewed before art is bought"
+    assert got["reason"]["card_lines"] == 2      # two windows offered
+    # the WINDOW, not just a count: "text is reviewed before art is bought"
     # cannot be done from a number (verifier, 2026-09-21)
-    assert got["card"] == ["Main scenario has begun.",
-                           "YOU HAVE EXCEEDED THE TIME LIMIT."]
+    assert got["card"][0]["line"] == "Main scenario has begun."
 
 
 def test_rank_designs_run_without_a_montage_fails_loud(tmp_path, monkeypatch):
@@ -1367,8 +1366,7 @@ def test_system_window_run_quotes_the_card_from_the_teaser(tmp_path, monkeypatch
                  {"title": "T", "thumbnail_style": "power_reveal",
                   "labels": ["WEAKEST HUNTER"], "hashtags": []}])
     assert rc == 0
-    assert _j.loads(out.read_text())["card"] == [
-        "Main scenario has begun.", "YOU HAVE EXCEEDED THE TIME LIMIT."]
+    assert _j.loads(out.read_text())["card"][0]["line"] == "Main scenario has begun."
 
 
 def test_title_reuses_the_picked_thumbnails_headline_too():
@@ -1722,7 +1720,8 @@ def test_cards_are_built_from_the_claim_without_a_model_call(tmp_path, monkeypat
     a, b = got["system_window"], got["nametag_headline"]
     assert a["hooks"] == b["hooks"] and a["scene"] == b["scene"]
     assert a["title"] == b["title"]
-    assert len(a["card"]) == 1 and b["tags"][0]["text"] == "NOBODY -> KING"
+    assert a["card"]["line"] == "Main scenario has begun."   # ONE window
+    assert b["tags"][0]["text"] == "NOBODY -> KING"
 
 
 def test_write_claim_without_a_teaser_montage_fails_loud(tmp_path, monkeypatch):
@@ -1757,10 +1756,10 @@ def test_write_claim_records_the_tone_and_every_printable_window_line(
     assert c["tone"] == "erotic"
     from thumbnail_styles import CLAIM_TONES
     assert CLAIM_TONES["erotic"] in prompts[1]
-    # every printable line of the window is offered; the card is the first
-    assert c["card_options"] == ["Main scenario has begun.",
-                                 "YOU HAVE EXCEEDED THE TIME LIMIT."]
-    assert c["card"] == c["card_options"][:2]
+    # every printable window is offered; the card is the first
+    assert [w["line"] for w in c["card_options"]] == [
+        "Main scenario has begun.", "YOU HAVE EXCEEDED THE TIME LIMIT."]
+    assert c["card"] == c["card_options"][:1]
 
 
 def test_concept_from_claim_paints_the_line_the_owner_chose():
@@ -1772,3 +1771,51 @@ def test_concept_from_claim_paints_the_line_the_owner_chose():
     claim["card"] = ["100 COINS HAVE BEEN DEDUCTED."]
     assert pc.concept_from_claim(claim, "system_window")["card"] == [
         "100 COINS HAVE BEEN DEDUCTED."]
+
+
+# --- a system WINDOW, not a line: header / big line / stat footer -----------
+# ORV's first scenario is printed as one window: "MAIN SCENARIO #1 [PROVE YOUR
+# VALUE] KILL ONE OR MORE LIVING ORGANISMS. CATEGORY: MAIN DIFFICULTY: F TIME
+# LIMIT: 30 MINUTES REWARD: 300 COINS PENALTY FOR FAILURE: DEATH". The
+# one-clean-sentence filter threw the whole thing away; the punchiest text in
+# the opening was invisible (owner, 2026-09-22: "do this properly").
+
+_ORV_WINDOW = ("MAIN SCENARIO #1 [PROVE YOUR VALUE] KILL ONE OR MORE LIVING "
+               "ORGANISMS. CATEGORY: MAIN DIFFICULTY: F TIME LIMIT: 30 MINUTES "
+               "REWARD: 300 COINS PENALTY FOR FAILURE: DEATH")
+
+
+def test_window_from_ocr_splits_header_big_line_and_footer():
+    w = pc.window_from_ocr(_ORV_WINDOW)
+    assert w == {"header": "MAIN SCENARIO #1",
+                 "line": "KILL ONE OR MORE LIVING ORGANISMS.",
+                 "footer": ["TIME LIMIT: 30 MINUTES", "PENALTY FOR FAILURE: DEATH"]}
+
+
+def test_window_from_ocr_keeps_a_plain_sentence_as_the_line():
+    assert pc.window_from_ocr("[THE MAIN SCENARIO HAS ARRIVED.]") == {
+        "header": "", "line": "THE MAIN SCENARIO HAS ARRIVED.", "footer": []}
+    assert pc.window_from_ocr("?! DING E0x") is None
+    assert pc.window_from_ocr("") is None
+
+
+def test_window_from_ocr_never_carries_the_licensed_title():
+    assert pc.window_from_ocr(
+        "[YOU HAVE UNLOCKED YOUR PERSONAL SKILL, OMNISCIENT READER'S VIEWPOINT.]",
+        banned="Omniscient Reader") is None
+
+
+def test_window_options_offer_structured_windows_first(tmp_path):
+    eps = _understood_chapters(tmp_path, [
+        [_system("s1.jpg", "[THE MAIN SCENARIO HAS ARRIVED.]"),
+         _system("s2.jpg", _ORV_WINDOW),
+         _story("a1.jpg", "he is mocked as the weakest hunter")],
+        [_story("b1.jpg", "his hidden power awakens, he is transformed", "intense")]])
+    montage = pc._attach_printed([
+        {**_story("b1.jpg", "his hidden power awakens"),
+         "scene_file": eps[1] + "/scenes/b1.jpg"}])
+    opts = pc.window_options(eps, montage)
+    assert opts[0]["line"] == "KILL ONE OR MORE LIVING ORGANISMS."   # richest first
+    assert opts[0]["footer"] == ["TIME LIMIT: 30 MINUTES", "PENALTY FOR FAILURE: DEATH"]
+    assert {o["line"] for o in opts} == {"KILL ONE OR MORE LIVING ORGANISMS.",
+                                         "THE MAIN SCENARIO HAS ARRIVED."}

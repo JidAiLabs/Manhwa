@@ -160,7 +160,9 @@ HOOK_DESIGNS: Dict[str, Dict[str, Any]] = {
                        "no figures, no faces, no panels, no glyphs there."),
         "overlay": {"label_pos": "upper_left", "arrow": "to_hero",
                     "arrow_to": [0.70, 0.40], "marks": [], "speech_slots": 0,
-                    "card": {"pos": [0.04, 0.52], "size": [0.42, 0.30]}},
+                    # header + big line + two stat lines: wider and taller
+                    # than the one-line box, below the label, left of the lead
+                    "card": {"pos": [0.03, 0.49], "size": [0.47, 0.42]}},
     },
 }
 

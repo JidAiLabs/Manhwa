@@ -77,11 +77,11 @@
 <div><b>Story:</b> {{ (claim.brief or {}).premise or '—' }}</div>
 <div><b>Labels</b> (same on every card): {{ (claim.labels or [])|join(' · ') or '—' }}</div>
 {% if claim.headlines %}<div><b>Headline:</b> {{ claim.headlines[0] }}</div>{% endif %}
-{% if claim.card %}<div><b>System window line:</b> {{ claim.card[0] }}</div>{% endif %}
-{% if claim.card_options and claim.card_options|length > 1 %}
+{% if claim.card %}<div><b>System window:</b> {{ claim.card_text }}</div>{% endif %}
+{% if claim.option_texts and claim.option_texts|length > 1 %}
 <form method="post" action="/thumbnail/card" class="row" style="margin:.3em 0 0"><input type="hidden" name="series_id" value="{{ sid }}">
-<select name="line">{% for l in claim.card_options %}<option value="{{ loop.index0 }}"{% if claim.card and l == claim.card[0] %} selected{% endif %}>{{ l }}</option>{% endfor %}</select>
-<button class="ghost">use this line</button> <span class="kv">every line is quoted from the story; free, repainted at the next generate</span></form>
+<select name="line">{% for l in claim.option_texts %}<option value="{{ loop.index0 }}"{% if l == claim.card_text %} selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+<button class="ghost">use this window</button> <span class="kv">every window is quoted from the story; free, the painted card is redrawn at once</span></form>
 {% endif %}
 <div><b>Designs to build:</b> {{ (claim.designs or [])|join(', ')|replace('_', ' ') or '—' }} · <b>from:</b> {{ claim.claim_source or '—' }}</div>
 </div>
@@ -106,6 +106,7 @@
 <form method="post" action="/thumbnail/label"><input type="hidden" name="series_id" value="{{ sid }}"><input type="hidden" name="option" value="{{ o.name }}">
 {% for hk in o.hooks %}<label style="display:block"><input type="radio" name="hook" value="{{ loop.index0 }}"{% if hk == o.hook %} checked{% endif %}> {{ hk }}</label>{% endfor %}
 <input name="text" maxlength="40" placeholder="or type your own label" style="width:100%;margin:.3em 0">
+{% if o.name == 'nametag_headline' %}<input name="headline" maxlength="40" placeholder="type the headline (bottom line)" style="width:100%;margin:0 0 .3em">{% endif %}
 <button class="ghost">apply label</button> <span class="kv">free, same image</span></form>
 {% endif %}
 <form class="inline" method="post" action="/thumbnail/pick"><input type="hidden" name="series_id" value="{{ sid }}">

@@ -309,3 +309,44 @@ def test_one_card_line_is_drawn_big(tmp_path):
                       card=["THE MAIN SCENARIO HAS ARRIVED."])
     white = _box_pixels(out, (0.0, 0.45, 0.5, 0.9), lambda px: min(px) > 200)
     assert white > 12000, white
+
+
+# ---- the system window is the standard manhwa BLUE panel --------------------
+# Owner, 2026-09-22: "system window looks very wierd... it is not blue panel
+# from standard manhwa approach". The examples' windows (MARRY HER, LEVEL UP!,
+# SQUATS COMPLETED) are a saturated blue translucent panel with a glowing cyan
+# edge, a small header line, ONE huge line, and small stat lines under it.
+
+_WIN = {"header": "MAIN SCENARIO #1", "line": "KILL ONE OR MORE LIVING ORGANISMS.",
+        "footer": ["TIME LIMIT: 30 MINUTES", "PENALTY FOR FAILURE: DEATH"]}
+_WIN_SPEC = {"label_pos": "upper_left", "arrow": "none", "marks": [],
+             "speech_slots": 0, "card": {"pos": [0.04, 0.50], "size": [0.46, 0.40]}}
+_WIN_BOX = (0.05, 0.51, 0.49, 0.89)
+
+
+def _is_blue(px):
+    r, g, b = px
+    return b > 150 and b > r + 60 and b >= g
+
+
+def test_structured_window_is_blue_with_header_big_line_and_footer(tmp_path):
+    out = str(tmp_path / "w.jpg")
+    ov.render_overlay(_stub(tmp_path), out, hook="", style_overlay=_WIN_SPEC,
+                      card=_WIN)
+    blue = _box_pixels(out, _WIN_BOX, _is_blue)
+    white = _box_pixels(out, _WIN_BOX, lambda px: min(px) > 200)
+    assert blue > 60000, blue                    # a BLUE panel, not a dark box
+    assert white > 12000, white                  # the big line is big
+    # header sits above the big line, footer below it: white text in the top
+    # strip and in the bottom strip of the panel
+    assert _box_pixels(out, (0.05, 0.51, 0.49, 0.60), lambda px: min(px) > 200) > 300
+    assert _box_pixels(out, (0.05, 0.80, 0.49, 0.89), lambda px: min(px) > 200) > 300
+
+
+def test_a_plain_list_still_renders_as_a_window(tmp_path):
+    """Older claims hold card as a list of lines; the first is the big line."""
+    out = str(tmp_path / "l.jpg")
+    ov.render_overlay(_stub(tmp_path), out, hook="", style_overlay=_WIN_SPEC,
+                      card=["THE MAIN SCENARIO HAS ARRIVED."])
+    assert _box_pixels(out, _WIN_BOX, _is_blue) > 60000
+    assert _box_pixels(out, _WIN_BOX, lambda px: min(px) > 200) > 12000

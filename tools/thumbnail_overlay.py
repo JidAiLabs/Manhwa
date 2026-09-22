@@ -151,37 +151,79 @@ def _target(spec: Dict[str, Any], W: int, H: int,
     return int(W * fx), int(H * fy)
 
 
-_CARD_FILL = (8, 20, 40, 205)
-_CARD_EDGE = (80, 200, 255, 255)
+# The standard manhwa SYSTEM PANEL, as the example thumbnails draw it (MARRY
+# HER, LEVEL UP!, SQUATS COMPLETED 47/10,000): a saturated blue translucent
+# panel, a glowing cyan edge, a small header line, ONE huge line, small stat
+# lines under it. Owner, 2026-09-22, on the first dark-navy box: "it is not
+# blue panel from standard manhwa approach".
+_CARD_FILL = (24, 96, 214, 215)
+_CARD_TOP = (70, 150, 250, 230)            # a lighter band along the top
+_CARD_EDGE = (120, 225, 255, 255)
+_CARD_GLOW = (90, 200, 255, 70)
+_CARD_DIM = (205, 232, 255)                # header / footer text
 
 
-def _draw_card(img: Image.Image, slot: Dict[str, Any], lines: List[str],
+def _window_parts(card: Any) -> Dict[str, Any]:
+    """A card is a dict {header, line, footer[]} or, from an older claim, a
+    list of lines whose first is the big one."""
+    if isinstance(card, dict):
+        return {"header": str(card.get("header") or "").strip(),
+                "line": str(card.get("line") or "").strip(),
+                "footer": [str(x).strip() for x in card.get("footer") or []
+                           if str(x).strip()]}
+    lines = [str(x).strip() for x in (card or []) if str(x).strip()]
+    return {"header": "", "line": lines[0] if lines else "",
+            "footer": lines[1:3]}
+
+
+def _draw_card(img: Image.Image, slot: Dict[str, Any], card: Any,
                W: int, H: int) -> None:
     """A system window holding the story's OWN printed words (quoted by code
     upstream, never written by a model). Drawn here, not in the art: every word
     on a thumbnail is an overlay."""
+    parts = _window_parts(card)
+    if not parts["line"]:
+        return
     (fx, fy), (fw, fh) = slot["pos"], slot["size"]
     x0, y0, x1, y1 = int(W * fx), int(H * fy), int(W * (fx + fw)), int(H * (fy + fh))
     d = ImageDraw.Draw(img, "RGBA")           # RGBA draw blends the fill
-    d.rounded_rectangle((x0, y0, x1, y1), radius=int(H * 0.025),
-                        fill=_CARD_FILL, outline=_CARD_EDGE,
-                        width=max(4, H // 160))
-    pad = int((x1 - x0) * 0.07)
-    if len(lines) == 1:
-        # ONE line is the hook, so it is drawn BIG: stacked on two balanced
-        # lines rather than shrunk (the examples' windows hold a few huge
-        # words; three sentences of fine print read as nothing).
-        rows, f = _label_lines(d, lines[0], int(H * 0.11), x1 - x0 - 2 * pad)
-        row_h = int(f.size * 1.12)
-        top = y0 + max(pad, ((y1 - y0) - row_h * len(rows)) // 2)
-        for i, row in enumerate(rows):
-            d.text((x0 + pad, top + i * row_h), row, font=f, fill=_WHITE)
-        return
-    step = (y1 - y0 - 2 * pad) // max(len(lines), 1)
-    for i, line in enumerate(lines):
-        f = _fitted(d, line, min(int(H * 0.07), int(step * 0.8)),
-                    x1 - x0 - 2 * pad)
-        d.text((x0 + pad, y0 + pad + i * step), line, font=f, fill=_WHITE)
+    r = int(H * 0.03)
+    # outer glow: the same rounded rect, larger and fainter, twice
+    for grow in (int(H * 0.018), int(H * 0.009)):
+        d.rounded_rectangle((x0 - grow, y0 - grow, x1 + grow, y1 + grow),
+                            radius=r + grow, fill=_CARD_GLOW)
+    d.rounded_rectangle((x0, y0, x1, y1), radius=r, fill=_CARD_FILL,
+                        outline=_CARD_EDGE, width=max(4, H // 160))
+    band = int((y1 - y0) * 0.16)
+    d.rounded_rectangle((x0, y0, x1, y0 + band + r), radius=r, fill=_CARD_TOP)
+    d.rectangle((x0, y0 + band, x1, y0 + band + r), fill=_CARD_FILL)
+    d.line((x0, y0 + band, x1, y0 + band), fill=_CARD_EDGE, width=2)
+
+    pad = int((x1 - x0) * 0.06)
+    inner_w = x1 - x0 - 2 * pad
+    f_small = _fitted(d, parts["header"] or "SYSTEM", int(H * 0.045), inner_w)
+    y = y0 + (band - f_small.size) // 2
+    d.text((x0 + pad, y), "[ %s ]" % (parts["header"] or "SYSTEM"), font=f_small,
+           fill=_WHITE)
+    y = y0 + band + pad // 2
+    footer = parts["footer"][:2]
+    foot_h = int(H * 0.042 * 1.25) * len(footer) if footer else 0
+    room = y1 - pad // 2 - foot_h - y
+    # the big line: stacked on two balanced rows rather than shrunk
+    rows, f = _label_lines(d, parts["line"], int(H * 0.105), inner_w)
+    row_h = int(f.size * 1.1)
+    while row_h * len(rows) > room and f.size > 14:
+        f = _font(int(f.size * 0.92))
+        row_h = int(f.size * 1.1)
+    top = y + max(0, (room - row_h * len(rows)) // 2)
+    for i, row in enumerate(rows):
+        d.text((x0 + pad + 3, top + i * row_h + 3), row, font=f, fill=(0, 30, 90, 200))
+        d.text((x0 + pad, top + i * row_h), row, font=f, fill=_WHITE)
+    fy_ = y1 - pad // 2 - foot_h
+    for i, line in enumerate(footer):
+        ff = _fitted(d, line, int(H * 0.042), inner_w)
+        d.text((x0 + pad, fy_ + i * int(H * 0.042 * 1.25)), line, font=ff,
+               fill=_CARD_DIM)
 
 
 def render_overlay(base_image: str, out_path: str, *, hook: str,
@@ -190,7 +232,7 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
                    size: Tuple[int, int] = (1280, 720),
                    badge: str = "",
                    tags: Optional[List[Dict[str, Any]]] = None,
-                   card: Optional[List[str]] = None) -> str:
+                   card: Any = None) -> str:
     """Composite the branded text layer onto *base_image*. Returns *out_path*.
 
     A single centred phrase reads as a caption on a picture; the thumbnails that
@@ -213,7 +255,6 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
     render byte-identically."""
     W, H = size
     img = Image.open(base_image).convert("RGB").resize((W, H))
-    card = [str(x).strip() for x in (card or []) if str(x).strip()]
     if card and style_overlay.get("card"):
         _draw_card(img, style_overlay["card"], card, W, H)   # under the labels
     draw = ImageDraw.Draw(img)

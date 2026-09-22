@@ -130,3 +130,11 @@ def test_every_tone_forbids_inventing_and_erotic_stays_suggestive():
         assert "invent" in clause.lower(), name          # only what the story shows
     e = ts.CLAIM_TONES["erotic"].lower()
     assert "never explicit" in e and "absurd" in e       # falls back when the story has none
+
+
+def test_the_system_window_slot_holds_a_header_a_big_line_and_two_stats():
+    """The blue panel now carries three tiers, so its slot is wider and taller
+    than the one-line box was, and still clear of the label and the face."""
+    card = ts.HOOK_DESIGNS["system_window"]["overlay"]["card"]
+    (cx, cy), (cw, ch) = card["pos"], card["size"]
+    assert cw >= 0.44 and ch >= 0.40

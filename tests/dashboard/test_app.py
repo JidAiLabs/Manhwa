@@ -1525,6 +1525,79 @@ def test_owner_types_a_label_and_it_is_drawn_for_free(client, tmp_path, monkeypa
                   follow_redirects=False).status_code == 400
 
 
+_WINDOW = {"header": "MAIN SCENARIO #1", "line": "KILL ONE OR MORE LIVING ORGANISMS.",
+           "footer": ["TIME LIMIT: 30 MINUTES", "PENALTY FOR FAILURE: DEATH"]}
+_PLAIN = {"header": "", "line": "THE MAIN SCENARIO HAS ARRIVED.", "footer": []}
+
+
+def _painted_option(tmp_path, name, **concept):
+    import json as _j
+    from PIL import Image
+    d = tmp_path / "dist" / "series_1" / "options" / name
+    d.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1280, 720), (20, 30, 40)).save(d / "thumbnail_art.png")
+    (d / "thumbnail_yt.jpg").write_bytes(b"old")
+    (d / "concept.json").write_text(_j.dumps(concept))
+    return d
+
+
+def test_the_page_shows_a_window_as_header_and_line_and_lists_the_options(
+        client, tmp_path, monkeypatch):
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    _claim_file(tmp_path, card=[_PLAIN], card_options=[_WINDOW, _PLAIN])
+    page = c.get("/series/1").text
+    assert "THE MAIN SCENARIO HAS ARRIVED." in page
+    assert "KILL ONE OR MORE LIVING ORGANISMS." in page      # offered
+    assert "MAIN SCENARIO #1" in page                        # with its header
+    assert "{&#39;header&#39;" not in page and "{'header'" not in page   # never a dict repr
+
+
+def test_picking_a_window_redraws_the_painted_card_for_free(client, tmp_path,
+                                                            monkeypatch):
+    """The window is an overlay on the art the owner already paid for, so a
+    new window must not cost another generate."""
+    import json as _j
+    c, con = client
+    from studio.dashboard import app as _app
+    from thumbnail_styles import HOOK_DESIGNS
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    claim = _claim_file(tmp_path, card=[_PLAIN], card_options=[_WINDOW, _PLAIN])
+    d = _painted_option(tmp_path, "system_window", style="power_reveal",
+                        design="system_window", hook="A", hooks=["A"],
+                        card=_PLAIN,
+                        style_overlay=HOOK_DESIGNS["system_window"]["overlay"])
+    r = c.post("/thumbnail/card", data={"series_id": 1, "line": "0"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert _j.loads(claim.read_text())["card"] == [_WINDOW]
+    assert _j.loads((d / "concept.json").read_text())["card"] == _WINDOW
+    assert (d / "thumbnail_yt.jpg").read_bytes() != b"old"        # redrawn
+    assert con.execute("SELECT COUNT(*) FROM job").fetchone()[0] == 0   # nothing paid
+
+
+def test_owner_types_the_headline_too(client, tmp_path, monkeypatch):
+    import json as _j
+    c, _ = client
+    from studio.dashboard import app as _app
+    from thumbnail_styles import HOOK_DESIGNS
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    ov = HOOK_DESIGNS["nametag_headline"]["overlay"]
+    d = _painted_option(tmp_path, "nametag_headline", style="power_reveal",
+                        design="nametag_headline", hook="A", hooks=["A"],
+                        tags=[{"text": "OLD", "pos": ov["headline_pos"], "arrow": False}],
+                        style_overlay=ov)
+    r = c.post("/thumbnail/label", data={"series_id": 1, "option": "nametag_headline",
+                                         "hook": "0", "headline": " Apocalypse? Spoiled. "},
+               follow_redirects=False)
+    assert r.status_code == 303
+    got = _j.loads((d / "concept.json").read_text())
+    assert got["tags"][0]["text"] == "Apocalypse? Spoiled."
+    assert got["tags"][0]["pos"] == ov["headline_pos"]
+    assert (d / "thumbnail_yt.jpg").read_bytes() != b"old"
+
+
 def test_generate_with_picks_rejects_bad_selections(client, tmp_path, monkeypatch):
     c, con = client
     from studio.dashboard import app as _app
