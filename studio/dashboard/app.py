@@ -759,11 +759,33 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.post("/thumbnail/claim")
-    def preview_claim(series_id: int = Form(...)):
+    def preview_claim(series_id: int = Form(...), tone: str = Form("absurd")):
         """Write the series claim and paint nothing: free. Owner-triggered and
         tiny, so it jumps the prepare queue (a thumbnail job once sat behind 30
         prepares); generate then paints the claim this leaves on disk."""
-        jobs.enqueue(con(), "series_claim", series_id=series_id, priority=30)
+        from thumbnail_styles import CLAIM_TONES
+        if tone not in CLAIM_TONES:
+            return PlainTextResponse("no such tone", status_code=400)
+        jobs.enqueue(con(), "series_claim", series_id=series_id, priority=30,
+                     payload={"tone": tone})
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
+
+    @app.post("/thumbnail/card")
+    def pick_card_line(series_id: int = Form(...), line: int = Form(...)):
+        """The owner picks which of the window's printable lines the system
+        window prints (they are all quoted from the story; the order is the
+        code's). Rewrites the claim's `card`; free, nothing repainted until
+        the next generate."""
+        p = REPO / "dist" / f"series_{series_id}" / "claim.json"
+        try:
+            claim = json.loads(p.read_text())
+        except (OSError, ValueError):
+            return PlainTextResponse("no claim", status_code=404)
+        options = [str(x) for x in claim.get("card_options") or []]
+        if not 0 <= line < len(options):
+            return PlainTextResponse("no such line", status_code=404)
+        claim["card"] = [options[line]]
+        p.write_text(json.dumps(claim, ensure_ascii=False, indent=2))
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.post("/thumbnail/generate")
@@ -781,9 +803,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
 
     @app.post("/thumbnail/label")
     def switch_label(series_id: int = Form(...), option: str = Form(...),
-                     hook: int = Form(...)):
-        """Redraw an option's label with another of its candidates: the same
-        art, a new text layer, no image call, no cost."""
+                     hook: int = Form(...), text: str = Form("")):
+        """Redraw an option's label with another of its candidates -- or with
+        words the owner TYPED (*text*, up to 40 characters; it joins the
+        candidates so it stays switchable). The same art, a new text layer, no
+        image call, no cost. Owner, 2026-09-22: the model's five labels for ORV
+        were all abstract; the words are one string and the owner can write it."""
         d = REPO / "dist" / f"series_{series_id}" / "options" / option
         try:
             concept = json.loads((d / "concept.json").read_text())
@@ -793,6 +818,15 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         if option not in gates.THUMBNAIL_OPTIONS or not 0 <= hook < len(hooks) \
                 or not (d / "thumbnail_art.png").exists():
             return PlainTextResponse("no such label", status_code=404)
+        text = " ".join(text.split())
+        if len(text) > 40:
+            return PlainTextResponse("a label is at most 40 characters",
+                                     status_code=400)
+        if text:
+            if text not in hooks:
+                hooks.append(text)
+                concept["hooks"] = hooks
+            hook = hooks.index(text)
         from thumbnail_overlay import render_overlay
         render_overlay(str(d / "thumbnail_art.png"), str(d / "thumbnail_yt.jpg"),
                        hook=hooks[hook],

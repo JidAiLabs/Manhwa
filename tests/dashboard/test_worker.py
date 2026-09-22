@@ -2969,3 +2969,20 @@ def test_new_reference_picks_keep_the_reviewed_text(tmp_path, monkeypatch):
     assert not [c for c in calls if "--write-claim" in c]
     got = _j.loads(claim.read_text())
     assert got["scene"] == "REVIEWED SCENE" and got["refs"] == ["/new/p22.jpg"]
+
+
+def test_claim_preview_passes_the_owners_tone(tmp_path, monkeypatch):
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_claim(con, {"series_id": 1, "payload": {"tone": "erotic"}},
+                           io.StringIO())
+    c = [x for x in calls if "--write-claim" in x][0]
+    assert c[c.index("--tone") + 1] == "erotic"
+    calls.clear()
+    worker._h_series_claim(con, {"series_id": 1, "payload": {}}, io.StringIO())
+    c = [x for x in calls if "--write-claim" in x][0]
+    assert c[c.index("--tone") + 1] == "absurd"           # the default

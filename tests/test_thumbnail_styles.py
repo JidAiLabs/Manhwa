@@ -110,3 +110,23 @@ def test_the_headline_design_asks_for_a_painted_bottom_not_a_blank_bar():
     clause = ts.HOOK_DESIGNS["nametag_headline"]["art_clause"].lower()
     assert "bottom fifth" not in clause           # that wording painted an empty strip
     assert "bottom edge" in clause
+
+
+# --- the claim's TONE: absurd by default ------------------------------------
+# Owner, 2026-09-22: "i prefer absurd and a little erotique options they are
+# more catchy". Counted in the owner's 20: the three biggest outliers are absurd
+# (EXP GLITCH over 100x, MC (LOSER)/FIANCE over 100x, MARRY HER 47x); the three
+# whose only hook is the body are the batch's weakest (1.1x, 1.1x, 2 VPH).
+
+def test_claim_tones_are_absurd_erotic_dramatic_with_absurd_default():
+    assert set(ts.CLAIM_TONES) == {"absurd", "erotic", "dramatic"}
+    assert ts.DEFAULT_TONE == "absurd"
+    for name, clause in ts.CLAIM_TONES.items():
+        assert isinstance(clause, str) and clause.strip(), name
+
+
+def test_every_tone_forbids_inventing_and_erotic_stays_suggestive():
+    for name, clause in ts.CLAIM_TONES.items():
+        assert "invent" in clause.lower(), name          # only what the story shows
+    e = ts.CLAIM_TONES["erotic"].lower()
+    assert "never explicit" in e and "absurd" in e       # falls back when the story has none

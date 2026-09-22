@@ -1443,6 +1443,88 @@ def test_the_series_claim_is_readable_on_the_page_and_previewed_for_free(
     assert [tuple(x) for x in rows] == [("series_claim", 1, 30)]
 
 
+def _claim_file(tmp_path, **extra):
+    import json as _j
+    base = tmp_path / "dist" / "series_1"
+    base.mkdir(parents=True, exist_ok=True)
+    p = base / "claim.json"
+    p.write_text(_j.dumps({"scene": "S", "brief": {"premise": "P"},
+                           "labels": ["A"], "designs": ["nametag"],
+                           "card": ["THE MAIN SCENARIO HAS ARRIVED."],
+                           "card_options": ["THE MAIN SCENARIO HAS ARRIVED.",
+                                            "100 COINS HAVE BEEN DEDUCTED."],
+                           "tone": "absurd", **extra}))
+    return p
+
+
+def test_claim_preview_takes_a_tone_and_the_page_preselects_the_last_one(
+        client, tmp_path, monkeypatch):
+    import json as _j
+    c, con = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    r = c.post("/thumbnail/claim", data={"series_id": 1, "tone": "erotic"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    rows = con.execute("SELECT payload_json FROM job WHERE type='series_claim'").fetchall()
+    assert [_j.loads(x[0]) for x in rows] == [{"tone": "erotic"}]
+    assert c.post("/thumbnail/claim", data={"series_id": 1, "tone": "gritty"},
+                  follow_redirects=False).status_code == 400
+    _claim_file(tmp_path, tone="erotic")
+    page = c.get("/series/1").text
+    assert '<option value="erotic" selected' in page
+    assert '<option value="absurd" selected' not in page
+
+
+def test_owner_picks_the_window_line_from_the_claims_options(client, tmp_path,
+                                                            monkeypatch):
+    import json as _j
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    p = _claim_file(tmp_path)
+    page = c.get("/series/1").text
+    assert "100 COINS HAVE BEEN DEDUCTED." in page          # offered on the page
+    r = c.post("/thumbnail/card", data={"series_id": 1, "line": "1"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert _j.loads(p.read_text())["card"] == ["100 COINS HAVE BEEN DEDUCTED."]
+    for bad in ("7", "-1", "x"):
+        assert c.post("/thumbnail/card", data={"series_id": 1, "line": bad},
+                      follow_redirects=False).status_code in (400, 404, 422), bad
+
+
+def test_owner_types_a_label_and_it_is_drawn_for_free(client, tmp_path, monkeypatch):
+    import json as _j
+    from PIL import Image
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    d = tmp_path / "dist" / "series_1" / "options" / "nametag"
+    d.mkdir(parents=True)
+    Image.new("RGB", (1280, 720), (20, 30, 40)).save(d / "thumbnail_art.png")
+    (d / "thumbnail_yt.jpg").write_bytes(b"old")
+    (d / "concept.json").write_text(_j.dumps({
+        "style": "power_reveal", "hook": "A", "hooks": ["A", "B"],
+        "style_overlay": {"label_pos": "upper_left", "arrow": "none", "marks": []}}))
+    r = c.post("/thumbnail/label", data={"series_id": 1, "option": "nametag",
+                                         "hook": "0", "text": "  He Read The Ending "},
+               follow_redirects=False)
+    assert r.status_code == 303
+    got = _j.loads((d / "concept.json").read_text())
+    assert got["hook"] == "He Read The Ending"
+    assert got["hooks"] == ["A", "B", "He Read The Ending"]   # stays switchable
+    assert (d / "thumbnail_yt.jpg").read_bytes() != b"old"
+    # a blank box means "use the radio"; an essay is refused
+    assert c.post("/thumbnail/label", data={"series_id": 1, "option": "nametag",
+                                            "hook": "1", "text": "   "},
+                  follow_redirects=False).status_code == 303
+    assert _j.loads((d / "concept.json").read_text())["hook"] == "B"
+    assert c.post("/thumbnail/label", data={"series_id": 1, "option": "nametag",
+                                            "hook": "0", "text": "x" * 41},
+                  follow_redirects=False).status_code == 400
+
+
 def test_generate_with_picks_rejects_bad_selections(client, tmp_path, monkeypatch):
     c, con = client
     from studio.dashboard import app as _app

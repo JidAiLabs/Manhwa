@@ -77,6 +77,34 @@ STYLE_MODULES: Dict[str, Dict[str, Any]] = {
 
 DEFAULT_STYLE = "power_reveal"
 
+# The TONE of the series claim: which moment of the hook the scene, the labels
+# and the headline go for. Owner, 2026-09-22: "i prefer absurd and a little
+# erotique". Counted in the owner's 20 examples: the three biggest outliers are
+# absurd (EXP GLITCH over 100x, MC (LOSER)/FIANCE over 100x, MARRY HER 47x);
+# the three whose only hook is the body are the batch's weakest (1.1x, 1.1x,
+# 2 views/hour). So absurd is the default and erotic is a per-series switch
+# that must fall back when the story has nothing to show. Every tone forbids
+# inventing: the click must be a promise the video can pay off.
+CLAIM_TONES: Dict[str, str] = {
+    "absurd": (
+        "TONE: ABSURD. Choose the moment of THE HOOK that is the most WRONG at "
+        "first sight -- a viewer stares for a second because it makes no sense: "
+        "someone calm while everyone screams, a system window ordering "
+        "something ridiculous, a mundane act while the world ends. The scene, "
+        "the labels and the headline share that deadpan wrongness. Never invent "
+        "it: only what the story actually shows."),
+    "erotic": (
+        "TONE: SUGGESTIVE. Choose the moment of THE HOOK with the most heat -- a "
+        "charged pose, gaze or touch the story actually draws -- suggestive, "
+        "never explicit, and never invented. If the opening has no such moment, "
+        "go ABSURD instead: the most wrong-at-first-sight moment of the hook."),
+    "dramatic": (
+        "TONE: DRAMATIC. Choose the moment of THE HOOK with the highest stakes "
+        "-- the reveal, the transformation, the threat. Never invent it: only "
+        "what the story actually shows."),
+}
+DEFAULT_TONE = "absurd"
+
 # HOOK DESIGNS: the LABEL layer on a one-scene thumbnail, counted from the
 # owner's examples (20 on 2026-09-21: nametag+arrow 3, contrast pair 4,
 # nametag+headline 4, system window 4, roll-call 2, split 1, no text 2).

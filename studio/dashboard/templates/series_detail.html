@@ -78,6 +78,11 @@
 <div><b>Labels</b> (same on every card): {{ (claim.labels or [])|join(' · ') or '—' }}</div>
 {% if claim.headlines %}<div><b>Headline:</b> {{ claim.headlines[0] }}</div>{% endif %}
 {% if claim.card %}<div><b>System window line:</b> {{ claim.card[0] }}</div>{% endif %}
+{% if claim.card_options and claim.card_options|length > 1 %}
+<form method="post" action="/thumbnail/card" class="row" style="margin:.3em 0 0"><input type="hidden" name="series_id" value="{{ sid }}">
+<select name="line">{% for l in claim.card_options %}<option value="{{ loop.index0 }}"{% if claim.card and l == claim.card[0] %} selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+<button class="ghost">use this line</button> <span class="kv">every line is quoted from the story; free, repainted at the next generate</span></form>
+{% endif %}
 <div><b>Designs to build:</b> {{ (claim.designs or [])|join(', ')|replace('_', ' ') or '—' }} · <b>from:</b> {{ claim.claim_source or '—' }}</div>
 </div>
 {% else %}
@@ -85,6 +90,8 @@
 {% endif %}
 <div class="row">
 <form class="inline" method="post" action="/thumbnail/claim"><input type="hidden" name="series_id" value="{{ sid }}">
+{% set tone = (claim.tone if claim and claim.tone else 'absurd') %}
+<select name="tone" title="which moment of the hook the scene and labels go for">{% for t in ('absurd', 'erotic', 'dramatic') %}<option value="{{ t }}"{% if t == tone %} selected{% endif %}>{{ t }}</option>{% endfor %}</select>
 <button class="ghost"{% if not thumb_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 'preview claim again' if claim else 'preview claim' }}</button></form>
 <span class="kv">free: two local model calls, no image. Writes a NEW claim; generate reuses whatever claim is shown here.</span>
 </div>
@@ -98,6 +105,7 @@
 {% if o.hooks|length > 1 %}
 <form method="post" action="/thumbnail/label"><input type="hidden" name="series_id" value="{{ sid }}"><input type="hidden" name="option" value="{{ o.name }}">
 {% for hk in o.hooks %}<label style="display:block"><input type="radio" name="hook" value="{{ loop.index0 }}"{% if hk == o.hook %} checked{% endif %}> {{ hk }}</label>{% endfor %}
+<input name="text" maxlength="40" placeholder="or type your own label" style="width:100%;margin:.3em 0">
 <button class="ghost">apply label</button> <span class="kv">free, same image</span></form>
 {% endif %}
 <form class="inline" method="post" action="/thumbnail/pick"><input type="hidden" name="series_id" value="{{ sid }}">

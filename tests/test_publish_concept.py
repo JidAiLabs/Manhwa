@@ -1732,3 +1732,43 @@ def test_write_claim_without_a_teaser_montage_fails_loud(tmp_path, monkeypatch):
         "--episode-dirs", ",".join(eps), "--write-claim", str(out),
         "--teaser-scan-chapters", "12", "--teaser-min-panels", "4"])
     assert rc == 2 and not out.exists() and prompts == []
+
+
+# --- tone reaches the claim; the owner picks the window line ---------------
+
+def test_claim_prompt_carries_the_tone_and_defaults_to_absurd():
+    import pytest
+    from thumbnail_styles import CLAIM_TONES
+    p = pc.build_claim_prompt({"premise": "P"}, "B")
+    assert CLAIM_TONES["absurd"] in p
+    assert CLAIM_TONES["erotic"] in pc.build_claim_prompt({"premise": "P"}, "B",
+                                                          tone="erotic")
+    with pytest.raises(ValueError, match="tone"):
+        pc.build_claim_prompt({"premise": "P"}, "B", tone="gritty")
+
+
+def test_write_claim_records_the_tone_and_every_printable_window_line(
+        tmp_path, monkeypatch):
+    import json as _j
+    eps, out, rc, prompts = _write_claim(tmp_path, monkeypatch,
+                                         extra=["--tone", "erotic"])
+    assert rc == 0
+    c = _j.loads(out.read_text())
+    assert c["tone"] == "erotic"
+    from thumbnail_styles import CLAIM_TONES
+    assert CLAIM_TONES["erotic"] in prompts[1]
+    # every printable line of the window is offered; the card is the first
+    assert c["card_options"] == ["Main scenario has begun.",
+                                 "YOU HAVE EXCEEDED THE TIME LIMIT."]
+    assert c["card"] == c["card_options"][:2]
+
+
+def test_concept_from_claim_paints_the_line_the_owner_chose():
+    claim = _a_claim(card=["THE MAIN SCENARIO HAS ARRIVED."],
+                     card_options=["THE MAIN SCENARIO HAS ARRIVED.",
+                                   "100 COINS HAVE BEEN DEDUCTED."])
+    assert pc.concept_from_claim(claim, "system_window")["card"] == [
+        "THE MAIN SCENARIO HAS ARRIVED."]
+    claim["card"] = ["100 COINS HAVE BEEN DEDUCTED."]
+    assert pc.concept_from_claim(claim, "system_window")["card"] == [
+        "100 COINS HAVE BEEN DEDUCTED."]

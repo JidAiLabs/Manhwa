@@ -2070,9 +2070,14 @@ def _h_series_claim(con: sqlite3.Connection, job: Dict[str, Any],
         raise NonRetryableError("no processed chapters yet")
     payload = job.get("payload") or {}
     picked = [str(r) for r in (payload.get("refs") or []) if str(r).strip()]
+    # the owner's tone for this series (absurd by default); validated by
+    # publish_concept's own choices list
+    tone = str(payload.get("tone") or "absurd")
     with record_stage(con, chapter_id=None, stage="series_claim", series_id=sid):
         _write_series_claim(con, sid, eps,
-                            ["--refs", ",".join(picked)] if picked else [], log)
+                            ["--tone", tone,
+                             *(["--refs", ",".join(picked)] if picked else [])],
+                            log)
 
 
 def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],

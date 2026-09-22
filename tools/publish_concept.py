@@ -25,7 +25,9 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from thumbnail_styles import (  # noqa: E402
+    CLAIM_TONES,
     DEFAULT_STYLE,
+    DEFAULT_TONE,
     HOOK_DESIGNS,
     STYLE_MODULES,
     select_style,
@@ -336,7 +338,8 @@ _SCENE_ASK = (
     'the hook. No real character names",\n')
 
 
-def build_claim_prompt(brief: Dict[str, Any], banned: str) -> str:
+def build_claim_prompt(brief: Dict[str, Any], banned: str,
+                       tone: str = DEFAULT_TONE) -> str:
     """ONE claim per series: the title, the labels, the headlines AND the scene
     to paint, written in a single call from the teaser-led understanding.
 
@@ -346,7 +349,10 @@ def build_claim_prompt(brief: Dict[str, Any], banned: str) -> str:
     reached the image model: every series was painted as "a hero with an aura
     and shocked onlookers". Owner, 2026-09-22: "we dont see a story on the
     thumbnail, the video title, teaser and thumbnail must in complementary".
+    *tone* (thumbnail_styles.CLAIM_TONES) picks WHICH moment of the hook.
     """
+    if tone not in CLAIM_TONES:
+        raise ValueError("unknown claim tone: %r" % tone)
     return (
         "You are writing the ONE publish claim for a manhwa recap series. You "
         "have already read its opening; your understanding is below.\n"
@@ -355,6 +361,7 @@ def build_claim_prompt(brief: Dict[str, Any], banned: str) -> str:
         "STORY UNDERSTANDING:\n" + json.dumps(brief, indent=2) + "\n\n"
         "Everything you write must belong to THIS story only. Anything that "
         "would fit any manhwa is a failure.\n\n"
+        + CLAIM_TONES[tone] + "\n\n"
         "Return ONLY JSON:\n{\n"
         '  "title": "YouTube title, 45-80 characters: WHO the protagonist starts '
         'as, the TURN, their specific EDGE, the PAYOFF. FULL CAPS on the 2-4 '
@@ -1515,6 +1522,9 @@ def main() -> int:
                     help="understand the series ONCE from its teaser window and "
                          "save the claim every card, the painted scene and the "
                          "titles read (2 local model calls, nothing paid)")
+    ap.add_argument("--tone", default=DEFAULT_TONE, choices=sorted(CLAIM_TONES),
+                    help="which moment of the hook the claim goes for "
+                         "(thumbnail_styles.CLAIM_TONES); absurd by default")
     ap.add_argument("--claim", default="", metavar="PATH",
                     help="build the --design card from a saved claim: no model "
                          "call, so every card shares labels, scene and refs")
@@ -1579,8 +1589,11 @@ def main() -> int:
                 tail_frac=args.teaser_payoff_tail_frac)
         win = args.teaser_scan_chapters if montage else len(eps)
         w_eps, w_beats = eps[:win], beats_list[:win]
-        card = (window_card_lines(w_eps, montage, banned=args.series_title)
-                if montage else [])
+        # EVERY printable window line is offered (the owner picks the one the
+        # window prints); the first three stay the default card
+        card_options = (window_card_lines(w_eps, montage, banned=args.series_title,
+                                          max_lines=100) if montage else [])
+        card = card_options[:3]
         if args.rank_designs:
             if not montage or not args.out:
                 print("[err] --rank-designs needs --out and a teaser montage "
@@ -1647,7 +1660,8 @@ def main() -> int:
                                               hook_block=hook_block),
                            args.ollama_model)
             print("[..] brief: %s" % str(brief.get("premise") or "")[:110])
-            pkg = _gemma(build_claim_prompt(brief, args.series_title),
+            pkg = _gemma(build_claim_prompt(brief, args.series_title,
+                                            tone=args.tone),
                          args.ollama_model)
             corpus = beats_text_corpus(w_beats[climax_ci] if w_beats else {})
             grounded = lambda raw: [x for x in (t.replace("|", " -> ")
@@ -1663,7 +1677,8 @@ def main() -> int:
                 "scene": re.sub(r"\s+", " ", str(pkg.get("scene") or "")).strip(),
                 "labels": grounded(pkg.get("labels")),
                 "headlines": grounded(pkg.get("headlines")),
-                "card": card, "designs": names, "design_reason": why,
+                "card": card, "card_options": card_options, "tone": args.tone,
+                "designs": names, "design_reason": why,
                 "claim_source": claim_source,
                 "teaser_panels": [str(p.get("scene_file") or "") for p in montage],
                 "climax_chapter_index": climax_ci,
