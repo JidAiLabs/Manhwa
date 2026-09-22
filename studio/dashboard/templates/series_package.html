@@ -1,0 +1,59 @@
+{% extends "base.html" %}{% set active='series' %}{% block body %}
+<h2>{{ title }} <small>— the publish package: what the thumbnail, the labels and the titles say</small></h2>
+<p class="kv"><a href="/series/{{ sid }}">← back to the series</a> · every word here is what is on disk now; the page never changes anything.</p>
+
+<h3>1. Story <small class="kv">— the understanding written ONCE from the teaser's window; every label, scene and title reads it</small></h3>
+{% if claim and claim.brief %}
+<div class="kv" style="max-width:960px;line-height:1.5;border:1px solid var(--line);border-radius:8px;padding:.6em .8em">
+{% for k in ('premise', 'protagonist', 'engine', 'arc', 'why_watch') %}{% if claim.brief[k] %}<div><b>{{ k|replace('_', ' ') }}:</b> {{ claim.brief[k] }}</div>{% endif %}{% endfor %}
+{% if claim.brief.distinctive %}<div><b>distinctive:</b> {{ claim.brief.distinctive|join(' · ') }}</div>{% endif %}
+</div>
+{% else %}<span class="kv">no claim yet — preview it on the series page (free)</span>{% endif %}
+
+<h3>2. Claim <small class="kv">— the hook the painter and the cards work from</small></h3>
+{% if claim %}
+<div class="kv" style="max-width:960px;line-height:1.5;border:1px solid var(--line);border-radius:8px;padding:.6em .8em">
+<div><b>from:</b> {{ claim.claim_source or '—' }} · <b>tone:</b> {{ claim.tone or 'none (written before tones existed)' }} · <b>designs:</b> {{ (claim.designs or [])|join(', ')|replace('_', ' ') }}</div>
+<div><b>scene to paint:</b> {{ claim.scene or '—' }}</div>
+<div><b>label candidates:</b> {{ (claim.labels or [])|join(' · ') or '—' }}</div>
+<div><b>headline candidates:</b> {{ (claim.headlines or [])|join(' · ') or '—' }}</div>
+{% if window %}<div><b>system window:</b> {% if window.header %}[ {{ window.header }} ] {% endif %}<b>{{ window.line }}</b>{% if window.footer %} — {{ window.footer|join(' · ') }}{% endif %}</div>{% endif %}
+<div><b>series title candidate:</b> {{ claim.title or '—' }} <span class="kv">(video titles are written per video, below)</span></div>
+</div>
+{% endif %}
+
+<h3>3. References <small class="kv">— the panels the painter copies the lead from</small></h3>
+{% if refs %}<ul class="kv">{% for r in refs %}<li>{{ r.chapter }} · {{ r.file }}{% if not r.exists %} <span class="b err">missing on disk</span>{% endif %}</li>{% endfor %}</ul>{% else %}<span class="kv">—</span>{% endif %}
+
+<h3>4. The cards <small class="kv">— what each option says right now, and the exact prompt its art was painted from</small></h3>
+{% if cards %}
+<div class="row" style="align-items:flex-start;gap:1.2em;flex-wrap:wrap">
+{% for o in cards %}
+<div style="max-width:520px">
+<img src="/thumb/series/{{ sid }}/option/{{ o.name }}?v={{ o.v }}" alt="option {{ o.name }}" style="width:100%;border:1px solid var(--line);border-radius:8px">
+<div class="kv" style="line-height:1.5"><b>{{ o.name|replace('_', ' ') }}</b><br>
+<b>label:</b> {{ o.hook or '—' }}{% if o.headline %}<br><b>headline:</b> {{ o.headline|join(' · ') }}{% endif %}
+{% if o.window %}<br><b>window:</b> {% if o.window.header %}[ {{ o.window.header }} ] {% endif %}{{ o.window.line }}{% if o.window.footer %} — {{ o.window.footer|join(' · ') }}{% endif %}{% endif %}
+<br><b>other labels on offer:</b> {{ o.hooks|join(' · ') or '—' }}</div>
+<details style="margin-top:.4em"><summary class="kv">painter prompt (exact)</summary><pre style="white-space:pre-wrap;font-size:.8em;max-width:520px">{{ o.prompt or 'not saved — this card was painted before prompts were kept' }}</pre></details>
+</div>
+{% endfor %}
+</div>
+{% else %}<span class="kv">no option cards built yet</span>{% endif %}
+
+<h3>5. Live thumbnail <small class="kv">— the one every video of this series uses</small></h3>
+{% if thumb_exists %}
+<div class="row" style="align-items:flex-start;gap:1em">
+<img src="/thumb/series/{{ sid }}?v={{ thumb_v }}" alt="live thumbnail" style="max-width:420px;border:1px solid var(--line);border-radius:8px">
+<div class="kv" style="line-height:1.5">{% if picked %}<b>{{ picked }}</b> · {{ picked_at }}{% else %}not picked from an option (older live image){% endif %}
+{% if live %}<br><b>label:</b> {{ live.hook or '—' }}{% endif %}</div>
+</div>
+{% else %}<span class="kv">no live thumbnail yet</span>{% endif %}
+
+<h3>6. Video titles <small class="kv">— one per video (bundle), written from the same story and the picked thumbnail's words</small></h3>
+{% if videos %}
+<table><tr><th>video</th><th>state</th><th>title</th></tr>
+{% for v in videos %}<tr><td>{{ v.label }}</td><td>{{ v.state }}</td><td>{{ v.title or '— not written yet (publish_meta runs when the video is created; re-run it after a pick)' }}</td></tr>{% endfor %}
+</table>
+{% else %}<span class="kv">no videos created for this series yet — a title is written when one is</span>{% endif %}
+{% endblock %}

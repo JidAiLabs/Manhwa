@@ -70,7 +70,7 @@
 <span class="kv">no live thumbnail yet — generate the options, then pick one{% if not thumb_ready %} (prepare at least one chapter first){% endif %}</span>
 {% endif %}
 </div>
-<h3 style="margin:.8em 0 .3em">Series claim <small class="kv">— what the painter is told and what every card and title says, written once from the teaser. Read it BEFORE buying images: generate paints exactly this.</small></h3>
+<h3 style="margin:.8em 0 .3em">Series claim <a href="/series/{{ sid }}/package" style="font-size:.8em;margin-left:.6em">see the full package ↗</a> <small class="kv">— what the painter is told and what every card and title says, written once from the teaser. Read it BEFORE buying images: generate paints exactly this.</small></h3>
 {% if claim %}
 <div class="kv" style="max-width:900px;line-height:1.5;border:1px solid var(--line);border-radius:8px;padding:.6em .8em">
 <div><b>Scene to paint:</b> {{ claim.scene or '— none —' }}</div>
@@ -90,8 +90,8 @@
 {% endif %}
 <div class="row">
 <form class="inline" method="post" action="/thumbnail/claim"><input type="hidden" name="series_id" value="{{ sid }}">
-{% set tone = (claim.tone if claim and claim.tone else 'absurd') %}
-<select name="tone" title="which moment of the hook the scene and labels go for">{% for t in ('absurd', 'erotic', 'dramatic') %}<option value="{{ t }}"{% if t == tone %} selected{% endif %}>{{ t }}</option>{% endfor %}</select>
+{% set tone = (claim.tone if claim and claim.tone else ('' if claim else 'absurd')) %}
+<select name="tone" title="which moment of the hook the scene and labels go for">{% if claim and not claim.tone %}<option value="absurd" selected>(none yet — next: absurd)</option>{% endif %}{% for t in ('absurd', 'erotic', 'dramatic') %}<option value="{{ t }}"{% if t == tone %} selected{% endif %}>{{ t }}</option>{% endfor %}</select>
 <button class="ghost"{% if not thumb_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 'preview claim again' if claim else 'preview claim' }}</button></form>
 <span class="kv">free: two local model calls, no image. Writes a NEW claim; generate reuses whatever claim is shown here.</span>
 </div>

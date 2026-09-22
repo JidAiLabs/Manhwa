@@ -887,6 +887,75 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                                                    indent=2))
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
+    @app.get("/series/{sid}/package", response_class=HTMLResponse)
+    def series_package(request: Request, sid: int):
+        """Everything the thumbnail and the titles say, on ONE page: the story
+        (the brief), the claim, the words on each card with its image, the
+        exact painter prompt, the references, every video's title, and what is
+        live. Owner, 2026-09-22: "what is the final history, label, title,
+        video title, prompt you plan etc? how do i see them properly?" -- they
+        were spread over three files and one of them was never saved."""
+        c = con()
+        base = REPO / "dist" / f"series_{sid}"
+
+        def _load(p: Path):
+            try:
+                v = json.loads(p.read_text())
+                return v if isinstance(v, dict) else None
+            except (OSError, ValueError):
+                return None
+
+        def _win(x):
+            if isinstance(x, dict):
+                return {"header": x.get("header") or "", "line": x.get("line") or "",
+                        "footer": x.get("footer") or []}
+            return {"header": "", "line": str(x or ""), "footer": []}
+
+        claim = _load(base / "claim.json")
+        cards = []
+        for name in gates.THUMBNAIL_OPTIONS:
+            d = base / "options" / name
+            cj = _load(d / "concept.json")
+            if not cj or not (d / "thumbnail_yt.jpg").exists():
+                continue
+            try:
+                prompt = (d / "art_prompt.txt").read_text()
+            except OSError:
+                prompt = ""
+            cards.append({
+                "name": name, "hook": cj.get("hook") or "", "hooks": cj.get("hooks") or [],
+                "headline": [t.get("text") for t in cj.get("tags") or []
+                             if isinstance(t, dict) and t.get("text")],
+                "window": _win(cj["card"] if isinstance(cj.get("card"), dict)
+                               else (cj.get("card") or [""])[0]) if cj.get("card") else None,
+                "prompt": prompt, "v": int((d / "thumbnail_yt.jpg").stat().st_mtime)})
+        live = _load(base / "concept.json")
+        picked = c.execute(
+            "SELECT note, created_at FROM approval WHERE gate='thumbnail' AND "
+            "series_id=? ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+        videos = []
+        for bid, btitle, state in c.execute(
+                "SELECT id, title, state FROM bundle WHERE series_id=? ORDER BY id", (sid,)):
+            pm = _load(REPO / "dist" / f"bundle_{bid}" / "publish_meta.json") or {}
+            videos.append({"id": bid, "label": btitle or f"bundle {bid}", "state": state,
+                           "title": pm.get("title") or "", "hook": pm.get("hook") or ""})
+        refs = []
+        for r in (claim or {}).get("refs") or []:
+            p = Path(str(r))
+            refs.append({"chapter": p.parent.parent.name, "file": p.name,
+                         "exists": p.is_file()})
+        return page("series_package.html", request, sid=sid,
+                    title=(c.execute("SELECT title FROM series WHERE id=?",
+                                     (sid,)).fetchone() or ["?"])[0],
+                    claim=claim, cards=cards,
+                    refs=refs, videos=videos, live=live,
+                    picked=(picked[0] if picked else ""),
+                    picked_at=(picked[1] if picked else ""),
+                    thumb_exists=(base / "thumbnail_yt.jpg").exists(),
+                    thumb_v=int((base / "thumbnail_yt.jpg").stat().st_mtime)
+                    if (base / "thumbnail_yt.jpg").exists() else 0,
+                    window=_win((claim or {}).get("card", [""])[0]) if claim and claim.get("card") else None)
+
     @app.get("/thumb/series/{sid}/option/{name}")
     def series_thumb_option(sid: int, name: str):
         # closed set: the name becomes a path segment

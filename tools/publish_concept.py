@@ -1061,6 +1061,10 @@ def window_from_ocr(raw: Any, *, banned: str = "") -> Optional[Dict[str, Any]]:
     """
     import gemini_narrative_pass as _gnp
     t = str(raw or "").strip()
+    # the window's bell/box ICON read as letters and glued to the text.
+    # Measured on ORV's opening: DING, TING, FOX, HOX, ONIO, INC, VING, BAX.
+    t = re.sub(r"^(?:DING|TING|FOX|HOX|ONIO|INC|VING|BAX|BOX)\b[\s.:-]*", "", t,
+               flags=re.IGNORECASE)
     if not t:
         return None
     header = ""

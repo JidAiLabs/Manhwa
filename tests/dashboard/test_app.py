@@ -1598,6 +1598,64 @@ def test_owner_types_the_headline_too(client, tmp_path, monkeypatch):
     assert (d / "thumbnail_yt.jpg").read_bytes() != b"old"
 
 
+def test_the_package_page_shows_everything_in_one_place(client, tmp_path, monkeypatch):
+    """Owner, 2026-09-22: "so what is the final history, label, title, video
+    title, prompt you plan etc? how do i see them properly?" -- story, claim,
+    the words on each card, the exact painter prompt, the references, the video
+    titles and what is live, on ONE page."""
+    import json as _j
+    c, con = client
+    from studio.dashboard import app as _app
+    from thumbnail_styles import HOOK_DESIGNS
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    _claim_file(tmp_path, scene="Inside a subway car, a man reads his phone.",
+                brief={"premise": "His finished web novel becomes reality.",
+                       "protagonist": "He has read the whole script.",
+                       "why_watch": "Can a book beat the apocalypse?"},
+                title="ONLY READER SURVIVES - Manhwa Recap",
+                labels=["THE ONLY READER"], headlines=["READER TO PLAYER"],
+                card=[_WINDOW], card_options=[_WINDOW, _PLAIN],
+                refs=["/abs/Episode_5/scenes/p000022.jpg"], tone="absurd",
+                claim_source="teaser:manifest", designs=["system_window", "nametag_headline"])
+    d = _painted_option(tmp_path, "system_window", style="power_reveal",
+                        design="system_window", hook="READ THE ENDING",
+                        hooks=["A", "READ THE ENDING"], card=_WINDOW,
+                        style_overlay=HOOK_DESIGNS["system_window"]["overlay"])
+    (d / "art_prompt.txt").write_text("PAINTER PROMPT: subway car, blank screens")
+    con.execute("INSERT INTO bundle (series_id, title, kind, state) VALUES (1, 'Episodes 1-12', 'range', 'created')")
+    bid = con.execute("SELECT MAX(id) FROM bundle").fetchone()[0]
+    con.commit()
+    pm = tmp_path / "dist" / f"bundle_{bid}"
+    pm.mkdir(parents=True)
+    (pm / "publish_meta.json").write_text(_j.dumps({"title": "LONELY READER Turns Into A GOD - Manhwa Recap"}))
+    page = c.get("/series/1/package").text
+    for needle in ("His finished web novel becomes reality.",       # story
+                   "He has read the whole script.",
+                   "Inside a subway car, a man reads his phone.",   # scene
+                   "teaser:manifest", "absurd",                     # source + tone
+                   "ONLY READER SURVIVES - Manhwa Recap",           # series title candidate
+                   "READ THE ENDING",                               # the card's current label
+                   "KILL ONE OR MORE LIVING ORGANISMS.",            # its window
+                   "PAINTER PROMPT: subway car, blank screens",     # the exact prompt
+                   "Episode_5", "p000022.jpg",                      # the reference
+                   "LONELY READER Turns Into A GOD - Manhwa Recap", # the video title
+                   "/thumb/series/1/option/system_window"):         # the card image
+        assert needle in page, needle
+    assert "/series/1/package" in c.get("/series/1").text         # linked from the Series page
+
+
+def test_the_tone_select_says_none_yet_for_a_claim_written_before_tones(
+        client, tmp_path, monkeypatch):
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    _claim_file(tmp_path, tone=None)
+    page = c.get("/series/1").text
+    assert "none yet" in page
+    assert page.count('<option value="absurd" selected') == 1      # only the placeholder
+    assert '<option value="absurd" selected>absurd' not in page
+
+
 def test_generate_with_picks_rejects_bad_selections(client, tmp_path, monkeypatch):
     c, con = client
     from studio.dashboard import app as _app

@@ -79,6 +79,12 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
         if scene else style_for(style)["art_prompt"])
     art_prompt = tg.build_art_prompt(
         composition + ("\n" + clause if clause else ""))
+    # the EXACT words the painter gets, kept beside the art: the owner asked
+    # "what is the prompt you plan? how do i see them properly?" and nothing
+    # on disk could answer (2026-09-22)
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "art_prompt.txt"), "w", encoding="utf-8") as f:
+        f.write(art_prompt)
 
     refs = refs or concept.get("refs") or []
     if not refs:

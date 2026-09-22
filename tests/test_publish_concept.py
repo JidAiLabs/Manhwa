@@ -1819,3 +1819,15 @@ def test_window_options_offer_structured_windows_first(tmp_path):
     assert opts[0]["footer"] == ["TIME LIMIT: 30 MINUTES", "PENALTY FOR FAILURE: DEATH"]
     assert {o["line"] for o in opts} == {"KILL ONE OR MORE LIVING ORGANISMS.",
                                          "THE MAIN SCENARIO HAS ARRIVED."}
+
+
+def test_window_from_ocr_drops_the_bell_icon_misread():
+    """Measured on ORV's opening: the window's bell/box icon is read as DING,
+    TING, FOX, HOX, ONIO, INC, VING glued in front of the text."""
+    for junk in ("FOX ", "HOX ", "TING ", "DING ", "ONIO ", "VING "):
+        w = pc.window_from_ocr(junk + "MAIN SCENARIO #1 [PROVE YOUR VALUE] KILL ONE "
+                               "OR MORE LIVING ORGANISMS. PENALTY FOR FAILURE: DEATH")
+        assert w and w["line"] == "KILL ONE OR MORE LIVING ORGANISMS.", junk
+        assert w["header"] == "MAIN SCENARIO #1", junk
+    assert pc.window_from_ocr("TING THE DIFFICULTY HAS BEEN ADJUSTED.")["line"] == \
+        "THE DIFFICULTY HAS BEEN ADJUSTED."

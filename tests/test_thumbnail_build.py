@@ -176,3 +176,16 @@ def test_without_a_scene_the_style_composition_is_still_used(tmp_path, monkeypat
                         ref_episode_dir=str(tmp_path),
                         out_dir=str(tmp_path / "b"), models=["m"])
     assert style_for("power_reveal")["art_prompt"][:60] in calls["prompt"]
+
+
+def test_the_exact_painter_prompt_is_saved_beside_the_art(tmp_path, monkeypatch):
+    """Owner, 2026-09-22: "what is the ... prompt you plan? how do i see them
+    properly?" The prompt was built and thrown away; nothing on disk said what
+    the painter had been told."""
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    out = tmp_path / "o"
+    tb.render_thumbnail(_design_concept(design="nametag", scene=_SCENE),
+                        ref_episode_dir=str(tmp_path), out_dir=str(out), models=["m"])
+    saved = (out / "art_prompt.txt").read_text()
+    assert saved == calls["prompt"] and _SCENE in saved
