@@ -254,7 +254,23 @@ def render_overlay(base_image: str, out_path: str, *, hook: str,
     All are optional and default to nothing, so existing single-hook callers
     render byte-identically."""
     W, H = size
-    img = Image.open(base_image).convert("RGB").resize((W, H))
+    img = Image.open(base_image).convert("RGB")
+    crop = style_overlay.get("crop")
+    if crop:
+        # FACE-FORWARD: zoom the art on the lead before drawing. Counted on 7
+        # ORV thumbnails other channels ship (2026-09-24): the winners fill the
+        # frame with the face; our scene had him at a third of it. The art is
+        # 2752x1536, so a ~60% crop is still sharp at 1280x720. {cx, cy} are
+        # frame fractions of the point kept near the upper third; h is the
+        # kept height as a fraction of the art's.
+        aw, ah = img.size
+        ch = int(ah * float(crop.get("h") or 0.6))
+        cw = int(ch * W / H)
+        cx, cy = int(aw * float(crop.get("cx") or 0.5)), int(ah * float(crop.get("cy") or 0.4))
+        x0 = max(0, min(aw - cw, cx - cw // 2))
+        y0 = max(0, min(ah - ch, cy - int(ch * 0.42)))
+        img = img.crop((x0, y0, x0 + cw, y0 + ch))
+    img = img.resize((W, H), Image.LANCZOS)
     if card and style_overlay.get("card"):
         _draw_card(img, style_overlay["card"], card, W, H)   # under the labels
     draw = ImageDraw.Draw(img)

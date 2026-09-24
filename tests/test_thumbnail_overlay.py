@@ -350,3 +350,28 @@ def test_a_plain_list_still_renders_as_a_window(tmp_path):
                       card=["THE MAIN SCENARIO HAS ARRIVED."])
     assert _box_pixels(out, _WIN_BOX, _is_blue) > 60000
     assert _box_pixels(out, _WIN_BOX, lambda px: min(px) > 200) > 12000
+
+
+# ---- face-forward: the overlay can CROP the art before drawing ---------------
+# Counted on 7 ORV thumbnails other channels ship (2026-09-24): the winners fill
+# the frame with the lead's face (723K: two big faces; 149K: a row of faces).
+# Our subway scene had him at a third of the frame. The art is painted at
+# 2752x1536, so a crop to ~60% of its height is still sharp at 1280x720.
+
+def test_crop_in_the_overlay_zooms_the_art_before_drawing(tmp_path):
+    from PIL import Image
+    art = tmp_path / "art.png"
+    im = Image.new("RGB", (2752, 1536), (20, 30, 40))
+    # a red patch where the face would be (right of centre, upper third)
+    for x in range(int(2752 * 0.60), int(2752 * 0.72)):
+        for y in range(int(1536 * 0.25), int(1536 * 0.45)):
+            im.putpixel((x, y), (220, 30, 30))
+    im.save(art)
+    spec = {"label_pos": "upper_left", "arrow": "none", "marks": [], "speech_slots": 0}
+    plain, zoomed = str(tmp_path / "p.jpg"), str(tmp_path / "z.jpg")
+    ov.render_overlay(str(art), plain, hook="", style_overlay=spec)
+    ov.render_overlay(str(art), zoomed, hook="",
+                      style_overlay={**spec, "crop": {"cx": 0.66, "cy": 0.36, "h": 0.6}})
+    red = lambda px: px[0] > 180 and px[1] < 80
+    assert _box_pixels(zoomed, (0, 0, 1, 1), red) > 2.2 * _box_pixels(plain, (0, 0, 1, 1), red)
+    assert Image.open(zoomed).size == (1280, 720)

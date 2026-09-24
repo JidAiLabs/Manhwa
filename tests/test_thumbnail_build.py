@@ -189,3 +189,14 @@ def test_the_exact_painter_prompt_is_saved_beside_the_art(tmp_path, monkeypatch)
                         ref_episode_dir=str(tmp_path), out_dir=str(out), models=["m"])
     saved = (out / "art_prompt.txt").read_text()
     assert saved == calls["prompt"] and _SCENE in saved
+
+
+def test_a_scene_is_painted_face_forward(tmp_path, monkeypatch):
+    """The lead's face is the thumbnail; the scene is context behind it."""
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    tb.render_thumbnail(_design_concept(design="nametag", scene=_SCENE),
+                        ref_episode_dir=str(tmp_path),
+                        out_dir=str(tmp_path / "f"), models=["m"])
+    low = calls["prompt"].lower()
+    assert "face" in low and "half" in low and "close" in low

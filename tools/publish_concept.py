@@ -363,10 +363,11 @@ def build_claim_prompt(brief: Dict[str, Any], banned: str,
         "would fit any manhwa is a failure.\n\n"
         + CLAIM_TONES[tone] + "\n\n"
         "Return ONLY JSON:\n{\n"
-        '  "title": "YouTube title, 45-80 characters: WHO the protagonist starts '
-        'as, the TURN, their specific EDGE, the PAYOFF. FULL CAPS on the 2-4 '
-        'status words. No emoji, no character names, no question marks. A number '
-        'must be one the story states",\n'
+        '  "title": "YouTube title, 45-70 characters, starting with He or She: '
+        'the protagonist one EDGE, then ONE twist -- what it does to the world '
+        '-- often after an ellipsis. FULL CAPS on the 2-3 status words. No '
+        'emoji, no character names, no question marks. A number must be one '
+        'the story states",\n'
         '  "description": "3-5 sentences a viewer reads to decide. Prose only",\n'
         + _SCENE_ASK
         + _design_labels_ask("nametag_headline")

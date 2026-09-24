@@ -72,6 +72,11 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
     composition = (
         "Paint this ONE moment as a single cohesive scene, the protagonist as "
         "its clear visual focus:\n" + scene + "\n"
+        # FACE-FORWARD (counted on 7 ORV thumbnails other channels ship,
+        # 2026-09-24: the winners fill the frame with the lead's face)
+        "Close crop: the protagonist's face and shoulders fill about half the "
+        "frame's height, sharp and lit; the rest of the scene is behind and "
+        "around them, smaller.\n"
         "Every window, screen, sign, book or card in the scene is BLANK and "
         "softly glowing: no letters, no numbers, no symbols.\n"
         "No letterbox bars, no blank strips, no panels or borders: the scene "

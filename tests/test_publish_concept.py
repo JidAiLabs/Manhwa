@@ -1831,3 +1831,12 @@ def test_window_from_ocr_drops_the_bell_icon_misread():
         assert w["header"] == "MAIN SCENARIO #1", junk
     assert pc.window_from_ocr("TING THE DIFFICULTY HAS BEEN ADJUSTED.")["line"] == \
         "THE DIFFICULTY HAS BEEN ADJUSTED."
+
+
+def test_claim_title_shape_is_he_plus_one_twist_and_short():
+    """Counted on 7 ORV titles other channels ship: the ones that perform start
+    with "He" and carry ONE twist ("He Read the Ending of the World... Then It
+    Became REAL!"). Ours asked for four parts in 80 characters and got 113."""
+    p = pc.build_claim_prompt({"premise": "P"}, "B")
+    assert "45-70 characters" in p and "starting with He or She" in p and "ONE twist" in p
+    assert "45-80 characters" not in p
