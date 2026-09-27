@@ -304,3 +304,42 @@ class TestHelp:
 # ---------------------------------------------------------------------------
 
 from studio import config as studio_config
+
+
+class TestFetchMixedSources:
+    def test_fetch_downloads_a_chapter_with_the_site_its_url_names(
+            self, tmp_db, mock_adapter, tmp_path, monkeypatch):
+        """Omniscient Reader's Webtoon run stops at Episode 308; season 1 ends
+        at 311 on Asura. The three rows carry Asura URLs inside a Webtoon
+        series, and fetch used to pick the downloader from the SERIES source,
+        so gallery-dl would have been pointed at an Asura page (owner,
+        2026-09-27)."""
+        from studio.sources import base
+        cli_mod.main(["add-series", "mock", "https://mock.test/series/foo"])
+        con = connect(tmp_db)
+        sid = repo.list_series(con)[0].id
+        monkeypatch.setattr(studio_config, "REPO_ROOT", tmp_path)
+
+        other = MagicMock()
+        other.id = "othersite"
+        other.domains = ("othersite.test",)
+        calls = []
+
+        def _download(chapter_ref, dest_dir):
+            calls.append(chapter_ref.url)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            (dest_dir / "001.jpg").write_bytes(b"other")
+            return [dest_dir / "001.jpg"]
+        other.download.side_effect = _download
+        base.REGISTRY["othersite"] = other
+        mock_adapter.domains = ("mock.test",)
+        repo.upsert_chapter(con, sid, 4.0, "Chapter 4",
+                            "https://othersite.test/chapter/4", updated_at=FIXED_NOW)
+        con.commit()
+
+        cli_mod.main(["fetch", str(sid), "--chapters", "4"])
+        assert calls == ["https://othersite.test/chapter/4"]
+        assert not [c for c in mock_adapter.download.call_args_list
+                    if "othersite" in str(c)]
+        ch4 = next(c for c in repo.list_chapters(con, sid) if c.number == 4.0)
+        assert ch4.status == "downloaded"

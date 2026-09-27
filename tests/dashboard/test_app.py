@@ -1656,6 +1656,27 @@ def test_the_tone_select_says_none_yet_for_a_claim_written_before_tones(
     assert '<option value="absurd" selected>absurd' not in page
 
 
+def test_owner_types_the_badge(client, tmp_path, monkeypatch):
+    """The badge is a fact about the UPLOAD. It was always "<n> CHAPTERS"; the
+    owner wants "SEASON 1 FINALE" once the season's last chapters are in."""
+    import json as _j
+    c, _ = client
+    from studio.dashboard import app as _app
+    from thumbnail_styles import HOOK_DESIGNS
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    d = _painted_option(tmp_path, "nametag", style="power_reveal", design="nametag",
+                        hook="A", hooks=["A"], badge="309 CHAPTERS",
+                        style_overlay=HOOK_DESIGNS["nametag"]["overlay"])
+    r = c.post("/thumbnail/label", data={"series_id": 1, "option": "nametag",
+                                         "hook": "0", "badge": " season 1 finale "},
+               follow_redirects=False)
+    assert r.status_code == 303
+    assert _j.loads((d / "concept.json").read_text())["badge"] == "season 1 finale"
+    assert c.post("/thumbnail/label", data={"series_id": 1, "option": "nametag",
+                                            "hook": "0", "badge": "x" * 25},
+                  follow_redirects=False).status_code == 400
+
+
 def test_generate_with_picks_rejects_bad_selections(client, tmp_path, monkeypatch):
     c, con = client
     from studio.dashboard import app as _app

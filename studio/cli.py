@@ -30,7 +30,7 @@ from studio.catalog import identity
 from studio.catalog import repo
 from studio.catalog.models import Chapter
 from studio import config as studio_config
-from studio.sources.base import get as get_adapter
+from studio.sources.base import for_url as adapter_for_url, get as get_adapter
 from tools.niche_modules import classify_niche, pick_primary_secondary
 
 
@@ -179,7 +179,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         return 0
 
     import studio.sources  # ensure adapters loaded
-    adapter = get_adapter(series.source)
+    series_adapter = get_adapter(series.source)
 
     from studio.sources.base import ChapterRef
 
@@ -197,7 +197,12 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         )
         ep_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"  Fetching ch{ch.number} → {ep_dir} …")
+        # A chapter's URL names its site. A series can hold rows from a second
+        # site (Omniscient Reader: Webtoon stops at Episode 308, the last three
+        # of season 1 live on Asura), and the series' own downloader pointed at
+        # another site's page fetched nothing.
+        adapter = adapter_for_url(ch.url) or series_adapter
+        print(f"  Fetching ch{ch.number} → {ep_dir} … [{adapter.id}]")
         chapter_ref = ChapterRef(number=ch.number, label=ch.label, url=ch.url)
         # The adapter validates completeness (page-number contiguity) and raises
         # on a partial/empty fetch — let that propagate so the worker retries and

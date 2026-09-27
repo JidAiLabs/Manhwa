@@ -107,6 +107,7 @@
 {% for hk in o.hooks %}<label style="display:block"><input type="radio" name="hook" value="{{ loop.index0 }}"{% if hk == o.hook %} checked{% endif %}> {{ hk }}</label>{% endfor %}
 <input name="text" maxlength="40" placeholder="or type your own label" style="width:100%;margin:.3em 0">
 {% if o.name == 'nametag_headline' %}<input name="headline" maxlength="40" placeholder="type the headline (bottom line)" style="width:100%;margin:0 0 .3em">{% endif %}
+<input name="badge" maxlength="24" placeholder="corner badge, e.g. SEASON 1 FINALE (a fact about the upload)" style="width:100%;margin:0 0 .3em">
 <button class="ghost">apply label</button> <span class="kv">free, same image</span></form>
 {% endif %}
 <form class="inline" method="post" action="/thumbnail/pick"><input type="hidden" name="series_id" value="{{ sid }}">

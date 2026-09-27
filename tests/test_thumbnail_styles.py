@@ -138,3 +138,13 @@ def test_the_system_window_slot_holds_a_header_a_big_line_and_two_stats():
     card = ts.HOOK_DESIGNS["system_window"]["overlay"]["card"]
     (cx, cy), (cw, ch) = card["pos"], card["size"]
     assert cw >= 0.44 and ch >= 0.40
+
+
+def test_no_built_design_draws_an_arrow():
+    """Owner, 2026-09-27: "remove the arrow since it is not properly oriented".
+    The arrow aimed at a fixed point; the painter puts the face wherever it
+    likes, so the arrow pointed at a chin or at air. arrow_to stays as the
+    face anchor the art clause asks for."""
+    for name, d in ts.HOOK_DESIGNS.items():
+        assert d["overlay"].get("arrow", "none") == "none", name
+        assert d["overlay"].get("arrow_to"), name

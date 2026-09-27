@@ -835,7 +835,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     @app.post("/thumbnail/label")
     def switch_label(series_id: int = Form(...), option: str = Form(...),
                      hook: int = Form(...), text: str = Form(""),
-                     headline: str = Form("")):
+                     headline: str = Form(""), badge: str = Form("")):
         """Redraw an option's label with another of its candidates -- or with
         words the owner TYPED (*text*, up to 40 characters; it joins the
         candidates so it stays switchable). The same art, a new text layer, no
@@ -859,6 +859,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                 hooks.append(text)
                 concept["hooks"] = hooks
             hook = hooks.index(text)
+        badge = " ".join(badge.split())
+        if len(badge) > 24:
+            return PlainTextResponse("a badge is at most 24 characters",
+                                     status_code=400)
+        if badge:
+            concept["badge"] = badge      # a fact about the upload, typed by the owner
         headline = " ".join(headline.split())
         if len(headline) > 40:
             return PlainTextResponse("a headline is at most 40 characters",

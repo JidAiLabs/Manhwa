@@ -112,9 +112,11 @@ DEFAULT_TONE = "absurd"
 # never chosen by the model. Only designs whose cast is the LEAD alone are
 # here: contrast_pair and roll_call need a counterpart ref no code can find yet.
 # ponytail: add each one when its counterpart ref finder exists.
-# The arrow lands on its subject BY CONSTRUCTION: art_clause fixes where the
-# lead stands and overlay.arrow_to aims there (face detection misses anime
-# faces). No grammar carries a sample label: an example is an answer.
+# arrow_to is the FACE ANCHOR the art clause asks for; no design draws an
+# arrow any more. Owner, 2026-09-27: "remove the arrow since it is not
+# properly oriented" -- the painter puts the face where it likes, so a fixed
+# arrow pointed at a chin or at air. No grammar carries a sample label: an
+# example is an answer.
 _NAMETAG_GRAMMAR = (
     "A label is a NAMETAG, not a caption: it names WHAT THE LEAD IS or WHAT "
     "THEY BECAME -- a role, a title, a rank, a status -- so a viewer could "
@@ -128,7 +130,7 @@ HOOK_DESIGNS: Dict[str, Dict[str, Any]] = {
         "art_clause": ("Place the hero's face right of centre, about 60% "
                        "across and 40% down. Keep the upper-left third calm "
                        "and uncluttered."),
-        "overlay": {"label_pos": "upper_left", "arrow": "to_hero",
+        "overlay": {"label_pos": "upper_left", "arrow": "none",
                     "arrow_to": [0.60, 0.40], "marks": [], "speech_slots": 0},
     },
     "nametag_headline": {
@@ -142,7 +144,7 @@ HOOK_DESIGNS: Dict[str, Dict[str, Any]] = {
                        "across and 38% down. Keep the upper-left third calm. "
                        "The scene continues to the bottom edge; keep the "
                        "lower-left area darker and free of faces."),
-        "overlay": {"label_pos": "upper_left", "arrow": "to_hero",
+        "overlay": {"label_pos": "upper_left", "arrow": "none",
                     "arrow_to": [0.60, 0.38], "marks": [], "speech_slots": 0,
                     "headline_pos": "lower_left"},
     },
@@ -158,7 +160,7 @@ HOOK_DESIGNS: Dict[str, Dict[str, Any]] = {
                        "across and 40% down, nothing in front of the face. "
                        "Leave the LEFT 45% of the frame dark and uncluttered: "
                        "no figures, no faces, no panels, no glyphs there."),
-        "overlay": {"label_pos": "upper_left", "arrow": "to_hero",
+        "overlay": {"label_pos": "upper_left", "arrow": "none",
                     "arrow_to": [0.70, 0.40], "marks": [], "speech_slots": 0,
                     # header + big line + two stat lines: wider and taller
                     # than the one-line box, below the label, left of the lead
