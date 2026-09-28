@@ -589,6 +589,13 @@ def content_aware_trim(
 # -----------------------------
 # Internal gutter split (THE FIX)
 # -----------------------------
+# A crop taller than this is never ONE panel: the clean corpus tops out near
+# 5.2k px and ORV's tallest splashes near 9.5k. prep_qa's chunk_as_panel gate
+# imports THIS number, so the gate and the splitter below cannot disagree
+# about what "a column of panels" is.
+CHUNK_AS_PANEL_MIN_H = 8000
+
+
 @dataclass
 class GutterParams:
     blank_thr: float = 0.985
@@ -1085,8 +1092,14 @@ def main() -> int:
                 # THE FIX: split first (pre-trim) if a merged crop contains big
                 # internal gutters. Recovered spans are NOT re-split — a solid
                 # run inside a caption card reads as a "gutter" and would slice
-                # the card; the span is already bounded by real panels.
-                if pidx is None:
+                # the card; the span is already bounded by real panels —
+                # UNLESS the span is taller than any panel can be: then it is
+                # a column of panels YOLO missed outright (ORV Ep311
+                # chunk_0020: 0 boxes in 9460px; Death Knight ch33: 11218px)
+                # and its gutter is real. Left whole it ships as one strip or
+                # prep_qa blocks it as chunk_as_panel with nothing upstream
+                # able to clear it.
+                if pidx is None and crop.height <= CHUNK_AS_PANEL_MIN_H:
                     split_parts = [(crop, box_xyxy, crop_local_spans)]
                 else:
                     split_parts = split_crop_on_gutters(
@@ -1094,7 +1107,7 @@ def main() -> int:
                         crop_box_in_chunk=box_xyxy,
                         spans_local=crop_local_spans,
                         gp=gp,
-                        min_h_px=int(args.min_h_px),
+                        min_h_px=min_h_eff,
                         min_w_px=int(args.min_w_px),
                     )
 

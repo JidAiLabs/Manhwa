@@ -103,3 +103,47 @@ def test_recovers_caption_card_in_reading_order(tmp_path):
     y0, y1 = card["box_px_xyxy"][1], card["box_px_xyxy"][3]
     assert y0 >= 480 and y1 <= 1120     # the card span, not the gutter
     assert m.get("recovered_n") == 1
+
+
+# ---- a recovered span taller than a panel is a COLUMN, split on its gutter ----
+
+def _tall_column(path: Path) -> None:
+    """800x9000 with NO YOLO boxes: art(0-4200) / white gutter / art(4700-9000).
+    ORV Ep311 chunk_0020 (0 boxes in 9460px) and Death Knight ch33 (11218px):
+    recovery kept the whole chunk as ONE scene and prep_qa blocked it as
+    chunk_as_panel with nothing upstream able to clear it."""
+    rng = np.random.default_rng(11)
+    img = np.full((9000, 800, 3), 255, dtype=np.uint8)
+    img[0:4200] = rng.integers(40, 215, (4200, 800, 3), dtype=np.uint8)
+    img[4700:9000] = rng.integers(40, 215, (4300, 800, 3), dtype=np.uint8)
+    Image.fromarray(img).save(path, "JPEG", quality=92)
+
+
+def test_a_recovered_span_taller_than_a_panel_is_split_on_its_gutter(tmp_path):
+    chunk = tmp_path / "chunk_0000.jpg"
+    _tall_column(chunk)
+    stitch = {"chunks": [{"chunk_file": "chunk_0000.jpg",
+                          "chunk_path": str(chunk)}]}
+    panels = {"chunks": [{"chunk_file": "chunk_0000.jpg", "panels_norm": []}]}
+    sp = tmp_path / "stitch.json"
+    pp = tmp_path / "panels.json"
+    sp.write_text(json.dumps(stitch))
+    pp.write_text(json.dumps(panels))
+    out_dir = tmp_path / "scenes"
+    out_manifest = tmp_path / "manifest.scenes.json"
+    argv = ["panels_to_scenes.py",
+            "--stitch-manifest", str(sp), "--panels-manifest", str(pp),
+            "--out-dir", str(out_dir), "--out-manifest", str(out_manifest),
+            "--panel-id-mode", "sequential"]
+    old = sys.argv
+    sys.argv = argv
+    try:
+        pts.main()
+    finally:
+        sys.argv = old
+    scenes = json.loads(out_manifest.read_text())["scenes"]
+    assert [bool(s.get("recovered")) for s in scenes] == [True, True], scenes
+    assert all(s["h"] <= pts.CHUNK_AS_PANEL_MIN_H for s in scenes)
+    # the cut lies inside the gutter band (the splitter cuts at its centre)
+    assert 4200 <= scenes[0]["box_px_xyxy"][3] <= 4700
+    assert 4200 <= scenes[1]["box_px_xyxy"][1] <= 4700

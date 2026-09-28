@@ -255,7 +255,8 @@ def image_flags(
     # A reconciled_seam panel is tall BY DESIGN (spec §5.1) — the seam-merge
     # re-assembled two chunk slices into one contiguous panel — so it is exempt;
     # every non-reconciled panel is still gated.
-    if h > 8000 and not reconciled:
+    from panels_to_scenes import CHUNK_AS_PANEL_MIN_H
+    if h > CHUNK_AS_PANEL_MIN_H and not reconciled:
         # A "panel" taller than ~8k px MAY be a whole stitch chunk the detector
         # failed to segment — a column of panels rendered as one thin strip
         # (nano ch28/ch38). But height alone was calibrated on one title (nano
@@ -1280,8 +1281,11 @@ def truncated_line_flags(beats_obj: Any) -> List[Dict[str, Any]]:
 #   * only before a conjunction, and only when no determiner follows it
 #     ("his and her towels" is fine) — a determiner before a comma is the
 #     pronoun case above, not a dropped noun.
+#   * the article only in LOWER case: a capital "A" before and/or is a grade
+#     or rank letter — "an A or S-rank" (tower ch1 g0020, 2026-09-28) is the
+#     correct English the heal could never clear; two prepares failed on it.
 _DANGLING_DET_RE = re.compile(
-    r"\b(?:my|your|our|their|the|an?)\s+(?:and|or|but)\s+"
+    r"\b(?:my|your|our|their|the|(?-i:an?))\s+(?:and|or|but)\s+"
     r"(?!(?:my|your|his|her|their|our|its|the|an?)\b)", re.I)
 
 

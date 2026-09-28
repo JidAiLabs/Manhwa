@@ -1995,6 +1995,10 @@ def test_garbled_line_flags_quiet_on_legitimate_english():
         {"span": ["b.jpg"], "line": "The kid, the sword, and the oath remain."},
         {"span": ["c.jpg"], "line": "She reaches for the door but stops."},
         {"span": ["d.jpg"], "line": "Our guy, bleeding, still stands."},
+        # a CAPITAL A before or/and is a grade or rank letter, not the article
+        # (tower ch1 g0020, 2026-09-28: two prepares failed on this line)
+        {"span": ["f.jpg"], "line": "He could probably jump to an A or S-rank immediately."},
+        {"span": ["g.jpg"], "line": "A or B, the choice is his."},
         # a line that also ENDS wrong belongs to truncated_line, not here
         {"span": ["e.jpg"], "line": "He was so focused on using my and"},
     ]}]}

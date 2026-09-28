@@ -1315,3 +1315,35 @@ def test_presence_in_a_flashback_does_not_retract_a_death():
               {"shot_id": 4, "scene_files": ["p000041.jpg"]}]
     facts = sl.build_beat_facts(groups, ev, [], ents, u)
     assert facts["g0004"]["dead_by_now"] == ["Bloodthirsty Forest Wolf"]
+
+
+def test_build_ledger_writes_the_retracted_kill_notice_out_of_events(monkeypatch):
+    """prep_qa reads `events` (dead sets, death quotes) and `beat_facts`
+    (banned handles) from the SAME file. Until 2026-09-28 only beat_facts
+    retracted a contradicted kill notice, so role_stale still quoted it as a
+    death (Full-Time Awakening ch8). The writer must apply the same rule."""
+    u, ents = _wolf_fixture()
+    cast = {"cast": [
+        {"id": "protagonist", "canonical_name": "our protagonist",
+         "role": "protagonist", "is_protagonist": True, "aliases": [],
+         "visual_description": "A young man in a light robe with a blue sash"},
+        {"id": "forest_wolf", "canonical_name": "Bloodthirsty Forest Wolf",
+         "role": "antagonist", "is_protagonist": False, "aliases": [],
+         "visual_description": "A huge grey wolf with glowing red eyes and "
+                               "bared fangs"}]}
+    ev = {"type": "death", "subject": "Bloodthirsty Forest Wolf",
+          "scene_file": "p000038.jpg",
+          "evidence_quote": "SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF."}
+    monkeypatch.setattr(sl, "normalize_events", lambda raw, *a, **k: list(raw))
+    monkeypatch.setattr(sl, "build_digest", lambda *a, **k: "")
+    groups = {"shots": [{"shot_id": 1, "scene_files": ["p000036.jpg"]},
+                        {"shot_id": 2, "scene_files": ["p000038.jpg"]},
+                        {"shot_id": 3, "scene_files": ["p000040.jpg"]}]}
+    logged = []
+    led = sl.build_ledger(u, groups, cast,
+                          arbitrate_fn=lambda digest: {"events": [dict(ev)],
+                                                       "overrides": []},
+                          log=logged.append)
+    assert led["events"] == []
+    assert led["beat_facts"]["g0003"]["dead_by_now"] == []
+    assert any("retracted 1 kill-notice death" in m for m in logged)

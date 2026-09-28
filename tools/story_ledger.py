@@ -445,6 +445,48 @@ _KILL_NOTICE_RE = re.compile(r"\b(?:YOU HAVE )?SUCCESSFULLY (?:KILLED|SLAIN|DEFE
                              re.IGNORECASE)
 
 
+def retract_kill_notices(events: List[Dict[str, Any]],
+                         groups: List[Dict[str, Any]],
+                         understood: Any,
+                         profiles: List[Dict[str, Any]],
+                         log=None) -> List[Dict[str, Any]]:
+    """Drop a death announced by a game-system KILL NOTICE that the LATER
+    non-flashback panels contradict: Full-Time Awakening ch8 (2026-09-28)
+    printed "SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF" at p000014 and
+    the panels then showed that wolf present and fighting at p000028-31 and
+    p000047 -- a monster TYPE, killed one at a time, not a character. Only
+    kill notices qualify: a death read from dialogue or the story pass stands
+    even when a look-alike (the leader's surviving members) is on screen
+    afterwards. Presence in a flashback (the dead alive on purpose) does not
+    count. Applied where the ledger is WRITTEN so `events` on disk agrees
+    with `beat_facts`: at first only beat_facts retracted, and prep_qa's dead
+    sets and death quotes (both read `events`) still called the notice a
+    death, so role_stale kept quoting it."""
+    order = {str(p["scene_file"]): i for i, p in enumerate(_panels(understood))}
+    u_by_file = {str(p["scene_file"]): p for p in _panels(understood)}
+    later_alive: Dict[str, int] = {}          # name -> last present index
+    for g in groups:
+        if str(g.get("segment") or "present") != "present":
+            continue
+        for f in [str(f) for f in (g.get("scene_files") or [])]:
+            if f not in order:
+                continue
+            for fig in resolve_figures(u_by_file.get(f), profiles):
+                if fig.get("name") and fig["name"] != "unknown":
+                    later_alive[fig["name"]] = max(
+                        later_alive.get(fig["name"], -1), order[f])
+    retracted = {ev["subject"] for ev in events
+                 if ev["type"] == "death" and not ev.get("before_chapter")
+                 and _KILL_NOTICE_RE.search(str(ev.get("evidence_quote") or ""))
+                 and later_alive.get(ev["subject"], -1)
+                 > order.get(str(ev.get("scene_file")), -1)}
+    if retracted and log:
+        log(f"[ledger] retracted {len(retracted)} kill-notice death(s) the "
+            f"later panels contradict: {sorted(retracted)}")
+    return [ev for ev in events
+            if not (ev["type"] == "death" and ev["subject"] in retracted)]
+
+
 def build_beat_facts(groups: List[Dict[str, Any]],
                      events: List[Dict[str, Any]],
                      panel_actions: List[Dict[str, Any]],
@@ -465,35 +507,19 @@ def build_beat_facts(groups: List[Dict[str, Any]],
     def _ev_index(ev: Dict[str, Any]) -> int:
         return order.get(ev["scene_file"], -1)
 
-    # WHO is on screen, per group, resolved once. A death announced by a
-    # game-system KILL NOTICE that the LATER panels contradict is retracted:
-    # Full-Time Awakening ch8 (2026-09-28) printed "SUCCESSFULLY KILLED THE
-    # BLOODTHIRSTY FOREST WOLF" at p000014 and the ledger's own facts then
-    # showed that wolf present and fighting at p000028-31 and p000047 -- a
-    # monster TYPE, killed one at a time, not a character. Only kill notices
-    # qualify: a death read from dialogue or the story pass stands even when
-    # a look-alike (the leader's surviving members) is on screen afterwards.
-    # Presence in a flashback (the dead alive on purpose) does not count.
+    # WHO is on screen, per group, resolved once. A kill-notice death the
+    # later panels contradict is dropped first (retract_kill_notices; the
+    # ledger writer applies the same call so `events` on disk agrees).
+    events = retract_kill_notices(events, groups, understood, profiles)
     seen_in: Dict[int, Set[str]] = {}
-    later_alive: Dict[str, int] = {}          # name -> last present index
     for g in groups:
         gid = int(g.get("shot_id") or 0)
-        flashback = str(g.get("segment") or "present") != "present"
         names: Set[str] = set()
         for f in [str(f) for f in (g.get("scene_files") or [])]:
             for fig in resolve_figures(u_by_file.get(f), profiles):
                 if fig.get("name") and fig["name"] != "unknown":
                     names.add(fig["name"])
-                    if not flashback and f in order:
-                        later_alive[fig["name"]] = max(
-                            later_alive.get(fig["name"], -1), order[f])
         seen_in[gid] = names
-    retracted = {ev["subject"] for ev in events
-                 if ev["type"] == "death" and not ev.get("before_chapter")
-                 and _KILL_NOTICE_RE.search(str(ev.get("evidence_quote") or ""))
-                 and later_alive.get(ev["subject"], -1) > _ev_index(ev)}
-    events = [ev for ev in events
-              if not (ev["type"] == "death" and ev["subject"] in retracted)]
 
     facts: Dict[str, Dict[str, Any]] = {}
     for g in groups:
@@ -931,6 +957,7 @@ def build_ledger(understood: Any, groups_m: Any, cast: Any,
                                             entities, profiles=profiles)
         log(f"[ledger] {len(windows)} window(s), {failed} failed -> "
             f"{len(events)} event(s), {overrides_applied} override(s)")
+    events = retract_kill_notices(events, groups, understood, profiles, log=log)
     return {
         "entities": entities,
         "panel_actions": panel_actions,
