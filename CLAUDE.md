@@ -108,6 +108,9 @@ Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), 
   (`printable_card_line`: one clean sentence of real words; never the licensed title) and a
   montage needs 2+ system panels to be offered one. Skill: `manhwa-thumbnail`. Touches
   `studio/worker.py` + `studio/dashboard/**` → daemon restart on deploy.
+  **Painting is the owner's click only (2026-09-28, `fb2f65e`):** `series_thumbnail` refuses a job
+  without `payload.owner=True` (both generate buttons stamp it); `jobs.PAID_JOB_TYPES` are never
+  auto-retried or requeued; the automatic proposal after 12 chapters queues only the free `series_claim`.
 - **Adaptive flow narration (2026-07-02):** beats carry `segments[] = [{span, line}]` — one
   line spans 1–4 consecutive panels, voiced as ONE clip (consumers read/write via
   `tools/beats_segments.py`; `narration` stays the join). One paragraph+shot per segment
