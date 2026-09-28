@@ -438,6 +438,13 @@ def _unique_role_handles(dead: str, entities: List[Dict[str, Any]],
     return sorted(f"the {t}" for t in mine)
 
 
+# The game-system's kill notification: it names what was killed, and in a
+# hunting story that is a monster TYPE ("the Bloodthirsty Forest Wolf") as
+# often as a character.
+_KILL_NOTICE_RE = re.compile(r"\b(?:YOU HAVE )?SUCCESSFULLY (?:KILLED|SLAIN|DEFEATED)\b",
+                             re.IGNORECASE)
+
+
 def build_beat_facts(groups: List[Dict[str, Any]],
                      events: List[Dict[str, Any]],
                      panel_actions: List[Dict[str, Any]],
@@ -458,6 +465,36 @@ def build_beat_facts(groups: List[Dict[str, Any]],
     def _ev_index(ev: Dict[str, Any]) -> int:
         return order.get(ev["scene_file"], -1)
 
+    # WHO is on screen, per group, resolved once. A death announced by a
+    # game-system KILL NOTICE that the LATER panels contradict is retracted:
+    # Full-Time Awakening ch8 (2026-09-28) printed "SUCCESSFULLY KILLED THE
+    # BLOODTHIRSTY FOREST WOLF" at p000014 and the ledger's own facts then
+    # showed that wolf present and fighting at p000028-31 and p000047 -- a
+    # monster TYPE, killed one at a time, not a character. Only kill notices
+    # qualify: a death read from dialogue or the story pass stands even when
+    # a look-alike (the leader's surviving members) is on screen afterwards.
+    # Presence in a flashback (the dead alive on purpose) does not count.
+    seen_in: Dict[int, Set[str]] = {}
+    later_alive: Dict[str, int] = {}          # name -> last present index
+    for g in groups:
+        gid = int(g.get("shot_id") or 0)
+        flashback = str(g.get("segment") or "present") != "present"
+        names: Set[str] = set()
+        for f in [str(f) for f in (g.get("scene_files") or [])]:
+            for fig in resolve_figures(u_by_file.get(f), profiles):
+                if fig.get("name") and fig["name"] != "unknown":
+                    names.add(fig["name"])
+                    if not flashback and f in order:
+                        later_alive[fig["name"]] = max(
+                            later_alive.get(fig["name"], -1), order[f])
+        seen_in[gid] = names
+    retracted = {ev["subject"] for ev in events
+                 if ev["type"] == "death" and not ev.get("before_chapter")
+                 and _KILL_NOTICE_RE.search(str(ev.get("evidence_quote") or ""))
+                 and later_alive.get(ev["subject"], -1) > _ev_index(ev)}
+    events = [ev for ev in events
+              if not (ev["type"] == "death" and ev["subject"] in retracted)]
+
     facts: Dict[str, Dict[str, Any]] = {}
     for g in groups:
         gid = int(g.get("shot_id") or 0)
@@ -467,11 +504,7 @@ def build_beat_facts(groups: List[Dict[str, Any]],
         files = [str(f) for f in (g.get("scene_files") or [])]
         idxs = [order[f] for f in files if f in order]
         start = min(idxs) if idxs else -1
-        present: Set[str] = set()
-        for f in files:
-            for fig in resolve_figures(u_by_file.get(f), profiles):
-                if fig.get("name") and fig["name"] != "unknown":
-                    present.add(fig["name"])
+        present: Set[str] = set(seen_in.get(gid) or set())
         actions = []
         for f in files:
             for a in acts_by_file.get(f, []):

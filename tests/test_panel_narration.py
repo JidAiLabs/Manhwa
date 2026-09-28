@@ -121,10 +121,11 @@ def test_align_is_positional_when_model_omits_scene_file():
 
 def test_align_folds_overflow_into_last_panel_no_phantoms():
     files = ["a.jpg"]
-    model = [{"scene_file": "a.jpg", "line": "One."}, {"scene_file": "zzz.jpg", "line": "Two."}]
+    # two-word lines: a lone 2-3 letter word is a stub since 2026-09-28
+    model = [{"scene_file": "a.jpg", "line": "One here."}, {"scene_file": "zzz.jpg", "line": "Two there."}]
     out = gnp.align_panel_narration(files, model, {})
     assert len(out) == 1 and out[0]["scene_file"] == "a.jpg"
-    assert out[0]["line"] == "One. Two."
+    assert out[0]["line"] == "One here. Two there."
 
 def test_align_invariant_length_matches_scene_files():
     files = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]

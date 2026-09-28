@@ -221,14 +221,24 @@ def is_nullish_line(text: Any) -> bool:
 # a silence placeholder, and the blocking audio_failed stopped the chapter at
 # the SPEAKER again. Every pronounceable English word carries a vowel, so that
 # is the test. Re-measured over the whole 12,202-segment corpus: requiring one
-# rejects exactly ONE additional line -- 'Nt.' itself -- and keeps 'So.',
-# 'Meanwhile.' and 'Not right.'.
+# rejects exactly ONE additional line -- 'Nt.' itself.
 _SPEAKABLE_WORD_RE = re.compile(r"(?=[A-Za-z]*[AEIOUYaeiouy])[A-Za-z]{2,}")
+# ...and a line that is ONE word of at most three letters is a stub the
+# speaker dead-takes. Measured 2026-09-28 over 34,395 voiced clips in 715
+# chapters: 18 one-word lines; the three that parked their chapter at the
+# speaker after three takes each were "Ho." (0.06s), "So." (0.06s) and "Ole."
+# (no wav); longer lone words ("Meanwhile.", "Unlocked!", "Sparkle.") voiced.
+# A flat two-word floor was tried and rejected the same day: spoken system
+# cards are legitimately one word.
+_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\u2019-]*")
+_STUB_MAX_LETTERS = 3
+_MOOD_TAG_RE = re.compile(r"^\s*\[[a-z ]+\]\s*", re.IGNORECASE)
 
 
 def is_unvoiceable_line(text: Any) -> bool:
-    """True when *text* cannot be spoken as narration: a stringified null, or
-    a line with no pronounceable word (a lone letter, punctuation, bare digits).
+    """True when *text* cannot be spoken as narration: a stringified null, a
+    line with no pronounceable word (a lone letter, punctuation, bare digits),
+    or a single word.
 
     THE authority for "never send this to the speaker" -- prep_qa's gate, the
     TTS refusal and recap_style.usable_narration_line all consume this one
@@ -236,4 +246,8 @@ def is_unvoiceable_line(text: Any) -> bool:
     """
     if is_nullish_line(text):
         return True
-    return not _SPEAKABLE_WORD_RE.search(str(text or ""))
+    bare = _MOOD_TAG_RE.sub("", str(text or ""))
+    if not _SPEAKABLE_WORD_RE.search(bare):
+        return True
+    words = _WORD_RE.findall(bare)
+    return len(words) == 1 and len(re.sub(r"[^A-Za-z]", "", words[0])) <= _STUB_MAX_LETTERS

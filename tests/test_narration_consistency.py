@@ -160,10 +160,23 @@ def test_a_letter_run_without_a_vowel_is_not_a_word():
     # bare line and must NOT be asked to look through a tag
     # a lone vowel is still not a word
     assert is_unvoiceable_line("a.")
-    # ... but two letters WITH a vowel are: this is the line the length floor
-    # this predicate deliberately avoids would have thrown away
-    assert not is_unvoiceable_line("So.")
     assert not is_unvoiceable_line("It ends.")
+
+
+def test_a_lone_short_word_is_a_stub_not_a_line():
+    """Re-measured 2026-09-28 over 34,395 voiced clips in 715 chapters: 18
+    lines are one word. The three that parked their chapter at the speaker
+    after three takes each are all a lone word of 2-3 letters -- "Ho." (0.06s),
+    "So." (0.06s), "Ole." (no wav); longer lone words voiced ("Meanwhile."
+    0.65s, "Sparkle." 0.76s). Flagging the stub HERE means prep_qa's
+    narration_null catches it at PREPARE, where the heal re-narrates the
+    group, instead of at the speaker where nothing can be repaired. (A flat
+    two-word floor was tried the same day: it refused spoken system cards
+    like "Unlocked!", which are legitimately one word.)"""
+    for line in ("Ho.", "So.", "So...", "Ole.", "[tense] Ho.", "Iix."):
+        assert is_unvoiceable_line(line), line
+    for line in ("Meanwhile.", "Unlocked!", "Sparkle.", "It ends.", "Not right."):
+        assert not is_unvoiceable_line(line), line
 
 
 def test_unvoiceable_still_catches_stringified_nulls():

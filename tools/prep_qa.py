@@ -1710,6 +1710,8 @@ def narration_null_flags(beats_obj: Any) -> List[Dict[str, Any]]:
             if not is_unvoiceable_line(line):
                 continue
             _why = ("is a stringified null" if is_nullish_line(line)
+                    else "is a lone two-or-three-letter word (a stub the speaker dead-takes)"
+                    if len(str(line or "").split()) < 2
                     else "has no pronounceable word")
             flags.append(_flag(
                 "narration_null", ERROR,

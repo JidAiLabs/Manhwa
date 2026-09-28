@@ -362,7 +362,9 @@ def test_a_blip_on_the_shortest_line_is_caught(tmp_path):
 def test_a_real_one_word_take_is_not_failed(tmp_path):
     # the shortest real clips measured in the corpus are ~0.46-0.65s
     index = lt.synthesize_manifest(
-        _script_with(["[calm] Hi."]), str(tmp_path), backend="kokoro",
+        # "Hi." alone is a stub since 2026-09-28 (is_unvoiceable_line) and never
+        # reaches the speaker; a real short line is two words
+        _script_with(["[calm] Hi there."]), str(tmp_path), backend="kokoro",
         synth_fn=_take_of(0.45), duration_fn=lt.wav_duration_sec,
         clip_timeout_sec=0.5, clip_retries=0, group_mode=False)
     assert index["clips"][0].get("tts_failed", False) is False

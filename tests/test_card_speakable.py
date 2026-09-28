@@ -63,9 +63,12 @@ def test_without_a_word_list_nothing_is_called_decoration(monkeypatch,
     # fail open, like ocr_looks_clipped: a missing list must not silence every
     # OCR-only card in the corpus
     monkeypatch.setattr(gnp, "_DICT_PATH", str(tmp_path / "missing"))
-    out = gnp.system_card_line("p1.jpg", _u(ocr="+ IIX"),
+    # a lone 2-3 letter mark ("IIX", the numeral ring that shipped) is a stub
+    # since 2026-09-28 regardless of any word list; a longer unknown token is
+    # what "nothing is called decoration" protects
+    out = gnp.system_card_line("p1.jpg", _u(ocr="+ QUIRX"),
                                "An hourglass timer appears.")
-    assert "iix" in out.lower()
+    assert "quirx" in out.lower()
 
 
 def test_a_card_that_stops_mid_phrase_is_never_forced(monkeypatch, tmp_path):

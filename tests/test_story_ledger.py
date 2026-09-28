@@ -1248,3 +1248,70 @@ def test_normalize_events_carries_the_anchor_flags():
     old = sl.normalize_events([base], ents, _U12, log=lambda _m: None)
     assert (old[0]["anchor_source"], old[0]["before_chapter"]) == (
         "event", False)
+
+
+# ---- a death the later panels contradict is one of a KIND, not a character --
+# Full-Time Awakening ch8 (2026-09-28): the system printed "SUCCESSFULLY KILLED
+# THE BLOODTHIRSTY FOREST WOLF" at p000014; the ledger anchored a death, then
+# its own beat_facts showed 'Bloodthirsty Forest Wolf' PRESENT and fighting at
+# p000028-31 and p000047. A monster type is killed one at a time; role_stale
+# and dead_actor then blocked the chapter for narrating the wolves on screen.
+
+def _wolf_fixture():
+    """A cast whose wolf resolves from the understood subjects (the CAST
+    fixture's own shape: canonical_name + visual_description)."""
+    cast = {"cast": [
+        {"id": "protagonist", "canonical_name": "our protagonist",
+         "role": "protagonist", "is_protagonist": True, "aliases": [],
+         "visual_description": "A young man in a light robe with a blue sash"},
+        {"id": "forest_wolf", "canonical_name": "Bloodthirsty Forest Wolf",
+         "role": "antagonist", "is_protagonist": False, "aliases": [],
+         "visual_description": "A huge grey wolf with glowing red eyes and "
+                               "bared fangs"}]}
+    u = {"panels": [{"scene_file": f, "subjects": [], "actions": [], "dialogue": ""}
+                    for f in _ORDERED]}
+    # the wolf is on screen at p36 (before the kill) and again at p40 (after)
+    for f in ("p000036.jpg", "p000040.jpg"):
+        p = next(p for p in u["panels"] if p["scene_file"] == f)
+        p["subjects"] = ["a huge grey wolf with glowing red eyes and bared fangs"]
+    ents = sl.build_entities(u, cast)
+    assert any(e["canonical_name"] == "Bloodthirsty Forest Wolf" for e in ents)
+    return u, ents
+
+
+def test_a_death_contradicted_by_later_presence_is_retracted():
+    u, ents = _wolf_fixture()
+    ev = [{"type": "death", "subject": "Bloodthirsty Forest Wolf",
+           "scene_file": "p000038.jpg",
+           "evidence_quote": "SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF."}]
+    groups = [{"shot_id": 1, "scene_files": ["p000036.jpg"]},
+              {"shot_id": 2, "scene_files": ["p000038.jpg"]},
+              {"shot_id": 3, "scene_files": ["p000040.jpg"]}]      # present again
+    facts = sl.build_beat_facts(groups, ev, [], ents, u)
+    assert "Bloodthirsty Forest Wolf" in facts["g0003"]["present"]   # the evidence
+    assert facts["g0003"]["dead_by_now"] == []
+    assert facts["g0003"]["banned_handles"] == []
+
+
+def test_a_death_the_panels_never_contradict_still_propagates():
+    u, ents = _wolf_fixture()
+    ev = [{"type": "death", "subject": "Bloodthirsty Forest Wolf",
+           "scene_file": "p000038.jpg", "evidence_quote": "q"}]
+    groups = [{"shot_id": 1, "scene_files": ["p000036.jpg"]},
+              {"shot_id": 2, "scene_files": ["p000038.jpg"]},
+              {"shot_id": 3, "scene_files": ["p000039.jpg"]}]      # wolf absent
+    facts = sl.build_beat_facts(groups, ev, [], ents, u)
+    assert facts["g0003"]["dead_by_now"] == ["Bloodthirsty Forest Wolf"]
+    assert "the wolf" in facts["g0003"]["banned_handles"]
+
+
+def test_presence_in_a_flashback_does_not_retract_a_death():
+    u, ents = _wolf_fixture()
+    ev = [{"type": "death", "subject": "Bloodthirsty Forest Wolf",
+           "scene_file": "p000038.jpg", "evidence_quote": "q"}]
+    groups = [{"shot_id": 1, "scene_files": ["p000036.jpg"]},
+              {"shot_id": 2, "scene_files": ["p000038.jpg"]},
+              {"shot_id": 3, "scene_files": ["p000040.jpg"], "segment": "flashback"},
+              {"shot_id": 4, "scene_files": ["p000041.jpg"]}]
+    facts = sl.build_beat_facts(groups, ev, [], ents, u)
+    assert facts["g0004"]["dead_by_now"] == ["Bloodthirsty Forest Wolf"]

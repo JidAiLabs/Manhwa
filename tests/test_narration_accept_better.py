@@ -118,7 +118,9 @@ def test_gate_never_restores_an_unspeakable_card_line():
         card_unspeakable=lambda b: b["narration"] == "Iix.")
     assert judged == []
     assert accepted[0]["narration"].startswith("An hourglass")
-    assert decisions[0]["verdict"] == "old_unspeakable_card"
+    # since 2026-09-28 the one authority refuses "Iix." even earlier (a lone
+    # 2-3 letter word is a stub), so the verdict may be the generic one
+    assert decisions[0]["verdict"] in ("old_unspeakable_card", "old_unshippable")
     assert decisions[0]["kept"] == "new"
 
 
