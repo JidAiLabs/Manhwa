@@ -502,6 +502,27 @@ _PERSONISH = _GENERIC_PERSON | {
     "partner", "leader", "member", "survivor", "victim", "witness",
 }
 
+# TITLES a person HOLDS — the only words a dead name may turn into a banned
+# role handle ("the leader" after the leader dies: a surviving underling must
+# not inherit it). A closed English class, never series vocabulary. Until
+# 2026-09-28 every token of a dead name was banned: across 742 ledgers the
+# writer was told never to say "the kim", "the dokja", "the song", "the
+# thunder", "the river", "the forest", "the protagonist" (145 distinct bans,
+# ~1 real role_stale in 34). Kept apart from _PERSONISH on purpose: that set
+# drives identity matching, this one only role bans. Excluded: "count" (the
+# noun and verb), "lady" (a pronoun-class word here), class nouns a crowd
+# shares (knight, warrior, soldier). Every entry must survive _norm unchanged.
+_ROLE_TITLES = frozenset({
+    "leader", "king", "queen", "emperor", "empress", "prince", "princess",
+    "lord", "duke", "duchess", "archduke", "marquis", "marquess", "earl",
+    "viscount", "baron", "baroness", "countess", "general", "commander",
+    "captain", "chief", "chieftain", "boss", "master", "grandmaster", "elder",
+    "patriarch", "matriarch", "overlord", "warlord", "ruler", "monarch",
+    "sovereign", "pharaoh", "sultan", "khan", "tsar", "shogun", "regent",
+    "chancellor", "president", "chairman", "headmaster", "guildmaster",
+    "pope", "abbot", "abbess",
+})
+
 
 def _looks_person(text: str) -> bool:
     toks = set(_tokens(text))

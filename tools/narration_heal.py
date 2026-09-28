@@ -89,10 +89,13 @@ HEALABLE = {
     # writer payload carries the beat's FACTS block (dead_by_now /
     # banned_handles / arbitrated directions), so re-narration sees the very
     # record the original roll violated. dead_actor is ALSO heal-THEN-block
-    # in the worker; role_stale stays heal-only until precision is measured
-    # (the actor_mismatch precedent).
+    # in the worker.
     "dead_actor",
-    "role_stale",
+    # NOT "role_stale" (removed 2026-09-28): 34 flags ever, ~1 real — the
+    # bans were every token of a dead name ("the forest", "the kim"), so a
+    # re-roll rewrote correct lines. Bans are titles only now; it reports
+    # (WARN) and re-enters only when a graded sample clears the bar in
+    # tools/qa_gate_blast_radius.py. _note_for keeps its branch for that.
 }
 
 _GID_RE = re.compile(r"g0*(\d+)")

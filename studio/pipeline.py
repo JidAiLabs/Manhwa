@@ -287,9 +287,9 @@ def refresh_facts(ep_dir: Path, cfg: Config, *, force: bool = False,
                   ledger_only: bool = False) -> dict:
     """Re-read the chapter (story pass) and rebuild the ledger — WITHOUT
     touching the narration. The repair path for a chapter whose facts were
-    wrong when the writer ran: the beats stay, prep_qa's dead_actor/role_stale
-    flag whatever the new facts contradict, and the heal re-narrates only
-    those groups. Deliberately not a rewind: --to grouped would re-roll the
+    wrong when the writer ran: the beats stay, prep_qa's dead_actor flags
+    whatever the new facts contradict (role_stale only reports), and the heal
+    re-narrates only those groups. Deliberately not a rewind: --to grouped would re-roll the
     whole chapter, --to scripted alone re-uses the same wrong facts.
 
     Skips the model call when the story is already at the current prompt

@@ -794,6 +794,8 @@ def test_role_stale_fires_on_banned_handle_not_double_flagged():
         ("They all stare at what is left of the leader now.", ["p2.jpg"], 9))
     flags = pq.ledger_contradiction_flags(beats, led, CAST)
     assert [f["code"] for f in flags] == ["role_stale"]
+    assert flags[0]["severity"] == pq.WARN           # report-only since 09-28
+    assert "HOW DID A KID" in flags[0]["detail"]     # the holder's own death
     # subject-position 'the leader' -> dead_actor ONLY (no double flag)
     beats2 = _beats(("The leader stands back up.", ["p2.jpg"], 9))
     codes = [f["code"] for f in
@@ -814,7 +816,8 @@ def test_ledger_flags_silent_without_ledger_or_before_death():
 # ---- narration_heal + worker posture ----------------------------------------
 
 def test_new_codes_are_healable_with_fact_notes():
-    assert "dead_actor" in nh.HEALABLE and "role_stale" in nh.HEALABLE
+    assert "dead_actor" in nh.HEALABLE
+    assert "role_stale" not in nh.HEALABLE     # report-only (2026-09-28)
     note = nh._note_for(
         "dead_actor",
         "line has 'leader' acting but ['the hooded leader'] are dead by this "
@@ -1302,7 +1305,8 @@ def test_a_death_the_panels_never_contradict_still_propagates():
               {"shot_id": 3, "scene_files": ["p000039.jpg"]}]      # wolf absent
     facts = sl.build_beat_facts(groups, ev, [], ents, u)
     assert facts["g0003"]["dead_by_now"] == ["Bloodthirsty Forest Wolf"]
-    assert "the wolf" in facts["g0003"]["banned_handles"]
+    # a creature is not a TITLE: no "the wolf", "the forest", "the bloodthirsty"
+    assert facts["g0003"]["banned_handles"] == []
 
 
 def test_presence_in_a_flashback_does_not_retract_a_death():
@@ -1347,3 +1351,85 @@ def test_build_ledger_writes_the_retracted_kill_notice_out_of_events(monkeypatch
     assert led["events"] == []
     assert led["beat_facts"]["g0003"]["dead_by_now"] == []
     assert any("retracted 1 kill-notice death" in m for m in logged)
+
+
+
+# ---- role bans are TITLES only; role_stale reports (2026-09-28) -------------
+# 742 production ledgers carried 145 distinct bans, mostly name tokens the
+# writer then avoided ("the kim", "the dokja", "the forest", "the river",
+# "the protagonist"); role_stale fired 34 times with ~1 real flag.
+
+import pytest
+
+
+@pytest.mark.parametrize("entity, banned", [
+    ({"canonical_name": "Kim Dokja"}, []),
+    ({"canonical_name": "Bloodthirsty Forest Wolf"}, []),
+    ({"canonical_name": "our protagonist"}, []),
+    ({"canonical_name": "Monster Bird of the Nile River"}, []),
+    ({"canonical_name": "Demon Marquis Cuarteto"}, ["the marquis"]),
+    ({"canonical_name": "Magma Lion King"}, ["the king"]),
+    ({"canonical_name": "unnamed assassin", "aliases": ["the leader"]},
+     ["the leader"]),
+])
+def test_only_a_title_becomes_a_banned_handle(entity, banned):
+    ents = [dict(entity, aliases=entity.get("aliases") or [])]
+    assert sl._unique_role_handles(entity["canonical_name"], ents, set()) == banned
+
+
+def test_a_title_a_living_entity_holds_is_not_banned():
+    ents = [{"canonical_name": "Magma Lion King", "aliases": []},
+            {"canonical_name": "Frost King", "aliases": []}]
+    assert sl._unique_role_handles("Magma Lion King", ents,
+                                   {"Frost King"}) == []
+
+
+def test_every_title_survives_token_normalisation():
+    assert all(ci._norm(t) == t for t in ci._ROLE_TITLES)
+
+
+def test_role_stale_is_report_only():
+    from studio.worker import _CRITICAL_QA_CODES, _WRITER_ARBITRATED_CODES
+    assert "role_stale" not in nh.HEALABLE
+    assert "role_stale" not in _CRITICAL_QA_CODES
+    assert "role_stale" not in _WRITER_ARBITRATED_CODES
+    for sev in ("ERROR", "WARN"):
+        assert nh.corrections_from_qa({"flags": [
+            {"code": "role_stale", "severity": sev, "segment_id": "g0009",
+             "detail": "line says 'the leader'"}]}) == {}
+    assert "title" in nh._note_for("role_stale", "line says 'the leader'")
+
+
+def test_a_title_that_opens_a_longer_name_is_not_flagged():
+    led = _ledger()
+    codes = lambda line: [f["code"] for f in pq.ledger_contradiction_flags(
+        _beats((line, ["p2.jpg"], 9)), led, CAST)]
+    # (object position, past dead_actor's subject zone, as in the test above)
+    assert codes("Everyone in the great hall bows low to the Leader of the "
+                 "Azure Sect.") == []
+    assert codes("Everyone in the great hall bows low before the Leader "
+                 "Kang.") == []
+    # the skip is per occurrence: a later bare handle still reports
+    assert codes("Everyone in the great hall bows to the Leader Kang, then "
+                 "to what is left of the leader.") == ["role_stale"]
+    # lower case "of the dead" is not a name
+    assert codes("Everyone in the great hall mourns what is left of the "
+                 "leader of the dead.") == ["role_stale"]
+
+
+def test_role_stale_quotes_the_title_holders_own_death():
+    led = {"entities": [{"canonical_name": "Forest Wolf", "aliases": []},
+                        {"canonical_name": "Wolf King", "aliases": []}],
+           "events": [
+               {"type": "death", "subject": "Forest Wolf",
+                "scene_file": "p1.jpg", "evidence_quote": "KILLED THE FOREST WOLF"},
+               {"type": "death", "subject": "Wolf King",
+                "scene_file": "p2.jpg", "evidence_quote": "KILLED THE WOLF KING"}],
+           "beat_facts": {"g0009": {"dead_by_now": ["Forest Wolf", "Wolf King"],
+                                    "banned_handles": ["the king"]}}}
+    flags = pq.ledger_contradiction_flags(
+        _beats(("They look back at the king once more.", ["p3.jpg"], 9)),
+        led, {"cast": []})
+    assert [f["code"] for f in flags] == ["role_stale"]
+    assert "KILLED THE WOLF KING" in flags[0]["detail"]
+    assert "FOREST WOLF" not in flags[0]["detail"]

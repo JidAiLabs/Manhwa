@@ -26,8 +26,8 @@ Output: manifest.chapter_story.json
   {synopsis, cast: [{name, role, fate}], events: [{panels, actor, does,
    target, evidence}]}
 
-story_ledger.py consumes it to derive per-beat facts (deaths propagate, dead
-role-holders' titles get banned), so every existing consumer — the writer's
+story_ledger.py consumes it to derive per-beat facts (deaths propagate, a
+dead title-holder's title gets banned), so every existing consumer — the writer's
 FACTS block, the identity gate, prep_qa's dead_actor/role_stale — keeps its
 contract while the weak per-window arbitration goes away.
 """

@@ -23,12 +23,12 @@ This tool builds manifest.ledger.json ONCE per chapter at the beated stage
            contradicts a panel's visual attribution. Dialogue is the highest-
            trust channel; the model arbitrates, it never writes prose;
   code   — apply overrides, derive beat_facts per group (deaths propagate to
-           all LATER groups; a dead unique-role holder bans their role handle
-           downstream), write the manifest atomically with input shas.
+           all LATER groups; a dead holder of a unique TITLE bans that title's
+           handle downstream), write the manifest atomically with input shas.
 
 Consumers: gemini_narrative_pass (FACTS block per beat + ledger-aware
-identity gate), narration_punchup's backstop, prep_qa (dead_actor/role_stale),
-narration_heal (fact-carrying correction notes).
+identity gate), narration_punchup's backstop, prep_qa (dead_actor blocks,
+role_stale reports), narration_heal (fact-carrying correction notes).
 
 Fail-soft: an unparseable arbitration yields a purely-visual ledger
 (events=[], overrides=[]) with a loud log — never a crashed beated stage.
@@ -417,17 +417,22 @@ def apply_overrides(panel_actions: List[Dict[str, Any]], raw: Any,
 
 def _unique_role_handles(dead: str, entities: List[Dict[str, Any]],
                          alive: Set[str]) -> List[str]:
-    """Handles that stop being sayable once *dead* is gone: 'the <token>' for
-    each of the dead entity's name tokens no LIVING entity shares ('the
-    leader' after the leader dies — a surviving assassin must not inherit
-    it)."""
-    from cast_identity import _name_tokens
+    """Handles that stop being sayable once *dead* is gone: 'the <title>' for
+    each TITLE in the dead entity's name or aliases (cast_identity.
+    _ROLE_TITLES) that no LIVING entity also holds ('the leader' after the
+    leader dies — a surviving assassin must not inherit it).
+
+    Titles only (2026-09-28). Every name token used to be banned, and the
+    writer obeys these as "NEVER use": a dead "Kim Dokja" banned "the kim"
+    and "the dokja", "Bloodthirsty Forest Wolf" banned "the forest", "Monster
+    Bird of the Nile River" banned "the river"."""
+    from cast_identity import _ROLE_TITLES, _name_tokens
     by_name = {e["canonical_name"]: e for e in entities}
     m = by_name.get(dead)
     if not m:
         return []
     mine = _name_tokens({"canonical_name": m["canonical_name"],
-                         "aliases": m.get("aliases")})
+                         "aliases": m.get("aliases")}) & _ROLE_TITLES
     for other in entities:
         if other["canonical_name"] == dead:
             continue

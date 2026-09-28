@@ -2000,6 +2000,12 @@ def actor_mismatch_flags(beats_obj: Any, understood_obj: Any,
     return flags
 
 
+# After a matched title handle: a capitalized word, or "of (the) <Capital>",
+# means the handle opens a longer proper name. CASE-SENSITIVE on purpose: the
+# handle itself is matched case-insensitively.
+_NAME_CONTINUES = re.compile(r"\s+(?:of\s+(?:the\s+)?)?[A-Z]")
+
+
 def ledger_contradiction_flags(beats_obj: Any, ledger_obj: Any,
                                cast_obj: Any) -> List[Dict[str, Any]]:
     """STORY-STATE gate (2026-07-20 wave) — narration vs the chapter's fact
@@ -2008,12 +2014,15 @@ def ledger_contradiction_flags(beats_obj: Any, ledger_obj: Any,
         position actor-noun maps ONLY to entities the ledger says are dead
         by this beat — a dead character cannot act (the nano ch1 'leader
         finishes the job' class);
-      role_stale (ERROR, heal-only until precision is measured): a line uses
-        a banned unique-role handle ('the leader' after the leader died — a
-        surviving underling never inherits the title).
+      role_stale (WARN, report-only since 2026-09-28): a line uses a banned
+        title handle ('the leader' after the leader died — a surviving
+        underling never inherits the title). 34 flags ever, ~1 real, below
+        the heal bar in tools/qa_gate_blast_radius.py. An occurrence that
+        runs on into a longer proper name ("the King of the Azure Forest",
+        "the Leader Kang") names someone and is skipped.
     Details carry the ledger's evidence quote so the heal note states the
     FACT, not just the violation. Silent without a ledger (old chapters)."""
-    from cast_identity import actor_noun_map, subject_actor_nouns
+    from cast_identity import _name_tokens, actor_noun_map, subject_actor_nouns
     flags: List[Dict[str, Any]] = []
     if not isinstance(beats_obj, dict) or not isinstance(ledger_obj, dict):
         return flags
@@ -2035,6 +2044,19 @@ def ledger_contradiction_flags(beats_obj: Any, ledger_obj: Any,
                 sf = str(ev.get("scene_file") or "")
                 return f" (killed at {sf}: \"{q}\")" if q else f" (killed at {sf})"
         return ""
+
+    ents = ledger_obj.get("entities") or []
+
+    def _holders(handle: str, dead: set) -> List[str]:
+        """The dead entities whose name or alias carries this title — so the
+        detail quotes THEIR death, not whichever dead entity came first (FTA
+        ch8's 'the king' flag quoted the forest-wolf notice)."""
+        title = handle.rsplit(" ", 1)[-1].lower()
+        return sorted(str(e.get("canonical_name")) for e in ents
+                      if e.get("canonical_name") in dead
+                      and title in _name_tokens(
+                          {"canonical_name": e.get("canonical_name") or "",
+                           "aliases": e.get("aliases")}))
 
     for b in beats_obj.get("beats") or []:
         gid = f"g{int(b.get('group_id') or 0):04d}"
@@ -2062,14 +2084,18 @@ def ledger_contradiction_flags(beats_obj: Any, ledger_obj: Any,
             for h in banned:
                 if h.rsplit(" ", 1)[-1].lower() in fired_nouns:
                     continue                  # already flagged as dead_actor
-                if re.search(r"\b" + re.escape(h) + r"\b", line,
-                             re.IGNORECASE):
+                for m in re.finditer(r"\b" + re.escape(h) + r"\b", line,
+                                     re.IGNORECASE):
+                    if _NAME_CONTINUES.match(line, m.end()):
+                        continue              # part of a longer proper name
                     flags.append(_flag(
-                        "role_stale", ERROR,
+                        "role_stale", WARN,
                         f"line says {h!r} but that role holder is dead by "
-                        f"this beat{_quote(dead)}: {line[:80]!r} — nobody "
-                        "inherits the title; name who is actually shown",
+                        f"this beat{_quote(_holders(h, dead))}: {line[:80]!r} "
+                        "— review: nobody inherits the title; name who is "
+                        "actually shown",
                         scene=str((s["span"] or [""])[0]), segment_id=gid))
+                    break
     return flags
 
 
