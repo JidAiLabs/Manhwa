@@ -30,6 +30,7 @@ from studio.catalog import identity
 from studio.catalog import repo
 from studio.catalog.models import Chapter
 from studio import config as studio_config
+from studio.sources.base import UnsupportedSource
 from studio.sources.base import for_url as adapter_for_url, get as get_adapter
 from tools.niche_modules import classify_niche, pick_primary_secondary
 
@@ -131,12 +132,21 @@ def _persist_series(con, meta) -> int:
 
 
 def cmd_add_series(args: argparse.Namespace) -> int:
+    """Exit 2 with the reason on stderr for a link that cannot name a series
+    (the worker then fails the job without retrying). The meta and the
+    chapter list are read BEFORE anything is written, so a refused link never
+    leaves an empty series row behind."""
     adapter = get_adapter(args.source)
     now = _now_iso()
-    meta = adapter.series_meta(args.series_url)
+    try:
+        url = adapter.resolve_series_url(args.series_url)
+        meta = adapter.series_meta(url)
+        chapters = adapter.list_chapters(url)
+    except UnsupportedSource as e:
+        print(f"add-series: {e}", file=sys.stderr)
+        return 2
     con = _open_db()
     sid = _persist_series(con, meta)
-    chapters = adapter.list_chapters(args.series_url)
     for ch in chapters:
         repo.upsert_chapter(con, sid, ch.number, ch.label, ch.url, updated_at=now)
     print(f"series_id={sid} chapters={len(chapters)}")

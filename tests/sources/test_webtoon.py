@@ -274,3 +274,99 @@ def test_fixture_prologue_is_episode_zero():
     assert chs[0].number == 1.0
     assert chs[0].label == "Episode 0 (Prologue)"
     assert chs[1].label == "Episode 1"
+
+
+
+# ---------------------------------------------------------------------------
+# resolve_series_url: any webtoons.com link -> the canonical list page
+# (2026-09-27: the short link failed three times as "add-series exited 1")
+# ---------------------------------------------------------------------------
+
+CANON = "https://www.webtoons.com/en/action/rise-of-the-devourer/list?title_no=7818"
+
+
+@pytest.mark.parametrize("link", [
+    "https://www.webtoons.com/en/action/rise-of-the-devourer/list?title_no=7818&page=1",
+    "https://www.webtoons.com/en/action/rise-of-the-devourer/list?title_no=7818&page=3",
+    "http://webtoons.com/en/action/rise-of-the-devourer/list?title_no=7818",
+    "https://m.webtoons.com/en/action/rise-of-the-devourer/list?title_no=7818",
+    "https://www.webtoons.com/en/action/rise-of-the-devourer/ep-5/viewer"
+    "?title_no=7818&episode_no=5",
+    "  " + CANON + "  ",
+])
+def test_a_link_with_title_no_resolves_offline(link):
+    """page= is dropped: gallery-dl starts at that page and skips the newest."""
+    from studio.sources.webtoon import WebtoonAdapter
+    a = WebtoonAdapter()
+    with patch.object(WebtoonAdapter, "_search_raw",
+                      side_effect=AssertionError("no network needed")):
+        assert a.resolve_series_url(link) == CANON
+
+
+def test_a_short_link_is_found_by_its_exact_path():
+    from studio.sources.webtoon import WebtoonAdapter
+    hits = [("Rise of the Devourer (canvas)",
+             "https://www.webtoons.com/en/canvas/rise-of-the-devourer-x/list?title_no=99"),
+            ("Rise of the Devourer", CANON)]
+    with patch.object(WebtoonAdapter, "_search_raw", return_value=hits) as s:
+        got = WebtoonAdapter().resolve_series_url(
+            "https://www.webtoons.com/en/action/rise-of-the-devourer/")
+    assert got == CANON
+    s.assert_called_once_with("rise of the devourer")
+
+
+def test_a_short_link_with_the_wrong_genre_still_finds_the_one_series():
+    from studio.sources.webtoon import WebtoonAdapter
+    with patch.object(WebtoonAdapter, "_search_raw",
+                      return_value=[("Rise of the Devourer", CANON)]):
+        assert WebtoonAdapter().resolve_series_url(
+            "https://www.webtoons.com/en/fantasy/rise-of-the-devourer") == CANON
+
+
+@pytest.mark.parametrize("link, why", [
+    ("https://www.webtoons.com/en/action/no-such-series/", "has no series at"),
+    ("https://www.webtoons.com/en/", "not a webtoons.com series link"),
+    ("https://example.com/en/action/x/list?title_no=1", "not a webtoons.com"),
+    ("https://www.webtoons.com/fr/action/x/", "English only"),
+])
+def test_a_link_that_names_no_series_is_refused_with_a_reason(link, why):
+    from studio.sources.base import UnsupportedSource
+    from studio.sources.webtoon import WebtoonAdapter
+    with patch.object(WebtoonAdapter, "_search_raw", return_value=[
+            ("Other", "https://www.webtoons.com/en/action/other/list?title_no=5")]):
+        with pytest.raises(UnsupportedSource, match=why) as e:
+            WebtoonAdapter().resolve_series_url(link)
+    assert "title_no=" in str(e.value)          # the owner is told what to paste
+
+
+def test_a_search_failure_is_transient_not_a_refusal():
+    """A network blip must not become "no such series" (NonRetryable)."""
+    import httpx
+    from studio.sources.base import UnsupportedSource
+    from studio.sources.webtoon import WebtoonAdapter
+    with patch("httpx.get", side_effect=httpx.ConnectError("down")):
+        with pytest.raises(httpx.ConnectError):
+            WebtoonAdapter().resolve_series_url(
+                "https://www.webtoons.com/en/action/rise-of-the-devourer/")
+        assert WebtoonAdapter().search("rise of the devourer") == []  # discovery
+
+
+def test_gallery_dl_unsupported_url_is_a_permanent_refusal():
+    from studio.sources.base import UnsupportedSource
+    from studio.sources.webtoon import _run_gallery_dl_j
+    bad = MagicMock(returncode=64, stdout="",
+                    stderr="[gallery-dl][error] Unsupported URL 'https://x'")
+    with patch("subprocess.run", return_value=bad):
+        with pytest.raises(UnsupportedSource):
+            _run_gallery_dl_j("https://x")
+    flaky = MagicMock(returncode=1, stdout="", stderr="HTTP 503")
+    with patch("subprocess.run", return_value=flaky):
+        with pytest.raises(RuntimeError):
+            _run_gallery_dl_j("https://x")
+
+
+def test_the_default_resolver_returns_the_link_as_given():
+    from studio.sources.base import get
+    import studio.sources  # noqa: F401
+    assert get("asura").resolve_series_url(
+        "  https://asurascans.com/comics/x-1  ") == "https://asurascans.com/comics/x-1"

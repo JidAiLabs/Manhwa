@@ -16,16 +16,22 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from studio.sources.base import (
     Capability,
     ChapterRef,
     SeriesMeta,
     SourceAdapter,
+    UnsupportedSource,
     register,
     slugify,
 )
-from studio.sources.gallerydl import normalize_into, run_download
+from studio.sources.gallerydl import (
+    _EXTRACTOR_ERROR_PHRASES,
+    normalize_into,
+    run_download,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -53,10 +59,37 @@ def _run_gallery_dl_j(url: str) -> list:
         timeout=120,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"gallery-dl -j failed (exit {result.returncode}): {result.stderr.strip()}"
-        )
+        err = result.stderr.strip()
+        # a link gallery-dl has no extractor for is permanent: say so, so the
+        # add is not retried (run_download classifies it the same way)
+        if any(p in err.lower() for p in _EXTRACTOR_ERROR_PHRASES):
+            raise UnsupportedSource(f"gallery-dl cannot read '{url}': {err}")
+        raise RuntimeError(f"gallery-dl -j failed (exit {result.returncode}): {err}")
     return json.loads(result.stdout)
+
+
+_WT_HOSTS = {"webtoons.com", "www.webtoons.com", "m.webtoons.com"}
+_PASTE_HINT = "paste the series page link (it contains title_no=)"
+
+
+def _series_parts(url: str):
+    """(lang, genre, slug, title_no) of a webtoons.com series, list or episode
+    link; title_no is "" when the link has none. None when it is not one."""
+    parts = urlsplit(str(url or "").strip())
+    if (parts.hostname or "").lower() not in _WT_HOSTS:
+        return None
+    segs = [s for s in parts.path.split("/") if s]
+    if len(segs) < 3:
+        return None
+    title_no = (parse_qs(parts.query).get("title_no") or [""])[0]
+    return segs[0], segs[1], segs[2], title_no if title_no.isdigit() else ""
+
+
+def _canonical_list_url(lang: str, genre: str, slug: str, title_no: str) -> str:
+    """The one form gallery-dl reads from page 1. A pasted `page=3` made it
+    start at page 3 and skip the newest episodes."""
+    return (f"https://www.webtoons.com/{lang}/{genre}/{slug}/list"
+            f"?title_no={title_no}")
 
 
 def _comic_slug_to_title(slug: str) -> str:
@@ -184,30 +217,73 @@ class WebtoonAdapter(SourceAdapter):
     domains = ("webtoons.com",)
     capabilities = Capability.DOWNLOAD | Capability.LIST_CHAPTERS | Capability.SERIES_META
 
-    def search(self, title: str) -> list[tuple[str, str]]:
+    def _search_raw(self, title: str) -> list[tuple[str, str]]:
         """webtoons.com/en/search — result cards are <a class='link _card_item'>
-        with the title as the first text line."""
+        with the title as the first text line. RAISES on an HTTP failure, so
+        the resolver can tell a network blip from "no such series"."""
         from urllib.parse import quote
 
         import httpx
         from selectolax.parser import HTMLParser
+        r = httpx.get(
+            "https://www.webtoons.com/en/search?keyword=" + quote(title),
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS "
+                                   "X 10_15_7) AppleWebKit/537.36"},
+            follow_redirects=True, timeout=15)
+        r.raise_for_status()
+        out: list[tuple[str, str]] = []
+        for a in HTMLParser(r.text).css("a._card_item"):
+            href = a.attributes.get("href") or ""
+            first_line = next((ln.strip() for ln in
+                               (a.text() or "").splitlines()
+                               if ln.strip()), "")
+            if href and first_line:
+                out.append((first_line, urljoin("https://www.webtoons.com/", href)))
+        return out
+
+    def search(self, title: str) -> list[tuple[str, str]]:
+        """Discovery's contract: never raises, at most 10 results."""
         try:
-            r = httpx.get(
-                "https://www.webtoons.com/en/search?keyword=" + quote(title),
-                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS "
-                                       "X 10_15_7) AppleWebKit/537.36"},
-                follow_redirects=True, timeout=15)
-            out: list[tuple[str, str]] = []
-            for a in HTMLParser(r.text).css("a._card_item"):
-                href = a.attributes.get("href") or ""
-                first_line = next((ln.strip() for ln in
-                                   (a.text() or "").splitlines()
-                                   if ln.strip()), "")
-                if href and first_line:
-                    out.append((first_line, href))
-            return out[:10]
+            return self._search_raw(title)[:10]
         except Exception:
             return []
+
+    def resolve_series_url(self, url: str) -> str:
+        """Any webtoons.com link to a series -> its canonical list page.
+
+        A link with title_no (a list page, an episode) needs no network. A
+        SHORT link (`/en/action/rise-of-the-devourer/`) cannot be read: the
+        site answers it, and `/list` without title_no, with HTTP 500, and
+        gallery-dl calls it unsupported (jobs 2934-2936 failed three times on
+        it, 2026-09-27). The site search returns the same path WITH title_no,
+        so the series is found by an exact path match, never a fuzzy title."""
+        got = _series_parts(url)
+        if got is None:
+            raise UnsupportedSource(
+                f"not a webtoons.com series link: {url!r} — {_PASTE_HINT}")
+        lang, genre, slug, title_no = got
+        if title_no:
+            return _canonical_list_url(lang, genre, slug, title_no)
+        if lang != "en":
+            raise UnsupportedSource(
+                f"a '{lang}' link without title_no cannot be looked up (the "
+                f"site search is English only) — {_PASTE_HINT}")
+        exact, same_slug = [], set()
+        for _title, href in self._search_raw(slug.replace("-", " ")):
+            hit = _series_parts(href)
+            if not hit or not hit[3] or hit[0] != lang \
+                    or hit[2].lower() != slug.lower():
+                continue
+            if hit[1].lower() == genre.lower():
+                exact.append(hit)
+            same_slug.add(hit)
+        if exact:
+            return _canonical_list_url(*exact[0])
+        if len(same_slug) == 1:            # the genre in the pasted link was off
+            return _canonical_list_url(*same_slug.pop())
+        raise UnsupportedSource(
+            f"webtoons.com search has no series at /{lang}/{genre}/{slug}/ — "
+            f"{_PASTE_HINT}")
 
     def _fetch_entries(self, series_url: str) -> list:
         return _run_gallery_dl_j(series_url)

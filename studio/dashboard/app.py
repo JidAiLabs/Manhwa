@@ -1361,6 +1361,20 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                      bundle_id=bundle_id, payload=payload)
         return RedirectResponse("/", status_code=303)
 
+    def _resolve_series_link(source: str, url: str):
+        """The canonical series URL, or a redirect that shows the owner why
+        the link cannot be added (the red badge on /series)."""
+        from studio.sources.base import UnsupportedSource, get as get_adapter
+        try:
+            return get_adapter(source).resolve_series_url(url)
+        except UnsupportedSource as e:
+            why = str(e)
+        except Exception as e:           # a network blip during the lookup
+            why = (f"could not look that link up ({e.__class__.__name__}) — "
+                   "try again in a minute")
+        return RedirectResponse("/series?error=" + quote_plus(why),
+                                status_code=303)
+
     @app.post("/add-series-direct")
     def add_series_direct(source: str = Form(...), url: str = Form(...)):
         """Manually add a manhwa by URL — the source comes from the LINK.
@@ -1387,8 +1401,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     f"that link is {detected.id}, not {source} — leave the "
                     "picker on 'auto' or choose the matching source"),
                 status_code=303)
+        resolved = _resolve_series_link(source, url)
+        if isinstance(resolved, RedirectResponse):
+            return resolved
+        # dedupe=False: add_series rows have no series/chapter id, so dedupe
+        # would fold a second DIFFERENT series into the first pending add and
+        # drop it silently. The add itself is an idempotent upsert.
         jobs.enqueue(con(), "add_series",
-                     payload={"source": source, "url": url})
+                     payload={"source": source, "url": resolved}, dedupe=False)
         return RedirectResponse("/series", status_code=303)
 
     @app.post("/jobs/{job_id}/cancel")
@@ -1792,9 +1812,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                            url: str = Form(...)):
         if not _http_url(url):
             return PlainTextResponse("invalid url scheme", status_code=400)
+        resolved = _resolve_series_link(source, url)
+        if isinstance(resolved, RedirectResponse):
+            return resolved              # the title stays unmarked
         c = con()
         discovery.mark(c, anilist_id, "in_production")
-        jobs.enqueue(c, "add_series", payload={"source": source, "url": url})
+        jobs.enqueue(c, "add_series", payload={"source": source, "url": resolved},
+                     dedupe=False)
         return RedirectResponse("/", status_code=303)
 
     return app

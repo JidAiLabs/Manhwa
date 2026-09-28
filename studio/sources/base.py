@@ -122,6 +122,18 @@ class SourceAdapter(ABC):
         Returns the list of image paths written, in page order.
         """
 
+    def resolve_series_url(self, url: str) -> str:
+        """The canonical SERIES page for any link a person pastes (a short
+        link, an episode link, a list page with paging). Every add path calls
+        it first, so one series is stored under one URL (series.series_url is
+        UNIQUE per source) and the site's tools get a link they accept.
+
+        Default: the link as given. May do network I/O. Raises
+        UnsupportedSource, with a reason a person can act on, when the link
+        cannot name a series on this site; any other exception is transient
+        (a retry may succeed)."""
+        return str(url or "").strip()
+
     def search(self, title: str) -> list[tuple[str, str]]:
         """Best-effort site search: [(series_title, series_url), ...].
 

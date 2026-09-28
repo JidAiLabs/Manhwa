@@ -44,6 +44,7 @@ def mock_adapter(monkeypatch):
 
     adapter = MagicMock()
     adapter.id = "mock"
+    adapter.resolve_series_url.side_effect = lambda u: u
 
     # Default series_meta return value
     adapter.series_meta.return_value = SeriesMeta(
@@ -174,6 +175,29 @@ class TestAddSeries:
 # ---------------------------------------------------------------------------
 # fetch
 # ---------------------------------------------------------------------------
+
+    def test_a_link_that_names_no_series_exits_2_and_writes_nothing(
+            self, tmp_db, mock_adapter, capsys):
+        from studio.sources.base import UnsupportedSource
+        mock_adapter.resolve_series_url.side_effect = UnsupportedSource(
+            "webtoons.com search has no series at /en/x/y/")
+        import argparse
+        rc = cli_mod.cmd_add_series(argparse.Namespace(
+            source="mock", series_url="https://mock.test/short"))
+        assert rc == 2
+        assert "has no series at" in capsys.readouterr().err
+        assert not tmp_db.exists()      # refused before the DB is even opened
+
+    def test_the_resolved_url_is_what_gets_read(self, tmp_db, mock_adapter):
+        mock_adapter.resolve_series_url.side_effect = \
+            lambda u: "https://mock.test/series/foo?canonical=1"
+        import argparse
+        assert cli_mod.cmd_add_series(argparse.Namespace(
+            source="mock", series_url="https://mock.test/s")) == 0
+        mock_adapter.series_meta.assert_called_with(
+            "https://mock.test/series/foo?canonical=1")
+        mock_adapter.list_chapters.assert_called_with(
+            "https://mock.test/series/foo?canonical=1")
 
 class TestFetch:
     def test_fetch_sets_downloaded_status(self, tmp_db, mock_adapter, tmp_path, monkeypatch, capsys):

@@ -1797,3 +1797,66 @@ def test_the_owners_claim_click_is_never_folded_into_an_automatic_one(client):
     rows = [_j.loads(x[0]) for x in con.execute(
         "SELECT payload_json FROM job WHERE type='series_claim' ORDER BY id")]
     assert rows == [{"auto": True}, {"tone": "erotic"}]
+
+
+
+def test_add_series_direct_resolves_the_link_before_queueing(client, monkeypatch):
+    import json as _j
+    from studio.sources.webtoon import WebtoonAdapter
+    c, con = client
+    canon = "https://www.webtoons.com/en/action/rise-of-the-devourer/list?title_no=7818"
+    monkeypatch.setattr(WebtoonAdapter, "_search_raw",
+                        lambda self, t: [("Rise of the Devourer", canon)])
+    r = c.post("/add-series-direct", data={
+        "source": "auto",
+        "url": "https://www.webtoons.com/en/action/rise-of-the-devourer/"},
+        follow_redirects=False)
+    assert r.status_code == 303 and "error" not in r.headers["location"]
+    rows = [_j.loads(x[0]) for x in con.execute(
+        "SELECT payload_json FROM job WHERE type='add_series'")]
+    assert rows == [{"source": "webtoon", "url": canon}]
+
+
+def test_add_series_direct_shows_why_a_link_cannot_be_added(client, monkeypatch):
+    from studio.sources.webtoon import WebtoonAdapter
+    c, con = client
+    monkeypatch.setattr(WebtoonAdapter, "_search_raw", lambda self, t: [])
+    r = c.post("/add-series-direct", data={
+        "source": "auto",
+        "url": "https://www.webtoons.com/en/action/nothing-here/"},
+        follow_redirects=False)
+    assert r.status_code == 303 and "/series?error=" in r.headers["location"]
+    assert "title_no" in r.headers["location"]
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='add_series'"
+                       ).fetchone()[0] == 0
+
+
+def test_two_different_adds_make_two_jobs(client):
+    """add_series rows carry no series id, so dedupe folded a second DIFFERENT
+    series into the first pending add and dropped it."""
+    c, con = client
+    for n in (1, 2):
+        c.post("/add-series-direct", data={
+            "source": "auto",
+            "url": f"https://www.webtoons.com/en/action/s{n}/list?title_no={n}"},
+            follow_redirects=False)
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='add_series'"
+                       ).fetchone()[0] == 2
+
+
+def test_a_failed_discovery_add_leaves_the_title_unmarked(client, monkeypatch):
+    from studio.dashboard import app as _app, discovery
+    from studio.sources.webtoon import WebtoonAdapter
+    c, con = client
+    monkeypatch.setattr(WebtoonAdapter, "_search_raw", lambda self, t: [])
+    marked = []
+    monkeypatch.setattr(discovery, "mark",
+                        lambda *a, **k: marked.append(a))
+    r = c.post("/discovery/77/add", data={
+        "source": "webtoon",
+        "url": "https://www.webtoons.com/en/action/nothing-here/"},
+        follow_redirects=False)
+    assert r.status_code == 303 and "error=" in r.headers["location"]
+    assert marked == []
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='add_series'"
+                       ).fetchone()[0] == 0

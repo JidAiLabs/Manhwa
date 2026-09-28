@@ -3110,3 +3110,42 @@ def test_an_automatic_claim_never_overwrites_an_existing_one(tmp_path,
     worker._h_series_claim(con, {"series_id": 1, "payload": {"auto": True}},
                            io.StringIO())
     assert calls == [] and claim.read_text() == '{"tone": "erotic"}'
+
+
+
+def test_add_series_refuses_a_link_that_names_no_series_without_retry(
+        tmp_path, monkeypatch):
+    """2026-09-27: a short webtoons link failed three times as "add-series
+    exited 1". The reason now reaches job.error and the job is not retried."""
+    import io
+    from studio.sources.webtoon import WebtoonAdapter
+    con = _con(tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream",
+                        lambda cmd, log, **kw: calls.append(cmd) or 0)
+    monkeypatch.setattr(WebtoonAdapter, "_search_raw", lambda self, t: [])
+    with pytest.raises(worker.NonRetryableError, match="has no series at"):
+        worker._h_add_series(con, {"payload": {
+            "source": "webtoon",
+            "url": "https://www.webtoons.com/en/action/nothing-here/"}},
+            io.StringIO())
+    assert calls == []
+
+
+def test_add_series_passes_the_canonical_link_to_the_cli(tmp_path, monkeypatch):
+    import io
+    con = _con(tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream",
+                        lambda cmd, log, **kw: calls.append(cmd) or 0)
+    worker._h_add_series(con, {"payload": {
+        "source": "webtoon",
+        "url": "https://www.webtoons.com/en/action/x-y/list?title_no=12&page=4"}},
+        io.StringIO())
+    assert calls[0][-1] == "https://www.webtoons.com/en/action/x-y/list?title_no=12"
+    monkeypatch.setattr(worker, "_stream", lambda cmd, log, **kw: 2)
+    with pytest.raises(worker.NonRetryableError):
+        worker._h_add_series(con, {"payload": {
+            "source": "webtoon",
+            "url": "https://www.webtoons.com/en/action/x-y/list?title_no=12"}},
+            io.StringIO())

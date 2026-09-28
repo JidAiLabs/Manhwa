@@ -1488,7 +1488,20 @@ def _h_add_series(con: sqlite3.Connection, job: Dict[str, Any],
     url = job["payload"].get("url", "")
     if not src or not url:
         raise RuntimeError("add_series needs source + url")
+    # Resolve HERE, in-process, so a link that names no series fails with its
+    # reason on the dashboard instead of "add-series exited 1", and is never
+    # retried (2026-09-27: a short webtoons link failed three times).
+    import studio.sources  # noqa: F401 — registers the adapters
+    from studio.sources.base import UnsupportedSource, get as _adapter
+    try:
+        url = _adapter(src).resolve_series_url(url)
+    except UnsupportedSource as e:
+        raise NonRetryableError(f"add-series: {e}") from e
+    log.write(f"[add-series] {src} {url}\n")
     rc = _stream([PY, "-m", "studio", "add-series", src, url], log)
+    if rc == 2:      # the CLI's "this link names no series" (reason in the log)
+        raise NonRetryableError("add-series refused the link — the reason is "
+                                "the last line of the job log")
     if rc != 0:
         raise RuntimeError(f"add-series exited {rc}")
 
