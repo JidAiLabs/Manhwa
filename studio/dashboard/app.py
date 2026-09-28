@@ -777,8 +777,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         from thumbnail_styles import CLAIM_TONES
         if tone not in CLAIM_TONES:
             return PlainTextResponse("no such tone", status_code=400)
+        # dedupe=False: dedupe ignores the payload, so this click would fold
+        # into a queued automatic claim and lose the owner's tone
         jobs.enqueue(con(), "series_claim", series_id=series_id, priority=30,
-                     payload={"tone": tone})
+                     payload={"tone": tone}, dedupe=False)
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.post("/thumbnail/card")
@@ -828,8 +830,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         if not 1 <= len(ref) <= 3 or any(not 0 <= i < len(cands) for i in ref):
             return PlainTextResponse("pick 1-3 reference panels from the "
                                      "suggestions", status_code=400)
+        # owner=True: the paid handler refuses a job this button did not queue
         jobs.enqueue(con(), "series_thumbnail", series_id=series_id,
-                     payload={"refs": [cands[i]["path"] for i in ref]})
+                     payload={"refs": [cands[i]["path"] for i in ref],
+                              "owner": True})
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.post("/thumbnail/label")
@@ -1349,6 +1353,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             payload["target"] = target
         if type == "render_segment":
             payload["branding"] = branding
+        if type == "series_thumbnail":
+            # the Series page's generate button: the owner's click, the only
+            # consent the paid handler accepts (jobs.PAID_JOB_TYPES)
+            payload["owner"] = True
         jobs.enqueue(c, type, chapter_id=chapter_id, series_id=series_id,
                      bundle_id=bundle_id, payload=payload)
         return RedirectResponse("/", status_code=303)

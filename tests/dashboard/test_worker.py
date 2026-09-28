@@ -1,5 +1,7 @@
 """Worker: claims serially, logs, enforces gates, records stage timings."""
 import time
+
+import pytest
 import types
 
 from studio.catalog.db import connect
@@ -2153,14 +2155,22 @@ def _series_with_prepared(con, tmp_path, n, *, sid=1):
     con.commit()
 
 
-def test_autopropose_thumbnail_once_threshold_reached(tmp_path, monkeypatch):
+def test_autopropose_queues_the_free_claim_never_the_paid_paint(tmp_path,
+                                                                monkeypatch):
+    """Owner audit 2026-09-28: the automatic proposal painted two paid images
+    for series 1, 9, 11 and 12 with nobody clicking. It now queues only the
+    free claim preview; painting is the owner's generate button."""
+    import io, json as _json
     con = _con(tmp_path)
     monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
+    monkeypatch.setattr(worker, "REPO", tmp_path)
     _series_with_prepared(con, tmp_path, 3)
-    import io
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail' "
-                       "AND series_id=1").fetchone()[0] == 1
+    rows = con.execute("SELECT payload_json FROM job WHERE type='series_claim' "
+                       "AND series_id=1").fetchall()
+    assert [_json.loads(r[0]) for r in rows] == [{"auto": True}]
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail'"
+                       ).fetchone()[0] == 0
 
 
 def test_autopropose_does_nothing_below_threshold(tmp_path, monkeypatch):
@@ -2177,11 +2187,12 @@ def test_autopropose_is_idempotent(tmp_path, monkeypatch):
     """Firing on every prepare must not pile up duplicate jobs or bundles."""
     con = _con(tmp_path)
     monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
+    monkeypatch.setattr(worker, "REPO", tmp_path)
     _series_with_prepared(con, tmp_path, 3)
     import io
     for _ in range(4):
         worker._autopropose_publish_if_ready(con, 1, io.StringIO())
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail'"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_claim'"
                        ).fetchone()[0] == 1
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
                        ).fetchone()[0] == 1
@@ -2222,30 +2233,63 @@ def test_autopropose_respects_an_existing_bundle_layout(tmp_path, monkeypatch):
     bundles.create_bundle(con, 1, "full", title="mine")
     import io
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())
-    # thumbnail still proposed, but NO new bundle and NO teaser job
+    # the claim is still proposed, but NO new bundle and NO teaser job
     assert con.execute("SELECT COUNT(*) FROM bundle").fetchone()[0] == 1
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
                        ).fetchone()[0] == 0
 
 
-def test_autopropose_skips_thumbnail_that_already_exists(tmp_path, monkeypatch):
+@pytest.mark.parametrize("made", ["thumbnail", "claim", "option", "approval",
+                                  "claim_job"])
+def test_autopropose_leaves_what_the_owner_already_has_alone(tmp_path,
+                                                            monkeypatch, made):
+    """Anything the owner reviews stops the automatic claim: a live thumbnail,
+    a claim, a built option, an approval, or any earlier claim job (in any
+    state, so a failed one is not re-fired on every prepare)."""
+    import io
     con = _con(tmp_path)
     monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
+    monkeypatch.setattr(worker, "REPO", tmp_path)
     _series_with_prepared(con, tmp_path, 3)
-    thumb = worker.REPO / "dist" / "series_1" / "thumbnail_yt.jpg"
-    thumb.parent.mkdir(parents=True, exist_ok=True)
-    thumb.write_bytes(b"x")
-    try:
-        import io
-        worker._autopropose_publish_if_ready(con, 1, io.StringIO())
-        assert con.execute("SELECT COUNT(*) FROM job WHERE "
-                           "type='series_thumbnail'").fetchone()[0] == 0
-    finally:
-        thumb.unlink()
-        try:
-            thumb.parent.rmdir()
-        except OSError:
-            pass
+    d = tmp_path / "dist" / "series_1"
+    if made == "thumbnail":
+        d.mkdir(parents=True)
+        (d / "thumbnail_yt.jpg").write_bytes(b"x")
+    elif made == "claim":
+        d.mkdir(parents=True)
+        (d / "claim.json").write_text("{}")
+    elif made == "option":
+        (d / "options" / "nametag").mkdir(parents=True)
+    elif made == "approval":
+        gates.approve(con, "thumbnail", series_id=1)
+    else:
+        jid = jobs.enqueue(con, "series_claim", series_id=1)
+        con.execute("UPDATE job SET state='failed' WHERE id=?", (jid,))
+        con.commit()
+    before = con.execute("SELECT COUNT(*) FROM job WHERE type='series_claim'"
+                         ).fetchone()[0]
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_claim'"
+                       ).fetchone()[0] == before
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail'"
+                       ).fetchone()[0] == 0
+
+
+def test_an_old_paid_proposal_does_not_block_the_free_claim(tmp_path,
+                                                           monkeypatch):
+    """Tutorial Tower's automatic paid job (2883) was cancelled on 2026-09-28;
+    the series must still get its free claim, so the guard ignores the old
+    series_thumbnail history."""
+    import io
+    con = _con(tmp_path)
+    monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    _series_with_prepared(con, tmp_path, 3)
+    jid = jobs.enqueue(con, "series_thumbnail", series_id=1)
+    jobs.cancel(con, jid)
+    worker._autopropose_publish_if_ready(con, 1, io.StringIO())
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_claim'"
+                       ).fetchone()[0] == 1
 
 
 def test_autopropose_off_when_threshold_zero(tmp_path, monkeypatch):
@@ -2301,15 +2345,16 @@ def test_failed_thumbnail_proposal_is_not_re_fired_every_prepare(tmp_path,
     """A permanently-failing thumbnail (e.g. no API key) must not re-enqueue on
     every subsequent chapter prepare — propose ONCE, ever."""
     monkeypatch.setattr(worker, "_beats_cfg", lambda: _cfg_pub())
+    monkeypatch.setattr(worker, "REPO", tmp_path)
     con = _con(tmp_path)
     _series_with_prepared(con, tmp_path, 3)
     import io
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())
-    # the proposed thumbnail job fails
-    con.execute("UPDATE job SET state='failed' WHERE type='series_thumbnail'")
+    # the proposed claim job fails
+    con.execute("UPDATE job SET state='failed' WHERE type='series_claim'")
     con.commit()
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())  # next prepare
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail'"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_claim'"
                        ).fetchone()[0] == 1
 
 
@@ -2639,7 +2684,7 @@ def test_series_thumbnail_builds_the_two_ranked_designs_and_leaves_live_alone(
     gates.approve(con, "thumbnail", series_id=1)
     calls = []
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
                                io.StringIO())
     for name in ("system_window", "nametag"):
         assert (live / "options" / name / "thumbnail_yt.jpg").exists(), name
@@ -2679,7 +2724,7 @@ def test_one_failed_option_still_builds_the_other_then_fails_loud(tmp_path,
     monkeypatch.setattr(worker, "_stream",
                         _thumb_stream([], fail_style="nametag"))
     with pytest.raises(RuntimeError, match="nametag"):
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
                                    io.StringIO())
     assert (opts / "system_window" / "thumbnail_yt.jpg").exists()
     # a failed rebuild never leaves the OLD image pickable under the new label
@@ -2696,7 +2741,7 @@ def test_failed_option_is_not_auto_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "_stream",
                         _thumb_stream([], fail_style="system_window"))
     with pytest.raises(worker.NonRetryableError):
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
                                    io.StringIO())
 
 
@@ -2718,7 +2763,7 @@ def test_a_corrupt_concept_in_one_option_still_builds_the_other(tmp_path,
         return rc
     monkeypatch.setattr(worker, "_stream", stream)
     with pytest.raises(worker.NonRetryableError, match="system_window"):
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
                                    io.StringIO())
     opts = tmp_path / "dist" / "series_1" / "options"
     assert (opts / "nametag" / "thumbnail_yt.jpg").exists()
@@ -2760,7 +2805,7 @@ def test_a_failed_variant_is_not_auto_retried(tmp_path, monkeypatch):
                         _thumb_stream([], fail_style="series_1_vs_monster"))
     with pytest.raises(worker.NonRetryableError, match="vs_monster"):
         worker._h_series_thumbnail(
-            con, {"series_id": 1, "payload": {"style": "vs_monster"}},
+            con, {"series_id": 1, "payload": {"owner": True, "style": "vs_monster"}},
             io.StringIO())
 
 
@@ -2791,7 +2836,7 @@ def test_picked_refs_reach_both_options(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
     worker._h_series_thumbnail(
-        con, {"series_id": 1, "payload": {"refs": ["/a/p1.jpg", "/b/p2.jpg"]}},
+        con, {"series_id": 1, "payload": {"owner": True, "refs": ["/a/p1.jpg", "/b/p2.jpg"]}},
         io.StringIO())
     cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
     claim_cmd = [c for c in cmds if "--write-claim" in c]
@@ -2812,7 +2857,7 @@ def test_a_stale_option_from_before_the_designs_is_removed(tmp_path, monkeypatch
     old.mkdir(parents=True)
     (old / "thumbnail_yt.jpg").write_bytes(b"old")
     monkeypatch.setattr(worker, "_stream", _thumb_stream([]))
-    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
                                io.StringIO())
     assert not old.exists()
 
@@ -2828,7 +2873,7 @@ def test_a_failed_ranking_builds_nothing_and_is_not_retried(tmp_path, monkeypatc
     calls = []
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls, rank_rc=2))
     with pytest.raises(worker.NonRetryableError, match="claim"):
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
                                    io.StringIO())
     assert not [c for c in calls if c[1].endswith("thumbnail_build.py")]
 
@@ -2858,7 +2903,7 @@ def test_teaser_manifest_is_passed_only_for_a_reviewable_teaser(tmp_path,
             man.write_text("{}")
         calls = []
         monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
                                    io.StringIO())
         claim_cmd = [c for c in calls if "--write-claim" in c]
         assert len(claim_cmd) == 1
@@ -2879,7 +2924,7 @@ def test_the_ranking_knows_the_banned_title_the_build_will_apply(tmp_path,
     monkeypatch.setattr(worker, "REPO", tmp_path)
     calls = []
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}},
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
                                io.StringIO())
     # the claim call is the ONLY one that writes copy, ranks designs and quotes
     # the card, so it is the one that must know the banned title
@@ -2948,7 +2993,7 @@ def test_generate_paints_the_claim_the_owner_previewed(tmp_path, monkeypatch):
     claim = _claim_on_disk(tmp_path)
     calls = []
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {}}, io.StringIO())
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}}, io.StringIO())
     cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
     assert not [c for c in cmds if "--write-claim" in c]      # NOT rewritten
     assert [c[c.index("--design") + 1] for c in cmds] == ["system_window", "nametag"]
@@ -2965,7 +3010,7 @@ def test_new_reference_picks_keep_the_reviewed_text(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
     worker._h_series_thumbnail(
-        con, {"series_id": 1, "payload": {"refs": ["/new/p22.jpg"]}}, io.StringIO())
+        con, {"series_id": 1, "payload": {"owner": True, "refs": ["/new/p22.jpg"]}}, io.StringIO())
     assert not [c for c in calls if "--write-claim" in c]
     got = _j.loads(claim.read_text())
     assert got["scene"] == "REVIEWED SCENE" and got["refs"] == ["/new/p22.jpg"]
@@ -2986,3 +3031,82 @@ def test_claim_preview_passes_the_owners_tone(tmp_path, monkeypatch):
     worker._h_series_claim(con, {"series_id": 1, "payload": {}}, io.StringIO())
     c = [x for x in calls if "--write-claim" in x][0]
     assert c[c.index("--tone") + 1] == "absurd"           # the default
+
+
+# ---- one owner click pays for at most one run (2026-09-28) ------------------
+
+def test_the_paid_paint_refuses_a_job_the_owner_did_not_queue(tmp_path,
+                                                              monkeypatch):
+    """No owner=True, no painting: refused before any subprocess, and the
+    options already on disk survive (the handler used to rmtree them first)."""
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 1)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    opt = tmp_path / "dist" / "series_1" / "options" / "nametag"
+    opt.mkdir(parents=True)
+    (opt / "thumbnail_yt.jpg").write_bytes(b"paid for")
+    calls = []
+    monkeypatch.setattr(worker, "_stream",
+                        lambda cmd, log, **kw: calls.append(cmd) or 0)
+    for payload in ({}, {"refs": ["/a.jpg"]}, {"owner": "yes"}):
+        with pytest.raises(worker.NonRetryableError, match="owner"):
+            worker._h_series_thumbnail(
+                con, {"series_id": 1, "payload": payload}, io.StringIO())
+    assert calls == []
+    assert (opt / "thumbnail_yt.jpg").read_bytes() == b"paid for"
+
+
+def test_a_paid_job_is_never_auto_retried(tmp_path):
+    """Any exception on a paid job ends it: the failed run may already have
+    been charged, so a second run is the owner's click, not the retry loop."""
+    con = _con(tmp_path)
+    jid = jobs.enqueue(con, "series_thumbnail", series_id=1,
+                       payload={"owner": True})
+
+    def boom(c, job, log):
+        raise RuntimeError("network blip after the image was billed")
+
+    worker.run_once(con, handlers={"series_thumbnail": boom},
+                    log_dir=str(tmp_path))
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (jid,)).fetchone()[0] == "failed"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_thumbnail' "
+                       "AND state='queued'").fetchone()[0] == 0
+
+
+def test_requeue_orphans_fails_a_paid_job_and_requeues_the_rest(tmp_path,
+                                                                monkeypatch):
+    """A deploy or a crash mid-paint must not paint (and pay) again at boot."""
+    con = _con(tmp_path)
+    paid = jobs.enqueue(con, "series_thumbnail", series_id=1,
+                        payload={"owner": True})
+    prep = jobs.enqueue(con, "prepare", chapter_id=1)
+    con.execute("UPDATE job SET state='running' WHERE id IN (?,?)", (paid, prep))
+    con.commit()
+    monkeypatch.setattr(worker, "_reap_pgid", lambda pgid: True)
+    assert worker.requeue_orphans(con) == 1
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (paid,)).fetchone()
+    assert state == "failed" and "press generate" in err
+    assert con.execute("SELECT state FROM job WHERE id=?",
+                       (prep,)).fetchone()[0] == "queued"
+
+
+def test_an_automatic_claim_never_overwrites_an_existing_one(tmp_path,
+                                                            monkeypatch):
+    """The claim writer deletes first; an automatic claim queued behind the
+    owner's preview must not replace the owner's tone with the default."""
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 1)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    claim = tmp_path / "dist" / "series_1" / "claim.json"
+    claim.parent.mkdir(parents=True)
+    claim.write_text('{"tone": "erotic"}')
+    calls = []
+    monkeypatch.setattr(worker, "_stream",
+                        lambda cmd, log, **kw: calls.append(cmd) or 0)
+    worker._h_series_claim(con, {"series_id": 1, "payload": {"auto": True}},
+                           io.StringIO())
+    assert calls == [] and claim.read_text() == '{"tone": "erotic"}'

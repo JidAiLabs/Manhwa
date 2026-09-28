@@ -210,9 +210,11 @@ def test_series_thumbnail_job_and_approval_flow(client, tmp_path, monkeypatch):
     r = c.post("/jobs", data={"type": "series_thumbnail", "series_id": 1},
                follow_redirects=False)
     assert r.status_code == 303
-    row = con.execute("SELECT type, series_id, state FROM job WHERE "
-                      "type='series_thumbnail'").fetchone()
-    assert row == ("series_thumbnail", 1, "queued")
+    row = con.execute("SELECT type, series_id, state, payload_json FROM job "
+                      "WHERE type='series_thumbnail'").fetchone()
+    assert row[:3] == ("series_thumbnail", 1, "queued")
+    import json as _json
+    assert _json.loads(row[3])["owner"] is True     # the owner's click = consent
     # no image on disk yet -> the file route 404s, the page shows no <img>
     assert c.get("/thumb/series/1").status_code == 404
     assert 'src="/thumb/series/1' not in c.get("/series/1").text
@@ -1381,7 +1383,8 @@ def test_suggested_refs_are_one_set_and_a_pick_queues_generation(client, tmp_pat
     assert r.status_code == 303
     rows = con.execute("SELECT payload_json FROM job WHERE type='series_thumbnail'"
                        ).fetchall()
-    assert [_j.loads(x[0]) for x in rows] == [{"refs": [refs[0]["path"], refs[2]["path"]]}]
+    assert [_j.loads(x[0]) for x in rows] == [
+        {"refs": [refs[0]["path"], refs[2]["path"]], "owner": True}]
 
 
 def test_reference_tile_urls_change_when_the_suggestions_change(client, tmp_path,
@@ -1778,3 +1781,19 @@ def test_a_series_never_measured_shows_no_number(client, tmp_path, monkeypatch):
     monkeypatch.setattr(_app, "REPO", tmp_path)
     page = c.get("/series").text
     assert "not measured" in page.lower()
+
+
+
+def test_the_owners_claim_click_is_never_folded_into_an_automatic_one(client):
+    """jobs.enqueue dedupe ignores the payload: without dedupe=False the owner's
+    tone would fold into a queued automatic claim and be lost."""
+    import json as _j
+    from studio.dashboard import jobs
+    c, con = client
+    jobs.enqueue(con, "series_claim", series_id=1, payload={"auto": True})
+    r = c.post("/thumbnail/claim", data={"series_id": 1, "tone": "erotic"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    rows = [_j.loads(x[0]) for x in con.execute(
+        "SELECT payload_json FROM job WHERE type='series_claim' ORDER BY id")]
+    assert rows == [{"auto": True}, {"tone": "erotic"}]

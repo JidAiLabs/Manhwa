@@ -1267,13 +1267,12 @@ def _autopropose_publish_if_ready(con: sqlite3.Connection, series_id: int,
     """After a chapter is prepared: once a series has >= N prepared chapters
     ([publish].auto_after_chapters), PROPOSE its two publish assets for review.
     Both are proposals a human still approves in the dashboard, and NEITHER
-    blocks chapter processing — the thumbnail runs on the api lane and the
-    teaser on the cpu lane while chapters keep preparing on the gpu lane.
+    blocks chapter processing (both are short jobs on the gpu lane).
 
-      * THUMBNAIL — enqueue series_thumbnail once. Idempotent: skipped if a
-        thumbnail already exists on disk, is approved, or a thumbnail job is
-        already pending/done. Building it clears any approval, so it always
-        lands as 'needs review'.
+      * THUMBNAIL — enqueue the FREE series_claim once (payload auto=True).
+        Painting (series_thumbnail, paid) is never queued here: it runs only
+        from the owner's generate button. Skipped once a claim, option, live
+        thumbnail, approval or any earlier series_claim job exists.
       * TEASER — the cold open is bundle-scoped, so if the series has NO bundle
         yet, auto-create a 'debut' bundle of exactly those first N chapters,
         then enqueue plan_teaser as a PROPOSAL (no auto_intro -> teaser_state
@@ -1291,38 +1290,48 @@ def _autopropose_publish_if_ready(con: sqlite3.Connection, series_id: int,
     if len(ready) < threshold:
         return
 
-    # --- thumbnail (series-level) --- propose exactly ONCE, ever. The guard
-    # counts a series_thumbnail job in ANY state (incl. 'failed'/'cancelled'):
-    # a failed or cancelled auto-proposal must NOT be re-fired on every
-    # subsequent prepare (e.g. a permanently-missing GEMINI_API_KEY would
-    # otherwise re-enqueue a doomed thumbnail job on each chapter). The
-    # operator retries via the manual 'generate thumbnail' button. The enqueue
-    # itself is race-safe — series-scoped, BEGIN IMMEDIATE + dedupe on
-    # series_id — so two concurrent prepares fold to one row.
-    thumb = REPO / "dist" / f"series_{series_id}" / "thumbnail_yt.jpg"
-    approved = con.execute(
-        "SELECT COUNT(*) FROM approval WHERE gate='thumbnail' AND series_id=?",
-        (series_id,)).fetchone()[0]
-    ever_proposed = con.execute(
-        "SELECT COUNT(*) FROM job WHERE type='series_thumbnail' AND series_id=?",
-        (series_id,)).fetchone()[0]
-    if not thumb.exists() and not approved and not ever_proposed:
-        jobs.enqueue(con, "series_thumbnail", series_id=series_id)
-        log.write(f"[auto-publish] {len(ready)} chapters prepared -> proposing "
-                  "channel thumbnail for review\n")
-
     # --- teaser (debut bundle) --- atomic get-or-create closes the two-thread
     # check-and-create race; only the thread that actually creates the bundle
     # enqueues its (proposal, no auto_intro) teaser.
-    if not cfg.teaser_enabled:
-        return
-    bid = bundles.create_debut_bundle_once(
-        con, series_id, ready[:threshold], title=f"Debut — first {threshold}")
-    if bid is not None:
-        jobs.enqueue(con, "plan_teaser", series_id=series_id)
-        log.write(f"[auto-publish] created debut bundle {bid} "
-                  f"({len(ready[:threshold])} chapters) -> proposing arc teaser "
-                  "for review\n")
+    if cfg.teaser_enabled:
+        bid = bundles.create_debut_bundle_once(
+            con, series_id, ready[:threshold],
+            title=f"Debut — first {threshold}")
+        if bid is not None:
+            jobs.enqueue(con, "plan_teaser", series_id=series_id)
+            log.write(f"[auto-publish] created debut bundle {bid} "
+                      f"({len(ready[:threshold])} chapters) -> proposing arc "
+                      "teaser for review\n")
+
+    # --- thumbnail (series-level) --- the FREE claim preview, never the paid
+    # paint. Until 2026-09-28 this queued series_thumbnail, which painted two
+    # paid images for series 1, 9, 11 and 12 with nobody clicking. It now
+    # writes only the claim (the scene, labels and window the owner reads on
+    # the Series page); painting stays the owner's generate button. Queued
+    # AFTER the teaser so a planned teaser is what the claim reads. Once
+    # ever: any series_claim job in any state, or anything the owner already
+    # made (claim, options, live thumbnail, approval), stops it.
+    approved = con.execute(
+        "SELECT COUNT(*) FROM approval WHERE gate='thumbnail' AND series_id=?",
+        (series_id,)).fetchone()[0]
+    ever_claimed = con.execute(
+        "SELECT COUNT(*) FROM job WHERE type='series_claim' AND series_id=?",
+        (series_id,)).fetchone()[0]
+    if not approved and not ever_claimed and not _series_publish_started(series_id):
+        jobs.enqueue(con, "series_claim", series_id=series_id,
+                     payload={"auto": True})
+        log.write(f"[auto-publish] {len(ready)} chapters prepared -> free "
+                  "claim preview queued; painting waits for the owner's "
+                  "generate\n")
+
+
+def _series_publish_started(series_id: int) -> bool:
+    """True once the series has anything the owner reviews: a claim, a built
+    option or a live thumbnail. The automatic claim never touches any of it."""
+    d = REPO / "dist" / f"series_{series_id}"
+    opts = d / "options"
+    return ((d / "claim.json").exists() or (d / "thumbnail_yt.jpg").exists()
+            or (opts.is_dir() and any(opts.iterdir())))
 
 
 def _h_voiceover(con: sqlite3.Connection, job: Dict[str, Any],
@@ -2065,10 +2074,17 @@ def _h_series_claim(con: sqlite3.Connection, job: Dict[str, Any],
     sid = job["series_id"]
     if not sid:
         raise RuntimeError("series_claim needs series_id")
+    payload = job.get("payload") or {}
+    if payload.get("auto") and _series_publish_started(sid):
+        # the automatic proposal never overwrites: the claim writer deletes
+        # first, so an auto job running after an owner preview would replace
+        # the owner's tone with the default one
+        log.write("[auto-publish] a claim, options or a live thumbnail already "
+                  "exist -> the automatic claim leaves them alone\n")
+        return
     eps = _prepared_eps(con, sid)
     if not eps:
         raise NonRetryableError("no processed chapters yet")
-    payload = job.get("payload") or {}
     picked = [str(r) for r in (payload.get("refs") or []) if str(r).strip()]
     # the owner's tone for this series (absurd by default); validated by
     # publish_concept's own choices list
@@ -2102,6 +2118,14 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
     sid = job["series_id"]
     if not sid:
         raise RuntimeError("series_thumbnail needs series_id")
+    # CONSENT FIRST, before anything reads, writes or deletes: painting is the
+    # one paid step in the pipeline and runs only from an owner's click (the
+    # dashboard's generate buttons stamp payload owner=True). An automatic job
+    # painted series 1, 9, 11 and 12 with nobody asking (2026-09-28 audit).
+    if (job.get("payload") or {}).get("owner") is not True:
+        raise NonRetryableError(
+            "painting is paid and runs only from the owner's generate button "
+            "on the Series page — this job was not queued by that button")
     title = _series_title(con, sid)
     eps = _prepared_eps(con, sid)
     if not eps:
@@ -2337,8 +2361,11 @@ def run_once(con: sqlite3.Connection, *, handlers=None,
         max_attempts = int(os.environ.get("STUDIO_JOB_MAX_ATTEMPTS", "3"))
         retry_priority = int(os.environ.get("STUDIO_RETRY_PRIORITY", "1"))
         attempt = int((job.get("payload") or {}).get("_attempt", 0))
+        # A PAID job is never retried either: the failed run may already have
+        # been charged, and a second payment is the owner's click.
         if (job["type"] != "heartbeat" and attempt + 1 < max_attempts
-                and not isinstance(e, NonRetryableError)):
+                and not isinstance(e, NonRetryableError)
+                and job["type"] not in jobs.PAID_JOB_TYPES):
             payload = dict(job.get("payload") or {})
             payload["_attempt"] = attempt + 1
             # dedupe=False DELIBERATELY: dedupe folds onto an existing queued
@@ -2433,8 +2460,20 @@ def requeue_orphans(con: sqlite3.Connection) -> int:
             continue
         print(f"[worker] orphan reap: job {jid} pgid {pgid} -> "
               f"{'killed' if reaped else 'identity mismatch / already gone, skipped'}")
+    # a PAID job interrupted mid-run (a deploy or a crash) is failed, never
+    # re-run: the interrupted run may already have been charged
+    paid = tuple(sorted(jobs.PAID_JOB_TYPES))
+    marks = ",".join("?" * len(paid))
+    failed_paid = con.execute(
+        f"UPDATE job SET state='failed', pgid=NULL, finished_at=datetime('now'), "
+        f"error=? WHERE state='running' AND type IN ({marks})",
+        ("interrupted by a worker restart; " + jobs.PAID_NO_RERUN, *paid)).rowcount
+    if failed_paid:
+        print(f"[worker] {failed_paid} interrupted paid job(s) marked failed, "
+              "not re-run")
     cur = con.execute("UPDATE job SET state='queued', started_at=NULL, "
-                      "pgid=NULL WHERE state='running' AND type!='heartbeat'")
+                      "pgid=NULL WHERE state='running' AND type!='heartbeat' "
+                      f"AND type NOT IN ({marks})", paid)
     # a cancel in flight when the worker died -> just record it cancelled
     con.execute("UPDATE job SET state='cancelled', pgid=NULL, "
                 "finished_at=datetime('now') WHERE state='cancelling'")

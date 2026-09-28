@@ -56,6 +56,15 @@ LANES = {
     # worker), so a handler in HANDLERS but absent from LANES queues forever.
 }
 
+# Job types that spend MONEY (tools/thumbnail_gen.py: the paid image model).
+# One owner click pays for at most one run: such a job is never auto-retried,
+# never requeued at worker boot, never requeued by the Requeue button or the
+# autoreap loop. A rerun is the owner's generate button. Owner, 2026-09-22: "i
+# keep pushing generate and probably keep spending money".
+PAID_JOB_TYPES = frozenset({"series_thumbnail"})
+PAID_NO_RERUN = ("a paid job never re-runs by itself (it may already have been "
+                 "charged) — press generate on the Series page to run it again")
+
 # parallel width per lane (64GB mini): two gpu jobs overlap one chapter's
 # Gemma minutes with another's OCR/CPU minutes — ollama serializes its own
 # requests so the GPU never thrashes. Renders stay exclusive on cpu.
@@ -263,8 +272,8 @@ def requeue(con: sqlite3.Connection, job_id: int) -> bool:
     alive would put two processes on the same chapter's manifests, which is
     the exact corruption the chapter lease exists to prevent.
     """
-    row = con.execute(f"SELECT state, pgid FROM job WHERE id=? AND state IN "
-                      f"{_LIVE_SQL}", (job_id,)).fetchone()
+    row = con.execute(f"SELECT state, pgid, type FROM job WHERE id=? AND "
+                      f"state IN {_LIVE_SQL}", (job_id,)).fetchone()
     if not row:
         return False
     if row[1]:
@@ -273,6 +282,14 @@ def requeue(con: sqlite3.Connection, job_id: int) -> bool:
             _reap_pgid(int(row[1]))
         except Exception:
             pass                # never block recovery on a reap failure
+    if row[2] in PAID_JOB_TYPES:
+        # reaped, but never re-run: the stuck run may already have been
+        # charged, and a rerun is the owner's click (PAID_JOB_TYPES)
+        con.execute(f"UPDATE job SET state='failed', pgid=NULL, "
+                    f"finished_at=datetime('now'), error=? WHERE id=? AND "
+                    f"state IN {_LIVE_SQL}", (PAID_NO_RERUN, job_id))
+        con.commit()
+        return False
     cur = con.execute(
         f"UPDATE job SET state='queued', started_at=NULL, pgid=NULL "
         f"WHERE id=? AND state IN {_LIVE_SQL}", (job_id,))

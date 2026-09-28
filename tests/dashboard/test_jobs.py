@@ -285,3 +285,25 @@ def test_teaser_and_prepare_do_not_run_concurrently(tmp_path, monkeypatch):
     assert jobs.claim_next(con, lane="gpu")["id"] == p
     assert jobs.claim_next(con, lane="gpu") is None, \
         "teaser must wait for the prepare's gemma slot, not run beside it"
+
+
+def test_paid_job_types_are_real_lane_types():
+    assert jobs.PAID_JOB_TYPES and jobs.PAID_JOB_TYPES <= set(jobs.LANES)
+
+
+def test_requeue_never_re_runs_a_paid_job(tmp_path, monkeypatch):
+    """The Requeue button and the autoreap loop both call jobs.requeue: a stuck
+    paid job is reaped and failed, never put back on the queue."""
+    from studio import worker
+    con = _con(tmp_path)
+    j = jobs.enqueue(con, "series_thumbnail", series_id=1,
+                     payload={"owner": True})
+    con.execute("UPDATE job SET state='running', pgid=4242 WHERE id=?", (j,))
+    con.commit()
+    reaped = []
+    monkeypatch.setattr(worker, "_reap_pgid", lambda pgid: reaped.append(pgid))
+    assert jobs.requeue(con, j) is False
+    assert reaped == [4242]
+    state, err = con.execute("SELECT state, error FROM job WHERE id=?",
+                             (j,)).fetchone()
+    assert state == "failed" and err == jobs.PAID_NO_RERUN
