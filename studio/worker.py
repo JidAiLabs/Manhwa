@@ -1727,16 +1727,37 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
     if not chapter_dirs:
         raise NonRetryableError(
             "teaser: no processed chapters yet — prepare some first")
-    out_dir = REPO / "dist" / f"series_{sid}" / "teaser"
-    # Re-plan from a clean slate: clear any prior teaser state + the rendered
-    # teaser.mp4 up front, so a re-plan that selects NO window can't leave a stale
-    # approved teaser that the concat would still prepend. 'planned' is set again
-    # only if this run actually produces a teaser.
-    con.execute("UPDATE series SET teaser_state='none' WHERE id=?", (sid,))
-    con.commit()
-    teaser_mp4 = REPO / "dist" / f"series_{sid}" / "teaser.mp4"
-    if teaser_mp4.exists():
-        teaser_mp4.unlink()
+    base = REPO / "dist" / f"series_{sid}"
+    # An APPROVED teaser survives a re-plan (2026-09-29): the new one is built
+    # beside it in teaser_next/ + teaser_next.mp4 and replaces it only when the
+    # owner approves it (/teaser/approve promotes it; decline deletes it). A
+    # re-plan used to delete the approved ORV teaser before the new one existed.
+    state_row = con.execute("SELECT teaser_state FROM series WHERE id=?",
+                            (sid,)).fetchone()
+    keep_approved = bool(state_row and state_row[0] == "approved"
+                         and (base / "teaser.mp4").exists()
+                         and not (job.get("payload") or {}).get("auto_intro_bundle"))
+    out_dir = base / ("teaser_next" if keep_approved else "teaser")
+    teaser_mp4 = base / ("teaser_next.mp4" if keep_approved else "teaser.mp4")
+    if keep_approved:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        teaser_mp4.unlink(missing_ok=True)
+    else:
+        # Re-plan from a clean slate: clear any prior teaser state + the
+        # rendered teaser.mp4 up front, so a re-plan that selects NO window
+        # can't leave a stale teaser the concat would still prepend. 'planned'
+        # is set again only if this run actually produces a teaser.
+        con.execute("UPDATE series SET teaser_state='none' WHERE id=?", (sid,))
+        con.commit()
+        if teaser_mp4.exists():
+            teaser_mp4.unlink()
+    claim = base / "claim.json"
+    hook_args: List[str] = []
+    try:
+        if (json.loads(claim.read_text()).get("hook") or {}).get("sentence"):
+            hook_args = ["--hook-claim", str(claim)]   # the teaser lands THE hook
+    except (OSError, ValueError):
+        pass
     with record_stage(con, chapter_id=None, stage="plan_teaser"):
         # 1) select the window + materialize the synthetic teaser episode dir
         argv = [PY, str(REPO / "tools" / "teaser_planner.py"),
@@ -1749,7 +1770,7 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
                 "--max-hook-panels", str(cfg.teaser_max_hook_panels),
                 "--payoff-tail-frac", str(cfg.teaser_payoff_tail_frac),
                 "--max-seconds", str(cfg.teaser_max_seconds),
-                "--model", cfg.beats_model]
+                "--model", cfg.beats_model, *hook_args]
         if _stream(argv, log) != 0:
             raise RuntimeError("teaser_planner failed")
         if not (out_dir / "manifest.teaser.json").exists():
@@ -1836,6 +1857,10 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
                          payload={"intro_ch1": True})
             log.write("[autopilot] teaser rendered -> auto-approved; intro+ch1 "
                       "concat queued\n")
+        elif keep_approved:
+            log.write("[teaser] the new teaser waits in teaser_next/ for "
+                      "review; the approved one stays live until it is "
+                      "approved\n")
         else:
             con.execute("UPDATE series SET teaser_state='planned' WHERE id=?",
                         (sid,))

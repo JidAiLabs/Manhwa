@@ -1860,3 +1860,34 @@ def test_a_failed_discovery_add_leaves_the_title_unmarked(client, monkeypatch):
     assert marked == []
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='add_series'"
                        ).fetchone()[0] == 0
+
+
+
+def test_approving_a_waiting_teaser_promotes_it_and_declining_discards_it(
+        client, tmp_path, monkeypatch):
+    c, con = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    base = tmp_path / "dist" / "series_1"
+
+    def stage():
+        (base / "teaser").mkdir(parents=True, exist_ok=True)
+        (base / "teaser.mp4").write_bytes(b"OLD")
+        (base / "teaser_next").mkdir(parents=True, exist_ok=True)
+        (base / "teaser_next" / "manifest.teaser.json").write_text(
+            '{"hook": "the hook", "hook_landed": true}')
+        (base / "teaser_next.mp4").write_bytes(b"NEW")
+        con.execute("UPDATE series SET teaser_state='approved' WHERE id=1")
+        con.commit()
+    stage()
+    page = c.get("/series/1").text
+    assert "a new teaser waits for review" in page and "the hook" in page
+    c.post("/series/1/teaser/decline", follow_redirects=False)
+    assert (base / "teaser.mp4").read_bytes() == b"OLD"
+    assert not (base / "teaser_next.mp4").exists() and not (base / "teaser_next").exists()
+    assert con.execute("SELECT teaser_state FROM series WHERE id=1").fetchone()[0] == "approved"
+    stage()
+    c.post("/series/1/teaser/approve", follow_redirects=False)
+    assert (base / "teaser.mp4").read_bytes() == b"NEW"
+    assert (base / "teaser" / "manifest.teaser.json").exists()
+    assert not (base / "teaser_next.mp4").exists()

@@ -377,3 +377,46 @@ def test_materialize_narration_join_reads_lines_via_segments(tmp_path):
     assert beat["narration"] == "The exam begins."
     assert [p["scene_file"] for p in beat["panel_narration"]] == [ns7, ns8]
     assert beat["scene_files"] == [ns7, ns8]
+
+
+
+# ---- the teaser lands THE hook (2026-09-29) ----------------------------------
+
+def test_the_montage_builds_to_the_hooks_moment_not_the_keyword_climax():
+    """ORV's teaser built to a knife-fighting skill window because the keyword
+    scorer picked it. With a claim, the hook's moment is the climax (last) and
+    its "before" moment is in the setup. A claim path into scenes_clean/ names
+    the same panel as the pool's scenes/ path."""
+    pool = [_mk_panel("/x/ch1/scenes/p1.jpg", 1, desc="a quiet commute"),
+            _mk_panel("/x/ch1/scenes/p2.jpg", 1, intensity="explosive",
+                      desc="the nano core activates, energy surging, aura glowing"),
+            _mk_panel("/x/ch2/scenes/p3.jpg", 2, desc="he reads his phone calmly"),
+            _mk_panel("/x/ch2/scenes/p4.jpg", 2, desc="passengers scream"),
+            _mk_panel("/x/ch2/scenes/p5.jpg", 2, desc="a blank window appears")]
+    free = tp.select_montage(pool, max_panels=4, min_panels=2)
+    assert free[-1]["scene_file"] == "/x/ch1/scenes/p2.jpg"       # keyword pick
+    hooked = tp.select_montage(pool, max_panels=4, min_panels=2,
+                               climax_file="/x/ch2/scenes_clean/p3.jpg",
+                               must_include=["/x/ch1/scenes_clean/p1.jpg"])
+    assert hooked[-1]["scene_file"] == "/x/ch2/scenes/p3.jpg" and hooked[-1]["is_climax"]
+    assert "/x/ch1/scenes/p1.jpg" in [p["scene_file"] for p in hooked[:-1]]
+
+
+def test_the_manifest_records_the_hook_and_whether_the_last_line_lands_it():
+    montage = [{"chapter_number": 2, "scene_file": "/abs/ch2/scenes/p3.jpg",
+                "panel_kind": "story", "intensity": "tense", "is_climax": True,
+                "description": "he reads calmly", "action": "", "dialogue": "",
+                "subjects": []}]
+    seen = {}
+
+    def stub(payload):
+        seen.update(payload)
+        return {"panel_narration": [{"scene_file": "p3.jpg",
+                                     "line": "He alone already read how this world ends."}],
+                "rewind_line": "r", "reason": "why", "spoiler_boundary": "s"}
+    hook = "The only reader of a finished novel knows how this world ends."
+    out = tp.select_and_write(montage, loglines=[], model_call=stub, hook=hook)
+    assert seen["hook"] == hook                      # the model is told the hook
+    assert out["hook"] == hook and out["hook_moment"] == "p3.jpg"
+    assert out["hook_landed"] is True
+    assert tp.hook_landed("A quiet commute begins.", hook) is False

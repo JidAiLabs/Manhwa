@@ -152,6 +152,12 @@
 <form class="inline" method="post" action="/series/{{ sid }}/teaser/decline"><button class="red">decline</button></form>
 {% else %}<span class="kv">no teaser yet</span>{% endif %}
 </div>
+{% if teaser_next %}<div class="row"><span class="b warn">a new teaser waits for review</span>
+<a href="/dist/series_{{ sid }}/teaser_next.mp4?v={{ teaser_next_v }}" target="_blank" rel="noopener" class="kv" style="color:var(--acc)">▶ play the new one</a>
+{% if teaser_next_hook %}<span class="kv">lands the hook: <b>{{ teaser_next_hook }}</b>{% if not teaser_next_landed %} (the last line may not say it — check){% endif %}</span>{% endif %}
+<form class="inline" method="post" action="/series/{{ sid }}/teaser/approve"><button class="green">use the new teaser</button></form>
+<form class="inline" method="post" action="/series/{{ sid }}/teaser/decline"><button class="red">discard it</button></form>
+<span class="kv">the approved teaser stays live until you choose</span></div>{% endif %}
 {% if teaser_state=='planned' and teaser_card %}
 <div class="seg"><span class="kv"><b>Teaser hook</b>{% if teaser_card.source_chapters %} — from episodes {{ teaser_card.source_chapters | join(', ') }}{% endif %}</span>
 {% if teaser_card.reason %}<div class="nar"><b>why this window:</b> {{ teaser_card.reason }}</div>{% endif %}

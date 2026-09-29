@@ -303,12 +303,24 @@ def select_climax_panel(
     return _pick_climax(scored)[1]
 
 
+def _same_panel(panel: Dict[str, Any], path: str) -> bool:
+    """*panel* (a pool panel) is the scene at *path* (a claim moment, which may
+    point into scenes/ or scenes_clean/): same file name, same episode dir."""
+    sf = str(panel.get("scene_file") or "")
+    if not sf or not path or os.path.basename(sf) != os.path.basename(path):
+        return False
+    ep = lambda x: os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(x))))
+    return ep(sf) == ep(path)
+
+
 def select_montage(
     panels: List[Dict[str, Any]],
     *,
     max_panels: int,
     min_panels: int,
     payoff_tail_frac: float = 0.0,
+    climax_file: str = "",
+    must_include: Optional[List[str]] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Select an ARC MONTAGE that BUILDS to the power/transformation reveal.
 
@@ -352,7 +364,14 @@ def select_montage(
 
     # score every panel once, carrying its reading-order index
     scored = [(i, p, score_panel(p)) for i, p in enumerate(pool)]
-    climax_i, climax_p = _pick_climax(scored)
+    # THE HOOK leads (2026-09-29): the series claim names the moment the hook
+    # is about; the montage builds to THAT panel. The keyword climax is only
+    # the fallback, and it had ORV's teaser build to a knife-fighting skill
+    # window instead of "he alone read the ending".
+    hooked = [(i, p) for i, p, _ in scored if climax_file and _same_panel(p, climax_file)]
+    climax_i, climax_p = hooked[0] if hooked else _pick_climax(scored)
+    musts = [(i, p) for i, p, _ in scored
+             if i != climax_i and any(_same_panel(p, m) for m in (must_include or []))]
 
     n_chapters = len({_chapter_key(p) for _, p, _ in scored})
     per_cap = math.ceil(max_panels / max(1, n_chapters)) + 1
@@ -366,9 +385,15 @@ def select_montage(
         (t for t in scored if t[0] != climax_i),
         key=lambda t: (-t[2]["score"], t[0]),
     )
+    for idx, p in musts[:limit]:                 # the hook's own "before" moment
+        setup.append((idx, p))
+        seen_meta.append((idx, _norm_text(p), _scene_base(p)))
+        per_chapter[_chapter_key(p)] = per_chapter.get(_chapter_key(p), 0) + 1
     for idx, p, _sc in candidates:
         if len(setup) >= limit:
             break
+        if any(idx == j for j, _ in musts):
+            continue
         ck = _chapter_key(p)
         if per_chapter.get(ck, 0) >= per_cap:
             continue
@@ -452,6 +477,7 @@ def select_and_write(
     model_call: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
     cast_obj: Optional[Dict[str, Any]] = None,
     vision_by_file: Optional[Dict[str, Any]] = None,
+    hook: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Write per-panel narration over an ALREADY-SELECTED arc montage.
 
@@ -486,6 +512,8 @@ def select_and_write(
         "climax_index": len(montage) - 1,
         "loglines": list(loglines or []),
     }
+    if hook:
+        payload["hook"] = hook
     resp = model_call(payload)
     if not isinstance(resp, dict):
         return None
@@ -536,7 +564,24 @@ def select_and_write(
         beats_obj, cast_obj or {}, vision_by_file or {})
     recap_style.repair_spoken_fragments(beats_obj)
     teaser["panel_narration"] = beats_obj["beats"][0].get("panel_narration") or []
+    if hook:
+        last = (teaser["panel_narration"][-1]["line"]
+                if teaser["panel_narration"] else "")
+        teaser["hook"] = hook
+        teaser["hook_moment"] = os.path.basename(str(panels[-1].get("scene_file") or ""))
+        teaser["hook_landed"] = hook_landed(last, hook)
     return teaser
+
+
+def hook_landed(line: str, hook: str) -> bool:
+    """The final line says what the hook promises: it shares at least two of
+    the hook's content words (4+ letters). A cheap, visible check; the owner
+    judges the rest when the teaser plays."""
+    words = lambda s: {w for w in re.findall(r"[a-z]{4,}", str(s or "").lower())
+                       if w not in {"that", "this", "with", "from", "into",
+                                    "their", "they", "when", "then", "than",
+                                    "what", "only", "have", "been", "will"}}
+    return len(words(line) & words(hook)) >= 2
 
 
 # --------------------------------------------------------------------------- #
@@ -754,7 +799,10 @@ TEASER_PROMPT = (
     "the panel: a punchy phrase for a quick beat, a fuller cinematic sentence for a "
     "pivotal one. The FIRST line is the cold-open hook — strong and uncapped.\n"
     "2. The FINAL line LANDS the climax: hint at WHAT THE PROTAGONIST BECOMES (the "
-    "power awakening / transformation) WITHOUT stating any later outcome.\n"
+    "power awakening / transformation) WITHOUT stating any later outcome. When "
+    "INPUT_JSON has a `hook`, that sentence is what this series promises and the "
+    "climax panel is its moment: the final line LANDS that promise, in your own "
+    "words, and the lines before it build toward it.\n"
     "3. Write a `rewind_line`: one sentence that pivots from the hook back to the "
     "beginning (e.g. 'But to understand how it came to this, we have to go back.').\n"
     "4. Write a short `reason` (why this montage hooks) and a `spoiler_boundary` "
@@ -815,6 +863,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="DEPRECATED: the montage selector ignores this (kept for "
                          "backward-compatible invocation)")
     ap.add_argument("--min-panels", type=int, default=4)
+    ap.add_argument("--hook-claim", default="",
+                    help="the series claim.json: the montage builds to its hook's "
+                         "moment and the final line lands the hook")
     ap.add_argument("--max-hook-panels", type=int, default=10,
                     help="max panels in the montage (climax + setup)")
     ap.add_argument("--payoff-tail-frac", type=float, default=0.0,
@@ -860,12 +911,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[teaser] no teaser")
         return 0
 
+    hook, climax_file, must = "", "", []
+    if args.hook_claim:
+        try:
+            claim = json.load(open(args.hook_claim, encoding="utf-8"))
+        except (OSError, ValueError):
+            claim = {}
+        h = claim.get("hook") or {}
+        paths = {m.get("id"): m.get("path") for m in (claim.get("moments") or [])}
+        hook = str(h.get("sentence") or "")
+        climax_file = str(paths.get((h.get("moments") or {}).get("hero")) or "")
+        before = paths.get((h.get("moments") or {}).get("before"))
+        must = [before] if before else []
+        print(f"[teaser] hook: {hook[:120]!r} moment={os.path.basename(climax_file)}")
     montage = select_montage(
         panels,
         max_panels=args.max_hook_panels,
         min_panels=args.min_panels,
         payoff_tail_frac=args.payoff_tail_frac,
+        climax_file=climax_file,
+        must_include=must,
     )
+    if montage and climax_file and not _same_panel(montage[-1], climax_file):
+        print("[teaser] the hook's moment is not an eligible panel of the window; "
+              "the keyword climax is used")
     if not montage:
         print("[teaser] no teaser")
         return 0
@@ -878,6 +947,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         model_call=model_call,
         cast_obj=cast,
         vision_by_file={},
+        hook=hook,
     )
     if not teaser:
         print("[teaser] no teaser")

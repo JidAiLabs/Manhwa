@@ -735,12 +735,44 @@ _LADDER_PATTERNS = (
 
 def ladder_tokens_in(text: str) -> List[tuple]:
     """[(kind, token)] of every ladder token printed in *text*."""
+    return [(k, t) for k, t, _own in _ladder_hits(text)]
+
+
+# A level printed right after a SKILL / ITEM / ATTRIBUTE belongs to that thing
+# ("[FOURTH WALL LV. 1]"), not to a person's own ladder.
+_THING_CTX_RE = re.compile(r"SKILL|ITEM|ATTRIBUTE|STIGMA|WEAPON|ARTIFACT|TITLE\s*:",
+                           re.IGNORECASE)
+# a character-profile window names WHOSE stats it prints
+_PROFILE_NAME_RE = re.compile(
+    r"\bNAME\s*:\s*([A-Z][A-Z .'\-]{1,40}?)(?=\s+(?:AGE|SUPPORTING|ATTRIBUTE|"
+    r"SPONSOR|LEVEL|LV|CLASS|RANK|TITLE)\b|[\]\)]|$)", re.IGNORECASE)
+
+
+def _thing_owned(t: str, start: int) -> bool:
+    """A level at *start* belongs to a skill/item, not a person: it sits inside
+    a bracket that names something else ("[FOURTH WALL LV. 1]"; a bracket that
+    IS a level notice, "[LEVEL UP! LV. 26]", stays the person's), or right
+    after a skill/item word with no bracket or colon between."""
+    opened = t.rfind("[", 0, start)
+    if opened > t.rfind("]", 0, start):
+        seg = t[opened + 1:start].strip().upper()
+        if seg and not re.match(r"(?:LEVEL|LV|LVL|STATUS|RANK)\b", seg):
+            return True
+    near = t[max(0, start - 25):start]
+    return bool(_THING_CTX_RE.search(near)) and not re.search(r"[\]:]", near)
+
+
+def _ladder_hits(text: str) -> List[tuple]:
+    """[(kind, token, is_a_persons_own)]: False for a skill's or an item's
+    level (_thing_owned)."""
     out: List[tuple] = []
+    t = str(text or "")
     for kind, rx, norm in _LADDER_PATTERNS:
-        for m in rx.finditer(str(text or "")):
+        for m in rx.finditer(t):
             tok = norm(m)
-            if (kind, tok) not in out:
-                out.append((kind, tok))
+            own = not (kind in ("level", "rank") and _thing_owned(t, m.start()))
+            if all(o[1] != tok for o in out):
+                out.append((kind, tok, own))
     return out
 
 
@@ -767,18 +799,33 @@ def story_ladder_tokens(eps: List[str]) -> List[Dict[str, Any]]:
                  str(p.get("panel_kind") or "") for p in (u.get("panels") or [])}
         portraits, _look = _lead_panels(d)
         lead_idx = [i for i, f in enumerate(order) if f in portraits]
+        try:
+            lead_name = protagonist_name(json.load(open(os.path.join(d, "manifest.cast.json"))))
+        except Exception:
+            lead_name = ""
+        lead_words = {w for w in re.findall(r"[a-z]{3,}", _norm_name(lead_name))
+                      if w not in ("our", "the", "protagonist")}
         for it in (v.get("items") or []):
             fn = os.path.basename(str(it.get("scene_file") or ""))
-            toks = ladder_tokens_in(it.get("ocr_clean"))
-            if not toks:
+            ocr = str(it.get("ocr_clean") or "")
+            hits = _ladder_hits(ocr)
+            if not hits:
                 continue
             i = order.index(fn) if fn in order else -1
             lead = fn in portraits or (
                 kinds.get(fn) == "system" and i >= 0
                 and any(abs(i - j) <= 3 for j in lead_idx))
-            for kind, tok in toks:
+            # ORV Episode 5: the protagonist READS Namwoon Kim's CHARACTER
+            # PROFILE; its LEVEL 61 sat beside his panel and became "A NOBODY
+            # ... Reached LEVEL 61" (Checkpoint A, 2026-09-29). A profile that
+            # names someone else prints THEIR ladder.
+            named = _PROFILE_NAME_RE.search(ocr)
+            if named and not (lead_words & set(re.findall(
+                    r"[a-z]{3,}", named.group(1).lower()))):
+                lead = False
+            for kind, tok, own in hits:
                 out.append({"token": tok, "kind": kind, "chapter": ci,
-                            "file": fn, "lead": bool(lead)})
+                            "file": fn, "lead": bool(lead and own)})
     return out
 
 

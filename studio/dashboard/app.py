@@ -644,6 +644,15 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # hang off a bundle, so deleting a video destroyed it.
         teaser = REPO / "dist" / f"series_{sid}" / "teaser.mp4"
         teaser_exists = teaser.exists()
+        # a re-plan waiting beside the approved teaser (worker _h_teaser)
+        teaser_next = REPO / "dist" / f"series_{sid}" / "teaser_next.mp4"
+        next_hook: Dict[str, Any] = {}
+        if teaser_next.exists():
+            try:
+                next_hook = json.loads((teaser_next.parent / "teaser_next" /
+                                        "manifest.teaser.json").read_text())
+            except (OSError, ValueError):
+                next_hook = {}
         teaser_state = (c.execute("SELECT teaser_state FROM series WHERE id=?",
                                   (sid,)).fetchone() or ["none"])[0]
         thumb = REPO / "dist" / f"series_{sid}" / "thumbnail_yt.jpg"
@@ -717,7 +726,12 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     teaser_card=_teaser_card(sid),
                     teaser_state=teaser_state, teaser_exists=teaser_exists,
                     teaser_ready=teaser_ready,
-                    teaser_v=int(teaser.stat().st_mtime) if teaser_exists else 0)
+                    teaser_v=int(teaser.stat().st_mtime) if teaser_exists else 0,
+                    teaser_next=teaser_next.exists(),
+                    teaser_next_v=(int(teaser_next.stat().st_mtime)
+                                   if teaser_next.exists() else 0),
+                    teaser_next_hook=str(next_hook.get("hook") or ""),
+                    teaser_next_landed=bool(next_hook.get("hook_landed")))
 
     @app.get("/partials/series-chapters/{sid}", response_class=HTMLResponse)
     def series_chapters_partial(request: Request, sid: int):
@@ -1597,7 +1611,14 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     def post_teaser_approve(sid: int):
         # confirm-upstream-before-render: record the gate AND flip the state so
         # the concat gate (which reads it off the series) lets the FIRST video
-        # proceed.
+        # proceed. A re-plan beside an approved teaser (teaser_next/) is
+        # PROMOTED here: it replaces the live one only on this click.
+        import shutil as _sh
+        base = REPO / "dist" / f"series_{sid}"
+        if (base / "teaser_next.mp4").exists():
+            _sh.rmtree(base / "teaser", ignore_errors=True)
+            (base / "teaser_next").rename(base / "teaser")
+            (base / "teaser_next.mp4").replace(base / "teaser.mp4")
         c = con()
         gates.approve(c, "teaser", series_id=sid)
         c.execute("UPDATE series SET teaser_state='approved' WHERE id=?", (sid,))
@@ -1607,6 +1628,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     @app.post("/series/{sid}/teaser/decline")
     def post_teaser_decline(sid: int):
         # operator rejected the hook — unblock the concat without prepending it.
+        # Declining a waiting RE-PLAN only discards it: the approved teaser stays.
+        import shutil as _sh
+        base = REPO / "dist" / f"series_{sid}"
+        if (base / "teaser_next.mp4").exists():
+            _sh.rmtree(base / "teaser_next", ignore_errors=True)
+            (base / "teaser_next.mp4").unlink(missing_ok=True)
+            return RedirectResponse(f"/series/{sid}", status_code=303)
         c = con()
         c.execute("UPDATE series SET teaser_state='declined' WHERE id=?", (sid,))
         c.commit()

@@ -1983,3 +1983,17 @@ def test_a_rewritten_claim_keeps_the_owners_picks(tmp_path, monkeypatch):
         replies=list(_CLAIM_REPLIES))
     assert rc == 0
     assert _j.loads(out.read_text())["picks"] == {"title": "MY TITLE", "mock": "split"}
+
+
+
+def test_a_level_in_someone_elses_profile_or_on_a_skill_is_not_the_leads():
+    """Checkpoint A, ORV Episode 5: the protagonist reads NAMWOON KIM's
+    CHARACTER PROFILE, and its LEVEL 61 became "A NOBODY ... Reached LEVEL 61"."""
+    hits = pc._ladder_hits("[CHARACTER PROFILE] NAME: NAMWOON KIM AGE: 19 "
+                           "EXCLUSIVE SKILLS: [FOURTH WALL LV. 1] LEVEL 61")
+    assert ("level", "LEVEL 1", False) in hits        # a skill's level
+    assert ("level", "LEVEL 61", True) in hits        # own ... of the NAMED person
+    assert ("level", "LEVEL 26", True) in pc._ladder_hits("[LEVEL UP! LV. 26]")
+    assert ("level", "LEVEL 3", False) in pc._ladder_hits("NEW SKILL LV. 3")
+    m = pc._PROFILE_NAME_RE.search("[CHARACTER PROFILE] NAME: NAMWOON KIM AGE: 19")
+    assert m and m.group(1).strip().upper() == "NAMWOON KIM"

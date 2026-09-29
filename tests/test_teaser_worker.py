@@ -419,3 +419,46 @@ def test_h_teaser_sanitize_marker_must_be_fresh_this_run(tmp_path, monkeypatch):
     # No TTS call was recorded (job failed before reaching TTS)
     # This is implicitly verified by the exception — the teaser handler
     # should never reach the TTS dispatch code.
+
+
+
+def test_an_approved_teaser_survives_a_re_plan(tmp_path, monkeypatch):
+    """2026-09-29: a re-plan used to delete the approved teaser before the new
+    one existed. It is built beside it (teaser_next/) and passes the claim's
+    hook; the approved one stays live and the state stays approved."""
+    import json as _j
+    import studio.worker as w
+    import studio.pipeline as pl
+    con = connect(tmp_path / "s.db")
+    sid, _bid, _ = _bundle(con, tmp_path, n=2)
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg())
+    base = tmp_path / "dist" / f"series_{sid}"
+    (base / "teaser").mkdir(parents=True)
+    (base / "teaser.mp4").write_bytes(b"APPROVED")
+    (base / "claim.json").write_text(_j.dumps({"hook": {"sentence": "the hook"}}))
+    con.execute("UPDATE series SET teaser_state='approved' WHERE id=?", (sid,))
+    con.commit()
+    planner_argv = []
+
+    def fake_stream(argv, log, **k):
+        sargv = [str(a) for a in argv]
+        if any("teaser_planner.py" in a for a in sargv):
+            planner_argv.extend(sargv)
+            od = Path(sargv[sargv.index("--out-dir") + 1])
+            od.mkdir(parents=True, exist_ok=True)
+            (od / "manifest.teaser.json").write_text("{}")
+        if "remotion" in sargv:
+            seg = base / "teaser_next" / "render" / "segment_none.mp4"
+            seg.parent.mkdir(parents=True, exist_ok=True)
+            seg.write_bytes(b"NEW")
+        return 0
+    monkeypatch.setattr(w, "_stream", fake_stream)
+    monkeypatch.setattr(pl, "_run_tool", lambda script, args, **k: None)
+    w._h_teaser(con, {"series_id": sid, "payload": {}}, io.StringIO())
+    assert (base / "teaser.mp4").read_bytes() == b"APPROVED"
+    assert (base / "teaser_next.mp4").read_bytes() == b"NEW"
+    assert planner_argv[planner_argv.index("--out-dir") + 1].endswith("teaser_next")
+    assert planner_argv[planner_argv.index("--hook-claim") + 1].endswith("claim.json")
+    assert con.execute("SELECT teaser_state FROM series WHERE id=?",
+                       (sid,)).fetchone()[0] == "approved"
