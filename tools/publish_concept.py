@@ -620,12 +620,14 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
     def _pull(lab: Dict[str, Any]) -> tuple:
         # a hero is labelled with what he BECOMES (MAGE, NECROMANCER, SSS
         # RANKS in the examples), never with where he starts: Checkpoint A
-        # labelled every hero NOBODY / B-RANK / E-RANK. HIGH first, then the
-        # highest printed rank or a class, a low status last.
+        # labelled every hero NOBODY / B-RANK / E-RANK, then FLOOR 10. HIGH
+        # first, then a status or class word, then the highest letter rank,
+        # then a level; a floor is a place, last.
         t = lab["text"]
-        return (0 if t == hook.get("high") else 1,
-                1 if (t in low_words or t == hook.get("low")) else 0,
-                -rank_value(t))
+        kind = (0 if t in LADDER_WORDS else
+                1 if re.match(r"^(SSS|SS|[FEDCBAS])[-+ ]|^(SSS|SS)\+*$|^RANK", t) else
+                3 if t.startswith("FLOOR") else 2)
+        return (0 if t == hook.get("high") else 1, kind, -rank_value(t))
     pool = list(hook.get("labels") or [])
     on_split = set(out[0]["labels"]) if out else set()
     if (hook.get("high") and not on_split
@@ -962,8 +964,10 @@ def example_ngrams(n: int = 4) -> set:
 def title_ok(title: str, *, corpus: str = "", banned: str = "",
              ngrams: Optional[set] = None) -> List[str]:
     """Why *title* is NOT the examples' shape ([] = it is). Owner, 2026-09-29:
-    one premise sentence + " - Manhwa Recap"; counted over the example titles:
-    55-100 characters, 1-3 FULL CAPS words, no emoji or names."""
+    one premise sentence + " - Manhwa Recap". Counted over the 42 example
+    titles (examples.json): 11 use no FULL CAPS word at all and 36 use at most
+    4, so up to 4 is allowed (the prompt still asks for 1-3). 55-100
+    characters, no emoji or names."""
     t = str(title or "")
     body = _SUFFIX_RE.sub("", t).strip()
     why: List[str] = []
@@ -973,8 +977,8 @@ def title_ok(title: str, *, corpus: str = "", banned: str = "",
         why.append("length %d (55-100)" % len(t))
     caps = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9'#+\-]*", body)
             if len(re.sub(r"[^A-Za-z]", "", w)) >= 2 and w.upper() == w]
-    if not 1 <= len(caps) <= 3:
-        why.append("%d FULL CAPS words (1-3)" % len(caps))
+    if len(caps) > 4:
+        why.append("%d FULL CAPS words (at most 4)" % len(caps))
     if not hook_is_grounded(body, corpus):
         why.append("a number or rank the story does not state")
     if banned and _names_the_title(body, banned):

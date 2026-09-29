@@ -1926,8 +1926,12 @@ def test_a_title_is_the_examples_shape_and_never_copies_one():
                            "Of Clones"), corpus="x")
     assert any("length" in w for w in pc.title_ok(pc.normalize_title("Short"),
                                                    corpus="x"))
-    assert any("FULL CAPS" in w for w in pc.title_ok(pc.normalize_title(
+    # 36 of the 42 example titles use at most 4 FULL CAPS words (11 use none)
+    assert pc.title_ok(pc.normalize_title(
         "A Nobody On The Train Read How This World Ends And Became Its Only King"),
+        corpus="x") == []
+    assert any("FULL CAPS" in w for w in pc.title_ok(pc.normalize_title(
+        "A NOBODY On The TRAIN Read How This WORLD ENDS And Became Its Only KING"),
         corpus="x"))
     assert "names the licensed title" in pc.title_ok(pc.normalize_title(
         "The Omniscient Reader Knew How This World Ends And Became A KING"),
@@ -2046,3 +2050,15 @@ def test_a_mostly_empty_panel_is_not_a_moment(tmp_path):
     b.save(busy)
     assert pc.panel_emptiness(str(half)) > 0.5
     assert pc.panel_emptiness(str(busy)) < 0.05
+
+
+
+def test_a_hero_prefers_a_status_word_over_a_level_and_a_floor_last():
+    """Checkpoint A: Tutorial Tower's hero said FLOOR 10 (a place)."""
+    got = pc.choose_layout({"low": "", "high": "",
+                            "moments": {"hero": "m1"},
+                            "labels": [{"text": "FLOOR 10", "subject": "hero", "moment": ""},
+                                       {"text": "LEVEL 11", "subject": "hero", "moment": ""},
+                                       {"text": "LEGEND", "subject": "hero", "moment": ""}]},
+                           _cands()[:1])
+    assert [o["labels"] for o in got] == [["LEGEND"], ["LEVEL 11"]]
