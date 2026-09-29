@@ -2075,10 +2075,12 @@ def test_the_hero_reuses_the_splits_panel_and_a_place_never_arrows():
             "labels": [{"text": "GOD", "subject": "hero", "moment": "m1"}]}
     a, b = pc.choose_layout(hook, _cands())
     assert a["moments"] == ["m2", "m3"] and b["moments"] == ["m3"]
+    # a place is never a label on his face (REAL WORLD, 2026-09-30): the
+    # picture alone, unless the art direction built the picture on it
     only = pc.choose_layout({"low": "", "high": "", "moments": {"hero": "m1"},
                              "labels": [{"text": "REAL WORLD", "subject": "hero",
                                          "moment": ""}]}, _cands())
-    assert only[0]["labels"] == ["REAL WORLD"] and only[0]["arrow"] is None
+    assert only[0]["labels"] == [] and only[0]["arrow"] is None
 
 
 # --- the picture is DESIGNED from the story (owner, 2026-09-30) -------------
@@ -2237,6 +2239,11 @@ def test_no_painted_field_may_need_a_written_word():
         got = pc.check_art_direction(dict(_GOOD_ART, word="KING", **{field: value}),
                                      _HOOK, _BRIEF, "B")
         assert any(f.startswith("4:") and field in f for f in got), (field, got)
+    # a screen that SHOWS a picture is the twist, not text (ORV, run 2)
+    assert pc.check_art_direction(
+        dict(_GOOD_ART, word="KING", twist="the weakest commuter's phone displays "
+             "a vivid image of the monster tearing through the train behind him"),
+        _HOOK, _BRIEF, "B") == []
     # a possessive is not a quote
     assert pc.check_art_direction(
         dict(_GOOD_ART, word="KING", mc="the hero's calm face, the villain's "
@@ -2273,3 +2280,30 @@ def test_a_twist_is_one_thing_not_alternatives():
              twist="the weakest commuter crushes a glowing artifact or a "
                    "monster's weapon on the train"), _HOOK, _BRIEF, "B")
     assert any(f.startswith("1:") and "alternatives" in f for f in got)
+
+
+def test_a_place_word_never_labels_a_face_unless_the_picture_is_built_on_it():
+    cands = [{"id": "m1", "kind": "lead", "path": "/a.jpg"}]
+    hook = {"low": "", "high": "", "moments": {"hero": "m1"},
+            "labels": [{"text": "MASTER", "subject": "hero", "moment": ""},
+                       {"text": "REAL WORLD", "subject": "hero", "moment": ""}]}
+    got = pc.choose_layout(hook, cands)
+    assert [m["labels"] for m in got] == [["MASTER"], []]    # the clean picture
+    got = pc.choose_layout(hook, cands, prefer="REAL WORLD")
+    assert got[0]["labels"] == ["REAL WORLD"] and got[0]["arrow"] is None
+    assert got[0]["reason"].startswith("a place word")
+
+
+def test_an_empty_hook_is_asked_once_more_then_refused(tmp_path, monkeypatch):
+    """Full-Time Awakening's dry run (2026-09-30) wrote a claim with an empty
+    hook, no titles and no labels: the owner would have read an empty sheet."""
+    eps = _series(tmp_path, _ARC)
+    out = tmp_path / "claim.json"
+    argv = ["--episode-dirs", ",".join(eps), "--write-claim", str(out),
+            "--teaser-scan-chapters", "2", "--teaser-min-panels", "2"]
+    rc, prompts = _run_main(monkeypatch, argv,
+                            replies=[{"premise": "P"}, {"hook": ""}, {"hook": ""}])
+    assert rc == 2 and not out.exists() and len(prompts) == 3
+    rc, _ = _run_main(monkeypatch, argv, replies=[{"premise": "P"}, {"hook": ""},
+                                                  _CLAIM_REPLIES[1]])
+    assert rc == 0 and out.exists()                     # the second call counts

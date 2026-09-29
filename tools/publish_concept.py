@@ -664,6 +664,10 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]],
         if (lab["text"] == hook.get("low") or lab["text"] in low_words) \
                 and lab["text"] != prefer:
             continue                      # a low label only appears in a split
+        if lab["text"] in LADDER["place"] and lab["text"] != prefer:
+            # a place over a close-up face says nothing (ORV's REAL WORLD,
+            # 2026-09-30); the examples point it at the portal itself
+            continue
         # with a split, the hero stands on the split's own "after" panel: one
         # picture of him HIGH, not a third, unchecked one (FTA's hero showed
         # another man)
@@ -802,8 +806,10 @@ _STOP = frozenset("that this with from into their there they them what when "
                   "where which while have been will would only about over "
                   "under just than then your being after before other".split())
 _READ_RE = re.compile(r"\b(?:reads?|reading the|says?|written|writes|"
-                      r"letters?|caption|spells?|texts?|words?|displays?|"
-                      r"displaying|instructions?)\b|[\"“”]", re.I)
+                      r"letters?|caption|spells?|texts?|words?|"
+                      r"instructions?)\b|[\"“”]", re.I)
+# ("displays" is not in it: ORV's phone that "displays a vivid image of the
+# monster behind him" IS the picture twist)
 # every field the painter paints from: none may need a written word (ORV's
 # first design put "cryptic, blood-colored text" in the genre sign)
 _PAINTED_KEYS = ("twist", "mc", "others", "setting", "light", "genre")
@@ -2549,13 +2555,24 @@ def main() -> int:
                            args.ollama_model, temperature=0.4, num_predict=1600)
             print("[..] brief: %s" % str(brief.get("premise") or "")[:110])
             print("[..] printed ladder: %s" % (printed or "none"))
-            pkg = _gemma(build_hook_prompt(brief, printed, cands,
-                                           args.series_title, tone=args.tone),
-                         args.ollama_model, temperature=0.4, num_predict=1600)
             corpus = "\n".join([beats_text_corpus(b) for b in w_beats]
                                + [window_printed_text(w_eps)])
-            hook = validate_hook(pkg, printed=printed, cands=cands,
-                                 corpus=corpus, banned=args.series_title)
+            # a reply with no hook sentence or no valid title is asked ONCE
+            # more, then refused: Full-Time Awakening's dry run (2026-09-30)
+            # wrote a claim with an empty hook, no titles and no labels
+            for attempt in (1, 2):
+                pkg = _gemma(build_hook_prompt(brief, printed, cands,
+                                               args.series_title, tone=args.tone),
+                             args.ollama_model, temperature=0.4, num_predict=1600)
+                hook = validate_hook(pkg, printed=printed, cands=cands,
+                                     corpus=corpus, banned=args.series_title)
+                if hook["sentence"] and hook["titles"]:
+                    break
+                print("[warn] hook call %d gave %s" % (attempt, "no sentence"
+                      if not hook["sentence"] else "no valid title"))
+            else:
+                print("[err] no hook and title after two calls; nothing written")
+                return 2
             # the PICTURE, designed from the same understanding (a third local
             # call, a fourth only when the checks fail): owner, 2026-09-30
             art: Dict[str, Any] = {}
