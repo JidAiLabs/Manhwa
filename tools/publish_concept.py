@@ -568,10 +568,24 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
                     "reason": "the story backs both ends of the climb: %s -> %s"
                               % (hook["low"], hook["high"])})
     hero_moment = mo.get("hero") or (leads[0] if leads else "")
-    for lab in hook.get("labels") or []:
+    low_words = set(LADDER["status_low"])
+
+    def _pull(lab: Dict[str, Any]) -> tuple:
+        # a hero is labelled with what he BECOMES (MAGE, NECROMANCER, SSS
+        # RANKS in the examples), never with where he starts: Checkpoint A
+        # labelled every hero NOBODY / B-RANK / E-RANK. HIGH first, then the
+        # highest printed rank or a class, a low status last.
+        t = lab["text"]
+        return (0 if t == hook.get("high") else 1,
+                1 if (t in low_words or t == hook.get("low")) else 0,
+                -rank_value(t))
+    for lab in sorted(hook.get("labels") or [], key=_pull):
         if len(out) >= 2:
             break
-        m = lab.get("moment") or hero_moment
+        if lab["text"] == hook.get("low") or lab["text"] in low_words:
+            continue                      # a low label only appears in a split
+        m = lab.get("moment") or (mo.get("after") if lab["text"] == hook.get("high")
+                                  and mo.get("after") else hero_moment)
         if not m or any(o["layout"] == "hero" and o["labels"] == [lab["text"]]
                         for o in out):
             continue

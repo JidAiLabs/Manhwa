@@ -1948,6 +1948,15 @@ def test_layout_is_decided_by_the_story_not_asked():
     assert (a["layout"], a["labels"], a["arrow"]) == ("split", ["F-RANK", "S-RANK"], None)
     assert a["panels"] == ["/a/p2.jpg", "/a/p3.jpg"]
     assert (b["layout"], b["labels"], b["arrow"]) == ("hero", ["NECROMANCER"], "hero")
+    # Checkpoint A: every hero was labelled with where he STARTS; the hero is
+    # labelled with the HIGH, a low word never labels a hero
+    hi = pc.choose_layout({"low": "NOBODY", "high": "LEGEND",
+                           "moments": {"hero": "m1", "after": "m3"},
+                           "labels": [{"text": "NOBODY", "subject": "hero", "moment": ""},
+                                      {"text": "LEGEND", "subject": "hero", "moment": ""}]},
+                          _cands()[:1])
+    assert [(o["layout"], o["labels"]) for o in hi] == [("hero", ["LEGEND"]),
+                                                        ("hero", [])]
     # no backed climb: two hero options, then the clean scene
     only = pc.choose_layout({"low": "", "high": "", "moments": {"hero": "m1"},
                              "labels": [{"text": "OP", "subject": "hero",
