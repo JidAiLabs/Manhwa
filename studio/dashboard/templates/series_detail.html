@@ -132,6 +132,8 @@
 <div><b>Around them:</b> {{ sheet.art.others }}</div>
 <div><b>Setting:</b> {{ sheet.art.setting }} · <b>light:</b> {{ sheet.art.light }} · <b>genre sign:</b> {{ sheet.art.genre }}</div>
 <div><b>The word it shares with the title:</b> {{ sheet.art.word }}</div>
+{% if sheet.refs %}<div style="margin-top:.4em"><b>The painter copies the main character from these panels</b> (wrong person? pick others on the <a href="/series/{{ sid }}/package" style="color:var(--acc)">package page</a>):</div>
+<div class="row" style="gap:.4em;flex-wrap:wrap">{% for r in sheet.refs %}<img src="/thumb/series/{{ sid }}/claimref/{{ r.i }}?v={{ sheet.refs_v }}" alt="reference {{ r.name }}" title="{{ r.name }}" style="width:110px;height:140px;object-fit:contain;background:#000;border:1px solid var(--line);border-radius:6px">{% endfor %}</div>{% endif %}
 <div style="margin-top:.4em"><b>Checked against the 8 properties:</b></div>
 {% for c in sheet.checks %}<div>{{ '✓' if c.ok else '✗' }} {{ c.n }}. {{ c.prop }}{% if c.why %} — <b>{{ c.why }}</b>{% endif %}</div>{% endfor %}
 {% for f in sheet.other_fails %}<div>✗ {{ f }}</div>{% endfor %}

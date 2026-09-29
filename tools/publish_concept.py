@@ -417,6 +417,10 @@ def panel_emptiness(path: str) -> float:
     return flat / max(1, h)
 
 
+_PERSON_RE = re.compile(r"\b(?:man|men|woman|women|boy|girl|person|guy|lady|"
+                        r"youth|teen(?:ager)?|he|his|she|her)\b", re.I)
+
+
 def moment_candidates(w_eps: List[str], tokens: List[Dict[str, Any]], *,
                       n_lead: int = 10, n_print: int = 6,
                       max_empty: float = 0.3) -> List[Dict[str, Any]]:
@@ -449,6 +453,10 @@ def moment_candidates(w_eps: List[str], tokens: List[Dict[str, Any]], *,
         ci, fn = int(r["chapter"]), str(r["file"])
         path = _path(ci, fn)
         if panel_emptiness(path) > max_empty:
+            continue
+        if _desc(ci, fn) and not _PERSON_RE.search(_desc(ci, fn)):
+            # Tutorial Tower's "lead" shots held a tusked creature and FTA's
+            # a lone eye (2026-09-30): the painter copies the lead from these
             continue
         leads.append({"kind": "lead", "chapter": ci, "file": fn,
                       "path": path, "desc": _desc(ci, fn)[:160], "tokens": [],
@@ -779,7 +787,9 @@ def build_art_direction_prompt(brief: Dict[str, Any], hook: Dict[str, Any],
         "WORDS the thumbnail may print (pick ONE; your title must contain it):\n  "
         + ", ".join(art_words(hook)) + "\n\n"
         "THE MAIN CHARACTER, as the reference panels the painter copies show "
-        "him: " + (look or "(see the story)") + "\n\n"
+        "him (take his APPEARANCE from this: hair, face, clothes; his pose and "
+        "expression are yours to design): " + (look or "(see the story)")
+        + "\n\n"
         "What winning thumbnails do (counted on the channel's examples):\n"
         + "\n".join(" %d. %s." % (i, p) for i, p in
                     enumerate(THUMBNAIL_PROPERTIES, 1)) + "\n\n"
@@ -814,6 +824,10 @@ _READ_RE = re.compile(r"\b(?:reads?|reading the|says?|written|writes|"
                       r"instructions?)\b|[\"“”]", re.I)
 # ("displays" is not in it: ORV's phone that "displays a vivid image of the
 # monster behind him" IS the picture twist)
+# "instead of text, a vivid image of the monster" is the twist done right
+_NO_TEXT_RE = re.compile(r"\b(?:instead of|rather than|no|without|not|never|"
+                         r"free of|devoid of)\s+(?:any\s+)?(?:text|words?|"
+                         r"letters?|writing|numbers?)\b", re.I)
 # every field the painter paints from: none may need a written word (ORV's
 # first design put "cryptic, blood-colored text" in the genre sign)
 _PAINTED_KEYS = ("twist", "mc", "others", "setting", "light", "genre")
@@ -848,12 +862,17 @@ def check_art_direction(ad: Dict[str, Any], hook: Dict[str, Any],
     if len(str(ad.get("mc") or "").split()) < 4:
         fails.append("3: describe the main character: look, pose, expression")
     # a digit is text too: FTA's window "overwritten by a 'Level 11' icon"
-    wordy = [k for k in _PAINTED_KEYS if _READ_RE.search(str(ad.get(k) or ""))
-             or re.search(r"\d", str(ad.get(k) or ""))]
+    wordy = []
+    for k in _PAINTED_KEYS:
+        v = _NO_TEXT_RE.sub(" ", str(ad.get(k) or ""))
+        m = _READ_RE.search(v) or re.search(r"\S*\d\S*", v)
+        if m:
+            wordy.append("%s: '%s'" % (k, v[max(0, m.start() - 25):m.end() + 15]
+                                       .strip()))
     if wordy:
-        fails.append("4: the picture cannot carry words (%s): the painter "
-                     "prints no letters, so a screen or window shows a "
-                     "PICTURE or glows blank" % ", ".join(wordy))
+        fails.append("4: the picture cannot carry words or numbers (%s): the "
+                     "painter prints none, so a screen or window shows a "
+                     "PICTURE or glows blank" % "; ".join(wordy))
     word = str(ad.get("word") or "").strip().upper()
     if word not in art_words(hook) or len(word.split()) > 2:
         fails.append("5: the word must be ONE of: %s" % ", ".join(art_words(hook)))
@@ -902,7 +921,7 @@ def direct_art(brief: Dict[str, Any], hook: Dict[str, Any], look: str,
     still fails is kept on the design, so the owner sees it."""
     best: Dict[str, Any] = {}
     fails: Optional[List[str]] = None
-    for _ in range(2):
+    for _ in range(3):
         raw = ask(build_art_direction_prompt(brief, hook, look, banned, fails))
         ad = {k: " ".join(str(raw.get(k) or "").split()) for k in _ART_KEYS}
         ad = _share_a_word(dict(ad, word=ad["word"].upper()), hook)
@@ -1267,6 +1286,10 @@ def title_ok(title: str, *, corpus: str = "", banned: str = "",
         why.append("names the licensed title")
     if (ngrams if ngrams is not None else example_ngrams()) & _ngrams(body):
         why.append("copies a phrase of an example title")
+    if any(1 < int(n) < 100 for n in re.findall(r"\bLEVEL (\d+)\b", body.upper())):
+        # FTA, 2026-09-30: "...Found A GLITCH To Become LEVEL 11" -- the
+        # examples' numbers are extremes (LVL 1 -> LVL 500)
+        why.append("a middling level is no payoff (1 or 100+)")
     return why
 
 
@@ -2533,9 +2556,13 @@ def main() -> int:
             print(f"[..] digest: sampled {args.digest_chapters} of "
                   f"{len(w_beats)} chapters (climax #{climax_ci + 1} kept) "
                   f"— {len(digest):,} chars")
-        def _lead_refs(layout: str) -> List[str]:
+        def _lead_refs(layout: str, leads: Optional[List[str]] = None) -> List[str]:
             auto_refs = _sc[1] if _sc else select_bundle_climax(w_beats)[1]
-            if montage:
+            if leads:
+                # the SAME clean shots the art direction describes: a brief
+                # and references that disagree paint a third person
+                auto_refs = leads[:3]
+            elif montage:
                 # WHO to draw: the same clean-solo-shot rule the suggestion tiles
                 # use, over the teaser's window (absolute paths). The climax
                 # chapter's "lead" panels were, on ORV, the back of a head, a
@@ -2636,7 +2663,8 @@ def main() -> int:
                 "claim_source": claim_source,
                 "teaser_panels": [str(p.get("scene_file") or "") for p in montage],
                 "climax_chapter_index": climax_ci,
-                "refs": _lead_refs(SCENE_STYLES[0]),
+                "refs": _lead_refs(SCENE_STYLES[0], [
+                    c["path"] for c in cands if c.get("kind") == "lead"]),
                 "badge": "%d CHAPTERS" % len(beats_list),
                 "synopsis": synopsis, "hashtags": hashtags,
                 "description": build_description(synopsis, hashtags),

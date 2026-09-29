@@ -2355,3 +2355,31 @@ def test_the_leads_look_is_what_his_reference_shots_show():
              {"kind": "lead", "desc": "white hair, glowing yellow eyes"}]
     assert pc.mc_look(cands) == ("a young man with messy white hair | "
                                  "white hair, glowing yellow eyes")
+
+
+def test_saying_there_is_no_text_is_not_text_and_a_failure_quotes_what_broke():
+    ok = dict(_GOOD_ART, word="KING",
+              twist="inside the weakest commuter's phone, instead of text, a "
+                    "vivid image of the monster tearing through his train")
+    assert pc.check_art_direction(ok, _HOOK, _BRIEF, "B") == []
+    bad = pc.check_art_direction(dict(ok, genre="a window with a Level 1 badge"),
+                                 _HOOK, _BRIEF, "B")
+    assert any("genre: 'a window with a Level 1" in f for f in bad), bad
+
+
+def test_a_middling_level_is_no_title_payoff():
+    corpus = "LEVEL 11 LEVEL 1 LEVEL 500"
+    t = "He Was An E-RANK Trash But Found A GLITCH To Become LEVEL {} - Manhwa Recap"
+    assert "a middling level is no payoff (1 or 100+)" in pc.title_ok(
+        t.format(11), corpus=corpus, ngrams=set())
+    assert "a middling level is no payoff (1 or 100+)" not in pc.title_ok(
+        t.format(500), corpus=corpus, ngrams=set())
+
+
+def test_a_lead_shot_describes_a_person():
+    assert pc._PERSON_RE.search("A close-up shot of a man's face behind sunglasses")
+    assert pc._PERSON_RE.search("a person with messy white hair")
+    assert not pc._PERSON_RE.search("A close-up of a blue-skinned, one-eyed "
+                                    "creature with large tusks")
+    assert not pc._PERSON_RE.search("a single, light blue eye set within a dark "
+                                    "surface")

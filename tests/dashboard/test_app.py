@@ -1429,7 +1429,11 @@ def test_the_review_sheet_reads_top_to_bottom_before_any_paint(
     base = tmp_path / "dist" / "series_1"
     (base / "mocks").mkdir(parents=True)
     (base / "mocks" / "hero.jpg").write_bytes(b"M")
+    ref = tmp_path / "Episode_5" / "scenes" / "p000022.jpg"
+    ref.parent.mkdir(parents=True)
+    ref.write_bytes(b"REF")
     (base / "claim.json").write_text(_j.dumps({
+        "refs": [str(ref), "/gone/p1.jpg"],
         "brief": {"premise": "His finished web novel becomes reality.",
                   "protagonist": "A lonely office worker who read it all.",
                   "arc": "from the loneliest reader to the one who knows"},
@@ -1462,6 +1466,10 @@ def test_the_review_sheet_reads_top_to_bottom_before_any_paint(
     assert "★" in page                                        # the title that shares KING
     assert "✗ 7." in page and "✓ 1." in page                 # the 8 checks, shown
     assert 'disabled title="pick a title and a mock first"' in page
+    # who the painter copies, shown before the paint; served from the claim
+    assert "/thumb/series/1/claimref/0?v=" in page and "claimref/1" not in page
+    assert c.get("/thumb/series/1/claimref/0").content == b"REF"
+    assert c.get("/thumb/series/1/claimref/1").status_code == 404
     r = c.post("/thumbnail/claim", data={"series_id": 1}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/series/1"
     rows = con.execute("SELECT type, series_id, priority FROM job "

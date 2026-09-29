@@ -776,7 +776,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         titles = [{"text": str(t.get("text") or ""),
                    "shares": bool(word) and word.upper() in str(t.get("text") or "").upper()}
                   for t in claim.get("titles") or [] if isinstance(t, dict)]
+        refs = [str(r) for r in claim.get("refs") or []]
         return {"titles": titles, "title": str(picks.get("title") or ""),
+                "refs": [{"i": i, "name": "%s · %s" % (Path(r).parent.parent.name,
+                                                        Path(r).name)}
+                         for i, r in enumerate(refs) if Path(r).is_file()],
+                "refs_v": int((REPO / "dist" / f"series_{sid}" / "claim.json")
+                              .stat().st_mtime),
                 "mock": str(picks.get("mock") or ""), "mocks": mocks,
                 "art": art, "checks": checks, "other_fails": [
                     f for f in fails if not f[:1].isdigit()],
@@ -834,6 +840,19 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             return PlainTextResponse("no such mock", status_code=404)
         _save_pick(series_id, "mock", name)
         return RedirectResponse(f"/series/{series_id}", status_code=303)
+
+    @app.get("/thumb/series/{sid}/claimref/{idx}")
+    def series_claim_ref(sid: int, idx: int):
+        """A reference panel the painter will copy the lead from, by its
+        position in the claim (the path comes from the claim, never the URL)."""
+        try:
+            refs = json.loads((REPO / "dist" / f"series_{sid}" /
+                               "claim.json").read_text()).get("refs") or []
+        except (OSError, ValueError, AttributeError):
+            refs = []
+        if not 0 <= idx < len(refs) or not Path(str(refs[idx])).is_file():
+            return PlainTextResponse("no such reference panel", status_code=404)
+        return FileResponse(str(refs[idx]), media_type="image/jpeg")
 
     @app.get("/thumb/series/{sid}/mock/{name}")
     def series_mock(sid: int, name: str):
