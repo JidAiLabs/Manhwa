@@ -199,6 +199,21 @@ class TestAddSeries:
         mock_adapter.list_chapters.assert_called_with(
             "https://mock.test/series/foo?canonical=1")
 
+    def test_a_new_series_starts_on_autopilot_and_a_re_add_keeps_the_owners_choice(
+            self, tmp_db, mock_adapter):
+        """Owner 2026-09-29: autopilot on by default for every series. Turning
+        it off on the Series page must survive a re-add or a refresh."""
+        import argparse
+        args = argparse.Namespace(source="mock",
+                                  series_url="https://mock.test/series/foo")
+        assert cli_mod.cmd_add_series(args) == 0
+        con = connect(tmp_db)
+        assert con.execute("SELECT autopilot FROM series").fetchone()[0] == 1
+        con.execute("UPDATE series SET autopilot=0")
+        con.commit()
+        assert cli_mod.cmd_add_series(args) == 0
+        assert con.execute("SELECT autopilot FROM series").fetchone()[0] == 0
+
 class TestFetch:
     def test_fetch_sets_downloaded_status(self, tmp_db, mock_adapter, tmp_path, monkeypatch, capsys):
         # Seed DB

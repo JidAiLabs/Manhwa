@@ -15,11 +15,16 @@ def upsert_series(
     genres: str | None = None,
     synopsis: str | None = None,
 ) -> int:
+    # A NEW series starts on autopilot (owner, 2026-09-29: "set auto-pilot on
+    # as default for everything"): a prepare whose QA has no blocking code goes
+    # on to voice and video by itself. Only the INSERT sets it, so re-adding or
+    # refreshing a series never overrides the owner turning it off on its page.
     con.execute(
         """
         INSERT INTO series(source, series_url, slug, title, added_at,
-                           niche_primary, niche_secondary, genres, synopsis)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           niche_primary, niche_secondary, genres, synopsis,
+                           autopilot)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(source, series_url) DO UPDATE SET
           title=excluded.title,
           niche_primary=COALESCE(excluded.niche_primary, series.niche_primary),
