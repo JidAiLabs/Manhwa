@@ -2307,3 +2307,51 @@ def test_an_empty_hook_is_asked_once_more_then_refused(tmp_path, monkeypatch):
     rc, _ = _run_main(monkeypatch, argv, replies=[{"premise": "P"}, {"hook": ""},
                                                   _CLAIM_REPLIES[1]])
     assert rc == 0 and out.exists()                     # the second call counts
+
+
+def test_a_number_in_the_picture_is_text_and_a_middling_level_is_no_extreme():
+    """FTA's dry run 3 (2026-09-30): a window "showing a 'Level 1' icon being
+    overwritten by a 'Level 11' icon", word LEVEL 11."""
+    hook = dict(_HOOK, labels=[{"text": "LEVEL 11"}, {"text": "LEVEL 1"},
+                               {"text": "LEVEL 500"}],
+                titles=[{"text": "At LEVEL 11 LEVEL 1 LEVEL 500 The Weakest "
+                                 "Commuter Wins - Manhwa Recap"}])
+    base = dict(_GOOD_ART, title=hook["titles"][0]["text"])
+    fails = lambda **kw: [f[:2] for f in pc.check_art_direction(
+        dict(base, **kw), hook, _BRIEF, "B")]
+    assert "4:" in fails(word="LEVEL 500", twist="a glitching window with a "
+                         "Level 11 icon over the weakest commuter's train")
+    assert "5:" in fails(word="LEVEL 11")
+    assert "5:" not in fails(word="LEVEL 1") and "5:" not in fails(word="LEVEL 500")
+
+
+def test_the_designed_word_stays_on_the_hero_even_when_the_split_says_it():
+    """Tutorial Tower dry run 3: the brief's S-RANK sat only on the split and
+    the hero (the designed picture) got LEGEND."""
+    cands = [{"id": "m1", "kind": "lead", "path": "/a.jpg"},
+             {"id": "m2", "kind": "lead", "path": "/b.jpg"}]
+    hook = {"low": "B-RANK", "high": "S-RANK",
+            "moments": {"before": "m1", "after": "m2", "hero": "m2"},
+            "labels": [{"text": "LEGEND", "subject": "hero", "moment": ""}]}
+    split, hero = pc.choose_layout(hook, cands, prefer="S-RANK")
+    assert split["labels"] == ["B-RANK", "S-RANK"] and hero["labels"] == ["S-RANK"]
+    assert pc.choose_layout(hook, cands)[1]["labels"] == ["LEGEND"]
+
+
+def test_a_labels_panel_is_always_a_shot_of_the_lead():
+    """FTA dry run 3: LEVEL 11 stood on a panel printing a notification and
+    SSS-CLASS on a panel of another man in a suit (both print panels)."""
+    hook = {"low": "", "high": "", "moments": {"hero": "m1"},
+            "labels": [{"text": "SSS-CLASS", "subject": "hero", "moment": "m2"},
+                       {"text": "TRASH", "subject": "hero", "moment": "m3"}]}
+    got = pc.choose_layout(hook, _cands(), prefer="TRASH")
+    assert got and all(m["moments"] == ["m1"] for m in got), got
+
+
+def test_the_leads_look_is_what_his_reference_shots_show():
+    cands = [{"kind": "lead", "desc": "a young man with messy white hair"},
+             {"kind": "print", "desc": "a dark-haired man in a suit"},
+             {"kind": "lead", "desc": "a young man with messy white hair"},
+             {"kind": "lead", "desc": "white hair, glowing yellow eyes"}]
+    assert pc.mc_look(cands) == ("a young man with messy white hair | "
+                                 "white hair, glowing yellow eyes")

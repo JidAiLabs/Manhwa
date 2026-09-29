@@ -659,7 +659,7 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]],
     for lab in sorted(pool, key=_pull):
         if len(out) >= 2:
             break
-        if lab["text"] in on_split:
+        if lab["text"] in on_split and lab["text"] != prefer:
             continue                      # the split already says it: add a new word
         if (lab["text"] == hook.get("low") or lab["text"] in low_words) \
                 and lab["text"] != prefer:
@@ -671,8 +671,11 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]],
         # with a split, the hero stands on the split's own "after" panel: one
         # picture of him HIGH, not a third, unchecked one (FTA's hero showed
         # another man)
+        # a label's own moment counts only when it is a clean shot of HIM: a
+        # panel that PRINTS a rank is evidence, and FTA's showed another man
+        lab_m = lab.get("moment") if lab.get("moment") in leads else ""
         m = ((out[0]["moments"][1] if out and out[0]["layout"] == "split" else "")
-             or lab.get("moment")
+             or lab_m
              or (mo.get("after") if lab["text"] == hook.get("high")
                  and mo.get("after") else hero_moment))
         if not m or any(o["layout"] == "hero" and o["labels"] == [lab["text"]]
@@ -699,19 +702,19 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]],
     return out[:2]
 
 
-def mc_look(w_eps: List[str]) -> str:
-    """The lead's registered look (the cast registry, restored verbatim into
-    every chapter's manifest.cast.json): what the art director describes and
-    the painter's references show."""
-    for d in w_eps:
-        try:
-            cast = json.load(open(os.path.join(d, "manifest.cast.json")))
-        except (OSError, ValueError):
-            continue
-        for c in (cast.get("cast") or []) if isinstance(cast, dict) else []:
-            if c.get("is_protagonist") and str(c.get("visual_description") or "").strip():
-                return " ".join(str(c["visual_description"]).split())
-    return ""
+def mc_look(cands: List[Dict[str, Any]], n: int = 3) -> str:
+    """How the lead looks IN THE WINDOW: the descriptions of his clean solo
+    shots, the same panels the painter copies him from. Not the cast guess
+    (Full-Time Awakening's said dark hair; every shot of him is white-haired)
+    and not the registry (ORV's is his later white coat; the opening chapters
+    are a suit and tie): a brief that contradicts the references paints a
+    third person."""
+    out: List[str] = []
+    for c in cands:
+        d = " ".join(str(c.get("desc") or "").split())
+        if c.get("kind") == "lead" and d and d not in out:
+            out.append(d)
+    return " | ".join(out[:n])
 
 
 # The owner's bar (2026-09-30), counted on the 42 examples: the art director
@@ -775,7 +778,8 @@ def build_art_direction_prompt(brief: Dict[str, Any], hook: Dict[str, Any],
         + "\n".join("  " + t["text"] for t in hook.get("titles") or []) + "\n\n"
         "WORDS the thumbnail may print (pick ONE; your title must contain it):\n  "
         + ", ".join(art_words(hook)) + "\n\n"
-        "THE MAIN CHARACTER LOOKS LIKE: " + (look or "(see the story)") + "\n\n"
+        "THE MAIN CHARACTER, as the reference panels the painter copies show "
+        "him: " + (look or "(see the story)") + "\n\n"
         "What winning thumbnails do (counted on the channel's examples):\n"
         + "\n".join(" %d. %s." % (i, p) for i, p in
                     enumerate(THUMBNAIL_PROPERTIES, 1)) + "\n\n"
@@ -843,7 +847,9 @@ def check_art_direction(ad: Dict[str, Any], hook: Dict[str, Any],
                      "ending with ?")
     if len(str(ad.get("mc") or "").split()) < 4:
         fails.append("3: describe the main character: look, pose, expression")
-    wordy = [k for k in _PAINTED_KEYS if _READ_RE.search(str(ad.get(k) or ""))]
+    # a digit is text too: FTA's window "overwritten by a 'Level 11' icon"
+    wordy = [k for k in _PAINTED_KEYS if _READ_RE.search(str(ad.get(k) or ""))
+             or re.search(r"\d", str(ad.get(k) or ""))]
     if wordy:
         fails.append("4: the picture cannot carry words (%s): the painter "
                      "prints no letters, so a screen or window shows a "
@@ -851,6 +857,11 @@ def check_art_direction(ad: Dict[str, Any], hook: Dict[str, Any],
     word = str(ad.get("word") or "").strip().upper()
     if word not in art_words(hook) or len(word.split()) > 2:
         fails.append("5: the word must be ONE of: %s" % ", ".join(art_words(hook)))
+    elif re.fullmatch(r"LEVEL (\d+)", word) and 1 < int(word.split()[1]) < 100:
+        # the examples' numbers are extremes (LVL 1, LVL 500, 47/10,000);
+        # FTA's LEVEL 11 named neither end of anything
+        fails.append("5: %s is not an extreme; name the lowest or the highest "
+                     "(a rank, class or status word)" % word)
     if len(str(ad.get("genre") or "").split()) < 2:
         fails.append("6: name the genre sign in the frame")
     if len(str(ad.get("others") or "").split()) < 4:
@@ -2577,7 +2588,7 @@ def main() -> int:
             # call, a fourth only when the checks fail): owner, 2026-09-30
             art: Dict[str, Any] = {}
             if hook["titles"] and art_words(hook):
-                art = direct_art(brief, hook, mc_look(w_eps), args.series_title,
+                art = direct_art(brief, hook, mc_look(cands), args.series_title,
                                  lambda pr: _gemma(pr, args.ollama_model,
                                                    temperature=0.4,
                                                    num_predict=1200))
@@ -2637,8 +2648,11 @@ def main() -> int:
             # claim (mocks/): the owner sees the composition before any paint
             try:
                 from thumbnail_mock import render_claim_mocks
-                for m in render_claim_mocks(claim, os.path.join(
-                        os.path.dirname(os.path.abspath(args.write_claim)), "mocks")):
+                mdir = os.path.join(os.path.dirname(os.path.abspath(
+                    args.write_claim)), "mocks")
+                import shutil                # an older claim's mock is not an option
+                shutil.rmtree(mdir, ignore_errors=True)
+                for m in render_claim_mocks(claim, mdir):
                     print("[..] mock %s: %s arrow=%s %s" % (
                         m["name"], m.get("image") or "(no panel)",
                         bool(m.get("arrow_box")), m.get("arrow_note") or ""))
