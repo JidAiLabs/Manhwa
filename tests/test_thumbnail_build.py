@@ -200,3 +200,53 @@ def test_a_scene_is_painted_face_forward(tmp_path, monkeypatch):
                         out_dir=str(tmp_path / "f"), models=["m"])
     low = calls["prompt"].lower()
     assert "face" in low and "half" in low and "close" in low
+
+
+def test_an_art_direction_paints_the_premise_the_hook_and_the_twist(tmp_path,
+                                                                    monkeypatch):
+    """Owner, 2026-09-30: the painter must know the story like the teaser
+    does. With the claim's art direction it gets the premise, the hook, the
+    twist first, the question, the lead, the reactions, the light."""
+    art = {"twist": "his phone shows this same subway car as a finished chapter",
+           "question": "Why is he the only calm one?",
+           "mc": "black-haired office worker, still, knowing smile",
+           "others": "passengers recoil in terror", "setting": "a subway car",
+           "light": "cold blue chaos, gold light on his face",
+           "genre": "a blank blue system window", "word": "KING"}
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    tb.render_thumbnail({"style": "power_reveal", "design": "hero", "art": art,
+                         "scene": "an old one-sentence scene",
+                         "brief": {"premise": "His favourite novel comes true."},
+                         "hook_sentence": "Only he read how the world ends.",
+                         "refs": ["a.jpg"], "hook": "KING"},
+                        ref_episode_dir=str(tmp_path),
+                        out_dir=str(tmp_path / "o"), models=["m"])
+    p = calls["prompt"]
+    for part in ("His favourite novel comes true.",
+                 "Only he read how the world ends.", art["twist"],
+                 art["question"], art["mc"], art["others"], art["light"]):
+        assert part in p, part
+    assert "an old one-sentence scene" not in p       # the brief replaces it
+    assert p.index(art["twist"]) < p.index(art["mc"])  # the twist leads
+    assert "upper-left third" in p and "BLANK" in p
+    # the props the composition names are allowed (the phone IS the twist)
+    assert "or the COMPOSITION above names it" in p
+
+
+def test_a_split_art_direction_paints_the_same_lead_low_and_high(tmp_path,
+                                                                 monkeypatch):
+    from thumbnail_styles import style_for
+    calls: dict = {}
+    _patch(monkeypatch, calls)
+    tb.render_thumbnail({"style": "before_after", "design": "split",
+                         "art": {"twist": "t", "mc": "a thin boy in a grey robe",
+                                 "light": "cold then gold"},
+                         "brief": {"premise": "P."}, "hook_sentence": "H.",
+                         "refs": ["b.jpg", "a.jpg"], "hook": "NOBODY|KING"},
+                        ref_episode_dir=str(tmp_path),
+                        out_dir=str(tmp_path / "s"), models=["m"])
+    assert style_for("before_after")["art_prompt"] in calls["prompt"]
+    assert "a thin boy in a grey robe" in calls["prompt"]
+    assert calls["refs"] == ["b.jpg", "a.jpg"]
+    assert calls["overlay_hook"] == "NOBODY|KING"

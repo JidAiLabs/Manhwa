@@ -25,6 +25,23 @@
 <h3>3. References <small class="kv">— the panels the painter copies the lead from</small></h3>
 {% if refs %}<ul class="kv">{% for r in refs %}<li>{{ r.chapter }} · {{ r.file }}{% if not r.exists %} <span class="b err">missing on disk</span>{% endif %}</li>{% endfor %}</ul>{% else %}<span class="kv">—</span>{% endif %}
 
+<h3>3b. Pick other reference panels <small class="kv">— clear shots of the main character; tick 1–3 and paint the picked mock with them (~0.13 USD)</small></h3>
+<div class="row">
+<form class="inline" method="post" action="/thumbnail/candidates"><input type="hidden" name="series_id" value="{{ sid }}">
+<button class="ghost">{{ 'refresh suggestions' if ref_cands else 'find reference panels' }}</button></form>
+</div>
+{% if ref_cands %}
+<form method="post" action="/thumbnail/generate">
+<input type="hidden" name="series_id" value="{{ sid }}">
+<div class="row" style="flex-wrap:wrap;gap:.6em;align-items:flex-start">
+{% for r in ref_cands %}
+<label style="max-width:170px;text-align:center"><img src="/thumb/series/{{ sid }}/ref/{{ loop.index0 }}?v={{ ref_v }}" alt="reference panel {{ loop.index0 }}" style="width:170px;height:220px;object-fit:contain;background:#000;border:1px solid var(--line);border-radius:6px"><br>
+<input type="checkbox" name="ref" value="{{ loop.index0 }}"> {{ r.label }} · {{ r.file }}</label>
+{% endfor %}
+</div>
+<div class="row"><button class="green">paint the picked mock with these</button> <span class="kv">one image, ~0.13 USD; needs a picked title and mock on the Series page</span></div>
+</form>
+{% endif %}
 <h3>4. The cards <small class="kv">— what each option says right now, and the exact prompt its art was painted from</small></h3>
 {% if cards %}
 <div class="row" style="align-items:flex-start;gap:1.2em;flex-wrap:wrap">

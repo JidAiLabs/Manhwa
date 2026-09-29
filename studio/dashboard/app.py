@@ -674,12 +674,6 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     "hooks": [h for h in (oc.get("hooks") or []) if h],
                     "style": oc.get("style") or name,
                     "v": int((od / "thumbnail_yt.jpg").stat().st_mtime)})
-        ref_cands = _ref_candidates(sid)
-        # tiles are addressed by POSITION, so their URL must change when the
-        # suggestions do: a cached /ref/0 under a refreshed label had the owner
-        # judging (and nearly ticking) a panel that was no longer tile 0
-        _rc = REPO / "dist" / f"series_{sid}" / "ref_candidates.json"
-        ref_v = int(_rc.stat().st_mtime) if _rc.exists() else 0
         # the series CLAIM: what the painter will be told and what every card
         # and title says. Shown so the owner reads the text before buying art.
         try:
@@ -702,6 +696,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # the planner reads cached beats/understanding, so it needs prepared
         # chapters — the same readiness the thumbnail requires
         teaser_ready = thumb_ready
+        sheet = _publish_sheet(sid, claim) if claim else None
         # ONE option label for BOTH range selects. They were rendered by two
         # separate template loops with different rules — the "from" select
         # appended the label for chapter 0, the "to" select did not — so the
@@ -722,7 +717,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     thumb_v=int(thumb.stat().st_mtime) if thumb_exists else 0,
                     thumb_approved=gates.thumbnail_approved(c, sid),
                     thumb_options=thumb_options,
-                    ref_cands=ref_cands, ref_v=ref_v, claim=claim,
+                    claim=claim, sheet=sheet,
                     teaser_card=_teaser_card(sid),
                     teaser_state=teaser_state, teaser_exists=teaser_exists,
                     teaser_ready=teaser_ready,
@@ -750,6 +745,103 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             ch_row["job"] = activity.get(ch_row["id"])
         return page("partials/series_chapters.html", request, sid=sid,
                     chapters=chs)
+
+    def _publish_sheet(sid: int, claim: Dict[str, Any]) -> Dict[str, Any]:
+        """The ONE review sheet, in the order the owner reads it (2026-09-30:
+        "together with the thumbnail brief (story / character arc), i should
+        read: Video Title, Video Description (what is this manhwa about), what
+        labels you plan to use"): titles, description, the words on each mock,
+        the art direction with its 8 checks, the mocks. All free."""
+        from publish_concept import THUMBNAIL_PROPERTIES
+        art = claim.get("art") or {}
+        fails = [str(f) for f in art.get("fails") or []]
+        word = str(art.get("word") or "")
+        picks = claim.get("picks") or {}
+        checks = []
+        for i, prop in enumerate(THUMBNAIL_PROPERTIES, 1):
+            why = [f.split(":", 1)[1].strip() for f in fails
+                   if f.startswith("%d:" % i)]
+            checks.append({"n": i, "prop": prop, "ok": not why,
+                           "why": "; ".join(why)})
+        mocks_dir = REPO / "dist" / f"series_{sid}" / "mocks"
+        mocks = []
+        for m in claim.get("mocks") or []:
+            name = str(m.get("name") or "")
+            img = mocks_dir / f"{name}.jpg"
+            if name in gates.THUMBNAIL_OPTIONS:
+                mocks.append({"name": name, "layout": m.get("layout") or "",
+                              "labels": m.get("labels") or [],
+                              "reason": m.get("reason") or "",
+                              "v": int(img.stat().st_mtime) if img.exists() else 0})
+        titles = [{"text": str(t.get("text") or ""),
+                   "shares": bool(word) and word.upper() in str(t.get("text") or "").upper()}
+                  for t in claim.get("titles") or [] if isinstance(t, dict)]
+        return {"titles": titles, "title": str(picks.get("title") or ""),
+                "mock": str(picks.get("mock") or ""), "mocks": mocks,
+                "art": art, "checks": checks, "other_fails": [
+                    f for f in fails if not f[:1].isdigit()],
+                "hook": (claim.get("hook") or {}).get("sentence") or "",
+                "brief": claim.get("brief") or {},
+                "description": claim.get("synopsis") or "",
+                "hashtags": claim.get("hashtags") or [],
+                "ladder": claim.get("ladder") or {}}
+
+    def _save_pick(series_id: int, key: str, value: str):
+        p = REPO / "dist" / f"series_{series_id}" / "claim.json"
+        try:
+            claim = json.loads(p.read_text())
+        except (OSError, ValueError):
+            return None
+        claim.setdefault("picks", {})[key] = value
+        p.write_text(json.dumps(claim, ensure_ascii=False, indent=2))
+        return claim
+
+    @app.post("/title/pick")
+    def pick_title(series_id: int = Form(...), title: int = Form(-1),
+                   text: str = Form("")):
+        """The video title: one of the claim's candidates, or the owner's own
+        words. Free; the series' first video uses it (worker _h_publish_meta)."""
+        from publish_concept import normalize_title
+        p = REPO / "dist" / f"series_{series_id}" / "claim.json"
+        try:
+            titles = [str(t.get("text") or "") for t in
+                      json.loads(p.read_text()).get("titles") or []]
+        except (OSError, ValueError, AttributeError):
+            return PlainTextResponse("no claim", status_code=404)
+        text = " ".join(text.split())
+        if text:
+            chosen = normalize_title(text)
+            if len(chosen) > 100:
+                return PlainTextResponse("YouTube allows 100 characters; this "
+                                         "is %d" % len(chosen), status_code=400)
+        elif 0 <= title < len(titles):
+            chosen = titles[title]
+        else:
+            return PlainTextResponse("no such title", status_code=404)
+        _save_pick(series_id, "title", chosen)
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
+
+    @app.post("/mock/pick")
+    def pick_mock(series_id: int = Form(...), name: str = Form(...)):
+        """Which free mock the paid image paints. Free."""
+        p = REPO / "dist" / f"series_{series_id}" / "claim.json"
+        try:
+            names = [m.get("name") for m in
+                     json.loads(p.read_text()).get("mocks") or []]
+        except (OSError, ValueError, AttributeError):
+            return PlainTextResponse("no claim", status_code=404)
+        if name not in names or name not in gates.THUMBNAIL_OPTIONS:
+            return PlainTextResponse("no such mock", status_code=404)
+        _save_pick(series_id, "mock", name)
+        return RedirectResponse(f"/series/{series_id}", status_code=303)
+
+    @app.get("/thumb/series/{sid}/mock/{name}")
+    def series_mock(sid: int, name: str):
+        # closed set: the name becomes a path segment
+        p = REPO / "dist" / f"series_{sid}" / "mocks" / f"{name}.jpg"
+        if name not in gates.THUMBNAIL_OPTIONS or not p.exists():
+            return PlainTextResponse("no such mock", status_code=404)
+        return FileResponse(str(p), media_type="image/jpeg")
 
     @app.get("/thumb/series/{sid}")
     def series_thumb(sid: int):
@@ -838,16 +930,25 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
     @app.post("/thumbnail/generate")
     def generate_with_refs(series_id: int = Form(...),
                            ref: List[int] = Form([])):
-        """Generate both options from the 1-3 reference panels the owner
-        ticked (the prompt makes the before and the after from the same set)."""
+        """Paint ONE image of the picked mock (~0.13 USD). Only after the
+        owner picked a title and a mock on the review sheet. *ref*: up to 3
+        reference panels ticked on the package page; none = the claim's."""
+        try:
+            picks = json.loads((REPO / "dist" / f"series_{series_id}" /
+                                "claim.json").read_text()).get("picks") or {}
+        except (OSError, ValueError, AttributeError):
+            picks = {}
+        if not (picks.get("title") and picks.get("mock")):
+            return PlainTextResponse("pick a title and a mock on the Series "
+                                     "page first", status_code=400)
         cands = _ref_candidates(series_id)
-        if not 1 <= len(ref) <= 3 or any(not 0 <= i < len(cands) for i in ref):
-            return PlainTextResponse("pick 1-3 reference panels from the "
+        if len(ref) > 3 or any(not 0 <= i < len(cands) for i in ref):
+            return PlainTextResponse("pick at most 3 reference panels from the "
                                      "suggestions", status_code=400)
         # owner=True: the paid handler refuses a job this button did not queue
         jobs.enqueue(con(), "series_thumbnail", series_id=series_id,
-                     payload={"refs": [cands[i]["path"] for i in ref],
-                              "owner": True})
+                     payload={**({"refs": [cands[i]["path"] for i in ref]}
+                                 if ref else {}), "owner": True})
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.post("/thumbnail/label")
@@ -968,7 +1069,13 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             p = Path(str(r))
             refs.append({"chapter": p.parent.parent.name, "file": p.name,
                          "exists": p.is_file()})
+        _rc = base / "ref_candidates.json"
         return page("series_package.html", request, sid=sid,
+                    ref_cands=_ref_candidates(sid),
+                    # tiles are addressed by POSITION: the URL changes with
+                    # the suggestions, or a cached /ref/0 shows an old panel
+                    ref_v=int(_rc.stat().st_mtime) if _rc.exists() else 0,
+                    thumb_ready=True,
                     title=(c.execute("SELECT title FROM series WHERE id=?",
                                      (sid,)).fetchone() or ["?"])[0],
                     claim=claim, cards=cards,

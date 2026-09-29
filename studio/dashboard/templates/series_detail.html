@@ -57,90 +57,21 @@
 <span class="kv">applies the next time a chapter's narration is written (prepare / rebuild); captions always stay verbatim</span>
 </div>
 
-<h2>Channel thumbnail <small>— ONE per manhwa, reused on every video. Generating builds every option side by side; the one you pick goes live (copyright-safe, no licensed name baked in)</small></h2>
+<h2>Publish <small>— read it top to bottom, then paint once. Everything above the paint button is free.</small></h2>
 <div class="row">
 {# an unpicked old live image (the model's own choice) is hidden once options exist: it is not an option #}
 {% if thumb_exists and (thumb_approved or not thumb_options) %}
-<img src="/thumb/series/{{ sid }}?v={{ thumb_v }}" alt="live series thumbnail" style="max-width:480px;border:1px solid var(--line);border-radius:8px">
-{% if thumb_approved %}<span class="b ok">APPROVED ✓</span>
+<img src="/thumb/series/{{ sid }}?v={{ thumb_v }}" alt="live series thumbnail" style="max-width:360px;border:1px solid var(--line);border-radius:8px">
+{% if thumb_approved %}<span class="b ok">live thumbnail · APPROVED ✓</span>
 {% else %}<form class="inline" method="post" action="/approve"><input type="hidden" name="gate" value="thumbnail">
 <input type="hidden" name="series_id" value="{{ sid }}"><button class="green">approve this one</button></form>
 <span class="b warn">awaits approval 🔒</span>{% endif %}
 {% else %}
-<span class="kv">no live thumbnail yet — generate the options, then pick one{% if not thumb_ready %} (prepare at least one chapter first){% endif %}</span>
+<span class="kv">no live thumbnail yet{% if not thumb_ready %} (prepare at least one chapter first){% endif %}</span>
 {% endif %}
-</div>
-<h3 style="margin:.8em 0 .3em">Series claim <a href="/series/{{ sid }}/package" style="font-size:.8em;margin-left:.6em">see the full package ↗</a> <small class="kv">— what the painter is told and what every card and title says, written once from the teaser. Read it BEFORE buying images: generate paints exactly this.</small></h3>
-{% if claim %}
-<div class="kv" style="max-width:900px;line-height:1.5;border:1px solid var(--line);border-radius:8px;padding:.6em .8em">
-<div><b>Scene to paint:</b> {{ claim.scene or '— none —' }}</div>
-<div><b>Story:</b> {{ (claim.brief or {}).premise or '—' }}</div>
-<div><b>Labels</b> (same on every card): {{ (claim.labels or [])|join(' · ') or '—' }}</div>
-{% if claim.headlines %}<div><b>Headline:</b> {{ claim.headlines[0] }}</div>{% endif %}
-{% if claim.card %}<div><b>System window:</b> {{ claim.card_text }}</div>{% endif %}
-{% if claim.option_texts and claim.option_texts|length > 1 %}
-<form method="post" action="/thumbnail/card" class="row" style="margin:.3em 0 0"><input type="hidden" name="series_id" value="{{ sid }}">
-<select name="line">{% for l in claim.option_texts %}<option value="{{ loop.index0 }}"{% if l == claim.card_text %} selected{% endif %}>{{ l }}</option>{% endfor %}</select>
-<button class="ghost">use this window</button> <span class="kv">every window is quoted from the story; free, the painted card is redrawn at once</span></form>
-{% endif %}
-<div><b>Designs to build:</b> {{ (claim.designs or [])|join(', ')|replace('_', ' ') or '—' }} · <b>from:</b> {{ claim.claim_source or '—' }}</div>
-</div>
-{% else %}
-<span class="kv">No claim yet — preview it (free) to read the scene and labels before generating.</span>
-{% endif %}
-<div class="row">
-<form class="inline" method="post" action="/thumbnail/claim"><input type="hidden" name="series_id" value="{{ sid }}">
-{% set tone = (claim.tone if claim and claim.tone else ('' if claim else 'absurd')) %}
-<select name="tone" title="which moment of the hook the scene and labels go for">{% if claim and not claim.tone %}<option value="absurd" selected>(none yet — next: absurd)</option>{% endif %}{% for t in ('absurd', 'erotic', 'dramatic') %}<option value="{{ t }}"{% if t == tone %} selected{% endif %}>{{ t }}</option>{% endfor %}</select>
-<button class="ghost"{% if not thumb_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 'preview claim again' if claim else 'preview claim' }}</button></form>
-<span class="kv">free: two local model calls, no image. Writes a NEW claim; generate reuses whatever claim is shown here.</span>
-</div>
-{% if thumb_options %}
-<div class="row" style="align-items:flex-start;gap:1em;flex-wrap:wrap">
-{% for o in thumb_options %}
-<div style="max-width:420px">
-<img src="/thumb/series/{{ sid }}/option/{{ o.name }}?v={{ o.v }}" alt="thumbnail option {{ o.name }}" style="width:100%;border:1px solid var(--line);border-radius:8px">
-{# both designs paint on the same art STYLE; the caption names the DESIGN #}
-<div class="kv">{{ o.name|replace('_', ' ') }} · {{ o.hook }}</div>
-{% if o.hooks|length > 1 %}
-<form method="post" action="/thumbnail/label"><input type="hidden" name="series_id" value="{{ sid }}"><input type="hidden" name="option" value="{{ o.name }}">
-{% for hk in o.hooks %}<label style="display:block"><input type="radio" name="hook" value="{{ loop.index0 }}"{% if hk == o.hook %} checked{% endif %}> {{ hk }}</label>{% endfor %}
-<input name="text" maxlength="40" placeholder="or type your own label" style="width:100%;margin:.3em 0">
-{% if o.name == 'nametag_headline' %}<input name="headline" maxlength="40" placeholder="type the headline (bottom line)" style="width:100%;margin:0 0 .3em">{% endif %}
-<input name="badge" maxlength="24" placeholder="corner badge, e.g. SEASON 1 FINALE (a fact about the upload)" style="width:100%;margin:0 0 .3em">
-<button class="ghost">apply label</button> <span class="kv">free, same image</span></form>
-{% endif %}
-<form class="inline" method="post" action="/thumbnail/pick"><input type="hidden" name="series_id" value="{{ sid }}">
-<input type="hidden" name="option" value="{{ o.name }}"><button class="green">use this one</button></form>
-</div>
-{% endfor %}
-</div>
-{% endif %}
-<h3 style="margin:.8em 0 .3em">Reference panels <small class="kv">— clear shots of the MC; the art copies him from these for BOTH options. Suggestions are free; tick 1–3, then generate.</small></h3>
-<div class="row">
-<form class="inline" method="post" action="/thumbnail/candidates"><input type="hidden" name="series_id" value="{{ sid }}">
-<button class="ghost"{% if not thumb_ready %} disabled{% endif %}>{{ 'refresh suggestions' if ref_cands else 'find reference panels' }}</button></form>
-</div>
-{% if ref_cands %}
-<form method="post" action="/thumbnail/generate">
-<input type="hidden" name="series_id" value="{{ sid }}">
-<div class="row" style="flex-wrap:wrap;gap:.6em;align-items:flex-start">
-{% for r in ref_cands %}
-<label style="max-width:170px;text-align:center"><img src="/thumb/series/{{ sid }}/ref/{{ loop.index0 }}?v={{ ref_v }}" alt="reference panel {{ loop.index0 }}" style="width:170px;height:220px;object-fit:contain;background:#000;border:1px solid var(--line);border-radius:6px"><br>
-<input type="checkbox" name="ref" value="{{ loop.index0 }}"> {{ r.label }} · {{ r.file }}</label>
-{% endfor %}
-</div>
-<div class="row"><button class="green">generate options with these</button> <span class="kv">~0.26 USD, builds both options</span></div>
-</form>
-{% endif %}
-<div class="row">
-<form class="inline" method="post" action="/jobs"><input type="hidden" name="type" value="series_thumbnail">
-<input type="hidden" name="series_id" value="{{ sid }}">
-<button class="ghost"{% if not thumb_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 'regenerate options' if thumb_options else 'generate options' }}</button></form>
-<span class="kv">builds the two label designs this series' teaser ranks first (~0.13 USD each), using its own choice of reference panels; the live thumbnail only changes when you pick</span>
 </div>
 
-<h3 style="margin:.8em 0 .3em">Intro teaser <small class="kv">— one per manhwa, built from the first chapters; it opens this manhwa's FIRST video only</small></h3>
+<h3 style="margin:.8em 0 .3em">1 · Intro teaser <small class="kv">— built from the first chapters; it opens this manhwa's FIRST video only</small></h3>
 <div class="row">
 <form class="inline" method="post" action="/series/{{ sid }}/teaser/plan">
 <button class="ghost"{% if not teaser_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 're-create teaser' if teaser_exists else 'create teaser' }}</button></form>
@@ -169,6 +100,84 @@
 {% if teaser_card.rewind_line %}<div class="nar"><b>↩ rewind:</b> {{ teaser_card.rewind_line }}</div>{% endif %}
 </div>
 {% endif %}
+
+{% if sheet %}
+<div class="kv" style="max-width:900px;margin:.6em 0"><b>The hook</b> (the teaser, the title and the thumbnail all sell it): {{ sheet.hook or '—' }}</div>
+
+<h3 style="margin:.8em 0 .3em">2 · Video title <small class="kv">— pick one or type your own · ★ shares the thumbnail's word</small></h3>
+<form method="post" action="/title/pick" style="max-width:900px"><input type="hidden" name="series_id" value="{{ sid }}">
+{% for t in sheet.titles %}<label style="display:block"><input type="radio" name="title" value="{{ loop.index0 }}"{% if t.text == sheet.title %} checked{% endif %}> {{ t.text }}{% if t.shares %} ★{% endif %}</label>{% endfor %}
+<input name="text" maxlength="100" placeholder="or type your own title" style="width:100%;margin:.3em 0">
+<button class="ghost">use this title</button>{% if sheet.title %} <span class="kv">picked: <b>{{ sheet.title }}</b></span>{% else %} <span class="b warn">no title picked yet</span>{% endif %}</form>
+
+<h3 style="margin:.8em 0 .3em">3 · Video description <small class="kv">— what this manhwa is about</small></h3>
+<div class="nar" style="max-width:900px">{{ sheet.description or '—' }}</div>
+{% if sheet.hashtags %}<div class="kv">{{ sheet.hashtags|join(' ') }}</div>{% endif %}
+
+<h3 style="margin:.8em 0 .3em">4 · Words on the thumbnail</h3>
+<div class="kv" style="max-width:900px;line-height:1.5">
+{% for m in sheet.mocks %}<div>{{ m.name|replace('_', ' ') }} ({{ m.layout }}): <b>{{ m.labels|join(' | ') or '(no text)' }}</b> — {{ m.reason }}</div>{% endfor %}
+{% if sheet.ladder %}<div>the story prints: {% for k, v in sheet.ladder.items() %}{{ k }} {{ v|join(', ') }}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+</div>
+
+<h3 style="margin:.8em 0 .3em">5 · Thumbnail brief <small class="kv">— the picture, designed from the story; the painter gets exactly this</small></h3>
+<div class="kv" style="max-width:900px;line-height:1.5;border:1px solid var(--line);border-radius:8px;padding:.6em .8em">
+<div><b>Story:</b> {{ sheet.brief.premise or '—' }}</div>
+<div><b>Main character:</b> {{ sheet.brief.protagonist or '—' }}</div>
+<div><b>Arc:</b> {{ sheet.brief.arc or '—' }}</div>
+{% if sheet.art.twist %}
+<div style="margin-top:.4em"><b>The twist it shows:</b> {{ sheet.art.twist }}</div>
+<div><b>The question it raises:</b> {{ sheet.art.question }}</div>
+<div><b>Main character in the picture:</b> {{ sheet.art.mc }}</div>
+<div><b>Around them:</b> {{ sheet.art.others }}</div>
+<div><b>Setting:</b> {{ sheet.art.setting }} · <b>light:</b> {{ sheet.art.light }} · <b>genre sign:</b> {{ sheet.art.genre }}</div>
+<div><b>The word it shares with the title:</b> {{ sheet.art.word }}</div>
+<div style="margin-top:.4em"><b>Checked against the 8 properties:</b></div>
+{% for c in sheet.checks %}<div>{{ '✓' if c.ok else '✗' }} {{ c.n }}. {{ c.prop }}{% if c.why %} — <b>{{ c.why }}</b>{% endif %}</div>{% endfor %}
+{% for f in sheet.other_fails %}<div>✗ {{ f }}</div>{% endfor %}
+{% else %}
+<div><b>No picture brief yet</b> — preview the claim again to write one.</div>
+{% endif %}
+</div>
+
+<h3 style="margin:.8em 0 .3em">6 · Mocks <small class="kv">— free, drawn on the story's real panels: the layout and the words, not the art</small></h3>
+<form method="post" action="/mock/pick"><input type="hidden" name="series_id" value="{{ sid }}">
+<div class="row" style="align-items:flex-start;gap:1em;flex-wrap:wrap">
+{% for m in sheet.mocks %}
+<label style="max-width:420px">{% if m.v %}<img src="/thumb/series/{{ sid }}/mock/{{ m.name }}?v={{ m.v }}" alt="mock {{ m.name }}" style="width:100%;border:1px solid var(--line);border-radius:8px">{% else %}<span class="kv">(no panel to draw on)</span>{% endif %}
+<div class="kv"><b>{{ sheet.title or (sheet.titles[0].text if sheet.titles else '') }}</b></div>
+<input type="radio" name="name" value="{{ m.name }}"{% if m.name == sheet.mock %} checked{% endif %}> {{ m.name|replace('_', ' ') }}: {{ m.labels|join(' | ') or '(no text)' }}</label>
+{% endfor %}
+</div>
+<button class="ghost">use this mock</button>{% if sheet.mock %} <span class="kv">picked: <b>{{ sheet.mock|replace('_', ' ') }}</b></span>{% else %} <span class="b warn">no mock picked yet</span>{% endif %}</form>
+
+<h3 style="margin:.8em 0 .3em">7 · Paint</h3>
+<div class="row">
+<form class="inline" method="post" action="/thumbnail/generate"><input type="hidden" name="series_id" value="{{ sid }}">
+<button class="green"{% if not (sheet.title and sheet.mock) %} disabled title="pick a title and a mock first"{% endif %}>paint the picked mock — one image, ~0.13 USD</button></form>
+<span class="kv">the painter gets the story, the hook and the brief above, with 2-3 reference panels of the main character; nothing goes live until you pick the result</span>
+</div>
+{% else %}
+<div class="kv" style="margin:.6em 0">No claim yet — preview it (free) to read the title, the description, the words and the picture brief before any paint.</div>
+{% endif %}
+{% if thumb_options %}
+<div class="row" style="align-items:flex-start;gap:1em;flex-wrap:wrap">
+{% for o in thumb_options %}
+<div style="max-width:420px">
+<img src="/thumb/series/{{ sid }}/option/{{ o.name }}?v={{ o.v }}" alt="painted option {{ o.name }}" style="width:100%;border:1px solid var(--line);border-radius:8px">
+<div class="kv">painted: {{ o.name|replace('_', ' ') }} · {{ o.hook }}</div>
+<form class="inline" method="post" action="/thumbnail/pick"><input type="hidden" name="series_id" value="{{ sid }}">
+<input type="hidden" name="option" value="{{ o.name }}"><button class="green">use this one</button></form>
+</div>
+{% endfor %}
+</div>
+{% endif %}
+<div class="row">
+<form class="inline" method="post" action="/thumbnail/claim"><input type="hidden" name="series_id" value="{{ sid }}">
+<button class="ghost"{% if not thumb_ready %} disabled title="prepare at least one chapter first"{% endif %}>{{ 'write the claim again' if claim else 'preview claim' }}</button></form>
+<span class="kv">free: local model calls and mocks, no image; your title and mock picks are kept</span>
+<a href="/series/{{ sid }}/package" class="kv" style="color:var(--acc)">the full package, reference panels and older designs ↗</a>
+</div>
 
 <p class="kv" style="margin:.4em 0">status is <b>live</b> — a running job shows <span class="b run pulse">▶ voicing…</span>, a stuck one shows <span class="b err">⚠ failed</span>; refreshes every few seconds.</p>
 <div id="chaptertable" hx-get="/partials/series-chapters/{{ sid }}" hx-trigger="every 4s" hx-swap="innerHTML" hx-sync="this:replace">

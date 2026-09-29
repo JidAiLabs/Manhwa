@@ -51,6 +51,44 @@ def art_text_words(path: str) -> List[str]:
     return drawn_words(av.ocr_words(path, langs=("en-US",))[1])
 
 
+_EDGES = ("Every window, screen, sign, book or card in the scene is BLANK and "
+          "softly glowing: no letters, no numbers, no symbols.\n"
+          "No letterbox bars, no blank strips, no panels or borders: the scene "
+          "runs to every edge of the frame.")
+
+
+def art_composition(concept: Dict[str, Any]) -> str:
+    """The painter's COMPOSITION from the claim's art direction: the premise
+    and the hook it sells, then the picture (the visible twist first). Owner,
+    2026-09-30: the painter must know the story the way the teaser does; one
+    scene sentence painted a mood, not the hook. A split paints the same lead
+    LOW on the left and HIGH on the right."""
+    art = concept.get("art") or {}
+    story = ((concept.get("brief") or {}).get("premise") or "").strip()
+    head = ("THE STORY: %s\nTHE HOOK THIS PICTURE SELLS: %s\n"
+            % (story, concept.get("hook_sentence") or ""))
+    if concept.get("style") == "before_after":
+        return (head + style_for("before_after")["art_prompt"] + "\n"
+                "The same main character in both halves: %s\n"
+                "Light: %s\n" % (art.get("mc") or "", art.get("light") or "")
+                + _EDGES)
+    return (
+        head + "Paint ONE picture of this premise:\n"
+        "- THE TWIST, big and unmistakable, the reason to click: %s\n"
+        "- It must make a viewer ask: %s\n"
+        "- The main character, the ONE focal point, big, lit and powerful: %s. "
+        "Their face and shoulders fill about half the frame's height, right of "
+        "centre.\n"
+        "- Around them, smaller, reacting: %s\n"
+        "- Setting: %s\n"
+        "- Light and palette: %s. Genre sign: %s\n"
+        "Keep the upper-left third calmer and darker, free of faces (a word is "
+        "added there later).\n"
+        % (art.get("twist"), art.get("question"), art.get("mc"),
+           art.get("others"), art.get("setting"), art.get("light"),
+           art.get("genre")) + _EDGES)
+
+
 def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
                      out_dir: str, models: List[str],
                      size: str = "2K", refs: List[str] = None) -> Dict[str, Any]:
@@ -69,7 +107,8 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
     # 2026-09-22: "we dont see a story on the thumbnail"). No scene = the old
     # style composition, unchanged.
     scene = " ".join(str(concept.get("scene") or "").split())
-    composition = (
+    composition = art_composition(concept) if (concept.get("art") or {}).get(
+        "twist") else (
         "Paint this ONE moment as a single cohesive scene, the protagonist as "
         "its clear visual focus:\n" + scene + "\n"
         # FACE-FORWARD (counted on 7 ORV thumbnails other channels ship,
@@ -77,11 +116,7 @@ def render_thumbnail(concept: Dict[str, Any], *, ref_episode_dir: str,
         "Close crop: the protagonist's face and shoulders fill about half the "
         "frame's height, sharp and lit; the rest of the scene is behind and "
         "around them, smaller.\n"
-        "Every window, screen, sign, book or card in the scene is BLANK and "
-        "softly glowing: no letters, no numbers, no symbols.\n"
-        "No letterbox bars, no blank strips, no panels or borders: the scene "
-        "runs to every edge of the frame."
-        if scene else style_for(style)["art_prompt"])
+        + _EDGES if scene else style_for(style)["art_prompt"])
     art_prompt = tg.build_art_prompt(
         composition + ("\n" + clause if clause else ""))
     # the EXACT words the painter gets, kept beside the art: the owner asked

@@ -601,8 +601,8 @@ def lead_moments(moments: Dict[str, str], cands: List[Dict[str, Any]]
     return out
 
 
-def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
-                  ) -> List[Dict[str, Any]]:
+def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]],
+                  prefer: str = "") -> List[Dict[str, Any]]:
     """The two thumbnail options, decided by CODE from the story's facts
     (owner: layout and arrow "depend on the story, the image and what we say").
       split -- the story backs BOTH ends of his climb (low and high labels) and
@@ -610,7 +610,10 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
       hero  -- a ladder label names what he is; the arrow (Phase 4) goes to
                what the label names, and only if it can be found on the image;
       clean -- no label the story can back: the scene alone (4 of 13 examples
-               of 2026-09-29 have no text at all)."""
+               of 2026-09-29 have no text at all).
+    *prefer* is the word the art direction designed the picture around: the
+    hero carries it first, even a LOW word (the examples label a humiliated
+    lead MC (LOSER), NEWBIE, UNRANKED when the picture shows him low)."""
     by_id = {c["id"]: c for c in cands}
     leads = [c["id"] for c in cands if c["kind"] == "lead"]
     mo = hook.get("moments") or {}
@@ -636,18 +639,22 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
         kind = (0 if t in LADDER_WORDS else
                 1 if re.match(r"^(SSS|SS|[FEDCBAS])[-+ ]|^(SSS|SS)\+*$|^RANK", t) else
                 3 if t.startswith("FLOOR") else 2)
-        return (0 if t == hook.get("high") else 1, kind, -rank_value(t))
+        return (0 if t == prefer else 1, 0 if t == hook.get("high") else 1,
+                kind, -rank_value(t))
     pool = list(hook.get("labels") or [])
     on_split = set(out[0]["labels"]) if out else set()
     if (hook.get("high") and not on_split
             and hook["high"] not in [x["text"] for x in pool]):
         pool.insert(0, {"text": hook["high"], "subject": "hero", "moment": ""})
+    if prefer and prefer not in [x["text"] for x in pool]:
+        pool.insert(0, {"text": prefer, "subject": "hero", "moment": ""})
     for lab in sorted(pool, key=_pull):
         if len(out) >= 2:
             break
         if lab["text"] in on_split:
             continue                      # the split already says it: add a new word
-        if lab["text"] == hook.get("low") or lab["text"] in low_words:
+        if (lab["text"] == hook.get("low") or lab["text"] in low_words) \
+                and lab["text"] != prefer:
             continue                      # a low label only appears in a split
         # with a split, the hero stands on the split's own "after" panel: one
         # picture of him HIGH, not a third, unchecked one (FTA's hero showed
@@ -677,6 +684,210 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
     for o in out:
         o["panels"] = [by_id[m]["path"] for m in o["moments"] if m in by_id]
     return out[:2]
+
+
+def mc_look(w_eps: List[str]) -> str:
+    """The lead's registered look (the cast registry, restored verbatim into
+    every chapter's manifest.cast.json): what the art director describes and
+    the painter's references show."""
+    for d in w_eps:
+        try:
+            cast = json.load(open(os.path.join(d, "manifest.cast.json")))
+        except (OSError, ValueError):
+            continue
+        for c in (cast.get("cast") or []) if isinstance(cast, dict) else []:
+            if c.get("is_protagonist") and str(c.get("visual_description") or "").strip():
+                return " ".join(str(c["visual_description"]).split())
+    return ""
+
+
+# The owner's bar (2026-09-30), counted on the 42 examples: the art director
+# is told these, and check_art_direction checks what code can check.
+THUMBNAIL_PROPERTIES = (
+    "ONE picture of the PREMISE, not a random moment of the story",
+    "a contrast you can SEE that makes a stranger ask a question; the title "
+    "answers it",
+    "the main character big, lit and powerful: the one focal point",
+    "painted art: no speech bubbles, no sound effects, no written words in "
+    "the picture",
+    "almost no text: ONE word, added later in the upper-left third",
+    "genre signs: a glowing blank system window, an aura, magic light",
+    "the other people REACT to the main character (shock, fear, awe), smaller, "
+    "behind",
+    "the title tells the sentence, the picture shows the payoff; they share "
+    "ONE word")
+
+_ART_KEYS = ("twist", "question", "mc", "others", "setting", "light", "genre",
+             "word", "title")
+
+
+def art_words(hook: Dict[str, Any]) -> List[str]:
+    """The words the thumbnail may print: the hook's validated labels and its
+    LOW/HIGH (all already label_ok)."""
+    out: List[str] = []
+    for w in [x.get("text") for x in hook.get("labels") or []] + [
+            hook.get("low"), hook.get("high")]:
+        if w and w not in out:
+            out.append(str(w))
+    return out
+
+
+def build_art_direction_prompt(brief: Dict[str, Any], hook: Dict[str, Any],
+                               look: str, banned: str,
+                               fails: Optional[List[str]] = None) -> str:
+    """The thumbnail is DESIGNED from the story, the way the teaser is planned
+    (owner, 2026-09-30: "llm should know the story and the MC and character arc
+    ... apply same logic to thumbnail and prompt nano banana accordingly").
+    The painter used to get one scene sentence; this writes the picture: the
+    visible twist that carries the hook, the lead, the reactions, the light."""
+    shots = [e for e in load_examples() if e.get("picture")]
+    seen, ex = set(), []
+    for e in shots:
+        if e["title"] not in seen:
+            seen.add(e["title"])
+            ex.append("  TITLE: %s\n  PICTURE: %s\n  WHY YOU CLICK: %s"
+                      % (e["title"], e["picture"], e.get("twist") or ""))
+    return (
+        "You are the ART DIRECTOR of a YouTube thumbnail for a manhwa recap. "
+        "You know the story. Design ONE picture a stranger scrolling past "
+        "cannot ignore: it shows the premise's twist so plainly that they "
+        "feel they must watch.\n"
+        f"NEVER use this licensed title or any part of it: {banned or '(none)'}\n"
+        "No character names anywhere.\n\n"
+        "STORY UNDERSTANDING:\n" + json.dumps(brief, indent=2,
+                                              ensure_ascii=False) + "\n\n"
+        "THE HOOK the teaser and the title sell:\n  "
+        + str(hook.get("sentence") or "") + "\n\n"
+        "THE VIDEO TITLES (the picture goes with one of them):\n"
+        + "\n".join("  " + t["text"] for t in hook.get("titles") or []) + "\n\n"
+        "WORDS the thumbnail may print (pick ONE; your title must contain it):\n  "
+        + ", ".join(art_words(hook)) + "\n\n"
+        "THE MAIN CHARACTER LOOKS LIKE: " + (look or "(see the story)") + "\n\n"
+        "What winning thumbnails do (counted on the channel's examples):\n"
+        + "\n".join(" %d. %s." % (i, p) for i, p in
+                    enumerate(THUMBNAIL_PROPERTIES, 1)) + "\n\n"
+        "Examples: the PICTURE and why people click. Design for THIS story; "
+        "never copy them:\n" + "\n\n".join(ex) + "\n\n"
+        + ("YOUR LAST DESIGN FAILED THESE CHECKS; fix every one:\n"
+           + "\n".join("  - " + f for f in fails) + "\n\n" if fails else "")
+        + "Return ONLY JSON:\n{\n"
+        '  "twist": "the ONE thing in the picture that shows the hook, seen '
+        'WITHOUT reading any text: an object, a contrast, a reaction. '
+        'Concrete, from this story",\n'
+        '  "question": "the question a stranger asks on seeing it, ending '
+        'with ?",\n'
+        '  "mc": "the main character: how they look (as described above), '
+        'their pose and their expression",\n'
+        '  "others": "who else is in the frame, smaller, and how their faces '
+        'react to the main character",\n'
+        '  "setting": "where it happens, in concrete nouns from the story",\n'
+        '  "light": "the palette: what glows and what is dark",\n'
+        '  "genre": "the genre sign in the frame",\n'
+        '  "word": "the ONE word from the list above",\n'
+        '  "title": "the video title this picture goes with, copied exactly"\n'
+        "}")
+
+
+_STOP = frozenset("that this with from into their there they them what when "
+                  "where which while have been will would only about over "
+                  "under just than then your being after before other".split())
+_READ_RE = re.compile(r"\b(?:reads?|reading the|says?|written|writes|"
+                      r"letters?|caption|spells?)\b|[\"“”]", re.I)
+
+
+def _content_words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z]{4,}", str(text or "").lower())
+            if w not in _STOP}
+
+
+def check_art_direction(ad: Dict[str, Any], hook: Dict[str, Any],
+                        brief: Dict[str, Any], banned: str) -> List[str]:
+    """What code can check of THUMBNAIL_PROPERTIES, one message per failure
+    (numbered like the property). Clean-art (4) is the painter's rule; a
+    twist that needs READING fails it here, since the painter prints no
+    letters."""
+    fails: List[str] = []
+    story = _content_words(" ".join([str(hook.get("sentence") or "")] + [
+        json.dumps(brief.get(k), ensure_ascii=False)
+        for k in ("premise", "protagonist", "engine", "arc", "distinctive")]))
+    twist = str(ad.get("twist") or "")
+    if len(twist.split()) < 5 or not (_content_words(twist) & story):
+        fails.append("1: the twist must be a concrete thing from THIS story's "
+                     "premise (it shares no word with the premise or the hook)")
+    q = str(ad.get("question") or "").strip()
+    if len(q.split()) < 4 or not q.endswith("?"):
+        fails.append("2: the question a stranger asks must be a full question "
+                     "ending with ?")
+    if len(str(ad.get("mc") or "").split()) < 4:
+        fails.append("3: describe the main character: look, pose, expression")
+    if _READ_RE.search(twist):
+        fails.append("4: the twist cannot need reading: the painter prints no "
+                     "letters, so show it as a picture")
+    word = str(ad.get("word") or "").strip().upper()
+    if word not in art_words(hook) or len(word.split()) > 2:
+        fails.append("5: the word must be ONE of: %s" % ", ".join(art_words(hook)))
+    if len(str(ad.get("genre") or "").split()) < 2:
+        fails.append("6: name the genre sign in the frame")
+    if len(str(ad.get("others") or "").split()) < 4:
+        fails.append("7: say who reacts to the main character and how")
+    titles = [t["text"] for t in hook.get("titles") or []]
+    title = str(ad.get("title") or "").strip()
+    if title not in titles:
+        fails.append("8: the title must be one of the titles, copied exactly")
+    elif word and not re.search(r"(?<![A-Z0-9])%s(?![A-Z0-9])" % re.escape(word),
+                                title.upper()):
+        fails.append("8: the title and the picture must share the word %s" % word)
+    if any(_names_the_title(str(ad.get(k) or ""), banned) for k in _ART_KEYS):
+        fails.append("the licensed title appears in the design")
+    return fails
+
+
+def direct_art(brief: Dict[str, Any], hook: Dict[str, Any], look: str,
+               banned: str, ask) -> Dict[str, Any]:
+    """Write the picture, check it, and let the model fix what failed ONCE.
+    *ask* is prompt -> dict (the local model). The fewer failures wins; what
+    still fails is kept on the design, so the owner sees it."""
+    best: Dict[str, Any] = {}
+    fails: Optional[List[str]] = None
+    for _ in range(2):
+        raw = ask(build_art_direction_prompt(brief, hook, look, banned, fails))
+        ad = {k: " ".join(str(raw.get(k) or "").split()) for k in _ART_KEYS}
+        ad["word"] = ad["word"].upper()
+        fails = check_art_direction(ad, hook, brief, banned)
+        if not best or len(fails) < len(best["fails"]):
+            best = dict(ad, fails=fails, look=look)
+        if not fails:
+            break
+    return best
+
+
+def concept_from_mock(claim: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """The concept the painter gets for the owner's picked mock: the art
+    direction, the premise and the hook, the mock's layout and label, the
+    picked title. No model call. A split paints the two halves from the two
+    moments' panels (before first); a hero from the lead refs."""
+    mock = next((m for m in claim.get("mocks") or [] if m.get("name") == name),
+                None)
+    if not mock:
+        raise ValueError("the claim has no mock named %r" % name)
+    labels = [str(x) for x in mock.get("labels") or []]
+    split = mock.get("layout") == "split"
+    style = "before_after" if split else SCENE_STYLES[0]
+    c = {k: claim.get(k) for k in (
+        "brief", "scene", "art", "refs", "claim_source", "teaser_panels",
+        "climax_chapter_index", "badge", "synopsis", "hashtags", "description",
+        "pinned_comment") if claim.get(k) is not None}
+    c.update({"design": name, "style": style,
+              "style_overlay": dict(STYLE_MODULES[style]["overlay"] if split
+                                    else HOOK_DESIGNS["nametag"]["overlay"]),
+              "hook": "|".join(labels[:2]) if split else (labels[0] if labels else ""),
+              "hooks": labels,
+              "hook_sentence": str((claim.get("hook") or {}).get("sentence") or ""),
+              "title": str((claim.get("picks") or {}).get("title")
+                           or claim.get("title") or "")})
+    if split and len(mock.get("panels") or []) >= 2:
+        c["refs"] = list(mock["panels"][:2])
+    return c
 
 
 def concept_from_claim(claim: Dict[str, Any], design: str) -> Dict[str, Any]:
@@ -2154,6 +2365,12 @@ def main() -> int:
     ap.add_argument("--claim", default="", metavar="PATH",
                     help="build the --design card from a saved claim: no model "
                          "call, so every card shares labels, scene and refs")
+    ap.add_argument("--mock", default="",
+                    help="with --claim: the concept that paints the owner's "
+                         "picked mock (layout, label, art direction), no model")
+    ap.add_argument("--fixed-title", default="",
+                    help="bundle mode: the video title the owner picked on "
+                         "the Series page (the series' first video)")
     ap.add_argument("--rank-designs", action="store_true",
                     help="write the two designs the teaser ranks first "
                          "(json) to --out and stop: no model call, nothing paid")
@@ -2188,11 +2405,13 @@ def main() -> int:
             print("[ok] wrote=%s refs=%d" % (args.out, len(cands["refs"])))
             return 0
         if args.claim:
-            if not (args.design and args.out):
-                ap.error("--claim needs --design and --out")
+            if not ((args.design or args.mock) and args.out):
+                ap.error("--claim needs --design or --mock, and --out")
             try:
                 with open(args.claim, encoding="utf-8") as f:
-                    concept = concept_from_claim(json.load(f), args.design)
+                    claim_obj = json.load(f)
+                concept = (concept_from_mock(claim_obj, args.mock) if args.mock
+                           else concept_from_claim(claim_obj, args.design))
             except (OSError, ValueError) as e:
                 print("[err] cannot build %s from the claim: %s" % (args.design, e))
                 return 2
@@ -2200,7 +2419,7 @@ def main() -> int:
             with open(args.out, "w", encoding="utf-8") as f:
                 json.dump(concept, f, ensure_ascii=False, indent=2)
             print("[ok] wrote=%s design=%s hook=%r (from the claim, no model call)"
-                  % (args.out, args.design, concept["hook"]))
+                  % (args.out, args.mock or args.design, concept["hook"]))
             return 0
         # The thumbnail sells what the teaser sells: claim, climax and refs
         # come from the TEASER'S WINDOW. (ORV: teaser in chapters 3-9, the
@@ -2301,7 +2520,22 @@ def main() -> int:
                                + [window_printed_text(w_eps)])
             hook = validate_hook(pkg, printed=printed, cands=cands,
                                  corpus=corpus, banned=args.series_title)
-            mocks = choose_layout(hook, cands)
+            # the PICTURE, designed from the same understanding (a third local
+            # call, a fourth only when the checks fail): owner, 2026-09-30
+            art: Dict[str, Any] = {}
+            if hook["titles"] and art_words(hook):
+                art = direct_art(brief, hook, mc_look(w_eps), args.series_title,
+                                 lambda pr: _gemma(pr, args.ollama_model,
+                                                   temperature=0.4,
+                                                   num_predict=1200))
+                print("[..] art twist: %s" % art.get("twist", "")[:140])
+                print("[..] art word: %s | fails: %s"
+                      % (art.get("word"), art.get("fails") or "none"))
+                # the picture's title leads the list: the owner's default pick
+                hook["titles"].sort(key=lambda t: t["text"] != art.get("title"))
+            mocks = choose_layout(hook, cands, prefer=(
+                art.get("word", "") if art and not any(
+                    f.startswith("5:") for f in art.get("fails") or []) else ""))
             print("[..] hook: %s" % hook["sentence"][:140])
             print("[..] labels: %s | low/high: %s/%s" % (
                 [x["text"] for x in hook["labels"]], hook["low"], hook["high"]))
@@ -2325,7 +2559,7 @@ def main() -> int:
             hashtags = pkg.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
             claim = {
                 "title": (hook["titles"][0]["text"] if hook["titles"] else ""),
-                "style": SCENE_STYLES[0], "brief": brief,
+                "style": SCENE_STYLES[0], "brief": brief, "art": art,
                 "scene": re.sub(r"\s+", " ", str(pkg.get("scene") or "")).strip(),
                 "labels": grounded(pkg.get("labels")),
                 # the one headline is the climb the story backs (LOW -> HIGH)
@@ -2423,6 +2657,8 @@ def main() -> int:
                 concept["badge"] = "%d CHAPTERS" % len(beats_list)
             concept["description"] = (concept["description"] + "\n\n"
                                       + "\n".join(concept["parts"]))
+            if args.fixed_title:
+                concept["title"] = normalize_title(args.fixed_title)
         out = args.out or os.path.join(eps[0], "render", "bundle_publish_meta.json")
     else:
         if not args.episode_dir:

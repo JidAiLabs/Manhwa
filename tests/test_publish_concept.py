@@ -1289,11 +1289,15 @@ _ARC = [
 ]
 
 
-def _run_main(monkeypatch, argv, replies=()):
+def _run_main(monkeypatch, argv, replies=(), art=None):
+    """*replies* answer the story calls in order; the art director's calls
+    (the picture brief) get *art* ({} = a design that fails every check)."""
     import sys as _s
     prompts, it = [], iter(replies)
 
     def fake(prompt, model, **kw):
+        if "ART DIRECTOR" in prompt:
+            return dict(art or {})
         prompts.append(prompt)
         return next(it)
     monkeypatch.setattr(pc, "_gemma", fake)
@@ -2075,3 +2079,147 @@ def test_the_hero_reuses_the_splits_panel_and_a_place_never_arrows():
                              "labels": [{"text": "REAL WORLD", "subject": "hero",
                                          "moment": ""}]}, _cands())
     assert only[0]["labels"] == ["REAL WORLD"] and only[0]["arrow"] is None
+
+
+# --- the picture is DESIGNED from the story (owner, 2026-09-30) -------------
+# "llm should know the story and the MC and character arc ... apply same logic
+# to thumbnail"; "where is the hook that make me feels i should read this?"
+
+_HOOK = {"sentence": "The weakest commuter is the only one who read how the "
+                     "world ends.",
+         "low": "NOBODY", "high": "KING",
+         "labels": [{"text": "WEAKEST HUNTER", "subject": "hero", "moment": ""}],
+         "titles": [{"text": "A Nobody On The Train Read How This World Ends "
+                             "And Became Its Only KING - Manhwa Recap",
+                     "label": "KING"}]}
+_BRIEF = {"premise": "A commuter's finished web novel becomes reality on his "
+                     "subway train.",
+          "arc": "from the weakest commuter to the only one who knows the ending"}
+_GOOD_ART = {
+    "twist": "his phone screen shows a tiny painting of this same subway car "
+             "and its monster, a world he already finished",
+    "question": "Why is he the only calm one on the train?",
+    "mc": "black-haired office worker in a white shirt, sitting still, "
+          "faint knowing smile",
+    "others": "passengers behind him scream and recoil from the monster",
+    "setting": "a subway car at night, cracked windows",
+    "light": "cold blue chaos, warm gold light from the phone on his face",
+    "genre": "a blank glowing blue system window above the seats",
+    "word": "king",
+    "title": _HOOK["titles"][0]["text"]}
+
+
+def test_a_design_that_shows_the_premise_passes_every_check():
+    assert pc.check_art_direction(dict(_GOOD_ART, word="KING"), _HOOK, _BRIEF,
+                                  "Omniscient Reader") == []
+
+
+def test_each_checkable_property_fails_with_its_number():
+    def fails(**kw):
+        d = dict(_GOOD_ART, word="KING")
+        d.update(kw)
+        return [f.split(":")[0] for f in pc.check_art_direction(
+            d, _HOOK, _BRIEF, "Omniscient Reader")]
+    # 1: a mood, not this story's premise (no word shared with it)
+    assert "1" in fails(twist="a dramatic glowing aura of pure power")
+    assert "2" in fails(question="he is calm")              # not a question
+    assert "4" in fails(twist='his phone screen reads "the end" on the subway')
+    assert "5" in fails(word="LEGEND")                      # not a hook word
+    assert "7" in fails(others="")
+    assert "8" in fails(title="Some Other Title - Manhwa Recap")
+    assert "8" in fails(word="WEAKEST HUNTER")              # the title lacks it
+    assert pc.check_art_direction(
+        dict(_GOOD_ART, word="KING", setting="the Omniscient Reader train"),
+        _HOOK, _BRIEF, "Omniscient Reader")[-1].startswith("the licensed title")
+
+
+def test_the_art_director_fixes_what_failed_once_and_keeps_the_better():
+    prompts, replies = [], iter([dict(_GOOD_ART, question="calm"), _GOOD_ART])
+
+    def ask(p):
+        prompts.append(p)
+        return next(replies)
+    got = pc.direct_art(_BRIEF, _HOOK, "black hair, white shirt", "B", ask)
+    assert len(prompts) == 2 and got["fails"] == [] and got["word"] == "KING"
+    assert "FAILED THESE CHECKS" in prompts[1] and "2: the question" in prompts[1]
+    # the director knows the story, the hook, the titles, the words, the look
+    # and the example PICTURES
+    p = prompts[0]
+    for part in (_BRIEF["premise"], _HOOK["sentence"], _HOOK["titles"][0]["text"],
+                 "WEAKEST HUNTER, NOBODY, KING", "black hair, white shirt",
+                 "PICTURE:", "WHY YOU CLICK:"):
+        assert part in p, part
+
+
+def test_the_art_director_stops_at_a_clean_design():
+    calls = []
+    pc.direct_art(_BRIEF, _HOOK, "", "B", lambda p: calls.append(p) or _GOOD_ART)
+    assert len(calls) == 1
+
+
+def test_the_hero_carries_the_designed_word_even_a_low_one():
+    """The examples label a humiliated lead MC (LOSER), NEWBIE, UNRANKED when
+    the picture shows him low; without a design, a low word stays off a hero."""
+    cands = [{"id": "m1", "kind": "lead", "path": "/a.jpg"}]
+    hook = dict(_HOOK, moments={"hero": "m1"})
+    assert pc.choose_layout(hook, cands)[0]["labels"] == ["KING"]
+    assert pc.choose_layout(hook, cands, prefer="NOBODY")[0]["labels"] == ["NOBODY"]
+
+
+def test_write_claim_saves_the_picture_brief_and_its_title_leads(tmp_path,
+                                                                 monkeypatch):
+    import json as _j
+    eps = _series(tmp_path, _ARC)
+    out = tmp_path / "claim.json"
+    title = ("A Nobody On The Train Read How This World Ends And Became Its "
+             "Only KING - Manhwa Recap")
+    art = dict(_GOOD_ART, title=title,
+               twist="the weakest hunter's phone shows the train he rides as a "
+                     "chapter of the web novel he finished")
+    rc, _ = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--write-claim", str(out),
+        "--teaser-scan-chapters", "2", "--teaser-min-panels", "2"],
+        replies=list(_CLAIM_REPLIES), art=art)
+    assert rc == 0
+    c = _j.loads(out.read_text())
+    assert c["art"]["twist"] == art["twist"] and c["art"]["fails"] == []
+    assert c["titles"][0]["text"] == title and c["art"]["word"] == "KING"
+
+
+def test_the_paint_concept_is_the_picked_mock_with_the_art_direction():
+    claim = {"brief": _BRIEF, "art": dict(_GOOD_ART, word="KING"),
+             "hook": _HOOK, "refs": ["/r1.jpg", "/r2.jpg"],
+             "title": "Default - Manhwa Recap",
+             "picks": {"title": "Picked - Manhwa Recap", "mock": "hero"},
+             "mocks": [{"name": "hero", "layout": "hero", "labels": ["KING"],
+                        "panels": ["/m1.jpg"]},
+                       {"name": "split", "layout": "split",
+                        "labels": ["NOBODY", "KING"],
+                        "panels": ["/before.jpg", "/after.jpg"]}]}
+    hero = pc.concept_from_mock(claim, "hero")
+    assert hero["hook"] == "KING" and hero["art"]["twist"] == _GOOD_ART["twist"]
+    assert hero["title"] == "Picked - Manhwa Recap"
+    assert hero["refs"] == ["/r1.jpg", "/r2.jpg"]          # the lead refs
+    assert hero["hook_sentence"] == _HOOK["sentence"]
+    assert hero["style_overlay"]["label_pos"] == "upper_left"
+    split = pc.concept_from_mock(claim, "split")
+    assert split["style"] == "before_after" and split["hook"] == "NOBODY|KING"
+    assert split["refs"] == ["/before.jpg", "/after.jpg"]  # before first
+    import pytest
+    with pytest.raises(ValueError):
+        pc.concept_from_mock(claim, "nametag")
+
+
+def test_a_mock_paint_run_is_free_and_writes_the_concept(tmp_path, monkeypatch):
+    import json as _j
+    eps, claim_path, rc, _ = _write_claim(tmp_path, monkeypatch)
+    claim = _j.loads(claim_path.read_text())
+    claim["mocks"] = [{"name": "hero", "layout": "hero", "labels": ["KING"],
+                       "panels": []}]
+    claim_path.write_text(_j.dumps(claim))
+    out = tmp_path / "paint.json"
+    rc, prompts = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--claim", str(claim_path),
+        "--mock", "hero", "--out", str(out)])
+    assert rc == 0 and prompts == []
+    assert _j.loads(out.read_text())["hook"] == "KING"

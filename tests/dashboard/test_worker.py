@@ -2636,12 +2636,10 @@ def test_h_prepare_blocking_verdict_outlives_a_stale_green_row(tmp_path, monkeyp
     assert gates.latest_qa_ok(con, 5) is False
 
 
-# ---- series thumbnail: BOTH options are built, the owner picks one ----------
-# Owner, 2026-09-17: "i should see both options created and i can select 1 of
-# them. I am telling this many times." The job used to let the model choose the
-# layout (it chose a 3-panel triptych) and wrote straight over the live image.
-# Owner, 2026-09-21: the two options are the two hook DESIGNS the series' teaser
-# ranks first (code ranks, never the model); before/after is a variant only.
+# ---- series thumbnail: ONE paid image of the mock the owner picked ----------
+# Owner, 2026-09-29: "we keep spending money and tokens but we are cycling".
+# The review sheet shows the title, the description, the words, the picture
+# brief and two free mocks; the owner picks a mock and pays for one image.
 
 def _thumb_stream(calls, fail_style=None,
                   designs=("system_window", "nametag"), rank_rc=0):
@@ -2660,6 +2658,7 @@ def _thumb_stream(calls, fail_style=None,
         elif s[1].endswith("publish_concept.py"):
             style = s[s.index("--style") + 1] if "--style" in s else ""
             design = s[s.index("--design") + 1] if "--design" in s else ""
+            design = s[s.index("--mock") + 1] if "--mock" in s else design
             _j.dump({"style": style or "power_reveal", "hook": "HOOK",
                      "design": design, "climax_chapter_index": 0},
                     open(s[s.index("--out") + 1], "w"))
@@ -2670,103 +2669,6 @@ def _thumb_stream(calls, fail_style=None,
             open(out + "/thumbnail_yt.jpg", "wb").write(b"jpg")
         return 0
     return fake
-
-
-def test_series_thumbnail_builds_the_two_ranked_designs_and_leaves_live_alone(
-        tmp_path, monkeypatch):
-    import io
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    live = tmp_path / "dist" / "series_1"
-    live.mkdir(parents=True)
-    (live / "thumbnail_yt.jpg").write_bytes(b"live")
-    gates.approve(con, "thumbnail", series_id=1)
-    calls = []
-    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
-                               io.StringIO())
-    for name in ("system_window", "nametag"):
-        assert (live / "options" / name / "thumbnail_yt.jpg").exists(), name
-    concept_cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
-    # ONE claim for the series (the only call that reads the story), then one
-    # card per ranked design built FROM that claim, in rank order
-    claim_cmd, builds = concept_cmds[0], concept_cmds[1:]
-    claim_path = str(live / "claim.json")
-    assert claim_cmd[claim_cmd.index("--write-claim") + 1] == claim_path
-    assert claim_cmd[claim_cmd.index("--teaser-scan-chapters") + 1] == "12"
-    assert "--teaser-min-panels" in claim_cmd and "--teaser-max-panels" in claim_cmd
-    assert "--teaser-payoff-tail-frac" in claim_cmd
-    assert [c[c.index("--design") + 1] for c in builds] == ["system_window",
-                                                            "nametag"]
-    for c in builds:
-        # a card is built from the claim: it never re-reads the story, so the
-        # two cards cannot disagree on labels, scene or refs
-        assert c[c.index("--claim") + 1] == claim_path
-        assert "--teaser-scan-chapters" not in c and "--write-claim" not in c
-    for c in concept_cmds:
-        assert "--style" not in c                 # a split is a variant only
-    # nothing goes live until the owner picks: live image + approval untouched
-    assert (live / "thumbnail_yt.jpg").read_bytes() == b"live"
-    assert gates.thumbnail_approved(con, 1) is True
-
-
-def test_one_failed_option_still_builds_the_other_then_fails_loud(tmp_path,
-                                                                 monkeypatch):
-    import io
-    import pytest
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    opts = tmp_path / "dist" / "series_1" / "options"
-    (opts / "nametag").mkdir(parents=True)
-    (opts / "nametag" / "thumbnail_yt.jpg").write_bytes(b"stale")
-    monkeypatch.setattr(worker, "_stream",
-                        _thumb_stream([], fail_style="nametag"))
-    with pytest.raises(RuntimeError, match="nametag"):
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
-                                   io.StringIO())
-    assert (opts / "system_window" / "thumbnail_yt.jpg").exists()
-    # a failed rebuild never leaves the OLD image pickable under the new label
-    assert not (opts / "nametag" / "thumbnail_yt.jpg").exists()
-
-
-def test_failed_option_is_not_auto_retried(tmp_path, monkeypatch):
-    """A retry would delete the option that DID build and pay for both again."""
-    import io
-    import pytest
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    monkeypatch.setattr(worker, "_stream",
-                        _thumb_stream([], fail_style="system_window"))
-    with pytest.raises(worker.NonRetryableError):
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
-                                   io.StringIO())
-
-
-def test_a_corrupt_concept_in_one_option_still_builds_the_other(tmp_path,
-                                                               monkeypatch):
-    import io
-    import pytest
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    good = _thumb_stream([])
-
-    def stream(cmd, log, **kw):
-        s = [str(x) for x in cmd]
-        rc = good(cmd, log, **kw)
-        if (s[1].endswith("publish_concept.py") and "--design" in s
-                and s[s.index("--design") + 1] == "system_window"):
-            open(s[s.index("--out") + 1], "w").write("{not json")
-        return rc
-    monkeypatch.setattr(worker, "_stream", stream)
-    with pytest.raises(worker.NonRetryableError, match="system_window"):
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
-                                   io.StringIO())
-    opts = tmp_path / "dist" / "series_1" / "options"
-    assert (opts / "nametag" / "thumbnail_yt.jpg").exists()
 
 
 def test_publish_meta_reuses_thumbnail_words_only_after_an_owner_pick(tmp_path,
@@ -2828,109 +2730,6 @@ def test_candidates_payload_writes_suggestions_and_pays_for_nothing(tmp_path,
     assert not any(c[1].endswith("thumbnail_build.py") for c in calls)
 
 
-def test_picked_refs_reach_both_options(tmp_path, monkeypatch):
-    import io
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    calls = []
-    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-    worker._h_series_thumbnail(
-        con, {"series_id": 1, "payload": {"owner": True, "refs": ["/a/p1.jpg", "/b/p2.jpg"]}},
-        io.StringIO())
-    cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
-    claim_cmd = [c for c in cmds if "--write-claim" in c]
-    assert len(claim_cmd) == 1 and len([c for c in cmds if "--design" in c]) == 2
-    # the owner's picks go into the CLAIM, which every card is built from
-    assert claim_cmd[0][claim_cmd[0].index("--refs") + 1] == "/a/p1.jpg,/b/p2.jpg"
-    assert "--before-ref" not in claim_cmd[0]
-
-
-def test_a_stale_option_from_before_the_designs_is_removed(tmp_path, monkeypatch):
-    """options/scene can no longer be picked (the option set is closed), so a
-    leftover one is dead weight that reads as a third choice on disk."""
-    import io
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    old = tmp_path / "dist" / "series_1" / "options" / "scene"
-    old.mkdir(parents=True)
-    (old / "thumbnail_yt.jpg").write_bytes(b"old")
-    monkeypatch.setattr(worker, "_stream", _thumb_stream([]))
-    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
-                               io.StringIO())
-    assert not old.exists()
-
-
-def test_a_failed_ranking_builds_nothing_and_is_not_retried(tmp_path, monkeypatch):
-    """No montage = no teaser-based claim. Say so; never pay for an image built
-    on a guess, and never let an auto-retry loop on it."""
-    import io
-    import pytest
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    calls = []
-    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls, rank_rc=2))
-    with pytest.raises(worker.NonRetryableError, match="claim"):
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
-                                   io.StringIO())
-    assert not [c for c in calls if c[1].endswith("thumbnail_build.py")]
-
-
-def test_the_claim_never_reads_the_old_teaser(tmp_path, monkeypatch):
-    """2026-09-29: the hook is written FIRST and the teaser follows it. A
-    teaser in any state never drives the claim (ORV's approved teaser builds to
-    the wrong hook), so the window is always the computed montage."""
-    import io
-    import pytest
-    for state, write_file, expected in [("approved", True, False),
-                                        ("planned", True, False),
-                                        ("declined", True, False),
-                                        ("approved", False, False),
-                                        ("none", True, False)]:
-        root = tmp_path / f"{state}_{write_file}"
-        root.mkdir()
-        con = _con(root)
-        _series_with_prepared(con, root, 2)
-        monkeypatch.setattr(worker, "REPO", root)
-        con.execute("UPDATE series SET teaser_state=? WHERE id=1", (state,))
-        con.commit()
-        man = root / "dist" / "series_1" / "teaser" / "manifest.teaser.json"
-        if write_file:
-            man.parent.mkdir(parents=True)
-            man.write_text("{}")
-        calls = []
-        monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
-                                   io.StringIO())
-        claim_cmd = [c for c in calls if "--write-claim" in c]
-        assert len(claim_cmd) == 1
-        c = claim_cmd[0]
-        assert ("--teaser-manifest" in c) is expected, (state, write_file)
-        if expected:
-            assert c[c.index("--teaser-manifest") + 1] == str(man)
-
-
-
-def test_the_ranking_knows_the_banned_title_the_build_will_apply(tmp_path,
-                                                                 monkeypatch):
-    """Rank and build are two calls. If only the build knows the licensed title,
-    the ranking can promise a system window whose only line the build refuses."""
-    import io
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    calls = []
-    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
-                               io.StringIO())
-    # the claim call is the ONLY one that writes copy, ranks designs and quotes
-    # the card, so it is the one that must know the banned title
-    claim_cmd = [c for c in calls if "--write-claim" in c]
-    assert len(claim_cmd) == 1 and "--series-title" in claim_cmd[0]
-
-
 def test_suggested_reference_panels_prefer_the_teaser_window(tmp_path, monkeypatch):
     import io
     con = _con(tmp_path)
@@ -2958,9 +2757,14 @@ def _claim_on_disk(root, **extra):
     import json as _j
     p = root / "dist" / "series_1" / "claim.json"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(_j.dumps({"designs": ["system_window", "nametag"],
-                           "labels": ["HOOK"], "scene": "REVIEWED SCENE",
-                           "refs": ["/old/ref.jpg"], **extra}))
+    p.write_text(_j.dumps({"labels": ["HOOK"], "scene": "REVIEWED SCENE",
+                           "refs": ["/old/ref.jpg"],
+                           "mocks": [{"name": "hero", "layout": "hero",
+                                      "labels": ["KING"]},
+                                     {"name": "split", "layout": "split",
+                                      "labels": ["NOBODY", "KING"]}],
+                           "picks": {"title": "T - Manhwa Recap",
+                                     "mock": "hero"}, **extra}))
     return p
 
 
@@ -2981,38 +2785,6 @@ def test_series_claim_job_writes_the_claim_and_pays_for_nothing(tmp_path, monkey
     assert not [x for x in calls if x[1].endswith("thumbnail_build.py")]   # no image, no cost
     assert worker.HANDLERS["series_claim"] is worker._h_series_claim
     assert _jobs.LANES["series_claim"] == "gpu"          # two local model calls
-
-
-def test_generate_paints_the_claim_the_owner_previewed(tmp_path, monkeypatch):
-    import io
-    import json as _j
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    claim = _claim_on_disk(tmp_path)
-    calls = []
-    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}}, io.StringIO())
-    cmds = [c for c in calls if c[1].endswith("publish_concept.py")]
-    assert not [c for c in cmds if "--write-claim" in c]      # NOT rewritten
-    assert [c[c.index("--design") + 1] for c in cmds] == ["system_window", "nametag"]
-    assert _j.loads(claim.read_text())["scene"] == "REVIEWED SCENE"
-
-
-def test_new_reference_picks_keep_the_reviewed_text(tmp_path, monkeypatch):
-    import io
-    import json as _j
-    con = _con(tmp_path)
-    _series_with_prepared(con, tmp_path, 2)
-    monkeypatch.setattr(worker, "REPO", tmp_path)
-    claim = _claim_on_disk(tmp_path)
-    calls = []
-    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
-    worker._h_series_thumbnail(
-        con, {"series_id": 1, "payload": {"owner": True, "refs": ["/new/p22.jpg"]}}, io.StringIO())
-    assert not [c for c in calls if "--write-claim" in c]
-    got = _j.loads(claim.read_text())
-    assert got["scene"] == "REVIEWED SCENE" and got["refs"] == ["/new/p22.jpg"]
 
 
 def test_claim_preview_passes_the_owners_tone(tmp_path, monkeypatch):
@@ -3148,3 +2920,138 @@ def test_add_series_passes_the_canonical_link_to_the_cli(tmp_path, monkeypatch):
             "source": "webtoon",
             "url": "https://www.webtoons.com/en/action/x-y/list?title_no=12"}},
             io.StringIO())
+
+
+def test_paint_builds_one_image_of_the_picked_mock_and_leaves_live_alone(
+        tmp_path, monkeypatch):
+    import io
+    import json as _j
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    claim = _claim_on_disk(tmp_path)
+    live = tmp_path / "dist" / "series_1"
+    (live / "thumbnail_yt.jpg").write_bytes(b"live")
+    painted = live / "options" / "split"                  # an earlier paid image
+    painted.mkdir(parents=True)
+    (painted / "thumbnail_yt.jpg").write_bytes(b"paid")
+    gates.approve(con, "thumbnail", series_id=1)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
+                               io.StringIO())
+    concept = [c for c in calls if c[1].endswith("publish_concept.py")]
+    builds = [c for c in calls if c[1].endswith("thumbnail_build.py")]
+    assert len(concept) == 1 and len(builds) == 1          # ONE image
+    c = concept[0]
+    assert c[c.index("--claim") + 1] == str(claim)
+    assert c[c.index("--mock") + 1] == "hero" and "--write-claim" not in c
+    assert (live / "options" / "hero" / "thumbnail_yt.jpg").exists()
+    assert (painted / "thumbnail_yt.jpg").read_bytes() == b"paid"   # kept
+    # nothing goes live until the owner picks the painted result
+    assert (live / "thumbnail_yt.jpg").read_bytes() == b"live"
+    assert gates.thumbnail_approved(con, 1) is True
+    assert _j.loads(claim.read_text())["scene"] == "REVIEWED SCENE"  # not rewritten
+
+
+def test_paint_refuses_without_a_claim_or_a_picked_mock(tmp_path, monkeypatch):
+    """A claim written here would paint text nobody read."""
+    import io
+    import pytest
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    job = {"series_id": 1, "payload": {"owner": True}}
+    with pytest.raises(worker.NonRetryableError, match="no claim"):
+        worker._h_series_thumbnail(con, job, io.StringIO())
+    _claim_on_disk(tmp_path, picks={"title": "T"})
+    with pytest.raises(worker.NonRetryableError, match="pick one of the mocks"):
+        worker._h_series_thumbnail(con, job, io.StringIO())
+    _claim_on_disk(tmp_path, picks={"mock": "nametag"})    # not one of the mocks
+    with pytest.raises(worker.NonRetryableError, match="pick one of the mocks"):
+        worker._h_series_thumbnail(con, job, io.StringIO())
+    assert calls == []
+
+
+def test_a_failed_paint_is_not_retried_and_leaves_no_old_image(tmp_path,
+                                                               monkeypatch):
+    import io
+    import pytest
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    _claim_on_disk(tmp_path)
+    old = tmp_path / "dist" / "series_1" / "options" / "hero"
+    old.mkdir(parents=True)
+    (old / "thumbnail_yt.jpg").write_bytes(b"old")
+    monkeypatch.setattr(worker, "_stream", _thumb_stream([], fail_style="hero"))
+    with pytest.raises(worker.NonRetryableError, match="hero"):
+        worker._h_series_thumbnail(con, {"series_id": 1, "payload": {"owner": True}},
+                                   io.StringIO())
+    assert not (old / "thumbnail_yt.jpg").exists()
+
+
+def test_new_reference_picks_keep_the_reviewed_text(tmp_path, monkeypatch):
+    import io
+    import json as _j
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    claim = _claim_on_disk(tmp_path)
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    worker._h_series_thumbnail(
+        con, {"series_id": 1, "payload": {"owner": True, "refs": ["/new/p22.jpg"]}},
+        io.StringIO())
+    assert not [c for c in calls if "--write-claim" in c]
+    got = _j.loads(claim.read_text())
+    assert got["scene"] == "REVIEWED SCENE" and got["refs"] == ["/new/p22.jpg"]
+    assert got["picks"]["mock"] == "hero"
+
+
+def test_the_claim_never_reads_the_old_teaser(tmp_path, monkeypatch):
+    """2026-09-29: the hook is written FIRST and the teaser follows it. A
+    teaser in any state never drives the claim (ORV's approved teaser builds to
+    the wrong hook), so the window is always the computed montage."""
+    import io
+    for state in ("approved", "planned", "declined", "none"):
+        root = tmp_path / state
+        root.mkdir()
+        con = _con(root)
+        _series_with_prepared(con, root, 2)
+        monkeypatch.setattr(worker, "REPO", root)
+        con.execute("UPDATE series SET teaser_state=? WHERE id=1", (state,))
+        con.commit()
+        man = root / "dist" / "series_1" / "teaser" / "manifest.teaser.json"
+        man.parent.mkdir(parents=True)
+        man.write_text("{}")
+        calls = []
+        monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+        worker._h_series_claim(con, {"series_id": 1, "payload": {}}, io.StringIO())
+        claim_cmd = [c for c in calls if "--write-claim" in c]
+        assert len(claim_cmd) == 1 and "--teaser-manifest" not in claim_cmd[0]
+
+
+def test_the_first_video_carries_the_title_the_owner_picked(tmp_path, monkeypatch):
+    import io
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 1)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    for bid in (7, 8):
+        con.execute("INSERT INTO bundle (id, series_id, title, kind) "
+                    "VALUES (?, 1, 'b', 'season')", (bid,))
+    con.commit()
+    monkeypatch.setattr(worker.bundles, "bundle_chapters", lambda c, b: [1])
+    monkeypatch.setattr(worker, "_chapter",
+                        lambda c, cid: {"ep_dir": str(tmp_path / "ch1")})
+    _claim_on_disk(tmp_path, picks={"title": "Picked - Manhwa Recap"})
+    calls = []
+    monkeypatch.setattr(worker, "_stream",
+                        lambda cmd, log, **kw: calls.append([str(x) for x in cmd]) or 0)
+    worker._h_publish_meta(con, {"bundle_id": 7}, io.StringIO())
+    c = calls[-1]
+    assert c[c.index("--fixed-title") + 1] == "Picked - Manhwa Recap"
+    worker._h_publish_meta(con, {"bundle_id": 8}, io.StringIO())
+    assert "--fixed-title" not in calls[-1]               # later videos write their own

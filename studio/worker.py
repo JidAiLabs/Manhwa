@@ -2031,10 +2031,23 @@ def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
     was_picked = con.execute(
         "SELECT 1 FROM approval WHERE gate='thumbnail' AND series_id=? "
         "AND note LIKE 'picked option:%'", (sid,)).fetchone()
+    # the series' FIRST video carries the title the owner picked on the
+    # Series page's review sheet (claim.picks.title), next to its thumbnail
+    fixed = ""
+    first = con.execute("SELECT MIN(id) FROM bundle WHERE series_id=?",
+                        (sid,)).fetchone()
+    if first and first[0] == bid:
+        try:
+            fixed = str((json.loads((REPO / "dist" / f"series_{sid}" /
+                                     "claim.json").read_text()).get("picks")
+                         or {}).get("title") or "")
+        except (OSError, ValueError, AttributeError):
+            fixed = ""
     rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                   "--episode-dirs", ",".join(eps), "--series-title", title,
                   *(["--thumbnail-concept", str(picked)]
                     if was_picked and picked.exists() else []),
+                  *(["--fixed-title", fixed] if fixed else []),
                   "--out", str(out_dir / "publish_meta.json")],
                  log, env=_series_env(con, sid))
     if rc != 0:
@@ -2127,21 +2140,15 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
                         log: TextIO) -> None:
     """ONE thumbnail per manhwa (series), reused across every video.
 
-    Builds the TWO hook designs the series' TEASER ranks first, side by side
-    under dist/series_<id>/options/<design>/, and makes NONE of them live. The
-    owner picks one on the Series page (POST /thumbnail/pick copies it live and
-    approves it). The thumbnail sells what the teaser sells: claim, climax and
-    refs come from the teaser's window; a planned/approved teaser's own
-    manifest is used, otherwise its montage is computed on the fly (free).
-    Owner, 2026-09-21: the ranking is code, never the model's layout choice;
-    before/after is a variant only (payload style).
-    Owner, 2026-09-17: "i should see both options created and i can select 1
-    of them." The job used to let the model pick the layout (it picked a
-    3-panel triptych nobody wanted) and wrote straight over the live image.
-
-    Each option: a $0 local-Gemma concept (style + hook + refs) -> a text-free
-    Nano-Banana background (~0.13 USD) -> branded overlay. One failed option
-    never blocks the other; the job still fails loud, naming it."""
+    Paints ONE image: the mock the owner picked on the Series page's review
+    sheet (claim.picks.mock), into dist/series_<id>/options/<mock>/, and makes
+    nothing live. The owner then picks it (POST /thumbnail/pick copies it live
+    and approves it). The concept is built from the claim with no model call
+    (publish_concept --claim --mock): the art direction, the premise, the hook,
+    the mock's layout and label, the picked title. A text-free Nano-Banana
+    background (~0.13 USD) -> branded overlay. Owner, 2026-09-29: "we keep
+    spending money and tokens but we are cycling" -- every step before this
+    one is free and reviewed. payload style = a manual style variant."""
     sid = job["series_id"]
     if not sid:
         raise RuntimeError("series_thumbnail needs series_id")
@@ -2166,7 +2173,7 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
 
     claim_path = REPO / "dist" / f"series_{sid}" / "claim.json"
 
-    def build(out_dir: Path, style: str = "", design: str = "") -> None:
+    def build(out_dir: Path, style: str = "", mock: str = "") -> None:
         # The paid image step needs GEMINI_API_KEY from the login keychain,
         # which only this launchd-run worker can reach.
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -2179,8 +2186,8 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
                       # so two cards cannot disagree on labels, scene or refs
                       # (the owner's picks are already in the claim). A VARIANT
                       # still reads the story itself.
-                      *(["--claim", str(claim_path), "--design", design]
-                        if design else
+                      *(["--claim", str(claim_path), "--mock", mock]
+                        if mock else
                         [*(["--style", style] if style else []), *picked_args]),
                       "--out", str(concept_path)], log, env=env)
         if rc != 0:
@@ -2206,44 +2213,34 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
             except (RuntimeError, ValueError, OSError) as e:
                 raise NonRetryableError(f"variant {style} failed: {e}") from e
             return
-        opts = REPO / "dist" / f"series_{sid}" / "options"
-        # a failed rebuild must not leave an OLD image pickable -- and an option
-        # from before the designs (scene / before_after) is dead weight
-        shutil.rmtree(opts, ignore_errors=True)
-        opts.mkdir(parents=True, exist_ok=True)
-        # PAINT WHAT THE OWNER READ. A claim previewed on the Series page is
-        # reused as it stands: rewriting it here (temperature 0.8) would paint a
-        # scene nobody reviewed. Different reference ticks change WHO is drawn,
-        # not the text, so only `refs` is updated. No claim yet = write one.
-        if claim_path.exists():
-            if picked:
-                reviewed = json.loads(claim_path.read_text())
-                reviewed["refs"] = picked
-                claim_path.write_text(json.dumps(reviewed, ensure_ascii=False,
-                                                 indent=2))
-            log.write("[thumbnail] painting the claim already on disk "
-                      "(preview it again for a new one)\n")
-        else:
-            _write_series_claim(con, sid, eps, picked_args, log)
-        designs = [d for d in json.loads(claim_path.read_text()).get("designs") or []
-                   if d in gates.THUMBNAIL_OPTIONS]
-        if not designs:
-            raise NonRetryableError("the claim named no known hook design")
-        failed: List[str] = []
-        for name in designs:
-            opt_dir = opts / name
-            try:
-                build(opt_dir, design=name)
-            except (RuntimeError, ValueError, OSError) as e:  # ValueError: bad json
-                log.write(f"[thumbnail] option {name} failed: {e}\n")
-                failed.append(name)
-        if failed:
-            # NON-retryable: an auto-retry would delete the options that DID
-            # build and pay for every image again. Regenerating is the owner's
-            # call, from the Series page.
+        # PAINT WHAT THE OWNER READ AND PICKED (2026-09-30): the Series page's
+        # review sheet shows the title, the description, the labels, the
+        # art direction and two free mocks; the owner picks a mock and pays
+        # for ONE image of it. No claim or no pick = nothing to paint: writing
+        # a claim here would paint text nobody read.
+        if not claim_path.exists():
             raise NonRetryableError(
-                "thumbnail option(s) failed: %s — the rest are on the Series "
-                "page to pick" % ", ".join(failed))
+                "no claim yet — preview it on the Series page (free), read "
+                "it, pick a title and a mock, then paint")
+        claim = json.loads(claim_path.read_text())
+        if picked:
+            # different reference ticks change WHO is drawn, not the text
+            claim["refs"] = picked
+            claim_path.write_text(json.dumps(claim, ensure_ascii=False, indent=2))
+        mock = str((claim.get("picks") or {}).get("mock") or "")
+        if mock not in [m.get("name") for m in claim.get("mocks") or []] \
+                or mock not in gates.THUMBNAIL_OPTIONS:
+            raise NonRetryableError("pick one of the mocks on the Series page "
+                                    "first — painting paints the picked one")
+        opt_dir = REPO / "dist" / f"series_{sid}" / "options" / mock
+        # a failed paint must not leave an OLD image of this option pickable;
+        # the other options were paid for and stay
+        shutil.rmtree(opt_dir, ignore_errors=True)
+        try:
+            build(opt_dir, mock=mock)
+        except (RuntimeError, ValueError, OSError) as e:  # ValueError: bad json
+            # NON-retryable: a retry pays again. Repainting is the owner's call.
+            raise NonRetryableError(f"painting {mock} failed: {e}") from e
 
 
 def _h_disk_scan(con: sqlite3.Connection, job: Dict[str, Any],

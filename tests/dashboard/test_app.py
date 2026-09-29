@@ -1371,13 +1371,17 @@ def test_suggested_refs_are_one_set_and_a_pick_queues_generation(client, tmp_pat
     from studio.dashboard import app as _app
     monkeypatch.setattr(_app, "REPO", tmp_path)
     base, refs = _refs_json(tmp_path)
-    page = c.get("/series/1").text
-    assert page.count("/thumb/series/1/ref/") == 3 and "before" not in \
-        page[page.index("Reference panels"):page.index("generate options with these")].lower()
+    page = c.get("/series/1/package").text             # off the crowded Series page
+    assert page.count("/thumb/series/1/ref/") == 3
+    assert "/thumb/series/1/ref/" not in c.get("/series/1").text
     assert c.get("/thumb/series/1/ref/1").content == b"R1"
     assert c.get("/thumb/series/1/ref/9").status_code == 404
     assert c.post("/thumbnail/candidates", data={"series_id": 1},
                   follow_redirects=False).status_code == 303
+    # painting paints the picked mock: nothing is queued before the picks
+    assert c.post("/thumbnail/generate", data={"series_id": 1, "ref": ["0", "2"]},
+                  follow_redirects=False).status_code == 400
+    _claim_file(tmp_path, picks={"title": "T - Manhwa Recap", "mock": "hero"})
     r = c.post("/thumbnail/generate", data={"series_id": 1, "ref": ["0", "2"]},
                follow_redirects=False)
     assert r.status_code == 303
@@ -1400,7 +1404,8 @@ def test_reference_tile_urls_change_when_the_suggestions_change(client, tmp_path
     from studio.dashboard import app as _app
     monkeypatch.setattr(_app, "REPO", tmp_path)
     _refs_json(tmp_path)
-    stamp = lambda: re.findall(r"/thumb/series/1/ref/0\?v=(\d+)", c.get("/series/1").text)
+    stamp = lambda: re.findall(r"/thumb/series/1/ref/0\?v=(\d+)",
+                               c.get("/series/1/package").text)
     first = stamp()
     assert first, "tile URLs carry no version stamp"
     f = tmp_path / "dist" / "series_1" / "ref_candidates.json"
@@ -1409,12 +1414,12 @@ def test_reference_tile_urls_change_when_the_suggestions_change(client, tmp_path
     assert stamp() and stamp() != first
 
 
-def test_the_series_claim_is_readable_on_the_page_and_previewed_for_free(
+def test_the_review_sheet_reads_top_to_bottom_before_any_paint(
         client, tmp_path, monkeypatch):
-    """Owner, 2026-09-22: "where do i see all these new things you mentioned?"
-    The scene the painter gets, the summary and the system line lived only in a
-    chat message. They belong on the Series page, with a FREE button that writes
-    them without buying an image; generate then paints that file."""
+    """Owner, 2026-09-30: "together with the thumbnail brief (story / character
+    arc), i should read: Video Title, Video Description (what is this manhwa
+    about), what labels you plan to use". One sheet, in that order, all free;
+    the paint button waits for a picked title and mock."""
     import json as _j
     c, con = client
     from studio.dashboard import app as _app
@@ -1422,28 +1427,89 @@ def test_the_series_claim_is_readable_on_the_page_and_previewed_for_free(
     page = c.get("/series/1").text
     assert "preview claim" in page and "No claim yet" in page
     base = tmp_path / "dist" / "series_1"
-    base.mkdir(parents=True, exist_ok=True)
+    (base / "mocks").mkdir(parents=True)
+    (base / "mocks" / "hero.jpg").write_bytes(b"M")
     (base / "claim.json").write_text(_j.dumps({
-        "scene": "Inside a crowded subway car, a man reads his <blank> phone.",
-        "brief": {"premise": "His finished web novel becomes reality."},
-        "labels": ["THE ONLY READER", "SCENARIO SURVIVOR"],
-        "headlines": ["READER -> PLAYER"],
-        "card": ["THE MAIN SCENARIO HAS ARRIVED.", "SECOND LINE"],
-        "designs": ["system_window", "nametag_headline"],
-        "claim_source": "teaser:manifest"}))
+        "brief": {"premise": "His finished web novel becomes reality.",
+                  "protagonist": "A lonely office worker who read it all.",
+                  "arc": "from the loneliest reader to the one who knows"},
+        "hook": {"sentence": "Only he read how the world ends."},
+        "titles": [{"text": "He Read How The World Ends And Became Its KING - Manhwa Recap"},
+                   {"text": "The Only NOBODY Who Knew The Ending - Manhwa Recap"}],
+        "synopsis": "A commuter's favourite web novel comes true on his train.",
+        "hashtags": ["#manhwa", "#apocalypse"],
+        "ladder": {"level": ["LEVEL 1", "LEVEL 7"]},
+        "mocks": [{"name": "hero", "layout": "hero", "labels": ["KING"],
+                   "reason": "a ladder word names what he is: KING"}],
+        "art": {"twist": "his phone shows this <same> train as a chapter",
+                "question": "Why is he the only calm one?", "mc": "black hair",
+                "others": "passengers recoil", "setting": "a subway car",
+                "light": "blue and gold", "genre": "a blank blue window",
+                "word": "KING", "fails": ["7: say who reacts to the main character and how"]}}))
     page = c.get("/series/1").text
-    assert "Inside a crowded subway car" in page
-    assert "&lt;blank&gt;" in page and "<blank>" not in page     # model text is escaped
-    assert "His finished web novel becomes reality." in page
-    assert "SCENARIO SURVIVOR" in page and "THE MAIN SCENARIO HAS ARRIVED." in page
-    assert "SECOND LINE" not in page                # the card prints ONE line
-    assert "teaser:manifest" in page
+    order = ["1 · Intro teaser", "Only he read how the world ends.",
+             "2 · Video title", "He Read How The World Ends And Became Its KING",
+             "3 · Video description", "comes true on his train",
+             "4 · Words on the thumbnail", "KING</b> — a ladder word",
+             "5 · Thumbnail brief", "His finished web novel becomes reality.",
+             "from the loneliest reader", "The twist it shows",
+             "6 · Mocks", "/thumb/series/1/mock/hero?v=", "7 · Paint"]
+    at = [page.find(x) for x in order]
+    assert -1 not in at, [x for x, i in zip(order, at) if i < 0]
+    assert at == sorted(at), order
+    assert "this &lt;same&gt; train" in page                  # model text is escaped
+    assert "LEVEL 1, LEVEL 7" in page                        # what the story prints
+    assert "★" in page                                        # the title that shares KING
+    assert "✗ 7." in page and "✓ 1." in page                 # the 8 checks, shown
+    assert 'disabled title="pick a title and a mock first"' in page
     r = c.post("/thumbnail/claim", data={"series_id": 1}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/series/1"
     rows = con.execute("SELECT type, series_id, priority FROM job "
                        "WHERE type='series_claim'").fetchall()
     # owner-triggered, free and tiny: it must not wait behind a day of prepares
     assert [tuple(x) for x in rows] == [("series_claim", 1, 30)]
+
+
+def test_title_and_mock_picks_are_saved_and_unlock_the_paint(client, tmp_path,
+                                                             monkeypatch):
+    import json as _j
+    c, con = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    p = _claim_file(tmp_path, titles=[{"text": "First - Manhwa Recap"},
+                                      {"text": "Second - Manhwa Recap"}],
+                    mocks=[{"name": "hero", "layout": "hero", "labels": ["KING"]}])
+    post = lambda url, **d: c.post(url, data=dict(series_id=1, **d),
+                                   follow_redirects=False).status_code
+    assert post("/title/pick", title="1") == 303
+    assert _j.loads(p.read_text())["picks"]["title"] == "Second - Manhwa Recap"
+    assert post("/title/pick", text="  My Own Words ") == 303
+    assert _j.loads(p.read_text())["picks"]["title"] == "My Own Words - Manhwa Recap"
+    assert post("/title/pick", text="x" * 101) == 400
+    assert post("/title/pick", title="9") == 404
+    assert post("/mock/pick", name="split") == 404           # not one of the claim's
+    assert post("/mock/pick", name="../x") == 404
+    assert post("/mock/pick", name="hero") == 303
+    assert _j.loads(p.read_text())["picks"] == {"title": "My Own Words - Manhwa Recap",
+                                                "mock": "hero"}
+    assert "paint the picked mock" in c.get("/series/1").text
+    assert 'disabled title="pick a title and a mock first"' not in c.get("/series/1").text
+    assert post("/thumbnail/generate") == 303
+    rows = con.execute("SELECT payload_json FROM job WHERE type='series_thumbnail'"
+                       ).fetchall()
+    assert [_j.loads(x[0]) for x in rows] == [{"owner": True}]   # ONE paint, the claim's refs
+
+
+def test_a_mock_image_is_served_only_by_its_closed_name(client, tmp_path, monkeypatch):
+    c, _ = client
+    from studio.dashboard import app as _app
+    monkeypatch.setattr(_app, "REPO", tmp_path)
+    d = tmp_path / "dist" / "series_1" / "mocks"
+    d.mkdir(parents=True)
+    (d / "hero.jpg").write_bytes(b"M")
+    assert c.get("/thumb/series/1/mock/hero").content == b"M"
+    assert c.get("/thumb/series/1/mock/split").status_code == 404
+    assert c.get("/thumb/series/1/mock/..%2Fclaim").status_code == 404
 
 
 def _claim_file(tmp_path, **extra):
@@ -1473,10 +1539,6 @@ def test_claim_preview_takes_a_tone_and_the_page_preselects_the_last_one(
     assert [_j.loads(x[0]) for x in rows] == [{"tone": "erotic"}]
     assert c.post("/thumbnail/claim", data={"series_id": 1, "tone": "gritty"},
                   follow_redirects=False).status_code == 400
-    _claim_file(tmp_path, tone="erotic")
-    page = c.get("/series/1").text
-    assert '<option value="erotic" selected' in page
-    assert '<option value="absurd" selected' not in page
 
 
 def test_owner_picks_the_window_line_from_the_claims_options(client, tmp_path,
@@ -1486,8 +1548,6 @@ def test_owner_picks_the_window_line_from_the_claims_options(client, tmp_path,
     from studio.dashboard import app as _app
     monkeypatch.setattr(_app, "REPO", tmp_path)
     p = _claim_file(tmp_path)
-    page = c.get("/series/1").text
-    assert "100 COINS HAVE BEEN DEDUCTED." in page          # offered on the page
     r = c.post("/thumbnail/card", data={"series_id": 1, "line": "1"},
                follow_redirects=False)
     assert r.status_code == 303
@@ -1542,19 +1602,6 @@ def _painted_option(tmp_path, name, **concept):
     (d / "thumbnail_yt.jpg").write_bytes(b"old")
     (d / "concept.json").write_text(_j.dumps(concept))
     return d
-
-
-def test_the_page_shows_a_window_as_header_and_line_and_lists_the_options(
-        client, tmp_path, monkeypatch):
-    c, _ = client
-    from studio.dashboard import app as _app
-    monkeypatch.setattr(_app, "REPO", tmp_path)
-    _claim_file(tmp_path, card=[_PLAIN], card_options=[_WINDOW, _PLAIN])
-    page = c.get("/series/1").text
-    assert "THE MAIN SCENARIO HAS ARRIVED." in page
-    assert "KILL ONE OR MORE LIVING ORGANISMS." in page      # offered
-    assert "MAIN SCENARIO #1" in page                        # with its header
-    assert "{&#39;header&#39;" not in page and "{'header'" not in page   # never a dict repr
 
 
 def test_picking_a_window_redraws_the_painted_card_for_free(client, tmp_path,
@@ -1647,18 +1694,6 @@ def test_the_package_page_shows_everything_in_one_place(client, tmp_path, monkey
     assert "/series/1/package" in c.get("/series/1").text         # linked from the Series page
 
 
-def test_the_tone_select_says_none_yet_for_a_claim_written_before_tones(
-        client, tmp_path, monkeypatch):
-    c, _ = client
-    from studio.dashboard import app as _app
-    monkeypatch.setattr(_app, "REPO", tmp_path)
-    _claim_file(tmp_path, tone=None)
-    page = c.get("/series/1").text
-    assert "none yet" in page
-    assert page.count('<option value="absurd" selected') == 1      # only the placeholder
-    assert '<option value="absurd" selected>absurd' not in page
-
-
 def test_owner_types_the_badge(client, tmp_path, monkeypatch):
     """The badge is a fact about the UPLOAD. It was always "<n> CHAPTERS"; the
     owner wants "SEASON 1 FINALE" once the season's last chapters are in."""
@@ -1708,8 +1743,6 @@ def test_label_candidates_switch_for_free_and_only_from_the_list(client, tmp_pat
         "style": "power_reveal", "hook": "A",
         "hooks": ["F-RANK -> KING", "SECRET RANK"],
         "style_overlay": {"label_pos": "upper_right", "arrow": "none", "marks": []}}))
-    page = c.get("/series/1").text
-    assert "F-RANK -&gt; KING" in page or "F-RANK -> KING" in page
     r = c.post("/thumbnail/label", data={"series_id": 1, "option": "nametag", "hook": "1"},
                follow_redirects=False)
     assert r.status_code == 303

@@ -132,15 +132,13 @@ def ensure_approval(con: sqlite3.Connection, gate: str, *,
            bundle_id=bundle_id, note=note, content_sha=current_sha)
 
 
-# The CLOSED set of series thumbnail options: the hook designs
-# (tools/thumbnail_styles.HOOK_DESIGNS) the worker may build under
-# dist/series_<id>/options/<name>/. Each run builds the TWO the series' teaser
-# ranks first (code ranks, never the model); the owner picks one and nothing
-# goes live without that pick. Owner, 2026-09-21: before/after left the options
-# (1 of 46 unique example thumbnails is a split) and is a manual variant only; never 3
-# panels (owner, 2026-09-17). Routes check membership here, so an option name
-# from a URL can never become a path.
-THUMBNAIL_OPTIONS = ("nametag", "nametag_headline", "system_window")
+# The CLOSED set of series thumbnail options the worker may paint under dist/series_<id>/options/<name>/: the claim's
+# mock names (publish_concept.choose_layout; one paid image per owner pick,
+# 2026-09-30), then the older hook designs, still pickable where painted.
+# Nothing goes live without the owner's pick. Routes check membership here, so
+# an option name from a URL can never become a path.
+THUMBNAIL_OPTIONS = ("hero", "hero_2", "split", "clean",
+                     "nametag", "nametag_headline", "system_window")
 
 
 def thumbnail_approved(con: sqlite3.Connection, series_id: int) -> bool:
