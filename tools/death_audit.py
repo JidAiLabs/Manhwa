@@ -65,6 +65,8 @@ def audit_chapter(ep_dir: str, *, contradictions: bool = False) -> Dict[str, Any
     profiles = entity_profiles(led.get("entities") or [])
     deaths = {str(e.get("subject")): e for e in (led.get("events") or [])
               if e.get("type") == "death"}
+    skipped = {str(d.get("subject")): d
+               for d in (led.get("deaths_not_recorded") or [])}
     rows: List[Dict[str, Any]] = []
     for c in (story.get("cast") or []):
         if not isinstance(c, dict):
@@ -80,6 +82,9 @@ def audit_chapter(ep_dir: str, *, contradictions: bool = False) -> Dict[str, Any
             "anchored_at": str(ev.get("scene_file")) if ev else "",
             "anchor_source": (str(ev.get("anchor_source") or "event")
                               if ev else ""),
+            "not_recorded": (f"{skipped[who]['reason']} at "
+                             f"{skipped[who].get('scene_file')}"
+                             if who in skipped else ""),
         })
     out = {
         "ep_dir": ep_dir,
@@ -115,6 +120,7 @@ def _fmt(rec: Dict[str, Any]) -> str:
         if r["anchor_source"] == "last_act":
             continue
         why = ("matches no entity" if r["resolved"] == "unknown"
+               else f"not recorded: {r['not_recorded']}" if r.get("not_recorded")
                else "NOT anchored — the story never places them on a panel"
                if not r["anchored_at"]
                else f"anchored at {r['anchored_at']} by mention only")
@@ -129,8 +135,9 @@ def main() -> int:
     ap.add_argument("--chapters", default="",
                     help="number filter: N or N-M (by chapter number)")
     ap.add_argument("--contradictions", action="store_true",
-                    help="also run prep_qa's dead_actor/role_stale gate over "
-                         "each chapter's CURRENT narration (no model call)")
+                    help="also run prep_qa's dead_actor/role_stale checks "
+                         "(report-only) over each chapter's CURRENT narration "
+                         "(no model call)")
     ap.add_argument("--verbose", action="store_true",
                     help="list every unanchored death, not just the counts")
     args = ap.parse_args()

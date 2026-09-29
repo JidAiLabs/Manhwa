@@ -639,7 +639,8 @@ def beat_lines_usable(beat: Mapping[str, Any], *,
     chapter record: a line whose subject is a character the ledger says is
     already dead is not shippable, however well written. Without that, every
     revert guard happily restored the exact line the heal was fired to remove
-    (dead_actor then blocks, the corrections repeat, the chapter parks).
+    (the corrections repeated and, while dead_actor blocked, the chapter
+    parked; it reports since 2026-09-29).
     The predicate is prep_qa's own, so this floor and that gate agree."""
     segs = (beat or {}).get("segments") or []
     lines = [s.get("line") for s in segs if isinstance(s, dict)]

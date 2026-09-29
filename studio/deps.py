@@ -103,8 +103,8 @@ ARTIFACTS: Dict[str, A] = {
     # NO ledger edge, for the reason above: the writer stamps beats with
     # (groups, cast) only, so it was an MTIME edge that a facts refresh trips
     # by construction. The ledger<->narration relation is checked SEMANTICALLY
-    # by prep_qa's dead_actor (and the report-only role_stale), which is the
-    # check that matters.
+    # by prep_qa's dead_actor and role_stale (both report-only since
+    # 2026-09-29).
     "manifest.beats.json":             A(stage="beated", required=True,
                                          inputs=("manifest.groups.json",),
                                          optional=("manifest.cast.json",)),

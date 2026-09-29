@@ -338,14 +338,9 @@ _CRITICAL_QA_CODES = {
     # first (its writer payload now carries the [IMPACT SFX on panel] marker)
     # — blocking survives only when healing can't clear it.
     "impact_mismatch",
-    # a line has a DEAD character acting (contradicts the story ledger's
-    # dialogue-evidenced death record — the nano ch1 'leader finishes the
-    # job' class). Heal-THEN-block like impact_mismatch: the re-roll's
-    # payload carries the FACTS block; blocking survives only when healing
-    # can't clear it. NOT writer-arbitratable — the fact is ledger-evidenced.
-    # (role_stale, its title-inheritance sibling, is report-only since
-    # 2026-09-28 — 34 flags, ~1 real; the actor_mismatch precedent.)
-    "dead_actor",
+    # NOT "dead_actor" (report-only since 2026-09-29): 24 flags ever, none
+    # real, and it parked chapters no rewrite could clear (Tutorial Tower
+    # ch74, a read-aloud item card). role_stale went the same way 09-28.
     # a segment's line is a stringified null ("None.") rather than narration —
     # the writer's "no line here" carried verbatim. Heal-THEN-block: the code is
     # in narration_heal.HEALABLE so the re-roll writes a real line first, and

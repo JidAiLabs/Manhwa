@@ -431,9 +431,9 @@ def cmd_refresh_facts(args: argparse.Namespace) -> int:
     The repair for a chapter the writer narrated from WRONG facts (a death the
     ledger never anchored, or anchored at the caption that only announces it).
     A rewind cannot do this: --to grouped re-rolls the whole chapter, --to
-    scripted keeps the same wrong facts. Afterwards a prepare's prep_qa flags
-    exactly the groups the new facts contradict and the heal re-narrates only
-    those."""
+    scripted keeps the same wrong facts. Afterwards a prepare's prep_qa
+    reports the groups the new facts contradict (dead_actor and role_stale
+    are review codes since 2026-09-28/29)."""
     from studio import pipeline
 
     cfg = studio_config.load()

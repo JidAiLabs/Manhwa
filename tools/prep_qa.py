@@ -2010,10 +2010,12 @@ def ledger_contradiction_flags(beats_obj: Any, ledger_obj: Any,
                                cast_obj: Any) -> List[Dict[str, Any]]:
     """STORY-STATE gate (2026-07-20 wave) — narration vs the chapter's fact
     record (manifest.ledger.json, dialogue-arbitrated):
-      dead_actor (ERROR, heal-THEN-block in the worker): a line's SUBJECT-
+      dead_actor (WARN, report-only since 2026-09-29): a line's SUBJECT-
         position actor-noun maps ONLY to entities the ledger says are dead
-        by this beat — a dead character cannot act (the nano ch1 'leader
-        finishes the job' class);
+        by this beat (the nano ch1 'leader finishes the job' class). All 24
+        flags ever logged were false — a threat read as a death, a defeated
+        demon who flies away, a monster type — and it blocked, so Tutorial
+        Tower ch74 could never pass (a read-aloud item card);
       role_stale (WARN, report-only since 2026-09-28): a line uses a banned
         title handle ('the leader' after the leader died — a surviving
         underling never inherits the title). 34 flags ever, ~1 real, below
@@ -2074,12 +2076,11 @@ def ledger_contradiction_flags(beats_obj: Any, ledger_obj: Any,
                 if members and members <= dead:
                     fired_nouns.add(noun)
                     flags.append(_flag(
-                        "dead_actor", ERROR,
+                        "dead_actor", WARN,
                         f"line has '{noun}' acting but "
                         f"{sorted(members)} are dead by this beat"
-                        f"{_quote(members)}: {line[:80]!r} — a dead "
-                        "character cannot act; re-narrate from the living "
-                        "actors the chapter record names",
+                        f"{_quote(members)}: {line[:80]!r} — review: a dead "
+                        "character cannot act, unless the record is wrong",
                         scene=str((s["span"] or [""])[0]), segment_id=gid))
             for h in banned:
                 if h.rsplit(" ", 1)[-1].lower() in fired_nouns:

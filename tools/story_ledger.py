@@ -27,8 +27,8 @@ This tool builds manifest.ledger.json ONCE per chapter at the beated stage
            handle downstream), write the manifest atomically with input shas.
 
 Consumers: gemini_narrative_pass (FACTS block per beat + ledger-aware
-identity gate), narration_punchup's backstop, prep_qa (dead_actor blocks,
-role_stale reports), narration_heal (fact-carrying correction notes).
+identity gate), narration_punchup's backstop, prep_qa (dead_actor and
+role_stale both report since 2026-09-29), narration_heal (correction notes).
 
 Fail-soft: an unparseable arbitration yields a purely-visual ledger
 (events=[], overrides=[]) with a loud log — never a crashed beated stage.
@@ -40,7 +40,7 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
@@ -443,53 +443,53 @@ def _unique_role_handles(dead: str, entities: List[Dict[str, Any]],
     return sorted(f"the {t}" for t in mine)
 
 
-# The game-system's kill notification: it names what was killed, and in a
-# hunting story that is a monster TYPE ("the Bloodthirsty Forest Wolf") as
-# often as a character.
-_KILL_NOTICE_RE = re.compile(r"\b(?:YOU HAVE )?SUCCESSFULLY (?:KILLED|SLAIN|DEFEATED)\b",
-                             re.IGNORECASE)
+# A GAME-SYSTEM NOTICE is never a death (owner, 2026-09-29: "ok go"). It names
+# what was taken down, and in these stories that is a monster TYPE killed one at
+# a time ("SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF"), a DEFEAT the loser
+# walks away from ("YOU HAVE DEFEATED THE DEMON MARQUIS REINHEIT", "YOU HAVE
+# SUCCEEDED IN TAKING DOWN ... 'SUN WUKONG'"), or the player's own scenario
+# death ("[YOU HAVE DIED.]", ORV Ep52/164/193/220). All 24 dead_actor flags ever
+# logged were false, and the later-presence retraction that preceded this only
+# traded one look-alike error for another (3 of 4 retracted bosses were the
+# white-haired protagonist or the boss's remains). Recognised on the panels of
+# the event that anchors the death: by their printed text, or by panel_kind
+# "system" plus a kill/defeat verb (a notice card whose OCR is noise).
+_NOTICE_RE = re.compile(
+    r"\b(?:SUCCESSFULLY\s+(?:KILLED|SLAIN|SLEW|DEFEATED)"
+    r"|YOU\s+HAVE\s+(?:DIED|BEEN\s+KILLED|DEFEATED|SLAIN|KILLED)"
+    r"|SUCCEEDED\s+IN\s+(?:TAKING\s+DOWN|KILLING|DEFEATING|SLAYING)"
+    r"|HA(?:S|VE)\s+BEEN\s+(?:KILLED|SLAIN|DEFEATED))\b", re.IGNORECASE)
+_KILL_VERB_RE = re.compile(
+    r"\b(?:KILL(?:ED|S)?|SLAIN|SLEW|SLAY|DEFEAT(?:ED)?|DIED|DEATH|DEAD"
+    r"|TAKING\s+DOWN|TAKEN\s+DOWN)\b", re.IGNORECASE)
 
 
-def retract_kill_notices(events: List[Dict[str, Any]],
-                         groups: List[Dict[str, Any]],
-                         understood: Any,
-                         profiles: List[Dict[str, Any]],
-                         log=None) -> List[Dict[str, Any]]:
-    """Drop a death announced by a game-system KILL NOTICE that the LATER
-    non-flashback panels contradict: Full-Time Awakening ch8 (2026-09-28)
-    printed "SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF" at p000014 and
-    the panels then showed that wolf present and fighting at p000028-31 and
-    p000047 -- a monster TYPE, killed one at a time, not a character. Only
-    kill notices qualify: a death read from dialogue or the story pass stands
-    even when a look-alike (the leader's surviving members) is on screen
-    afterwards. Presence in a flashback (the dead alive on purpose) does not
-    count. Applied where the ledger is WRITTEN so `events` on disk agrees
-    with `beat_facts`: at first only beat_facts retracted, and prep_qa's dead
-    sets and death quotes (both read `events`) still called the notice a
-    death, so role_stale kept quoting it."""
-    order = {str(p["scene_file"]): i for i, p in enumerate(_panels(understood))}
-    u_by_file = {str(p["scene_file"]): p for p in _panels(understood)}
-    later_alive: Dict[str, int] = {}          # name -> last present index
-    for g in groups:
-        if str(g.get("segment") or "present") != "present":
-            continue
-        for f in [str(f) for f in (g.get("scene_files") or [])]:
-            if f not in order:
-                continue
-            for fig in resolve_figures(u_by_file.get(f), profiles):
-                if fig.get("name") and fig["name"] != "unknown":
-                    later_alive[fig["name"]] = max(
-                        later_alive.get(fig["name"], -1), order[f])
-    retracted = {ev["subject"] for ev in events
-                 if ev["type"] == "death" and not ev.get("before_chapter")
-                 and _KILL_NOTICE_RE.search(str(ev.get("evidence_quote") or ""))
-                 and later_alive.get(ev["subject"], -1)
-                 > order.get(str(ev.get("scene_file")), -1)}
-    if retracted and log:
-        log(f"[ledger] retracted {len(retracted)} kill-notice death(s) the "
-            f"later panels contradict: {sorted(retracted)}")
-    return [ev for ev in events
-            if not (ev["type"] == "death" and ev["subject"] in retracted)]
+def printed_by_panel(understood: Any, vision: Any = None
+                     ) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """({scene_file: dialogue + OCR}, {scene_file: panel_kind}). A notice is
+    PRINTED text, so the vision OCR is read on every panel, not only where the
+    understanding heard nothing."""
+    text = {str(p["scene_file"]): str(p.get("dialogue") or "")
+            for p in _panels(understood)}
+    kinds = {str(p["scene_file"]): str(p.get("panel_kind") or "")
+             for p in _panels(understood)}
+    for it in ((vision or {}).get("items") or []):
+        fn = str(it.get("scene_file") or "").split("/")[-1]
+        ocr = str(it.get("ocr_clean") or "")
+        if ocr:
+            text[fn] = (text.get(fn, "") + " " + ocr).strip()
+    return text, kinds
+
+
+def notice_panel(files: List[str], text: Dict[str, str],
+                 kinds: Dict[str, str]) -> str:
+    """The first of *files* that is a game-system notice, else ""."""
+    for f in files:
+        t = str(text.get(f) or "")
+        if _NOTICE_RE.search(t) or (kinds.get(f) == "system"
+                                    and _KILL_VERB_RE.search(t)):
+            return f
+    return ""
 
 
 def build_beat_facts(groups: List[Dict[str, Any]],
@@ -512,10 +512,7 @@ def build_beat_facts(groups: List[Dict[str, Any]],
     def _ev_index(ev: Dict[str, Any]) -> int:
         return order.get(ev["scene_file"], -1)
 
-    # WHO is on screen, per group, resolved once. A kill-notice death the
-    # later panels contradict is dropped first (retract_kill_notices; the
-    # ledger writer applies the same call so `events` on disk agrees).
-    events = retract_kill_notices(events, groups, understood, profiles)
+    # WHO is on screen, per group, resolved once.
     seen_in: Dict[int, Set[str]] = {}
     for g in groups:
         gid = int(g.get("shot_id") or 0)
@@ -743,7 +740,9 @@ def _each_named(text: Any, profiles: List[Dict[str, Any]]) -> Set[str]:
 def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                              understood: Any,
                              profiles: List[Dict[str, Any]],
-                             log=print, vision: Any = None) -> tuple:
+                             log=print, vision: Any = None,
+                             not_recorded: Optional[List[Dict[str, Any]]] = None
+                             ) -> tuple:
     """(raw_events, raw_overrides) derived DETERMINISTICALLY from the
     whole-chapter story pass — no model call here.
 
@@ -789,6 +788,7 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
     order = {f: i for i, f in enumerate(ordered)}
     last_act: Dict[str, int] = {}        # entity -> index of its last ACTING panel
     last_seen: Dict[str, int] = {}       # entity -> last panel that names it at all
+    last_span: Dict[str, List[str]] = {}  # entity -> panels of that naming event
     death_quote: Dict[str, str] = {}     # entity -> the line that proves it
     for ev in ((story or {}).get("events") or []):
         if not isinstance(ev, dict):
@@ -820,6 +820,9 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                   | _each_named(ev.get("target"), profiles))
         for who in listed:
             last_seen[who] = max(last_seen.get(who, -1), order[span[-1]])
+        for who in {actor, target} | listed:
+            if who != "unknown" and last_seen.get(who) == order[span[-1]]:
+                last_span[who] = list(span)
         # direction: every panel in the span gets the story's attribution
         if actor != "unknown" or target != "unknown":
             for fn in span:
@@ -873,6 +876,20 @@ def facts_from_chapter_story(story: Any, entities: List[Dict[str, Any]],
                 "story never places them on a panel — that death will NOT "
                 "propagate")
             continue
+        # a death that rests on a GAME-SYSTEM NOTICE is not recorded (see
+        # _NOTICE_RE): check every panel of the event that anchors it, and the
+        # proving line itself
+        text, kinds = printed_by_panel(understood, vision)
+        notice = notice_panel(last_span.get(who, []) + [ordered[i]], text, kinds)
+        if not notice and _NOTICE_RE.search(death_quote.get(who, "")):
+            notice = ordered[i]
+        if notice:
+            log(f"[ledger] {who!r} NOT recorded dead: the death rests on a "
+                f"system notice at {notice} (fate: {fate[:40]!r})")
+            if not_recorded is not None:
+                not_recorded.append({"subject": who, "reason": "system notice",
+                                     "scene_file": notice})
+            continue
         # the label says WHICH signal placed it: acting is the stronger read
         src = "last_act" if last_act.get(who, -1) == i else "named"
         events.append({"type": "death", "subject": who, "anchor_source": src,
@@ -920,6 +937,7 @@ def build_ledger(understood: Any, groups_m: Any, cast: Any,
     12 windowed arbitrations that each saw a slice. arbitrate_fn remains the
     fallback for chapters with no story pass."""
     entities = build_entities(understood, cast)
+    not_recorded: List[Dict[str, Any]] = []
     profiles = entity_profiles(entities)
     panel_actions = build_panel_actions(understood, profiles)
     groups = _read_groups(groups_m or {})
@@ -928,7 +946,7 @@ def build_ledger(understood: Any, groups_m: Any, cast: Any,
     if chapter_story:
         raw_events, raw_overrides = facts_from_chapter_story(
             chapter_story, entities, understood, profiles, log=log,
-            vision=vision)
+            vision=vision, not_recorded=not_recorded)
         events = normalize_events(raw_events, entities, understood,
                                   profiles=profiles, log=log)
         overrides_applied = apply_overrides(panel_actions, raw_overrides,
@@ -962,11 +980,29 @@ def build_ledger(understood: Any, groups_m: Any, cast: Any,
                                             entities, profiles=profiles)
         log(f"[ledger] {len(windows)} window(s), {failed} failed -> "
             f"{len(events)} event(s), {overrides_applied} override(s)")
-    events = retract_kill_notices(events, groups, understood, profiles, log=log)
+    if not chapter_story:
+        # the arbitration fallback names its own panel: same notice rule
+        text, kinds = printed_by_panel(understood, vision)
+        kept: List[Dict[str, Any]] = []
+        for ev in events:
+            f = str(ev.get("scene_file") or "")
+            if ev.get("type") == "death" and (
+                    notice_panel([f], text, kinds)
+                    or _NOTICE_RE.search(str(ev.get("evidence_quote") or ""))):
+                log(f"[ledger] {ev.get('subject')!r} NOT recorded dead: a "
+                    f"system notice at {f}")
+                not_recorded.append({"subject": ev.get("subject"),
+                                     "reason": "system notice", "scene_file": f})
+                continue
+            kept.append(ev)
+        events = kept
     return {
         "entities": entities,
         "panel_actions": panel_actions,
         "events": events,
+        # deaths a cast fate claimed but a game-system notice was the only
+        # proof of (death_audit reports them with this reason)
+        "deaths_not_recorded": not_recorded,
         "flashback_files": sorted(
             {str(f) for g in groups
              if str(g.get("segment") or "present") != "present"

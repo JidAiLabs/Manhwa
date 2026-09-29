@@ -85,12 +85,12 @@ HEALABLE = {
     # validator via its fallback path) — a re-roll with the explicit word
     # cap in the note converges: length is fully in the writer's control.
     "line_overlong",
-    # story-state contradictions (2026-07-20 ledger wave): the re-roll's
-    # writer payload carries the beat's FACTS block (dead_by_now /
-    # banned_handles / arbitrated directions), so re-narration sees the very
-    # record the original roll violated. dead_actor is ALSO heal-THEN-block
-    # in the worker.
-    "dead_actor",
+    # NOT "dead_actor" (removed 2026-09-29): 24 flags ever, none real — a
+    # threat read as a death, a defeated demon who flies away, a monster type,
+    # a read-aloud item card. A re-roll on a false death rewrote correct
+    # lines; the writer still gets the death list as guidance (FACTS block).
+    # Re-enters only when a graded sample clears the bar in
+    # tools/qa_gate_blast_radius.py. _note_for keeps its branch for that.
     # NOT "role_stale" (removed 2026-09-28): 34 flags ever, ~1 real — the
     # bans were every token of a dead name ("the forest", "the kim"), so a
     # re-roll rewrote correct lines. Bans are titles only now; it reports

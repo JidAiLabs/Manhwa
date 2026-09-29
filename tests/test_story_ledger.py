@@ -782,7 +782,7 @@ def test_dead_actor_flag_fires_with_evidence_quote():
     beats = _beats(("The leader lunges again.", ["p2.jpg"], 9))
     flags = pq.ledger_contradiction_flags(beats, led, CAST)
     assert [f["code"] for f in flags] == ["dead_actor"]
-    assert flags[0]["severity"] == pq.ERROR
+    assert flags[0]["severity"] == pq.WARN          # report-only since 09-29
     assert "HOW DID A KID" in flags[0]["detail"]
 
 
@@ -815,9 +815,10 @@ def test_ledger_flags_silent_without_ledger_or_before_death():
 
 # ---- narration_heal + worker posture ----------------------------------------
 
-def test_new_codes_are_healable_with_fact_notes():
-    assert "dead_actor" in nh.HEALABLE
-    assert "role_stale" not in nh.HEALABLE     # report-only (2026-09-28)
+def test_new_codes_keep_their_fact_notes_but_neither_heals():
+    # both report-only: role_stale 2026-09-28, dead_actor 2026-09-29
+    assert "dead_actor" not in nh.HEALABLE
+    assert "role_stale" not in nh.HEALABLE
     note = nh._note_for(
         "dead_actor",
         "line has 'leader' acting but ['the hooded leader'] are dead by this "
@@ -826,11 +827,18 @@ def test_new_codes_are_healable_with_fact_notes():
     assert "title" in nh._note_for("role_stale", "line says 'the leader'")
 
 
-def test_worker_blocks_dead_actor_but_not_role_stale():
+def test_dead_actor_is_report_only():
+    """24 flags ever logged, none real (a threat read as a death, a defeated
+    demon who flies away, a monster type, Tutorial Tower ch74's read-aloud
+    item card). It never blocks, never heals and never parks a chapter."""
     import studio.worker as w
-    assert "dead_actor" in w._CRITICAL_QA_CODES
-    assert "role_stale" not in w._CRITICAL_QA_CODES
+    assert "dead_actor" not in w._CRITICAL_QA_CODES
     assert "dead_actor" not in w._WRITER_ARBITRATED_CODES
+    assert "dead_actor" not in nh.HEALABLE
+    for sev in ("ERROR", "WARN"):
+        assert nh.corrections_from_qa({"flags": [
+            {"code": "dead_actor", "severity": sev, "segment_id": "g0009",
+             "detail": "line has 'leader' acting"}]}) == {}
 
 
 # ---- punchup backstop: gate re-runs after the persona pass ------------------
@@ -1282,18 +1290,17 @@ def _wolf_fixture():
     return u, ents
 
 
-def test_a_death_contradicted_by_later_presence_is_retracted():
+def test_build_beat_facts_is_a_pure_derivation_of_the_events_it_gets():
+    """Whether a death is real is decided where the ledger is WRITTEN (a system
+    notice is never recorded); beat facts only propagate what they are given."""
     u, ents = _wolf_fixture()
     ev = [{"type": "death", "subject": "Bloodthirsty Forest Wolf",
-           "scene_file": "p000038.jpg",
-           "evidence_quote": "SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF."}]
+           "scene_file": "p000038.jpg", "evidence_quote": "q"}]
     groups = [{"shot_id": 1, "scene_files": ["p000036.jpg"]},
               {"shot_id": 2, "scene_files": ["p000038.jpg"]},
               {"shot_id": 3, "scene_files": ["p000040.jpg"]}]      # present again
     facts = sl.build_beat_facts(groups, ev, [], ents, u)
-    assert "Bloodthirsty Forest Wolf" in facts["g0003"]["present"]   # the evidence
-    assert facts["g0003"]["dead_by_now"] == []
-    assert facts["g0003"]["banned_handles"] == []
+    assert facts["g0003"]["dead_by_now"] == ["Bloodthirsty Forest Wolf"]
 
 
 def test_a_death_the_panels_never_contradict_still_propagates():
@@ -1321,11 +1328,10 @@ def test_presence_in_a_flashback_does_not_retract_a_death():
     assert facts["g0004"]["dead_by_now"] == ["Bloodthirsty Forest Wolf"]
 
 
-def test_build_ledger_writes_the_retracted_kill_notice_out_of_events(monkeypatch):
-    """prep_qa reads `events` (dead sets, death quotes) and `beat_facts`
-    (banned handles) from the SAME file. Until 2026-09-28 only beat_facts
-    retracted a contradicted kill notice, so role_stale still quoted it as a
-    death (Full-Time Awakening ch8). The writer must apply the same rule."""
+def test_the_arbitration_path_never_records_a_system_notice_death(monkeypatch):
+    """No chapter story: the arbitration names its own panel, and a death whose
+    panel prints a kill notice is not recorded; it is listed with the reason
+    (death_audit reports it)."""
     u, ents = _wolf_fixture()
     cast = {"cast": [
         {"id": "protagonist", "canonical_name": "our protagonist",
@@ -1336,21 +1342,28 @@ def test_build_ledger_writes_the_retracted_kill_notice_out_of_events(monkeypatch
          "visual_description": "A huge grey wolf with glowing red eyes and "
                                "bared fangs"}]}
     ev = {"type": "death", "subject": "Bloodthirsty Forest Wolf",
-          "scene_file": "p000038.jpg",
-          "evidence_quote": "SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF."}
-    monkeypatch.setattr(sl, "normalize_events", lambda raw, *a, **k: list(raw))
+          "scene_file": "p000038.jpg", "evidence_quote": "q"}
+    # overlapping arbitration windows return the same event; the real
+    # normalize_events dedupes, so the stand-in does too
+    monkeypatch.setattr(sl, "normalize_events", lambda raw, *a, **k: list(
+        {(e["type"], e["subject"], e["scene_file"]): e for e in raw}.values()))
     monkeypatch.setattr(sl, "build_digest", lambda *a, **k: "")
     groups = {"shots": [{"shot_id": 1, "scene_files": ["p000036.jpg"]},
                         {"shot_id": 2, "scene_files": ["p000038.jpg"]},
                         {"shot_id": 3, "scene_files": ["p000040.jpg"]}]}
+    vision = {"items": [{"scene_file": "/x/p000038.jpg", "ocr_clean":
+                         "SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF."}]}
     logged = []
     led = sl.build_ledger(u, groups, cast,
                           arbitrate_fn=lambda digest: {"events": [dict(ev)],
                                                        "overrides": []},
-                          log=logged.append)
+                          log=logged.append, vision=vision)
     assert led["events"] == []
     assert led["beat_facts"]["g0003"]["dead_by_now"] == []
-    assert any("retracted 1 kill-notice death" in m for m in logged)
+    assert led["deaths_not_recorded"] == [
+        {"subject": "Bloodthirsty Forest Wolf", "reason": "system notice",
+         "scene_file": "p000038.jpg"}]
+    assert any("NOT recorded dead" in m for m in logged)
 
 
 
@@ -1433,3 +1446,78 @@ def test_role_stale_quotes_the_title_holders_own_death():
     assert [f["code"] for f in flags] == ["role_stale"]
     assert "KILLED THE WOLF KING" in flags[0]["detail"]
     assert "FOREST WOLF" not in flags[0]["detail"]
+
+
+
+# ---- a game-system notice is never a death (owner "ok go", 2026-09-29) ------
+
+def _u12_with(ocr=None, kind=None):
+    u = {"panels": [dict(p) for p in _U12["panels"]]}
+    for p in u["panels"]:
+        if kind and p["scene_file"] in kind:
+            p["panel_kind"] = kind[p["scene_file"]]
+    vis = {"items": [{"scene_file": f, "ocr_clean": t}
+                     for f, t in (ocr or {}).items()]}
+    return u, vis
+
+
+_NOTICE_STORY = [
+    {"panels": "p000031", "actor": "Prince Cheon", "does": "fights",
+     "target": "the assassins", "evidence": "NULLIFYENG FIST... MANA INFLATION"},
+    {"panels": "p000039-p000040", "actor": "System",
+     "does": "announces the result", "target": "the assassins",
+     "evidence": "q2"}]
+
+
+@pytest.mark.parametrize("text, kind", [
+    # Tutorial Tower ch74, verbatim: a DEFEAT, the evidence quote was OCR noise
+    ("(YOU HAVE SUCCEEDED IN TAKING DOWN CLIMBER MONKEY KING' \"SUN WUKONG'!)", None),
+    ("SUCCESSFULLY KILLED THE BLOODTHIRSTY FOREST WOLF. GAINED 52 EXPERIENCE.", None),
+    ("[YOU HAVE DIED.]", None),
+    ("[YOU HAVE DEFEATED THE DEMON MARQUIS REINHEIT:]", None),
+    # a system card that is no known notice phrase counts by its kind + a verb
+    ("[GOBLIN SHAMAN]  KILLED  +52 EXP", "system"),
+])
+def test_a_death_resting_on_a_system_notice_is_not_recorded(text, kind):
+    ents, profs = _ents_profs()
+    u, vis = _u12_with({"p000040.jpg": text},
+                       {"p000040.jpg": kind} if kind else None)
+    skipped, logs = [], []
+    ev, _ = sl.facts_from_chapter_story(_story("killed", events=_NOTICE_STORY),
+                                        ents, u, profs, log=logs.append,
+                                        vision=vis, not_recorded=skipped)
+    assert [e for e in ev if e["type"] == "death"] == []
+    assert [(d["reason"], d["scene_file"]) for d in skipped] == [
+        ("system notice", "p000040.jpg")]
+    assert any("NOT recorded dead" in m for m in logs)
+
+
+def test_a_death_the_story_states_in_dialogue_is_still_recorded():
+    """The nano ch1 kill: the proof is a SPOKEN line on a story panel."""
+    ents, profs = _ents_profs()
+    u, vis = _u12_with({"p000040.jpg": "HOW DID A KID KILL ONE OF OUR MEMBERS?"},
+                       {"p000040.jpg": "story"})
+    skipped = []
+    ev, _ = sl.facts_from_chapter_story(_story("killed", events=_NOTICE_STORY),
+                                        ents, u, profs, log=lambda _m: None,
+                                        vision=vis, not_recorded=skipped)
+    assert [e["scene_file"] for e in ev if e["type"] == "death"] == ["p000040.jpg"]
+    assert skipped == []
+
+
+def test_death_audit_names_the_reason_a_death_was_not_recorded(tmp_path):
+    import json
+    import tools.death_audit as da
+    ep = tmp_path / "Chapter_74"
+    ep.mkdir()
+    (ep / "manifest.chapter_story.json").write_text(json.dumps(
+        {"cast": [{"name": "the assassins", "fate": "killed"}]}))
+    ents, _p = _ents_profs()
+    (ep / "manifest.ledger.json").write_text(json.dumps(
+        {"entities": ents, "events": [],
+         "deaths_not_recorded": [{"subject": "the assassins",
+                                  "reason": "system notice",
+                                  "scene_file": "p000040.jpg"}]}))
+    rec = da.audit_chapter(str(ep))
+    assert rec["killed"][0]["not_recorded"] == "system notice at p000040.jpg"
+    assert "not recorded: system notice at p000040.jpg" in da._fmt(rec)
