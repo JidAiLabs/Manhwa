@@ -436,14 +436,23 @@ def moment_candidates(w_eps: List[str], tokens: List[Dict[str, Any]], *,
                                else os.path.join(w_eps[ci], "scenes", fn))
 
     cands: List[Dict[str, Any]] = []
+    leads = []
     for r in ref_candidates(w_eps, n=n_lead, prefer_first=len(w_eps))["refs"]:
         ci, fn = int(r["chapter"]), str(r["file"])
         path = _path(ci, fn)
         if panel_emptiness(path) > max_empty:
             continue
-        cands.append({"kind": "lead", "chapter": ci, "file": fn,
-                      "path": path, "desc": _desc(ci, fn)[:160],
-                      "tokens": []})
+        leads.append({"kind": "lead", "chapter": ci, "file": fn,
+                      "path": path, "desc": _desc(ci, fn)[:160], "tokens": [],
+                      "look": bool(r.get("look")), "text": bool(r.get("text"))})
+    # Checkpoint A: a "lead" panel that showed ANOTHER man (FTA), and cleaned
+    # panels still carrying empty speech bubbles (Tutorial Tower). The lead's
+    # registered LOOK and a panel with no printed text at all are the safe
+    # pictures; the rest are kept only when fewer than two safe ones exist.
+    safe = [c for c in leads if c["look"] and not c["text"]]
+    cands += safe if len(safe) >= 2 else (
+        safe + [c for c in leads if c not in safe][:max(0, 2 - len(safe))]
+        if safe else leads)
     by_panel: Dict[tuple, List[str]] = {}
     for t in tokens:
         if t.get("lead"):
@@ -640,14 +649,23 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
             continue                      # the split already says it: add a new word
         if lab["text"] == hook.get("low") or lab["text"] in low_words:
             continue                      # a low label only appears in a split
-        m = lab.get("moment") or (mo.get("after") if lab["text"] == hook.get("high")
-                                  and mo.get("after") else hero_moment)
+        # with a split, the hero stands on the split's own "after" panel: one
+        # picture of him HIGH, not a third, unchecked one (FTA's hero showed
+        # another man)
+        m = ((out[0]["moments"][1] if out and out[0]["layout"] == "split" else "")
+             or lab.get("moment")
+             or (mo.get("after") if lab["text"] == hook.get("high")
+                 and mo.get("after") else hero_moment))
         if not m or any(o["layout"] == "hero" and o["labels"] == [lab["text"]]
                         for o in out):
             continue
+        # an arrow points at the person only when the label says what HE is;
+        # a place ("REAL WORLD") pointed at his face (Checkpoint A)
+        arrow = (lab["subject"] if lab["text"] not in LADDER["place"]
+                 else None)
         out.append({"name": "hero" if not any(o["name"] == "hero" for o in out)
                     else "hero_2", "layout": "hero", "labels": [lab["text"]],
-                    "moments": [m], "arrow": lab["subject"],
+                    "moments": [m], "arrow": arrow,
                     "reason": "a ladder word names what he %s: %s"
                               % ("is" if lab["subject"] == "hero" else "has",
                                  lab["text"])})
@@ -1960,6 +1978,8 @@ def ref_candidates(ep_dirs: List[str], beats_list: Any = None, *,
                 "path": os.path.abspath(os.path.join(d, "scenes", fn)),
                 "chapter": i, "label": os.path.basename(d.rstrip("/")),
                 "file": fn, "subjects": p.get("subjects") or [],
+                "look": fn in look,
+                "text": bool(str(it.get("ocr_clean") or "").strip()),
                 "_rank": (0 if fn in look else 1,
                           0 if _CLOSE_UP_RE.search(str(p.get("description") or "")) else 1,
                           -(w * h))})

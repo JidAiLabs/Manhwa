@@ -2062,3 +2062,16 @@ def test_a_hero_prefers_a_status_word_over_a_level_and_a_floor_last():
                                        {"text": "LEGEND", "subject": "hero", "moment": ""}]},
                            _cands()[:1])
     assert [o["labels"] for o in got] == [["LEGEND"], ["LEVEL 11"]]
+
+
+
+def test_the_hero_reuses_the_splits_panel_and_a_place_never_arrows():
+    hook = {"low": "E-RANK", "high": "SSS-CLASS",
+            "moments": {"hero": "m1", "before": "m2", "after": "m3"},
+            "labels": [{"text": "GOD", "subject": "hero", "moment": "m1"}]}
+    a, b = pc.choose_layout(hook, _cands())
+    assert a["moments"] == ["m2", "m3"] and b["moments"] == ["m3"]
+    only = pc.choose_layout({"low": "", "high": "", "moments": {"hero": "m1"},
+                             "labels": [{"text": "REAL WORLD", "subject": "hero",
+                                         "moment": ""}]}, _cands())
+    assert only[0]["labels"] == ["REAL WORLD"] and only[0]["arrow"] is None
