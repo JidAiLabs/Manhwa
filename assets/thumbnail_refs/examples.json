@@ -1,0 +1,615 @@
+{
+ "_about": "Every competitor thumbnail the owner shared, transcribed from the screenshots in this folder (2026-09-17 ones are text only, from the skill's winning-format.md). Fields are orthogonal: layout {hero, split}, text {label, none}, arrow_target {hero, object, none}. Prompts and docs COUNT from this file; never quote a count that is not computed from it.",
+ "examples": [
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_01.png",
+   "title": "FIRST DAY at Magic Academy He Unlocked PASSIVE SKILLS And CRUSHED All Senior Students - Manhwa Recap",
+   "labels": [
+    "NEW STUDENTS"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "224K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_02.png",
+   "title": "No One Believed in Him… Until the Legendary Book Recognized His Potential! - Manhwa Recap",
+   "labels": [
+    "MAGE"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "245",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_03.png",
+   "title": "He Ate 10000 Expired Pills In Storage And Returned Home As A Martial Emperor",
+   "labels": [],
+   "layout": "split",
+   "text": "none",
+   "arrow_target": "none",
+   "views": "185K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_04.png",
+   "title": "He Awakened an SSS Class Job, Unleashed a Shadow Talent, and Swept the Entire World - Manhwa Recap",
+   "labels": [],
+   "layout": "split",
+   "text": "none",
+   "arrow_target": "none",
+   "views": "48K",
+   "badge": "",
+   "props": "stat window"
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_05.png",
+   "title": "He Awakened an SSS Class Job, Secretly Devoured Power for Ages, and Ascended Like a God",
+   "labels": [],
+   "layout": "split",
+   "text": "none",
+   "arrow_target": "none",
+   "views": "49K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_06.png",
+   "title": "He Obtained A Hidden Class And Became The Abyss Monarch | Manhua Recap",
+   "labels": [
+    "ABYSS LORD",
+    "ABYSS QUEEN"
+   ],
+   "layout": "split",
+   "text": "label",
+   "arrow_target": "none",
+   "views": "56K",
+   "badge": "CHAPTERS 1-94 ONGOING",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_07.png",
+   "title": "From the Very Beginning, He Awakens an SSS Tier War God Instinct - Manhwa Recap",
+   "labels": [],
+   "layout": "hero",
+   "text": "none",
+   "arrow_target": "none",
+   "views": "103K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_08.png",
+   "title": "TRAPPED In Magic World 20 Years He Returns To Earth And DESTROYS Bullies With ONE FLICK Manhwa Recap",
+   "labels": [
+    "NECROMANCER"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "37K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_09.png",
+   "title": "They CLOWNED His Class… His AUTO-LEVEL SYSTEM Hit S-RANK In Seconds! Manhwa Recap",
+   "labels": [
+    "F-",
+    "S-RANK"
+   ],
+   "layout": "split",
+   "text": "label",
+   "arrow_target": "none",
+   "views": "15K",
+   "badge": "",
+   "props": "system window"
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_10.png",
+   "title": "In 24 HOURS He Went From LVL 1 To LVL 500 By EXTRACTING Every Monster In 47 Dungeons! - Manhwa Recap",
+   "labels": [
+    "SSS RANKS"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "69K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_11.png",
+   "title": "Bro's AUTO LEVEL SYSTEM Slaps Different When He's SSS-RANK From Day 1! Manhwa Recap",
+   "labels": [
+    "S+",
+    "SSS+"
+   ],
+   "layout": "split",
+   "text": "label",
+   "arrow_target": "none",
+   "views": "69K",
+   "badge": "",
+   "props": "system card"
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_12.png",
+   "title": "When A PRODIGY Is Reborn In The Body Of A Loser And Makes Him The Owner Of The GOD SYSTEM",
+   "labels": [],
+   "layout": "hero",
+   "text": "none",
+   "arrow_target": "hero",
+   "views": "465K",
+   "badge": "",
+   "props": "system windows"
+  },
+  {
+   "batch": "2026-09-29",
+   "png": "owner_2026-09-29_13.png",
+   "title": "He Builds a Shelter in Another World While the Apocalypse Begins on Earth! - Manhwa Recap",
+   "labels": [
+    "REAL WORLD"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "object",
+   "views": "170K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_1.png",
+   "title": "TOP Doctor DIED From Overwork & TRANSMIGRATED To Magic Academy World As A Prodigy! - Manhwa Recap",
+   "labels": [
+    "PRODIGY"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "420K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_1.png",
+   "title": "In the Apocalypse his Chat Keep Giving him Wild Romance Quests to make Him OP! - Manhwa Recap",
+   "labels": [
+    "MARRY HER",
+    "wtf..."
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "none",
+   "views": "29K",
+   "badge": "",
+   "props": "system window"
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_1.png",
+   "title": "He Gets 100,000x EXP From Killing 1 Monster… Now He Broke The Entire System! [1-25]",
+   "labels": [
+    "EXP GLITCH: x100,000!"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "none",
+   "views": "40K",
+   "badge": "",
+   "props": "level-up cards"
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_2.png",
+   "title": "They Said The 8yr Prince Was Lazy, So He Trained Hard Until He Defeated Everyone!",
+   "labels": [
+    "RANK #1"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "148K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_2.png",
+   "title": "I Bought a $1 Scythe and Awakened as an SSS-Rank Necromancer!",
+   "labels": [
+    "SSS-Ranked"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "89K",
+   "badge": "1~493",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_2.png",
+   "title": "BETRAYED & Killed, He Reborn Awakened LEGENDARY Dual Class & SAVED THE WORLD! - Manhwa Recap",
+   "labels": [
+    "OP",
+    "CRUSHES GODS!!"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "26K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_3.png",
+   "title": "BORN as DUNGEON TRASH, He Awakened a GOD System & LEVELED Undefeated to SSS LORD! - Manhwa Recap",
+   "labels": [
+    "SSS+",
+    "DUNGEON -> GOD"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "16K",
+   "badge": "FULL RECAP",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_3.png",
+   "title": "Left For Dead, GENIUS Built a 100% Self-Sufficient Underground Base Like Minecraft | Manhwa Recap",
+   "labels": [],
+   "layout": "hero",
+   "text": "none",
+   "arrow_target": "none",
+   "views": "300K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_3.png",
+   "title": "[1-102] He Only Tames the WEAKEST Beasts… And They All Become GOD-TIER! | Manhwa Recap",
+   "labels": [
+    "BEFORE",
+    "AFTER"
+   ],
+   "layout": "split",
+   "text": "label",
+   "arrow_target": "none",
+   "views": "45K",
+   "badge": "[CH. 1-102]",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_3.png",
+   "title": "He Started As A Weak Necromancer, Then Unlocked A Power That Made Him Limitless - Manhwa Recap",
+   "labels": [
+    "RANK 1",
+    "NEW STUDENT"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "91K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_4.png",
+   "title": "His Fiancee Dumped him as TRASH, Not Knowing He's a Reborn LEGEND - Manhwa Recaps",
+   "labels": [
+    "MC (LOSER)",
+    "FIANCE",
+    "BAM!!"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "646K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_4.png",
+   "title": "(1-3) He Gets Stronger Every Time He Disrespects an Empress! | Manhwa Recap",
+   "labels": [
+    "SLAVE",
+    "MASTER"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "28K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_4.png",
+   "title": "When A Fat Weakling Gets A Body-Leveling System And Becomes #1 In The Academy! | Manhwa Recap",
+   "labels": [
+    "500KG",
+    "SQUATS COMPLETED: 47/10,000"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "object",
+   "views": "273K",
+   "badge": "",
+   "props": "system window"
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_5.png",
+   "title": "He Started as an SSS-RANK Hunter at the Ultimate Academy! | Manhwa Recap",
+   "labels": [],
+   "layout": "hero",
+   "text": "none",
+   "arrow_target": "none",
+   "views": "2K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_5.png",
+   "title": "[1-21] HE GAINED A SYSTEM THAT RECEIVES 10 TIMES ALL THE CULTIVATION OF HIS DISCIPLES",
+   "labels": [
+    "STRENGTH: SS+",
+    "CULTIVATION: SS+",
+    "INFINITY POWER"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "none",
+   "views": "",
+   "badge": "#21",
+   "props": "system window"
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_5.png",
+   "title": "He was the weakest rookie until he summoned 10,000 identical clones to fight for him Ep 1-130",
+   "labels": [
+    "HUMAN",
+    "NECROMANCER",
+    "VAMPIRE",
+    "BARBARIAN",
+    "DWARF",
+    "ELF",
+    "PALADIN"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "11K",
+   "badge": "#1-130",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_6.png",
+   "title": "BETRAYED By His Family, He Unlocked a Skill That SHOCKED the Entire Magic Academy - Manhwa Recap",
+   "labels": [
+    "EXPELLED",
+    "VILLAIN TO HERO"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "47K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_6.png",
+   "title": "FAILED MAN GETS A JOB… BUT IT'S AT A Store FULL OF Monsters! - Manhwa Recap",
+   "labels": [
+    "NEWBIE",
+    "Like what you see?"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "55K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_6.png",
+   "title": "Waking From A 10-Year Coma, The Trash Becomes An OP Hunter - Manhwa Recap",
+   "labels": [
+    "OP",
+    "BACK FROM HELL"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "15K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-21",
+   "png": "owner_2026-09-21_6.png",
+   "title": "He Awakened the Ability to SUMMON CLONES to Dominate the World for him - Manhwa Recap",
+   "labels": [
+    "CLONE 1",
+    "CLONE 2",
+    "CLONE 3",
+    "CLONE 4",
+    "CLONE 5",
+    "MC"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "59K",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "Poor Loser Becomes Rich Because Every Dollar He Spends Multiplies 200x! - Manhwa Recap",
+   "labels": [
+    "INFINITE MONEY"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "object",
+   "views": "",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "#1 UFC FIGHTER Reincarnates As A SLAVE Into The STRONGEST MAGE FAMILY! - Manhwa Recap",
+   "labels": [
+    "NEW SLAVE",
+    "MASTER"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "BETRAYED Porter Awakens OP Power In The DUNGEON - Manhwa Recap",
+   "labels": [
+    "OP",
+    "SECRET GOD TIER"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "His Fiancee Dumped him as TRASH, Not Knowing He's a Reborn LEGEND - Manhwa Recaps",
+   "labels": [
+    "MC (LOSER)",
+    "FIANCE",
+    "BAM!!"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "TRASH Youngest Prince Reveals His INFINITE Mana And SHOCKS The Entire Empire! - Manhwa Recap",
+   "labels": [
+    "2 Y/O PRODIGY"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "He Died as a KING, REBORN & Awakened LEGENDARY 3-Core System Made Every Enemy KNEEL! - Manhwa Recap",
+   "labels": [
+    "S-RANK",
+    "DEAD -> KING"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "He Wiped Out An Entire World For 140 Years And Returns To Earth At MAX LEVEL! - Manhwa Recap",
+   "labels": [
+    "UNRANKED",
+    "#1 HUNTER"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "none",
+   "views": "",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "REBORN As An F-Rank Porter With OP Magic System To Solo The DUNGEON - Manhwa Recap",
+   "labels": [
+    "OP",
+    "SOLO SYSTEM MAGE"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "",
+   "badge": "",
+   "props": ""
+  },
+  {
+   "batch": "2026-09-17",
+   "png": "",
+   "title": "He Was Too COWARDLY To Fight, But His SSR Summons Conquered The Tower For Him! | Manhwa Recap",
+   "labels": [
+    "F-RANK SUMMONER",
+    "SSR x4"
+   ],
+   "layout": "hero",
+   "text": "label",
+   "arrow_target": "hero",
+   "views": "",
+   "badge": "",
+   "props": ""
+  }
+ ]
+}

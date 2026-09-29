@@ -117,12 +117,74 @@ DEFAULT_TONE = "absurd"
 # properly oriented" -- the painter puts the face where it likes, so a fixed
 # arrow pointed at a chin or at air. No grammar carries a sample label: an
 # example is an answer.
-_NAMETAG_GRAMMAR = (
-    "A label is a NAMETAG, not a caption: it names WHAT THE LEAD IS or WHAT "
-    "THEY BECAME -- a role, a title, a rank, a status -- so a viewer could "
-    "draw an arrow from it to the person. 1-3 words, this story's OWN words, "
-    "at an EXTREME of a ladder a viewer reads instantly. Never a mood, never "
-    "a sentence. A number or rank must be one the story states. ")
+# ---------------------------------------------------------------------------
+# THE GENRE LADDER. Owner, 2026-09-29, choosing "genre ladder words" over "the
+# story's own words": the old grammar asked for "this story's OWN words" and the
+# claim prompt called anything "that would fit any manhwa" a failure, so ORV got
+# THE ONLY READER / SCENARIO PLAYER / THE PROTAGONIST ("idiotic... there were
+# never such claims on the examples"). Every example the owner shared
+# (assets/thumbnail_refs/examples.json) labels with these words: a rank, a
+# status at an extreme, a class, a place. A newcomer reads them at a glance.
+# A RANK, LEVEL or NUMBER is a checkable claim: it must be one the story
+# PRINTS (publish_concept.story_ladder_tokens), never invented.
+RANK_LETTERS = ("F", "E", "D", "C", "B", "A", "S", "SS", "SSS")
+LADDER: Dict[str, tuple] = {
+    "status_low": ("TRASH", "LOSER", "WEAKLING", "WEAKEST", "NEWBIE", "ROOKIE",
+                   "NOBODY", "SLAVE", "UNRANKED", "EXPELLED", "FAILED",
+                   "PORTER", "DEAD", "BETRAYED", "OUTCAST"),
+    "status_high": ("PRODIGY", "GENIUS", "OP", "GOD", "KING", "EMPEROR",
+                    "MONARCH", "MASTER", "LEGEND", "LORD", "GOD-TIER",
+                    "INFINITE", "UNDEFEATED", "MAX LEVEL", "RANK #1", "#1",
+                    "STRONGEST", "UNKILLABLE", "IMMORTAL"),
+    "class": ("MAGE", "NECROMANCER", "SUMMONER", "HUNTER", "PALADIN", "HEALER",
+              "ASSASSIN", "SWORDSMAN", "WARRIOR", "ARCHER", "TAMER", "KNIGHT",
+              "SORCERER", "WARLOCK", "BERSERKER", "SHAMAN", "PRIEST",
+              "ALCHEMIST", "BLACKSMITH", "CHEF", "DOCTOR", "MARTIAL ARTIST"),
+    "place": ("REAL WORLD", "ANOTHER WORLD", "DUNGEON", "TOWER", "ACADEMY",
+              "APOCALYPSE", "HELL"),
+}
+LADDER_WORDS = frozenset(w for words in LADDER.values() for w in words)
+
+LADDER_GRAMMAR = (
+    "A LABEL is 1-2 SHORT genre words a viewer reads in half a second -- the "
+    "words every manhwa recap channel puts on its thumbnails: a RANK (a letter "
+    "grade " + ", ".join(RANK_LETTERS) + " written like S-RANK or SSS+, RANK "
+    "#1, LEVEL n), a STATUS at an extreme (low: " + ", ".join(LADDER["status_low"][:8])
+    + "; high: " + ", ".join(LADDER["status_high"][:10]) + "), a CLASS ("
+    + ", ".join(LADDER["class"][:10]) + "), or a PLACE (" + ", ".join(LADDER["place"][:4])
+    + "). Choose the words that fit THIS protagonist's arc. A rank, level or "
+    "number must be one the story PRINTS (the printed ladder is listed). ")
+# the legacy per-design grammar reads the same rule
+_NAMETAG_GRAMMAR = LADDER_GRAMMAR
+
+
+def rank_value(token: str) -> float:
+    """Order on the ladder: LEVEL/FLOOR n (n / 10000, always below a grade) <
+    F < E < ... < SSS ('+' a half step) < RANK #n (#1 highest). -1 = not a rank."""
+    import re as _re
+    t = str(token or "").upper().strip()
+    m = _re.match(r"^(SSS|SS|[FEDCBAS])(?:[-\s]?(?:RANK|CLASS|GRADE|TIER))?(\+*)$", t)
+    if m:
+        return 1 + RANK_LETTERS.index(m.group(1)) + 0.5 * len(m.group(2))
+    m = _re.match(r"^(?:LEVEL|FLOOR|RANK)\s*#?\s*(\d+)$", t)
+    if m:
+        n = min(int(m.group(1)), 9999)
+        return (20 - n / 10000.0) if t.startswith("RANK") else n / 10000.0
+    return -1.0
+
+
+def load_examples() -> List[Dict[str, Any]]:
+    """The owner's example thumbnails as data (assets/thumbnail_refs/
+    examples.json). Counts quoted anywhere are computed from this."""
+    import json as _json
+    import os as _os
+    path = _os.path.join(_os.path.dirname(_os.path.dirname(
+        _os.path.abspath(__file__))), "assets", "thumbnail_refs", "examples.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return list((_json.load(f) or {}).get("examples") or [])
+    except (OSError, ValueError):
+        return []
 
 HOOK_DESIGNS: Dict[str, Dict[str, Any]] = {
     "nametag": {

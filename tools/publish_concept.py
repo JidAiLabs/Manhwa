@@ -29,7 +29,12 @@ from thumbnail_styles import (  # noqa: E402
     DEFAULT_STYLE,
     DEFAULT_TONE,
     HOOK_DESIGNS,
+    LADDER,
+    LADDER_GRAMMAR,
+    LADDER_WORDS,
     STYLE_MODULES,
+    load_examples,
+    rank_value,
     select_style,
     style_for,
 )
@@ -211,7 +216,7 @@ def system_card_lines(montage: List[Dict[str, Any]], *,
 
 
 def build_brief_prompt(digest: str, banned: str,
-                       hook_block: str = "") -> str:
+                       hook_block: str = "", ladder_block: str = "") -> str:
     """STAGE 1: understand the story before writing a word of copy.
 
     The digest is raw narration prose -- 17k chars of moment-to-moment
@@ -230,15 +235,16 @@ def build_brief_prompt(digest: str, banned: str,
         "Return ONLY JSON:\n"
         "{\n"
         '  "premise": "one sentence: the situation the story sets up",\n'
-        '  "protagonist": "who they are and what makes THEM different from '
-        'the usual manhwa lead — their actual edge, not a power level",\n'
+        '  "protagonist": "who they are, where they START (their status, rank '
+        'or situation) and what their edge is",\n'
         '  "engine": "the thing that keeps happening that drives the story",\n'
         '  "arc": "how the protagonist''s situation CHANGES from the first of '
-        'these chapters to the last",\n'
-        '  "distinctive": ["2-4 things a reader would remember about THIS '
-        'series that they would not find in a generic power-fantasy manhwa"],\n'
+        'these chapters to the last: from what low to what high",\n'
+        '  "distinctive": ["2-4 things a reader would remember about this '
+        'series"],\n'
         '  "why_watch": "the curiosity a viewer would click to satisfy"\n'
         "}\n\n" + (hook_block + "\n\n" if hook_block else "")
+        + (ladder_block + "\n\n" if ladder_block else "")
         + "STORY NARRATION:\n" + digest)
 
 
@@ -375,6 +381,216 @@ def build_claim_prompt(brief: Dict[str, Any], banned: str,
         "}")
 
 
+# ---------------------------------------------------------------------------
+# THE HOOK (2026-09-29, owner: "plan this properly"). ONE sentence the teaser,
+# the video title and the thumbnail all sell, written once per series from the
+# opening chapters, in the examples' own vocabulary (the GENRE LADDER), with
+# every rank, level and number checked against what the story prints. Code, not
+# the model, decides the layout and whether an arrow can point at anything.
+
+def moment_candidates(w_eps: List[str], tokens: List[Dict[str, Any]], *,
+                      n_lead: int = 8, n_print: int = 6) -> List[Dict[str, Any]]:
+    """Panels the hook may point at, each with an id the model answers with
+    (never a file name): clean solo shots of the lead (ref_candidates), then the
+    panels that PRINT the lead's lowest and highest ladder tokens."""
+    desc: Dict[tuple, str] = {}
+
+    def _desc(ci: int, fn: str) -> str:
+        if not any(k[0] == ci for k in desc):
+            try:
+                u = json.load(open(os.path.join(w_eps[ci],
+                                                "manifest.panels.understood.json")))
+            except Exception:
+                u = {}
+            for p in u.get("panels") or []:
+                desc[(ci, os.path.basename(str(p.get("scene_file") or "")))] = \
+                    str(p.get("description") or "")
+            desc.setdefault((ci, ""), "")
+        return desc.get((ci, fn), "")
+
+    def _path(ci: int, fn: str) -> str:
+        clean = os.path.join(w_eps[ci], "scenes_clean", fn)
+        return os.path.abspath(clean if os.path.exists(clean)
+                               else os.path.join(w_eps[ci], "scenes", fn))
+
+    cands: List[Dict[str, Any]] = []
+    for r in ref_candidates(w_eps, n=n_lead, prefer_first=len(w_eps))["refs"]:
+        ci, fn = int(r["chapter"]), str(r["file"])
+        cands.append({"kind": "lead", "chapter": ci, "file": fn,
+                      "path": _path(ci, fn), "desc": _desc(ci, fn)[:160],
+                      "tokens": []})
+    by_panel: Dict[tuple, List[str]] = {}
+    for t in tokens:
+        if t.get("lead"):
+            by_panel.setdefault((t["chapter"], t["file"]), []).append(t["token"])
+    ranked = sorted(by_panel.items(),
+                    key=lambda kv: max(rank_value(x) for x in kv[1]))
+    # the ends of the climb first (lowest, highest), then the rest in order
+    pick = ranked[:1] + ranked[-1:] + ranked[1:-1] if len(ranked) > 1 else ranked
+    for (ci, fn), toks in pick[:n_print]:
+        cands.append({"kind": "print", "chapter": ci, "file": fn,
+                      "path": _path(ci, fn), "desc": _desc(ci, fn)[:160],
+                      "tokens": sorted(set(toks), key=rank_value)})
+    for k, c in enumerate(cands, 1):
+        c["id"] = "m%d" % k
+    return cands
+
+
+def window_printed_text(w_eps: List[str]) -> str:
+    """Every OCR line of the window: the corpus a title's numbers must meet."""
+    out: List[str] = []
+    for d in w_eps:
+        try:
+            v = json.load(open(os.path.join(d, "manifest.vision.json")))
+        except Exception:
+            continue
+        out += [str(it.get("ocr_clean") or "") for it in (v.get("items") or [])]
+    return "\n".join(x for x in out if x)
+
+
+def build_hook_prompt(brief: Dict[str, Any], printed: Dict[str, List[str]],
+                      cands: List[Dict[str, Any]], banned: str,
+                      tone: str = DEFAULT_TONE) -> str:
+    """The ONE hook: sentence, ladder labels, moments, three titles, the scene.
+    Examples are shown for their STYLE; title_ok rejects a copied phrase."""
+    if tone not in CLAIM_TONES:
+        raise ValueError("unknown claim tone: %r" % tone)
+    ladder = "\n".join("  %s: %s" % (k, ", ".join(v)) for k, v in printed.items()
+                       if v) or "  (the story prints no rank, level or class)"
+    moments = "\n".join(
+        "  %s [%s, chapter %d] %s%s" % (c["id"], c["kind"], c["chapter"] + 1,
+                                        c["desc"] or "(no description)",
+                                        (" PRINTS " + ", ".join(c["tokens"]))
+                                        if c["tokens"] else "")
+        for c in cands) or "  (none)"
+    styles = [e["title"] for e in load_examples() if e.get("title")][:6]
+    return (
+        "You are writing the ONE hook of a manhwa recap series: the sentence "
+        "the teaser builds to, the video title and the thumbnail all sell. "
+        "Your understanding of the opening chapters is below.\n"
+        f"NEVER use this licensed title or any part of it: {banned or '(none)'}\n"
+        "No real character names anywhere in the output.\n\n"
+        "STORY UNDERSTANDING:\n" + json.dumps(brief, indent=2) + "\n\n"
+        "THE LADDER THIS STORY PRINTS on the main character's panels:\n"
+        + ladder + "\n\n" + LADDER_GRAMMAR + "\n\n"
+        "MOMENTS you may point at, by id:\n" + moments + "\n\n"
+        + CLAIM_TONES[tone] + "\n\n"
+        "How these channels write titles (their STYLE only; a phrase copied "
+        "from them is rejected):\n" + "\n".join("  " + t for t in styles)
+        + "\n\nReturn ONLY JSON:\n{\n"
+        '  "hook": "ONE sentence: who the main character STARTS as (a low '
+        'status, a humiliating role, a time or an odd situation), the TURN, '
+        'his EDGE (the power, with a rank or number the story prints) and the '
+        'PAYOFF",\n'
+        '  "low": "the ladder word for where he starts, or empty",\n'
+        '  "high": "the ladder word for where he gets to, or empty",\n'
+        '  "labels": [{"text": "1-2 ladder words", "subject": "hero or object", '
+        '"moment": "id of the moment it names"}],\n'
+        '  "moments": {"hero": "id of the moment that shows the hook best", '
+        '"before": "id showing him LOW, or empty", "after": "id showing him '
+        'HIGH, or empty"},\n'
+        '  "titles": [{"text": "YouTube title: ONE premise sentence, 55-85 '
+        'characters: who he starts as, the turn, his edge, the payoff. 1-3 '
+        'words in FULL CAPS, one of them the label word. No names, no emoji, '
+        'no question mark", "label": "the label word it reuses"}],\n'
+        + _SCENE_ASK
+        + '  "description": "3-5 sentences a viewer reads to decide. Prose only",\n'
+        '  "hashtags": ["6-10 hashtags incl #manhwa #manga + genre/theme"]\n'
+        "}\n"
+        "Give 4 labels and 3 titles.")
+
+
+def validate_hook(pkg: Dict[str, Any], *, printed: Dict[str, List[str]],
+                  cands: List[Dict[str, Any]], corpus: str,
+                  banned: str) -> Dict[str, Any]:
+    """Keep only what the examples would print and the story can back:
+    labels = ladder words / printed ranks (label_ok), titles = title_ok,
+    moments = known ids. Rejected titles are kept WITH the reason, so the owner
+    sees what was refused and why."""
+    ids = {c["id"] for c in cands}
+    norm = lambda x: " ".join(str(x or "").upper().replace("\u2192", "->").split())
+    labels: List[Dict[str, Any]] = []
+    for lab in pkg.get("labels") or []:
+        if not isinstance(lab, dict):
+            lab = {"text": lab}
+        text = norm(lab.get("text"))
+        if text and label_ok(text, printed) and text not in [x["text"] for x in labels]:
+            labels.append({"text": text,
+                           "subject": ("object" if str(lab.get("subject") or "")
+                                       .lower().startswith("obj") else "hero"),
+                           "moment": str(lab.get("moment") or "")
+                           if str(lab.get("moment") or "") in ids else ""})
+    low, high = norm(pkg.get("low")), norm(pkg.get("high"))
+    low = low if low and label_ok(low, printed) else ""
+    high = high if high and label_ok(high, printed) else ""
+    if low and high and rank_value(low) >= 0 and rank_value(high) >= 0 \
+            and rank_value(low) >= rank_value(high):
+        low = high = ""                      # a "climb" that goes down or nowhere
+    moments = {k: str(v) for k, v in (pkg.get("moments") or {}).items()
+               if k in ("hero", "before", "after") and str(v) in ids}
+    ng = example_ngrams()
+    titles: List[Dict[str, Any]] = []
+    rejected: List[Dict[str, Any]] = []
+    for t in pkg.get("titles") or []:
+        raw = t.get("text") if isinstance(t, dict) else t
+        text = normalize_title(raw)
+        why = title_ok(text, corpus=corpus, banned=banned, ngrams=ng)
+        row = {"text": text, "label": norm(t.get("label")) if isinstance(t, dict) else ""}
+        if why:
+            rejected.append(dict(row, why=why))
+        elif text not in [x["text"] for x in titles]:
+            titles.append(row)
+    return {"sentence": " ".join(str(pkg.get("hook") or "").split()),
+            "low": low, "high": high, "labels": labels, "moments": moments,
+            "titles": titles, "rejected_titles": rejected}
+
+
+def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
+                  ) -> List[Dict[str, Any]]:
+    """The two thumbnail options, decided by CODE from the story's facts
+    (owner: layout and arrow "depend on the story, the image and what we say").
+      split -- the story backs BOTH ends of his climb (low and high labels) and
+               two different panels show them: low on the left, high right;
+      hero  -- a ladder label names what he is; the arrow (Phase 4) goes to
+               what the label names, and only if it can be found on the image;
+      clean -- no label the story can back: the scene alone (4 of 13 examples
+               of 2026-09-29 have no text at all)."""
+    by_id = {c["id"]: c for c in cands}
+    leads = [c["id"] for c in cands if c["kind"] == "lead"]
+    mo = hook.get("moments") or {}
+    out: List[Dict[str, Any]] = []
+    before, after = mo.get("before"), mo.get("after")
+    if hook.get("low") and hook.get("high") and before and after \
+            and before != after:
+        out.append({"name": "split", "layout": "split",
+                    "labels": [hook["low"], hook["high"]],
+                    "moments": [before, after], "arrow": None,
+                    "reason": "the story backs both ends of the climb: %s -> %s"
+                              % (hook["low"], hook["high"])})
+    hero_moment = mo.get("hero") or (leads[0] if leads else "")
+    for lab in hook.get("labels") or []:
+        if len(out) >= 2:
+            break
+        m = lab.get("moment") or hero_moment
+        if not m or any(o["layout"] == "hero" and o["labels"] == [lab["text"]]
+                        for o in out):
+            continue
+        out.append({"name": "hero" if not any(o["name"] == "hero" for o in out)
+                    else "hero_2", "layout": "hero", "labels": [lab["text"]],
+                    "moments": [m], "arrow": lab["subject"],
+                    "reason": "a ladder word names what he %s: %s"
+                              % ("is" if lab["subject"] == "hero" else "has",
+                                 lab["text"])})
+    if len(out) < 2 and hero_moment:
+        out.append({"name": "clean", "layout": "hero", "labels": [],
+                    "moments": [hero_moment], "arrow": None,
+                    "reason": "no second label the story can back: the scene "
+                              "alone"})
+    for o in out:
+        o["panels"] = [by_id[m]["path"] for m in o["moments"] if m in by_id]
+    return out[:2]
+
+
 def concept_from_claim(claim: Dict[str, Any], design: str) -> Dict[str, Any]:
     """One option card's concept, built from the series claim with NO model
     call: the cards share labels, scene, refs and title by construction and
@@ -439,18 +655,43 @@ _DIGIT = re.compile(r"\d|\bS+\b|\brank\b|\blevel\b|\blvl\b|\bSSS?\b", re.I)
 
 # The concrete NUMBER / RANK tokens a hook ASSERTS about the story. These are
 # factual claims printed on the thumbnail, so each one has to exist in the
-# source. Plain words are not claims and are never checked.
-_HOOK_CLAIM_RE = re.compile(r"\d+|\bS{2,}\b", re.IGNORECASE)
+# source. Plain words are not claims and are never checked. A letter grade or a
+# number glued to RANK/CLASS/GRADE/TIER is ONE claim ("S-RANK", "0-RANK"):
+# checking only its digit let FTA's claim title "He Breaks The 0-rank Limit"
+# through on any "0" in the chapter (2026-09-29). Bare SS/SSS(+) is one too.
+_RANK_CLAIM_RE = re.compile(
+    r"\b(SSS|SS|[FEDCBAS]|\d+)\s*-?\s*(RANK|CLASS|GRADE|TIER)S?\b"
+    r"|(?<![A-Z0-9])S{2,3}\+*(?![A-Z0-9])", re.IGNORECASE)
+
+
+def _rank_token(m: "re.Match") -> str:
+    if m.group(2):
+        return "%s-%s" % (m.group(1).upper(), m.group(2).upper())
+    return m.group(0).upper()
 
 
 def hook_claims(hook: str) -> List[str]:
-    """Number/rank tokens *hook* asserts (upper-cased, de-duplicated in order)."""
+    """Number/rank tokens *hook* asserts (upper-cased, de-duplicated in order):
+    rank tokens whole, then every other number."""
+    text = str(hook or "")
     seen: List[str] = []
-    for m in _HOOK_CLAIM_RE.finditer(str(hook or "")):
-        t = m.group(0).upper()
+    spans = []
+    for m in _RANK_CLAIM_RE.finditer(text):
+        spans.append(m.span())
+        t = _rank_token(m)
         if t not in seen:
             seen.append(t)
+    for m in re.finditer(r"\d+", text):
+        if any(a <= m.start() < b for a, b in spans):
+            continue
+        if m.group(0) not in seen:
+            seen.append(m.group(0))
     return seen
+
+
+def _norm_ranks(text: str) -> str:
+    """Upper-case with every rank written one way ("s rank" -> "S-RANK")."""
+    return _RANK_CLAIM_RE.sub(_rank_token, str(text or "").upper())
 
 
 def hook_is_grounded(hook: str, corpus: str) -> bool:
@@ -462,9 +703,170 @@ def hook_is_grounded(hook: str, corpus: str) -> bool:
     """
     if not str(corpus or "").strip():
         return True
-    hay = str(corpus).upper()
+    hay = _norm_ranks(corpus)
     return all(re.search(r"(?<![0-9A-Z])%s(?![0-9A-Z])" % re.escape(c), hay)
                for c in hook_claims(hook))
+
+
+# ---------------------------------------------------------------------------
+# The story's PRINTED ladder: every rank, level, floor and class the chapters'
+# own text shows (vision OCR), each with its panel. Measured on the Mini over
+# the first 12 chapters (2026-09-29): ORV LV. 1..71 and SS-GRADE; Tutorial
+# Tower C..S-RANK and floors; FTA F..S-RANK, SSS-CLASS, LEVEL 1..26 and
+# CLASS: ELECTRIC WARRIOR. A label or title may claim only what is here.
+_LADDER_PATTERNS = (
+    ("rank", re.compile(r"\b(SSS|SS|[FEDCBAS])\s*-?\s*(RANK|CLASS|GRADE|TIER)\b",
+                        re.IGNORECASE),
+     lambda m: "%s-%s" % (m.group(1).upper(), m.group(2).upper())),
+    ("rank", re.compile(r"(?<![A-Z0-9])(SSS|SS)(\+{1,2})?(?![A-Z0-9])"),
+     lambda m: m.group(0)),
+    ("ranknum", re.compile(r"\bRANK\s*#?\s*(\d{1,4})\b", re.IGNORECASE),
+     lambda m: "RANK #%d" % int(m.group(1))),
+    ("level", re.compile(r"\b(?:LEVEL|LVL|LV)\s*[.:]?\s*(\d{1,4})\b",
+                         re.IGNORECASE),
+     lambda m: "LEVEL %d" % int(m.group(1))),
+    ("floor", re.compile(r"\b(\d{1,3})(?:ST|ND|RD|TH)\s+FLOOR\b", re.IGNORECASE),
+     lambda m: "FLOOR %d" % int(m.group(1))),
+    ("class", re.compile(r"\b(?:CLASS|JOB)\s*[:\-]\s*([A-Z][A-Z' \-]{2,28}[A-Z])",
+                         re.IGNORECASE),
+     lambda m: m.group(1).upper().strip()),
+)
+
+
+def ladder_tokens_in(text: str) -> List[tuple]:
+    """[(kind, token)] of every ladder token printed in *text*."""
+    out: List[tuple] = []
+    for kind, rx, norm in _LADDER_PATTERNS:
+        for m in rx.finditer(str(text or "")):
+            tok = norm(m)
+            if (kind, tok) not in out:
+                out.append((kind, tok))
+    return out
+
+
+def story_ladder_tokens(eps: List[str]) -> List[Dict[str, Any]]:
+    """Every printed ladder token in *eps* (the teaser's window), with where.
+
+    `lead` is True when the token plausibly belongs to the MAIN character: its
+    panel is a lead panel (_lead_panels), or a system panel within 3 panels of
+    one in the same chapter. A printed rank may belong to someone else; only
+    lead tokens may become a label."""
+    out: List[Dict[str, Any]] = []
+    for ci, d in enumerate(eps):
+        try:
+            v = json.load(open(os.path.join(d, "manifest.vision.json")))
+        except Exception:
+            continue
+        try:
+            u = json.load(open(os.path.join(d, "manifest.panels.understood.json")))
+        except Exception:
+            u = {}
+        order = [os.path.basename(str(p.get("scene_file") or ""))
+                 for p in (u.get("panels") or [])]
+        kinds = {os.path.basename(str(p.get("scene_file") or "")):
+                 str(p.get("panel_kind") or "") for p in (u.get("panels") or [])}
+        portraits, _look = _lead_panels(d)
+        lead_idx = [i for i, f in enumerate(order) if f in portraits]
+        for it in (v.get("items") or []):
+            fn = os.path.basename(str(it.get("scene_file") or ""))
+            toks = ladder_tokens_in(it.get("ocr_clean"))
+            if not toks:
+                continue
+            i = order.index(fn) if fn in order else -1
+            lead = fn in portraits or (
+                kinds.get(fn) == "system" and i >= 0
+                and any(abs(i - j) <= 3 for j in lead_idx))
+            for kind, tok in toks:
+                out.append({"token": tok, "kind": kind, "chapter": ci,
+                            "file": fn, "lead": bool(lead)})
+    return out
+
+
+def ladder_summary(tokens: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """{kind: [distinct tokens, low to high]} over the LEAD's tokens."""
+    out: Dict[str, List[str]] = {}
+    for t in tokens:
+        if t.get("lead") and t["token"] not in out.setdefault(t["kind"], []):
+            out[t["kind"]].append(t["token"])
+    for k in out:
+        out[k].sort(key=lambda x: (rank_value(x), x))
+    return out
+
+
+def label_ok(label: str, printed: Dict[str, List[str]]) -> bool:
+    """A thumbnail label the examples would print: 1-3 GENRE LADDER words
+    (thumbnail_styles.LADDER), a class the story prints, or a rank / level /
+    floor the story prints for the lead. "LOW -> HIGH" when both sides are."""
+    t = " ".join(str(label or "").upper().replace("\u2192", "->").split())
+    if not t:
+        return False
+    if "->" in t:
+        sides = [x.strip() for x in t.split("->")]
+        return len(sides) == 2 and all(label_ok(x, printed) for x in sides)
+    if len(t.split()) > 3:
+        return False
+    # the examples combine ladder words ("F-RANK SUMMONER", "#1 HUNTER", "NEW
+    # SLAVE", "SSS RANKS"): strip what the story PRINTS and the ladder's own
+    # phrases, then every word left must be a single ladder word or a modifier.
+    # A leftover rank, level or number is one the story never prints: invented.
+    rest = " %s " % _norm_ranks(t)
+    flat = sorted({x.upper() for v in printed.values() for x in v},
+                  key=len, reverse=True)
+    for ph in flat + sorted((w for w in LADDER_WORDS if " " in w or "#" in w),
+                            key=len, reverse=True):
+        rest = re.sub(r"(?<![A-Z0-9#])%s(?![A-Z0-9])" % re.escape(ph), " ", rest)
+    for w in rest.split():
+        if (w in _LADDER_SINGLE or w.rstrip("S") in _LADDER_SINGLE
+                or w in _LABEL_MODIFIERS):
+            continue
+        return False
+    return True
+
+
+_LADDER_SINGLE = frozenset(w for w in LADDER_WORDS if " " not in w)
+# words the examples put in front of a ladder word ("NEW SLAVE", "SOLO SYSTEM
+# MAGE", "SECRET GOD TIER"): they sharpen a label, they never make one
+_LABEL_MODIFIERS = frozenset({"NEW", "SOLO", "SECRET", "TOP", "HIDDEN", "TRUE",
+                              "FIRST", "LAST", "SYSTEM", "TIER", "RANKED"})
+
+
+def _ngrams(text: str, n: int = 4) -> set:
+    w = re.findall(r"[a-z0-9#+$%']+", _SUFFIX_RE.sub("", str(text or "")).lower())
+    return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+def example_ngrams(n: int = 4) -> set:
+    """Every n-word run of every example title: a title that repeats one copied
+    the example instead of writing this story."""
+    out: set = set()
+    for e in load_examples():
+        out |= _ngrams(e.get("title"), n)
+    return out
+
+
+def title_ok(title: str, *, corpus: str = "", banned: str = "",
+             ngrams: Optional[set] = None) -> List[str]:
+    """Why *title* is NOT the examples' shape ([] = it is). Owner, 2026-09-29:
+    one premise sentence + " - Manhwa Recap"; counted over the example titles:
+    55-100 characters, 1-3 FULL CAPS words, no emoji or names."""
+    t = str(title or "")
+    body = _SUFFIX_RE.sub("", t).strip()
+    why: List[str] = []
+    if not t.endswith(_TITLE_SUFFIX):
+        why.append("no ' - Manhwa Recap' suffix")
+    if not 55 <= len(t) <= 100:
+        why.append("length %d (55-100)" % len(t))
+    caps = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9'#+\-]*", body)
+            if len(re.sub(r"[^A-Za-z]", "", w)) >= 2 and w.upper() == w]
+    if not 1 <= len(caps) <= 3:
+        why.append("%d FULL CAPS words (1-3)" % len(caps))
+    if not hook_is_grounded(body, corpus):
+        why.append("a number or rank the story does not state")
+    if banned and _names_the_title(body, banned):
+        why.append("names the licensed title")
+    if (ngrams if ngrams is not None else example_ngrams()) & _ngrams(body):
+        why.append("copies a phrase of an example title")
+    return why
 
 
 # Words a tag can contain without naming anything — never evidence of grounding.
@@ -1382,7 +1784,9 @@ def choose_refs(style: str, beats_list: List[Dict[str, Any]],
                           climax_refs=list(auto_refs or []))
 
 
-_CLOSE_UP_RE = re.compile(r"close-up|closeup|portrait|\\bface\\b", re.IGNORECASE)
+# (was r"...\\bface\\b" inside a raw string: a literal backslash-b, so the
+# word "face" never matched and close-ups were never preferred)
+_CLOSE_UP_RE = re.compile(r"close-up|closeup|portrait|\bface\b", re.IGNORECASE)
 
 
 def ref_candidates(ep_dirs: List[str], beats_list: Any = None, *,
@@ -1539,11 +1943,12 @@ def build_bundle_concept(beats_list: List[Dict[str, Any]], llm: Dict[str, Any],
     return c
 
 
-def _gemma(prompt: str, model: str) -> Dict[str, Any]:
+def _gemma(prompt: str, model: str, *, temperature: float = 0.8,
+           num_predict: int = 800) -> Dict[str, Any]:
     from ollama_compat import chat as _chat
     resp = _chat(model=model, think=False,
                  messages=[{"role": "user", "content": prompt}],
-                 options={"temperature": 0.8, "num_predict": 800})
+                 options={"temperature": temperature, "num_predict": num_predict})
     raw = (resp.get("message") or {}).get("content") or ""
     got = extract_json(raw)
     if not got:
@@ -1735,30 +2140,60 @@ def main() -> int:
                                picked=[r for r in args.refs.split(",") if r.strip()])
 
         if args.write_claim:
-            # ONE understanding per series. Every card is then built from this
-            # file with no further model call (concept_from_claim).
-            hook_block = teaser_hook_block(montage, _teaser_reason(args.teaser_manifest))
+            # ONE hook per series (2026-09-29). The brief no longer reads the
+            # old teaser's HOOK block: the teaser now follows the hook, and
+            # ORV's approved teaser builds to the wrong one. Two local calls,
+            # temperature 0.4 so a re-run does not churn the words.
+            toks = story_ladder_tokens(w_eps)
+            printed = ladder_summary(toks)
+            cands = moment_candidates(w_eps, toks)
+            ladder_block = ("THE LADDER THIS STORY PRINTS: " + "; ".join(
+                "%s %s" % (k, ", ".join(v)) for k, v in printed.items())
+                if printed else "")
             brief = _gemma(build_brief_prompt(digest, args.series_title,
-                                              hook_block=hook_block),
-                           args.ollama_model)
+                                              ladder_block=ladder_block),
+                           args.ollama_model, temperature=0.4, num_predict=1600)
             print("[..] brief: %s" % str(brief.get("premise") or "")[:110])
-            pkg = _gemma(build_claim_prompt(brief, args.series_title,
-                                            tone=args.tone),
-                         args.ollama_model)
-            corpus = beats_text_corpus(w_beats[climax_ci] if w_beats else {})
-            grounded = lambda raw: [x for x in (t.replace("|", " -> ")
-                                                for t in _clean_labels(raw))
-                                    if hook_is_grounded(x, corpus)]
+            print("[..] printed ladder: %s" % (printed or "none"))
+            pkg = _gemma(build_hook_prompt(brief, printed, cands,
+                                           args.series_title, tone=args.tone),
+                         args.ollama_model, temperature=0.4, num_predict=1600)
+            corpus = "\n".join([beats_text_corpus(b) for b in w_beats]
+                               + [window_printed_text(w_eps)])
+            hook = validate_hook(pkg, printed=printed, cands=cands,
+                                 corpus=corpus, banned=args.series_title)
+            mocks = choose_layout(hook, cands)
+            print("[..] hook: %s" % hook["sentence"][:140])
+            print("[..] labels: %s | low/high: %s/%s" % (
+                [x["text"] for x in hook["labels"]], hook["low"], hook["high"]))
+            for t in hook["titles"]:
+                print("[..] title: %s" % t["text"])
+            for t in hook["rejected_titles"]:
+                print("[..] title REJECTED (%s): %s" % ("; ".join(t["why"]), t["text"]))
+            for m in mocks:
+                print("[..] option %s: %s %s -- %s" % (m["name"], m["layout"],
+                                                       m["labels"], m["reason"]))
+            picks: Dict[str, Any] = {}
+            try:                             # the owner's choices survive a re-write
+                with open(args.write_claim, encoding="utf-8") as f:
+                    picks = (json.load(f) or {}).get("picks") or {}
+            except (OSError, ValueError):
+                pass
+            grounded = lambda raw: [x["text"] for x in hook["labels"]]
             names, why = rank_designs(montage, banned=args.series_title,
                                       card_lines=card_options)
             synopsis = str(pkg.get("description") or "").strip()
             hashtags = pkg.get("hashtags") or ["#manhwa", "#manga", "#manhwarecap"]
             claim = {
-                "title": normalize_title(pkg.get("title")),
+                "title": (hook["titles"][0]["text"] if hook["titles"] else ""),
                 "style": SCENE_STYLES[0], "brief": brief,
                 "scene": re.sub(r"\s+", " ", str(pkg.get("scene") or "")).strip(),
                 "labels": grounded(pkg.get("labels")),
-                "headlines": grounded(pkg.get("headlines")),
+                # the one headline is the climb the story backs (LOW -> HIGH)
+                "headlines": ([hook["low"] + " -> " + hook["high"]]
+                              if hook["low"] and hook["high"] else []),
+                "hook": hook, "titles": hook["titles"], "ladder": printed,
+                "moments": cands, "mocks": mocks, "picks": picks,
                 "card": card, "card_options": card_options, "tone": args.tone,
                 "designs": names, "design_reason": why,
                 "claim_source": claim_source,

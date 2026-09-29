@@ -2878,15 +2878,14 @@ def test_a_failed_ranking_builds_nothing_and_is_not_retried(tmp_path, monkeypatc
     assert not [c for c in calls if c[1].endswith("thumbnail_build.py")]
 
 
-def test_teaser_manifest_is_passed_only_for_a_reviewable_teaser(tmp_path,
-                                                                monkeypatch):
-    """A planned/approved teaser is what the owner reviewed, so it drives the
-    thumbnail. A declined one was rejected, and a state with no file is just a
-    column: both fall back to the computed montage."""
+def test_the_claim_never_reads_the_old_teaser(tmp_path, monkeypatch):
+    """2026-09-29: the hook is written FIRST and the teaser follows it. A
+    teaser in any state never drives the claim (ORV's approved teaser builds to
+    the wrong hook), so the window is always the computed montage."""
     import io
     import pytest
-    for state, write_file, expected in [("approved", True, True),
-                                        ("planned", True, True),
+    for state, write_file, expected in [("approved", True, False),
+                                        ("planned", True, False),
                                         ("declined", True, False),
                                         ("approved", False, False),
                                         ("none", True, False)]:

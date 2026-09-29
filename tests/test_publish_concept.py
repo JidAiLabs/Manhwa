@@ -529,7 +529,7 @@ def test_package_prompt_writes_from_the_brief_not_the_narration():
 
 
 def test_assemble_package_honours_the_models_layout_choice():
-    beats = {"beats": [{"segments": [{"line": "he reaches level 3"}]}]}
+    beats = {"beats": [{"segments": [{"line": "the F-rank porter reaches level 3"}]}]}
     pkg = {"title": "T", "description": "D", "thumbnail_style": "vs_monster",
            "style_reason": "a giant foe",
            "labels": ["F-RANK PORTER"], "hashtags": ["#m"]}
@@ -951,8 +951,10 @@ def test_only_grounded_label_candidates_are_offered():
            "labels": ["LEVEL 999 GOD", "F-RANK -> KING", "LEVEL 11 READER"],
            "hashtags": []}
     c = pc.assemble_package(beats, {}, pkg, series_title="X")
-    assert c["hooks"] == ["F-RANK -> KING", "LEVEL 11 READER"]
-    assert c["hook"] == "F-RANK -> KING"
+    # F-RANK is ONE rank claim the corpus never states (2026-09-29: checking
+    # only digits let FTA's "0-rank" title through on any "0")
+    assert c["hooks"] == ["LEVEL 11 READER"]
+    assert c["hook"] == "LEVEL 11 READER"
 
 
 def test_look_evidence_must_not_contradict_the_registry_hair_colour(tmp_path,
@@ -1291,7 +1293,7 @@ def _run_main(monkeypatch, argv, replies=()):
     import sys as _s
     prompts, it = [], iter(replies)
 
-    def fake(prompt, model):
+    def fake(prompt, model, **kw):
         prompts.append(prompt)
         return next(it)
     monkeypatch.setattr(pc, "_gemma", fake)
@@ -1671,12 +1673,19 @@ def test_claim_prompt_asks_for_one_paintable_scene():
 
 _CLAIM_REPLIES = [
     {"premise": "A commuter's finished web novel becomes reality."},
-    {"title": "lonely reader becomes the only one who knows the script",
+    {"hook": "The weakest commuter is the only one who read how the world ends.",
+     "low": "NOBODY", "high": "KING",
+     "titles": [{"text": "He Was The WEAKEST Man On The Train Until A Blank "
+                         "Window Made Him A KING", "label": "WEAKEST"},
+                {"text": "A Nobody On The Train Read How This World Ends And "
+                         "Became Its Only KING", "label": "KING"},
+                {"text": "short", "label": ""}],
      "description": "D", "hashtags": ["#m"],
      "scene": "A crowded subway car; a blank glowing window hangs in the air; "
               "one calm man reads his phone while passengers panic.",
-     "labels": ["WEAKEST HUNTER", "LEVEL 999 GOD"],
-     "headlines": ["NOBODY -> KING"]}]
+     "labels": [{"text": "WEAKEST HUNTER", "subject": "hero"},
+                {"text": "LEVEL 999 GOD", "subject": "hero"},
+                {"text": "THE ONLY READER", "subject": "hero"}]}]
 
 
 def _write_claim(tmp_path, monkeypatch, arc=_ARC, extra=()):
@@ -1693,12 +1702,25 @@ def test_write_claim_understands_once_and_saves_everything_a_card_needs(
         tmp_path, monkeypatch):
     import json as _j
     eps, out, rc, prompts = _write_claim(tmp_path, monkeypatch)
-    assert rc == 0 and len(prompts) == 2          # understand, then claim: ONCE
-    assert "THE HOOK" in prompts[0] and '"scene"' in prompts[1]
+    assert rc == 0 and len(prompts) == 2          # understand, then hook: ONCE
+    # the brief no longer reads the old teaser's hook (the teaser follows the
+    # hook now); the hook call sees the printed ladder and the moments
+    assert "THE HOOK" not in prompts[0]
+    assert "THE LADDER THIS STORY PRINTS" in prompts[1] and '"scene"' in prompts[1]
     c = _j.loads(out.read_text())
     assert c["scene"].startswith("A crowded subway car")
-    assert c["labels"] == ["WEAKEST HUNTER"]      # the invented number is not offered
-    assert c["headlines"] == ["NOBODY -> KING"]
+    # ladder words only: the invented number and the story noun are refused
+    assert c["labels"] == ["WEAKEST HUNTER"]
+    assert c["headlines"] == ["NOBODY -> KING"]     # the backed climb
+    assert (c["hook"]["low"], c["hook"]["high"]) == ("NOBODY", "KING")
+    assert [t["text"] for t in c["titles"]] == [
+        "A Nobody On The Train Read How This World Ends And Became Its Only "
+        "KING - Manhwa Recap"]
+    why = {r["text"][:14]: r["why"] for r in c["hook"]["rejected_titles"]}
+    # "He was the weakest" is an example title's opening: copied, refused
+    assert why["He Was The WEA"] == ["copies a phrase of an example title"]
+    assert why["Short - Manhwa"]                      # too short says so
+    assert c["picks"] == {} and isinstance(c["mocks"], list)
     assert c["designs"][0] == "system_window" and len(c["designs"]) == 2
     assert c["card"] and c["claim_source"] == "montage:computed"
     assert c["climax_chapter_index"] == 1 and c["badge"] == "3 CHAPTERS"
@@ -1840,3 +1862,124 @@ def test_claim_title_shape_is_he_plus_one_twist_and_short():
     p = pc.build_claim_prompt({"premise": "P"}, "B")
     assert "45-70 characters" in p and "starting with He or She" in p and "ONE twist" in p
     assert "45-80 characters" not in p
+
+
+
+import pytest  # noqa: E402  (the hook tests below are parametrised)
+
+# ---- the hook: ladder words, printed ranks, titles like the examples --------
+# (owner, 2026-09-29: "genre ladder words"; "premise + ' - Manhwa Recap'")
+
+def test_the_example_library_is_data_and_counts_come_from_it():
+    from thumbnail_styles import load_examples
+    ex = load_examples()
+    assert len(ex) >= 42
+    for e in ex:
+        assert e["layout"] in ("hero", "split")
+        assert e["text"] in ("label", "none")
+        assert e["arrow_target"] in ("hero", "object", "none")
+        assert (e["text"] == "none") == (not e["labels"])
+    new = [e for e in ex if e["batch"] == "2026-09-29"]
+    assert len(new) == 13 and sum(e["layout"] == "split" for e in new) == 6
+
+
+def test_printed_ladder_tokens_are_normalised():
+    got = pc.ladder_tokens_in("[LV. 8] an s rank hunter. CLASS: ELECTRIC WARRIOR "
+                              "10TH FLOOR  SSS+  RANK #1  LEVEL: 26")
+    assert got == [("rank", "S-RANK"), ("rank", "SSS+"), ("ranknum", "RANK #1"),
+                   ("level", "LEVEL 8"), ("level", "LEVEL 26"),
+                   ("floor", "FLOOR 10"), ("class", "ELECTRIC WARRIOR")]
+    from thumbnail_styles import rank_value
+    assert rank_value("F-RANK") < rank_value("S-RANK") < rank_value("SSS+")
+    assert rank_value("LEVEL 26") < rank_value("F-RANK")
+
+
+def test_a_rank_is_one_claim_not_its_digit():
+    """FTA's live claim title said "0-rank": its "0" was found in the chapter,
+    so it passed. A rank token is checked whole."""
+    assert pc.hook_claims("Breaks The 0-rank Limit at s rank") == ["0-RANK", "S-RANK"]
+    assert not pc.hook_is_grounded("He Breaks The 0-rank Limit", "level 0, 10 ranks")
+    assert pc.hook_is_grounded("an S-RANK hunter", "she is an S rank hunter")
+
+
+@pytest.mark.parametrize("label, ok", [
+    ("NECROMANCER", True), ("WEAKEST HUNTER", True), ("TRASH -> GOD", True),
+    ("NEW SLAVE", True), ("RANK #1", True), ("S-RANK", True),
+    ("F-RANK SUMMONER", False),            # F-RANK is never printed here
+    ("SSS-RANK", False), ("LEVEL 999 GOD", False),
+    # the owner's "idiotic" labels (2026-09-29): story nouns, not ladder words
+    ("THE ONLY READER", False), ("SCENARIO PLAYER", False),
+    ("THE PROTAGONIST", False), ("THE SOLE SURVIVOR", False),
+    ("ELECTRIC WARRIOR", True),            # a class the story prints
+])
+def test_a_label_is_a_ladder_word_or_a_printed_rank(label, ok):
+    printed = {"rank": ["S-RANK"], "class": ["ELECTRIC WARRIOR"]}
+    assert pc.label_ok(label, printed) is ok
+
+
+def test_a_title_is_the_examples_shape_and_never_copies_one():
+    good = pc.normalize_title("A Nobody On The Train Read How This World Ends "
+                              "And Became Its Only KING")
+    assert pc.title_ok(good, corpus="x") == []
+    assert "copies a phrase of an example title" in pc.title_ok(
+        pc.normalize_title("He Was The Weakest Rookie Until He Summoned An ARMY "
+                           "Of Clones"), corpus="x")
+    assert any("length" in w for w in pc.title_ok(pc.normalize_title("Short"),
+                                                   corpus="x"))
+    assert any("FULL CAPS" in w for w in pc.title_ok(pc.normalize_title(
+        "A Nobody On The Train Read How This World Ends And Became Its Only King"),
+        corpus="x"))
+    assert "names the licensed title" in pc.title_ok(pc.normalize_title(
+        "The Omniscient Reader Knew How This World Ends And Became A KING"),
+        corpus="x", banned="Omniscient Reader")
+
+
+def _cands():
+    return [{"id": "m1", "kind": "lead", "path": "/a/p1.jpg"},
+            {"id": "m2", "kind": "print", "path": "/a/p2.jpg"},
+            {"id": "m3", "kind": "print", "path": "/a/p3.jpg"}]
+
+
+def test_layout_is_decided_by_the_story_not_asked():
+    hook = {"low": "F-RANK", "high": "S-RANK",
+            "moments": {"hero": "m1", "before": "m2", "after": "m3"},
+            "labels": [{"text": "NECROMANCER", "subject": "hero", "moment": "m1"}]}
+    a, b = pc.choose_layout(hook, _cands())
+    assert (a["layout"], a["labels"], a["arrow"]) == ("split", ["F-RANK", "S-RANK"], None)
+    assert a["panels"] == ["/a/p2.jpg", "/a/p3.jpg"]
+    assert (b["layout"], b["labels"], b["arrow"]) == ("hero", ["NECROMANCER"], "hero")
+    # no backed climb: two hero options, then the clean scene
+    only = pc.choose_layout({"low": "", "high": "", "moments": {"hero": "m1"},
+                             "labels": [{"text": "OP", "subject": "hero",
+                                         "moment": ""}]}, _cands())
+    assert [o["name"] for o in only] == ["hero", "clean"]
+    assert pc.choose_layout({"low": "", "high": "", "moments": {},
+                             "labels": []}, _cands())[0]["labels"] == []
+
+
+def test_validate_hook_keeps_only_what_the_story_backs():
+    printed = {"rank": ["E-RANK", "S-RANK"]}
+    h = pc.validate_hook(
+        {"hook": " He  starts at E-RANK. ", "low": "S-RANK", "high": "E-RANK",
+         "labels": [{"text": "s-rank", "subject": "object", "moment": "m9"},
+                    {"text": "The Only Reader"}],
+         "moments": {"hero": "m1", "before": "zz"}, "titles": ["x"]},
+        printed=printed, cands=_cands(), corpus="E-RANK S-RANK", banned="")
+    assert h["sentence"] == "He starts at E-RANK."
+    assert (h["low"], h["high"]) == ("", "")          # a climb that goes DOWN
+    assert h["labels"] == [{"text": "S-RANK", "subject": "object", "moment": ""}]
+    assert h["moments"] == {"hero": "m1"}
+    assert h["titles"] == [] and h["rejected_titles"][0]["why"]
+
+
+def test_a_rewritten_claim_keeps_the_owners_picks(tmp_path, monkeypatch):
+    import json as _j
+    eps = _series(tmp_path, _ARC)
+    out = tmp_path / "claim.json"
+    out.write_text(_j.dumps({"picks": {"title": "MY TITLE", "mock": "split"}}))
+    rc, _ = _run_main(monkeypatch, [
+        "--episode-dirs", ",".join(eps), "--write-claim", str(out),
+        "--teaser-scan-chapters", "2", "--teaser-min-panels", "2"],
+        replies=list(_CLAIM_REPLIES))
+    assert rc == 0
+    assert _j.loads(out.read_text())["picks"] == {"title": "MY TITLE", "mock": "split"}

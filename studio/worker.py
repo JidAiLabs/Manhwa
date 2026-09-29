@@ -2026,22 +2026,16 @@ def _prepared_eps(con: sqlite3.Connection, sid: int) -> List[str]:
 
 
 def _teaser_args(con: sqlite3.Connection, sid: int) -> List[str]:
-    """The SAME window and knobs _h_teaser plans with, so the claim and the
-    cold open agree on the hook. The teaser's own manifest is passed only when
-    the owner can review that teaser: a declined one was rejected, and a state
-    with no file on disk is just a column."""
+    """The SAME window and knobs _h_teaser plans with. The teaser's manifest is
+    NOT passed any more (2026-09-29): the hook is written first and the teaser
+    follows it, not the other way round -- ORV's approved teaser builds to the
+    wrong hook (a knife-fighting skill window picked by keyword score)."""
     cfg = _beats_cfg()
-    args = ["--teaser-scan-chapters",
+    return ["--teaser-scan-chapters",
             str(int(getattr(cfg, "publish_auto_after_chapters", 12) or 12)),
             "--teaser-min-panels", str(cfg.teaser_min_panels),
             "--teaser-max-panels", str(cfg.teaser_max_hook_panels),
             "--teaser-payoff-tail-frac", str(cfg.teaser_payoff_tail_frac)]
-    manifest = REPO / "dist" / f"series_{sid}" / "teaser" / "manifest.teaser.json"
-    state = con.execute("SELECT teaser_state FROM series WHERE id=?",
-                        (sid,)).fetchone()
-    if state and state[0] in ("planned", "approved") and manifest.exists():
-        args += ["--teaser-manifest", str(manifest)]
-    return args
 
 
 def _write_series_claim(con: sqlite3.Connection, sid: int, eps: List[str],
