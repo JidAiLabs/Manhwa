@@ -2254,6 +2254,17 @@ def main() -> int:
                                                  args.official_link)}
             os.makedirs(os.path.dirname(os.path.abspath(args.write_claim)),
                         exist_ok=True)
+            # FREE mocks of both options on the story's real panels, beside the
+            # claim (mocks/): the owner sees the composition before any paint
+            try:
+                from thumbnail_mock import render_claim_mocks
+                for m in render_claim_mocks(claim, os.path.join(
+                        os.path.dirname(os.path.abspath(args.write_claim)), "mocks")):
+                    print("[..] mock %s: %s arrow=%s %s" % (
+                        m["name"], m.get("image") or "(no panel)",
+                        bool(m.get("arrow_box")), m.get("arrow_note") or ""))
+            except Exception as e:           # a mock must never cost the claim
+                print("[warn] mocks not rendered: %r" % e)
             with open(args.write_claim, "w", encoding="utf-8") as f:
                 json.dump(claim, f, ensure_ascii=False, indent=2)
             print("[ok] wrote=%s designs=%s labels=%d scene=%r"
