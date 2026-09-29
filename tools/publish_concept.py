@@ -388,8 +388,30 @@ def build_claim_prompt(brief: Dict[str, Any], banned: str,
 # every rank, level and number checked against what the story prints. Code, not
 # the model, decides the layout and whether an arrow can point at anything.
 
+def panel_emptiness(path: str) -> float:
+    """Fraction of a panel's rows that are flat black or white (a close-up band
+    over a black fill, a caption box): what a thumbnail frame would show as
+    nothing. Checkpoint A framed ORV's hero on a panel half black."""
+    try:
+        from PIL import Image
+        im = Image.open(path).convert("L")
+        im.thumbnail((200, 400))
+        w, h = im.size
+        px = list(im.getdata())
+    except Exception:
+        return 1.0
+    flat = 0
+    for y in range(h):
+        row = px[y * w:(y + 1) * w]
+        m = sum(row) / max(1, w)
+        if (m < 22 or m > 240) and max(row) - min(row) < 60:
+            flat += 1
+    return flat / max(1, h)
+
+
 def moment_candidates(w_eps: List[str], tokens: List[Dict[str, Any]], *,
-                      n_lead: int = 8, n_print: int = 6) -> List[Dict[str, Any]]:
+                      n_lead: int = 10, n_print: int = 6,
+                      max_empty: float = 0.3) -> List[Dict[str, Any]]:
     """Panels the hook may point at, each with an id the model answers with
     (never a file name): clean solo shots of the lead (ref_candidates), then the
     panels that PRINT the lead's lowest and highest ladder tokens."""
@@ -416,8 +438,11 @@ def moment_candidates(w_eps: List[str], tokens: List[Dict[str, Any]], *,
     cands: List[Dict[str, Any]] = []
     for r in ref_candidates(w_eps, n=n_lead, prefer_first=len(w_eps))["refs"]:
         ci, fn = int(r["chapter"]), str(r["file"])
+        path = _path(ci, fn)
+        if panel_emptiness(path) > max_empty:
+            continue
         cands.append({"kind": "lead", "chapter": ci, "file": fn,
-                      "path": _path(ci, fn), "desc": _desc(ci, fn)[:160],
+                      "path": path, "desc": _desc(ci, fn)[:160],
                       "tokens": []})
     by_panel: Dict[tuple, List[str]] = {}
     for t in tokens:
@@ -526,8 +551,9 @@ def validate_hook(pkg: Dict[str, Any], *, printed: Dict[str, List[str]],
     if low and high and rank_value(low) >= 0 and rank_value(high) >= 0 \
             and rank_value(low) >= rank_value(high):
         low = high = ""                      # a "climb" that goes down or nowhere
-    moments = {k: str(v) for k, v in (pkg.get("moments") or {}).items()
-               if k in ("hero", "before", "after") and str(v) in ids}
+    moments = lead_moments({k: str(v) for k, v in (pkg.get("moments") or {}).items()
+                            if k in ("hero", "before", "after") and str(v) in ids},
+                           cands)
     ng = example_ngrams()
     titles: List[Dict[str, Any]] = []
     rejected: List[Dict[str, Any]] = []
@@ -543,6 +569,27 @@ def validate_hook(pkg: Dict[str, Any], *, printed: Dict[str, List[str]],
     return {"sentence": " ".join(str(pkg.get("hook") or "").split()),
             "low": low, "high": high, "labels": labels, "moments": moments,
             "titles": titles, "rejected_titles": rejected}
+
+
+def lead_moments(moments: Dict[str, str], cands: List[Dict[str, Any]]
+                 ) -> Dict[str, str]:
+    """Every chosen moment shows the MAIN CHARACTER. A panel that PRINTS a rank
+    is evidence, not a picture of him: Checkpoint A's FTA hero labelled
+    SSS-CLASS showed another man, and printed panels carry emptied speech
+    bubbles. A print pick becomes a clean solo shot of the lead: the earliest
+    for "before", the latest for "after" and "hero"."""
+    leads = sorted((c for c in cands if c.get("kind") == "lead"),
+                   key=lambda c: (c.get("chapter", 0), c.get("file", "")))
+    kind = {c["id"]: c.get("kind") for c in cands}
+    out: Dict[str, str] = {}
+    for k, v in moments.items():
+        if kind.get(v) == "lead":
+            out[k] = v
+        elif leads:
+            out[k] = (leads[0] if k == "before" else leads[-1])["id"]
+    if out.get("before") and out.get("before") == out.get("after") and len(leads) > 1:
+        out["before"], out["after"] = leads[0]["id"], leads[-1]["id"]
+    return out
 
 
 def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
@@ -579,9 +626,16 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]]
         return (0 if t == hook.get("high") else 1,
                 1 if (t in low_words or t == hook.get("low")) else 0,
                 -rank_value(t))
-    for lab in sorted(hook.get("labels") or [], key=_pull):
+    pool = list(hook.get("labels") or [])
+    on_split = set(out[0]["labels"]) if out else set()
+    if (hook.get("high") and not on_split
+            and hook["high"] not in [x["text"] for x in pool]):
+        pool.insert(0, {"text": hook["high"], "subject": "hero", "moment": ""})
+    for lab in sorted(pool, key=_pull):
         if len(out) >= 2:
             break
+        if lab["text"] in on_split:
+            continue                      # the split already says it: add a new word
         if lab["text"] == hook.get("low") or lab["text"] in low_words:
             continue                      # a low label only appears in a split
         m = lab.get("moment") or (mo.get("after") if lab["text"] == hook.get("high")

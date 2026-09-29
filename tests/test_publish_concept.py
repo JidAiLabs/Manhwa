@@ -2006,3 +2006,43 @@ def test_a_level_in_someone_elses_profile_or_on_a_skill_is_not_the_leads():
     assert ("level", "LEVEL 3", False) in pc._ladder_hits("NEW SKILL LV. 3")
     m = pc._PROFILE_NAME_RE.search("[CHARACTER PROFILE] NAME: NAMWOON KIM AGE: 19")
     assert m and m.group(1).strip().upper() == "NAMWOON KIM"
+
+
+
+def test_every_moment_shows_the_lead_never_a_printed_panel():
+    """Checkpoint A: FTA's SSS-CLASS hero showed ANOTHER man, because the model
+    picked the panel that printed the rank; printed panels also carry emptied
+    speech bubbles."""
+    cands = [{"id": "m1", "kind": "lead", "chapter": 0, "file": "a.jpg"},
+             {"id": "m2", "kind": "lead", "chapter": 5, "file": "b.jpg"},
+             {"id": "m3", "kind": "print", "chapter": 3, "file": "c.jpg"}]
+    got = pc.lead_moments({"hero": "m3", "before": "m1", "after": "m3"}, cands)
+    assert got == {"hero": "m2", "before": "m1", "after": "m2"}
+    same = pc.lead_moments({"before": "m3", "after": "m3"}, cands)
+    assert same == {"before": "m1", "after": "m2"}
+
+
+def test_the_high_word_labels_the_hero_even_when_not_listed():
+    """Checkpoint A: ORV's hero said REAL WORLD because LEGEND (its HIGH) was
+    not among the model's labels."""
+    got = pc.choose_layout({"low": "NOBODY", "high": "LEGEND",
+                            "moments": {"hero": "m1"},
+                            "labels": [{"text": "REAL WORLD", "subject": "object",
+                                        "moment": ""}]}, _cands()[:1])
+    assert got[0]["labels"] == ["LEGEND"]
+
+
+def test_a_mostly_empty_panel_is_not_a_moment(tmp_path):
+    from PIL import Image
+    half = tmp_path / "half.png"
+    im = Image.new("RGB", (400, 800), (0, 0, 0))
+    im.paste(Image.new("RGB", (400, 300), (120, 90, 60)), (0, 0))
+    im.save(half)
+    busy = tmp_path / "busy.png"
+    import random
+    random.seed(1)
+    b = Image.new("RGB", (400, 800))
+    b.putdata([(random.randint(0, 255),) * 3 for _ in range(400 * 800)])
+    b.save(busy)
+    assert pc.panel_emptiness(str(half)) > 0.5
+    assert pc.panel_emptiness(str(busy)) < 0.05
