@@ -185,6 +185,10 @@ def _clean_labels(raw: Any) -> List[str]:
     return [str(x).strip() for x in raw if str(x).strip()]
 
 
+_GLUE = frozenset("a an the of to in on at by for and or with from is his her "
+                  "my your our their".split())
+
+
 def _names_the_title(line: str, banned: str) -> bool:
     """True when *line* carries the licensed title: the whole phrase, or any
     two consecutive title words. ONE shared word is the story's own vocabulary
@@ -193,8 +197,12 @@ def _names_the_title(line: str, banned: str) -> bool:
     title, text = norm(banned), " " + " ".join(norm(line)) + " "
     if not title:
         return False
+    # a pair of glue words is not the name: "of the" in "The Tutorial Tower
+    # of the Advanced Player" refused "Secrets Of The Tower" and "shadows of
+    # the city" (2026-09-30)
     pairs = ([title] if len(title) == 1
-             else [title[i:i + 2] for i in range(len(title) - 1)])
+             else [title[i:i + 2] for i in range(len(title) - 1)
+                   if not set(title[i:i + 2]) <= _GLUE])
     return any(" " + " ".join(p) + " " in text for p in pairs)
 
 
@@ -673,9 +681,10 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]],
         out.append({"name": "hero" if not any(o["name"] == "hero" for o in out)
                     else "hero_2", "layout": "hero", "labels": [lab["text"]],
                     "moments": [m], "arrow": arrow,
-                    "reason": "a ladder word names what he %s: %s"
-                              % ("is" if lab["subject"] == "hero" else "has",
-                                 lab["text"])})
+                    "reason": ("a place word names where it happens: %s"
+                               % lab["text"]) if lab["text"] in LADDER["place"]
+                    else "a ladder word names what he %s: %s"
+                    % ("is" if lab["subject"] == "hero" else "has", lab["text"])})
     if len(out) < 2 and hero_moment:
         out.append({"name": "clean", "layout": "hero", "labels": [],
                     "moments": [hero_moment], "arrow": None,
@@ -773,7 +782,8 @@ def build_art_direction_prompt(brief: Dict[str, Any], hook: Dict[str, Any],
         + "Return ONLY JSON:\n{\n"
         '  "twist": "the ONE thing in the picture that shows the hook, seen '
         'WITHOUT reading any text: an object, a contrast, a reaction. '
-        'Concrete, from this story",\n'
+        'Concrete, from this story. A screen, window or book that carries '
+        'it shows a PICTURE, never words",\n'
         '  "question": "the question a stranger asks on seeing it, ending '
         'with ?",\n'
         '  "mc": "the main character: how they look (as described above), '
@@ -782,7 +792,7 @@ def build_art_direction_prompt(brief: Dict[str, Any], hook: Dict[str, Any],
         'react to the main character",\n'
         '  "setting": "where it happens, in concrete nouns from the story",\n'
         '  "light": "the palette: what glows and what is dark",\n'
-        '  "genre": "the genre sign in the frame",\n'
+        '  "genre": "the genre sign in the frame (a window glows BLANK)",\n'
         '  "word": "the ONE word from the list above",\n'
         '  "title": "the video title this picture goes with, copied exactly"\n'
         "}")
@@ -792,7 +802,11 @@ _STOP = frozenset("that this with from into their there they them what when "
                   "where which while have been will would only about over "
                   "under just than then your being after before other".split())
 _READ_RE = re.compile(r"\b(?:reads?|reading the|says?|written|writes|"
-                      r"letters?|caption|spells?)\b|[\"“”]", re.I)
+                      r"letters?|caption|spells?|texts?|words?|displays?|"
+                      r"displaying|instructions?)\b|[\"“”]", re.I)
+# every field the painter paints from: none may need a written word (ORV's
+# first design put "cryptic, blood-colored text" in the genre sign)
+_PAINTED_KEYS = ("twist", "mc", "others", "setting", "light", "genre")
 
 
 def _content_words(text: str) -> set:
@@ -814,15 +828,20 @@ def check_art_direction(ad: Dict[str, Any], hook: Dict[str, Any],
     if len(twist.split()) < 5 or not (_content_words(twist) & story):
         fails.append("1: the twist must be a concrete thing from THIS story's "
                      "premise (it shares no word with the premise or the hook)")
+    elif re.search(r"\bor\b", twist, re.I):
+        fails.append("1: the twist is ONE thing the painter can paint, not "
+                     "alternatives ('X or Y')")
     q = str(ad.get("question") or "").strip()
     if len(q.split()) < 4 or not q.endswith("?"):
         fails.append("2: the question a stranger asks must be a full question "
                      "ending with ?")
     if len(str(ad.get("mc") or "").split()) < 4:
         fails.append("3: describe the main character: look, pose, expression")
-    if _READ_RE.search(twist):
-        fails.append("4: the twist cannot need reading: the painter prints no "
-                     "letters, so show it as a picture")
+    wordy = [k for k in _PAINTED_KEYS if _READ_RE.search(str(ad.get(k) or ""))]
+    if wordy:
+        fails.append("4: the picture cannot carry words (%s): the painter "
+                     "prints no letters, so a screen or window shows a "
+                     "PICTURE or glows blank" % ", ".join(wordy))
     word = str(ad.get("word") or "").strip().upper()
     if word not in art_words(hook) or len(word.split()) > 2:
         fails.append("5: the word must be ONE of: %s" % ", ".join(art_words(hook)))
@@ -842,6 +861,23 @@ def check_art_direction(ad: Dict[str, Any], hook: Dict[str, Any],
     return fails
 
 
+def _share_a_word(ad: Dict[str, Any], hook: Dict[str, Any]) -> Dict[str, Any]:
+    """Property 8 by construction: the model named a word and a title that do
+    not share it (ORV: REAL WORLD with "...Already Read The ENDING", twice,
+    the retry told why). Keep its title and take the allowed word it
+    contains; else the first title that contains its word; else the first
+    pair that meets. The word is overlaid, never painted: the picture holds."""
+    titles = [t["text"] for t in hook.get("titles") or []]
+    words = art_words(hook)
+    has = lambda w, t: re.search(r"(?<![A-Z0-9])%s(?![A-Z0-9])" % re.escape(w),
+                                 t.upper())
+    for t in ([ad["title"]] if ad.get("title") in titles else []) + titles:
+        for w in ([ad["word"]] if ad.get("word") in words else []) + words:
+            if has(w, t):
+                return dict(ad, title=t, word=w)
+    return ad
+
+
 def direct_art(brief: Dict[str, Any], hook: Dict[str, Any], look: str,
                banned: str, ask) -> Dict[str, Any]:
     """Write the picture, check it, and let the model fix what failed ONCE.
@@ -852,7 +888,7 @@ def direct_art(brief: Dict[str, Any], hook: Dict[str, Any], look: str,
     for _ in range(2):
         raw = ask(build_art_direction_prompt(brief, hook, look, banned, fails))
         ad = {k: " ".join(str(raw.get(k) or "").split()) for k in _ART_KEYS}
-        ad["word"] = ad["word"].upper()
+        ad = _share_a_word(dict(ad, word=ad["word"].upper()), hook)
         fails = check_art_direction(ad, hook, brief, banned)
         if not best or len(fails) < len(best["fails"]):
             best = dict(ad, fails=fails, look=look)

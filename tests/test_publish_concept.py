@@ -2223,3 +2223,53 @@ def test_a_mock_paint_run_is_free_and_writes_the_concept(tmp_path, monkeypatch):
         "--mock", "hero", "--out", str(out)])
     assert rc == 0 and prompts == []
     assert _j.loads(out.read_text())["hook"] == "KING"
+
+
+def test_no_painted_field_may_need_a_written_word():
+    """ORV's first design (2026-09-30) put "cryptic, blood-colored text" in the
+    genre sign and a phone that "displays a 'Scenario' instruction": the
+    painter prints no letters, so the twist would be lost, or the paid art
+    refused for drawn text."""
+    for field, value in (("genre", "a red window with cryptic, blood-colored text"),
+                         ("twist", "his phone displays a 'Scenario' instruction "
+                                   "on the subway"),
+                         ("setting", "a train whose walls show the words GAME OVER")):
+        got = pc.check_art_direction(dict(_GOOD_ART, word="KING", **{field: value}),
+                                     _HOOK, _BRIEF, "B")
+        assert any(f.startswith("4:") and field in f for f in got), (field, got)
+    # a possessive is not a quote
+    assert pc.check_art_direction(
+        dict(_GOOD_ART, word="KING", mc="the hero's calm face, the villain's "
+                                        "shadow behind him"),
+        _HOOK, _BRIEF, "B") == []
+
+
+def test_the_word_and_the_title_are_made_to_share_one():
+    """ORV twice named REAL WORLD with a title that does not contain it, the
+    retry told why. The word is overlaid, not painted, so code picks the pair."""
+    hook = dict(_HOOK, titles=[{"text": "He Already Read The ENDING - Manhwa Recap"},
+                               {"text": "He Survived And Became A KING - Manhwa Recap"}])
+    got = pc._share_a_word(dict(_GOOD_ART, word="NOBODY",
+                                title=hook["titles"][0]["text"]), hook)
+    assert (got["word"], got["title"]) == ("KING", hook["titles"][1]["text"])
+    # the model's own title is kept when an allowed word is in it
+    got = pc._share_a_word(dict(_GOOD_ART, word="NOBODY",
+                                title=hook["titles"][1]["text"]), hook)
+    assert (got["word"], got["title"]) == ("KING", hook["titles"][1]["text"])
+
+
+def test_glue_words_of_a_licensed_title_are_not_its_name():
+    banned = "The Tutorial Tower of the Advanced Player"
+    assert not pc._names_the_title("dark shadows of the city streets", banned)
+    assert not pc._names_the_title("He Holds The Secrets Of The Tower", banned)
+    assert pc._names_the_title("a tutorial tower rises", banned)
+    assert pc._names_the_title("the Advanced Player returns", banned)
+    assert pc._names_the_title("reader", "Reader")          # a one-word title
+
+
+def test_a_twist_is_one_thing_not_alternatives():
+    got = pc.check_art_direction(
+        dict(_GOOD_ART, word="KING",
+             twist="the weakest commuter crushes a glowing artifact or a "
+                   "monster's weapon on the train"), _HOOK, _BRIEF, "B")
+    assert any(f.startswith("1:") and "alternatives" in f for f in got)
