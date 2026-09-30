@@ -1449,6 +1449,12 @@ def clean_card_text(text: str) -> str:
     """
     t = _CARD_STAMP_RE.sub("", str(text or ""))
     t = _CARD_MARKUP_RE.sub(" ", t)
+    # a LONE paren is a misread window bracket: ORV Ep311 printed
+    # '(FABLE "KING OF TWELVE SUNS" IS RADIATING LIGHT' and "(fable" was voiced
+    if "(" in t and ")" not in t:
+        t = t.replace("(", " ")
+    if ")" in t and "(" not in t:
+        t = t.replace(")", " ")
     t = _CARD_LEAD_JUNK_RE.sub("", t)
     return re.sub(r"\s+", " ", t).strip()
 
@@ -1462,6 +1468,10 @@ _CARD_CLOSE_RE = re.compile(r"\s*[\]>\u203a\u3009]\s*")
 
 
 _CARD_LABEL_MAX_WORDS = 4
+# a printed line that opens with one of these continues the line above it
+_CARD_CONTINUES_RE = re.compile(
+    r"(?i)(?:is|are|was|were|has|have|had|will|can|and|or|but|of|to|in|on|at|"
+    r"for|with|from|by|that|which|who)\b")
 # a handle like "The Fourth Wall" or "Lady of the Sleeping Broca" would
 # otherwise teach the map to capitalize every article in the card's prose
 _NAME_STOPWORDS = {"the", "a", "an", "of", "and", "or", "in", "on", "at",
@@ -1521,6 +1531,13 @@ def _speak_card(text: str, proper_case: Any = None) -> str:
     merged: List[str] = []
     for ln in kept:
         prev = merged[-1].rstrip() if merged else ""
+        if prev and not prev.endswith((".", "!", "?", ":")) \
+                and _CARD_CONTINUES_RE.match(ln):
+            # ONE sentence wrapped over two printed lines: ORV Ep311
+            # '(FABLE "KING OF TWELVE SUNS"' / 'IS RADIATING LIGHT' was voiced
+            # '...Suns". Is radiating light.'
+            merged[-1] = prev + " " + ln
+            continue
         # a LABEL is short ("PERSONAL ATTRIBUTE:"); a system sentence that
         # happens to end in a colon is not, and joining those glued two
         # separate cards into one ("...defeated the demon marquis reinheit:

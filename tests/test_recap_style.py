@@ -1472,3 +1472,17 @@ def test_an_unknown_gender_is_never_guessed():
                       "visual_description": "A shape of light."}]}
     b = _ration_beats("The constellation watches.", "The constellation speaks again.")
     assert rs.ration_repeated_names(b, cast) == 0
+
+
+def test_a_name_followed_by_its_own_tail_collapses():
+    """ORV Ep311: "King of Twelve Suns of Twelve Suns just smiles". Measured
+    over 39,671 corpus lines (2026-09-30): 6 changed, all real stutters."""
+    import recap_style as rs
+    b = {"beats": [{"segments": [
+        {"span": ["a.jpg"], "line": "King of Twelve Suns of Twelve Suns just smiles."},
+        {"span": ["b.jpg"], "line": "As Huiwon Jeong Huiwon Jeong prepares her move."},
+        {"span": ["c.jpg"], "line": "He ran and ran and ran."}]}]}
+    assert rs.collapse_name_stutter(b) == 2
+    assert [s["line"] for s in b["beats"][0]["segments"]] == [
+        "King of Twelve Suns just smiles.", "As Huiwon Jeong prepares her move.",
+        "He ran and ran and ran."]

@@ -2302,3 +2302,15 @@ def test_a_ladder_rung_with_no_speakable_word_is_skipped():
     only_junk = {"action": "''", "description": "", "subjects": ["''", "1?"],
                  "setting": ""}
     assert gnp._non_camera_description(only_junk) == ""
+
+
+def test_a_lone_paren_is_a_misread_bracket_and_a_wrapped_line_stays_one_sentence():
+    """ORV Ep311 (owner, 2026-09-30): OCR read the window's '[' as '(' and the
+    card printed one sentence over two lines, voiced as
+    '(fable "King of Twelve Suns". Is radiating light.'"""
+    assert gnp._speak_card('(FABLE "KING OF TWELVE SUNS"\nIS RADIATING LIGHT') == \
+        'Fable "king of twelve suns" is radiating light.'
+    # a real parenthesis stays; separate printed lines stay separate sentences
+    assert gnp._speak_card("[HP (HEALTH) 100]") == "Hp (health) 100."
+    assert gnp._speak_card("NAME: DOKJA KIM\nSUPPORTING CONSTELLATION: NONE") == \
+        "Name: dokja kim. Supporting constellation: none."

@@ -1593,6 +1593,13 @@ _HANDLE_STUTTER_RE = re.compile(
     r"\b((?:the|our|a|an)\s+[A-Za-z'’\-]+(?:\s+[A-Za-z'’\-]+){0,2})\s+\1\b",
     re.IGNORECASE)
 
+# A NAME followed by its own tail: ORV Ep311 shipped "King of Twelve Suns of
+# Twelve Suns just smiles" (a handle rewrite landed on "King" inside the name).
+# Capitalized head and a capitalized word in the tail, so prose that repeats
+# itself on purpose ("ran and ran") is never touched.
+_NAME_TAIL_STUTTER_RE = re.compile(
+    r"\b([A-Z][\w'’\-]*((?:\s+[\w'’\-]+){0,4}\s+[A-Z][\w'’\-]*))\2\b")
+
 
 # A protagonist handle glued onto a proper noun: "The protagonist Kim, a
 # second-year student…" (ORV Ep6, 2026-09-18) — the panel's character is
@@ -1724,9 +1731,9 @@ def collapse_name_stutter(beats_obj) -> int:
         if not segs:
             continue
         lines = [s.get("line") or "" for s in segs]
-        new = [_HANDLE_STUTTER_RE.sub(
+        new = [_NAME_TAIL_STUTTER_RE.sub(lambda m: m.group(1), _HANDLE_STUTTER_RE.sub(
                    lambda m: m.group(1),
-                   _NAME_STUTTER_RE.sub(lambda m: m.group(1), ln))
+                   _NAME_STUTTER_RE.sub(lambda m: m.group(1), ln)))
                for ln in lines]
         if new != lines and all(x.strip() for x in new):
             write_segment_lines(b, new)
