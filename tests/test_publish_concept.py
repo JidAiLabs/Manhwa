@@ -2303,7 +2303,7 @@ def test_an_empty_hook_is_asked_once_more_then_refused(tmp_path, monkeypatch):
             "--teaser-scan-chapters", "2", "--teaser-min-panels", "2"]
     rc, prompts = _run_main(monkeypatch, argv,
                             replies=[{"premise": "P"}, {"hook": ""}, {"hook": ""}])
-    assert rc == 2 and not out.exists() and len(prompts) == 3
+    assert rc == 3 and not out.exists() and len(prompts) == 3
     rc, _ = _run_main(monkeypatch, argv, replies=[{"premise": "P"}, {"hook": ""},
                                                   _CLAIM_REPLIES[1]])
     assert rc == 0 and out.exists()                     # the second call counts
@@ -2432,3 +2432,8 @@ def test_a_letter_the_model_keeps_is_scrubbed_by_code():
     assert "'E'" not in got["twist"] and "11" not in got["twist"]
     assert not any(f.startswith("4:") for f in got["fails"]), got["fails"]
     assert "shatters" in got["twist"]
+
+
+def test_a_place_is_never_the_designed_word():
+    hook = dict(_HOOK, labels=[{"text": "REAL WORLD"}, {"text": "WEAKEST HUNTER"}])
+    assert "REAL WORLD" not in pc.art_words(hook)

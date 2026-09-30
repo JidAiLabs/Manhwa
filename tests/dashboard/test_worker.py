@@ -3055,3 +3055,28 @@ def test_the_first_video_carries_the_title_the_owner_picked(tmp_path, monkeypatc
     assert c[c.index("--fixed-title") + 1] == "Picked - Manhwa Recap"
     worker._h_publish_meta(con, {"bundle_id": 8}, io.StringIO())
     assert "--fixed-title" not in calls[-1]               # later videos write their own
+
+
+
+def test_a_claim_rewrite_keeps_the_old_claim_and_retries_a_missing_hook(
+        tmp_path, monkeypatch):
+    """FTA 2026-09-30: the worker deleted the claim before writing, so a
+    failed rewrite left none, and the owner's picks never survived a rewrite
+    (the writer reads them from the file it replaces)."""
+    import io
+    import pytest
+    con = _con(tmp_path)
+    _series_with_prepared(con, tmp_path, 2)
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    claim = _claim_on_disk(tmp_path)
+    before = claim.read_text()
+    seen = []
+
+    def stream(cmd, log, **kw):
+        seen.append(claim.exists())               # still there for the writer
+        return 3
+    monkeypatch.setattr(worker, "_stream", stream)
+    with pytest.raises(RuntimeError, match="no usable hook") as e:
+        worker._h_series_claim(con, {"series_id": 1, "payload": {}}, io.StringIO())
+    assert not isinstance(e.value, worker.NonRetryableError)   # free: retried
+    assert seen == [True] and claim.read_text() == before

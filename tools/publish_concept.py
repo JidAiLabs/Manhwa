@@ -778,7 +778,9 @@ def art_words(hook: Dict[str, Any]) -> List[str]:
     out: List[str] = []
     for w in [x.get("text") for x in hook.get("labels") or []] + [
             hook.get("low"), hook.get("high")]:
-        if w and w not in out:
+        # a place names nothing in a picture of HIM (ORV live, 2026-09-30:
+        # REAL WORLD over his face, "In This New REAL WORLD" as the title)
+        if w and w not in out and w not in LADDER["place"]:
             out.append(str(w))
     return out
 
@@ -2644,11 +2646,12 @@ def main() -> int:
                                      corpus=corpus, banned=args.series_title)
                 if hook["sentence"] and hook["titles"]:
                     break
-                print("[warn] hook call %d gave %s" % (attempt, "no sentence"
-                      if not hook["sentence"] else "no valid title"))
+                print("[warn] hook call %d gave %s (keys: %s)" % (
+                    attempt, "no sentence" if not hook["sentence"]
+                    else "no valid title", sorted(pkg)))
             else:
                 print("[err] no hook and title after two calls; nothing written")
-                return 2
+                return 3
             # the PICTURE, designed from the same understanding (a third local
             # call, a fourth only when the checks fail): owner, 2026-09-30
             art: Dict[str, Any] = {}
@@ -2724,8 +2727,11 @@ def main() -> int:
                         bool(m.get("arrow_box")), m.get("arrow_note") or ""))
             except Exception as e:           # a mock must never cost the claim
                 print("[warn] mocks not rendered: %r" % e)
-            with open(args.write_claim, "w", encoding="utf-8") as f:
+            # replaced only now, whole: a failed run leaves the old claim
+            tmp = args.write_claim + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(claim, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, args.write_claim)
             print("[ok] wrote=%s designs=%s labels=%d scene=%r"
                   % (args.write_claim, names, len(claim["labels"]),
                      claim["scene"][:90]))

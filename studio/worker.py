@@ -2085,7 +2085,9 @@ def _write_series_claim(con: sqlite3.Connection, sid: int, eps: List[str],
     because each ran its own story pass, and neither painted the story."""
     claim_path = REPO / "dist" / f"series_{sid}" / "claim.json"
     claim_path.parent.mkdir(parents=True, exist_ok=True)
-    claim_path.unlink(missing_ok=True)
+    # NOT deleted first (2026-09-30): the writer replaces it only on success,
+    # so a failed rewrite keeps the claim the owner read, and it carries the
+    # owner's title/mock picks over (they were lost on every rewrite)
     rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                   "--episode-dirs", ",".join(eps),
                   # the BAN list: the claim writes the copy, ranks the designs
@@ -2094,6 +2096,10 @@ def _write_series_claim(con: sqlite3.Connection, sid: int, eps: List[str],
                   *_teaser_args(con, sid), *picked_args,
                   "--write-claim", str(claim_path)], log,
                  env=_series_env(con, sid))
+    if rc == 3:
+        # the local model gave no usable hook twice: free, so a retry is fine
+        raise RuntimeError("the local model gave no usable hook sentence and "
+                           "title (twice) — the old claim is kept; retrying")
     if rc != 0 or not claim_path.exists():
         # NON-retryable, nothing paid: no montage means no teaser-based claim,
         # and a retry would find the same chapters
