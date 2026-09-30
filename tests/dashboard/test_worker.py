@@ -2697,18 +2697,21 @@ def test_publish_meta_reuses_thumbnail_words_only_after_an_owner_pick(tmp_path,
     assert "--thumbnail-concept" in calls[-1]
 
 
-def test_a_failed_variant_is_not_auto_retried(tmp_path, monkeypatch):
+def test_a_style_variant_is_refused_before_anything_runs(tmp_path, monkeypatch):
+    """The variant re-read the story with local gemma; the paint runs on the
+    cpu lane beside a prepare, so it may never call a local model."""
     import io
     import pytest
     con = _con(tmp_path)
     _series_with_prepared(con, tmp_path, 1)
     monkeypatch.setattr(worker, "REPO", tmp_path)
-    monkeypatch.setattr(worker, "_stream",
-                        _thumb_stream([], fail_style="series_1_vs_monster"))
-    with pytest.raises(worker.NonRetryableError, match="vs_monster"):
+    calls = []
+    monkeypatch.setattr(worker, "_stream", _thumb_stream(calls))
+    with pytest.raises(worker.NonRetryableError, match="retired"):
         worker._h_series_thumbnail(
             con, {"series_id": 1, "payload": {"owner": True, "style": "vs_monster"}},
             io.StringIO())
+    assert calls == []
 
 
 def test_candidates_payload_writes_suggestions_and_pays_for_nothing(tmp_path,

@@ -1503,9 +1503,12 @@ def test_title_and_mock_picks_are_saved_and_unlock_the_paint(client, tmp_path,
     assert "paint the picked mock" in c.get("/series/1").text
     assert 'disabled title="pick a title and a mock first"' not in c.get("/series/1").text
     assert post("/thumbnail/generate") == 303
-    rows = con.execute("SELECT payload_json FROM job WHERE type='series_thumbnail'"
-                       ).fetchall()
-    assert [_j.loads(x[0]) for x in rows] == [{"owner": True}]   # ONE paint, the claim's refs
+    rows = con.execute("SELECT payload_json, priority FROM job "
+                       "WHERE type='series_thumbnail'").fetchall()
+    # ONE paint, the claim's refs, at the front of the queue (the owner waits)
+    assert [(_j.loads(x[0]), x[1]) for x in rows] == [({"owner": True}, 30)]
+    from studio.dashboard import jobs as _jobs
+    assert _jobs.LANES["series_thumbnail"] == "cpu"   # no local model: no GPU wait
 
 
 def test_a_mock_image_is_served_only_by_its_closed_name(client, tmp_path, monkeypatch):

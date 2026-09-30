@@ -36,7 +36,10 @@ LANES = {
     # synopsis) all make a local gemma call, so they belong on the gemma lane,
     # NOT beside a chapter prepare. They are infrequent (once per debut / per
     # series), so sharing the gpu queue costs a brief wait, never an OOM.
-    "plan_teaser": "gpu", "series_thumbnail": "gpu", "publish_meta": "gpu",
+    "plan_teaser": "gpu", "publish_meta": "gpu",
+    # the paint makes no local model call (the claim is read, the image model
+    # is remote): it must not wait behind a day of prepares (2026-09-30)
+    "series_thumbnail": "cpu",
     # the free claim PREVIEW: two local gemma calls, no image
     "series_claim": "gpu",
     # re-reading a chapter for its facts is one gemma call: same lane

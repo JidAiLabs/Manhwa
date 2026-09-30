@@ -2179,22 +2179,16 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
 
     claim_path = REPO / "dist" / f"series_{sid}" / "claim.json"
 
-    def build(out_dir: Path, style: str = "", mock: str = "") -> None:
+    def build(out_dir: Path, mock: str) -> None:
         # The paid image step needs GEMINI_API_KEY from the login keychain,
         # which only this launchd-run worker can reach.
         out_dir.mkdir(parents=True, exist_ok=True)
         concept_path = out_dir / "concept.json"
-        # ponytail: each option re-reads the story (2 local gemma calls each);
-        # share one brief across options if this job ever gets slow.
+        # built from the series claim: NO local model call (the job runs on
+        # the cpu lane beside a prepare's gemma, jobs.LANES)
         rc = _stream([PY, str(REPO / "tools" / "publish_concept.py"),
                       "--episode-dirs", ",".join(eps), "--series-title", title,
-                      # a CARD is built from the series claim: no model call,
-                      # so two cards cannot disagree on labels, scene or refs
-                      # (the owner's picks are already in the claim). A VARIANT
-                      # still reads the story itself.
-                      *(["--claim", str(claim_path), "--mock", mock]
-                        if mock else
-                        [*(["--style", style] if style else []), *picked_args]),
+                      "--claim", str(claim_path), "--mock", mock,
                       "--out", str(concept_path)], log, env=env)
         if rc != 0:
             raise RuntimeError(f"publish_concept exited {rc}")
@@ -2208,17 +2202,13 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         if rc != 0:
             raise RuntimeError(f"thumbnail_build exited {rc}")
 
-    # VARIANT mode: an explicit style renders to its OWN directory, for
-    # comparing a style by hand. Never live, never touches the options.
-    style = str(payload.get("style") or "").strip()
+    if str(payload.get("style") or "").strip():
+        # the style VARIANT re-read the story with local gemma; retired
+        # 2026-09-30 so this job never calls a local model (cpu lane)
+        raise NonRetryableError("style variants are retired — pick a mock on "
+                                "the Series page and paint it")
     with record_stage(con, chapter_id=None, stage="series_thumbnail",
                       series_id=sid):
-        if style:
-            try:
-                build(REPO / "dist" / f"series_{sid}_{style}", style)
-            except (RuntimeError, ValueError, OSError) as e:
-                raise NonRetryableError(f"variant {style} failed: {e}") from e
-            return
         # PAINT WHAT THE OWNER READ AND PICKED (2026-09-30): the Series page's
         # review sheet shows the title, the description, the labels, the
         # art direction and two free mocks; the owner picks a mock and pays
@@ -2243,7 +2233,7 @@ def _h_series_thumbnail(con: sqlite3.Connection, job: Dict[str, Any],
         # the other options were paid for and stay
         shutil.rmtree(opt_dir, ignore_errors=True)
         try:
-            build(opt_dir, mock=mock)
+            build(opt_dir, mock)
         except (RuntimeError, ValueError, OSError) as e:  # ValueError: bad json
             # NON-retryable: a retry pays again. Repainting is the owner's call.
             raise NonRetryableError(f"painting {mock} failed: {e}") from e

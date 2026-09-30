@@ -967,7 +967,8 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # owner=True: the paid handler refuses a job this button did not queue
         jobs.enqueue(con(), "series_thumbnail", series_id=series_id,
                      payload={**({"refs": [cands[i]["path"] for i in ref]}
-                                 if ref else {}), "owner": True})
+                                 if ref else {}), "owner": True},
+                     priority=30)                 # the owner is waiting on it
         return RedirectResponse(f"/series/{series_id}", status_code=303)
 
     @app.post("/thumbnail/label")

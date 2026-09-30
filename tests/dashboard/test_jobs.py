@@ -266,8 +266,11 @@ def test_all_gemma_jobs_share_the_gpu_lane(tmp_path):
     failure). Teaser + thumbnail + metadata all call gemma, so they belong
     here — NOT on a separate lane that runs them concurrently with a prepare."""
     for t in ("prepare", "qa_scan", "chain",
-              "plan_teaser", "series_thumbnail", "publish_meta"):
+              "plan_teaser", "series_claim", "publish_meta"):
         assert jobs.LANES[t] == "gpu", f"{t} must be on the gpu lane"
+    # the paint reads the claim and calls the REMOTE image model: no gemma,
+    # so the owner's click never waits behind a day of prepares (2026-09-30)
+    assert jobs.LANES["series_thumbnail"] == "cpu"
     # qwen TTS stays on its OWN lane so a voiceover still overlaps a prepare
     assert jobs.LANES["voiceover"] == "tts"
     # ffmpeg/remotion + network jobs use no local model
