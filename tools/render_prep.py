@@ -4055,6 +4055,14 @@ def main() -> int:
         if not args.no_trim:
             tx1, ty1, tx2, ty2 = content_bbox(part)
             part = part[ty1:ty2, tx1:tx2]
+            # content_bbox stops at 18% a side; a frame still MORE THAN HALF
+            # flat blank is cut to its content (owner, 2026-09-30, ORV Ep311)
+            from panels_to_scenes import blank_band_box
+            band, _why = blank_band_box(part)
+            if band is not None:
+                bx0, by0, bx1, by1 = band
+                part = part[by0:by1, bx0:bx1]
+                tx1, ty1 = tx1 + bx0, ty1 + by0
         cv2.imwrite(os.path.join(clean_dir, name), part,
                     [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         ph, pw = part.shape[:2]

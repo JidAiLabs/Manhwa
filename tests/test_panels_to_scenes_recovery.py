@@ -147,3 +147,46 @@ def test_a_recovered_span_taller_than_a_panel_is_split_on_its_gutter(tmp_path):
     # the cut lies inside the gutter band (the splitter cuts at its centre)
     assert 4200 <= scenes[0]["box_px_xyxy"][3] <= 4700
     assert 4200 <= scenes[1]["box_px_xyxy"][1] <= 4700
+
+
+# ---- flat blank bands at a crop's edges are cut (ORV Ep311 p000008) -------
+
+def _seam_tail(w=600, h=520):
+    """Art on the top quarter touching the edge, a black stroke with a white
+    rim hanging into white, then plain white gutter."""
+    rng = np.random.default_rng(3)
+    img = np.full((h, w, 3), 255, dtype=np.uint8)
+    img[0:130] = rng.integers(60, 180, (130, w, 3), dtype=np.uint8)
+    img[130:190, 280:300] = 0                       # the sound-effect stroke
+    img[130:190, 276:280] = 255
+    return Image.fromarray(img)
+
+
+def test_flat_edge_bands_are_cut_and_the_art_is_kept():
+    out, info = pts.trim_blank_bands(_seam_tail())
+    assert info["trimmed"] and info["mode"] == "blank_bands"
+    assert out.size[1] < 220 and out.size[0] == 600      # art + stroke, no gutter
+    assert info["top_px"] == 0 and info["bottom_px"] > 300
+
+
+def test_line_art_on_white_is_never_cut():
+    img = np.full((400, 400, 3), 255, dtype=np.uint8)
+    img[:, ::9] = 0                                      # ink across every row
+    img[::9, :] = 0
+    out, info = pts.trim_blank_bands(Image.fromarray(img))
+    assert not info["trimmed"] and out.size == (400, 400)
+
+
+def test_a_sliver_is_left_alone():
+    img = np.full((500, 500, 3), 255, dtype=np.uint8)
+    img[0:40] = 120                                      # 40px of content only
+    out, info = pts.trim_blank_bands(Image.fromarray(img))
+    assert not info["trimmed"] and info["reason"] == "min_keep_guard"
+
+
+def test_a_frame_under_half_blank_keeps_its_margins():
+    img = np.full((500, 500, 3), 255, dtype=np.uint8)
+    rng = np.random.default_rng(5)
+    img[0:350] = rng.integers(60, 180, (350, 500, 3), dtype=np.uint8)  # 30% white
+    out, info = pts.trim_blank_bands(Image.fromarray(img))
+    assert not info["trimmed"] and info["reason"] == "below_threshold"

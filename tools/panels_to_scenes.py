@@ -586,6 +586,59 @@ def content_aware_trim(
     }
 
 
+def blank_band_box(
+    gray: np.ndarray,
+    *,
+    flat_frac: float = 0.98,
+    near_white_v: int = 235,
+    near_black_v: int = 20,
+    pad_px: int = 4,
+    min_keep_h: int = 140,
+    min_keep_w: int = 120,
+    min_cut_frac: float = 0.5,
+) -> Tuple[Optional[Tuple[int, int, int, int]], str]:
+    """The box left after cutting the rows and columns at the image's EDGES
+    that are ONE flat colour (>= flat_frac near-white, or >= flat_frac
+    near-black) -- only when those bands are at least *min_cut_frac* of the
+    image (owner, 2026-09-30: "remove such images with more than 50% pure
+    blank area"). (None, reason) when nothing is cut. A row mixing white and
+    black (line art, a stroke) is never flat, so ink is never cut.
+
+    ORV Ep311 p000008: the tail of a panel cut at a chunk seam plus the gutter
+    under it. content_aware_trim read the edge-touching art as background
+    (fg_frac=0.028 < 0.28, refused) and render_prep's content_bbox stops at
+    18% a side, so the frame shipped 52-61% white."""
+    g = gray if gray.ndim == 2 else gray.mean(axis=2)
+    h, w = g.shape[:2]
+    white, black = g >= near_white_v, g <= near_black_v
+    flat = lambda ax: (white.mean(axis=ax) >= flat_frac) | (black.mean(axis=ax) >= flat_frac)
+    keep_r, keep_c = np.flatnonzero(~flat(1)), np.flatnonzero(~flat(0))
+    if not len(keep_r) or not len(keep_c):
+        return None, "all_flat"
+    y0, y1 = max(0, int(keep_r[0]) - pad_px), min(h, int(keep_r[-1]) + 1 + pad_px)
+    x0, x1 = max(0, int(keep_c[0]) - pad_px), min(w, int(keep_c[-1]) + 1 + pad_px)
+    if (x0, y0, x1, y1) == (0, 0, w, h):
+        return None, "no_change"
+    if 1.0 - (x1 - x0) * (y1 - y0) / float(w * h) < min_cut_frac:
+        return None, "below_threshold"
+    if y1 - y0 < min_keep_h or x1 - x0 < min_keep_w:
+        return None, "min_keep_guard"
+    return (x0, y0, x1, y1), ""
+
+
+def trim_blank_bands(crop: Image.Image, **kw) -> Tuple[Image.Image, Dict[str, Any]]:
+    """blank_band_box on a PIL crop: (cropped image, trim info)."""
+    w, h = crop.size
+    box, why = blank_band_box(np.asarray(crop.convert("L")), **kw)
+    if box is None:
+        return crop, {"trimmed": False, "reason": why}
+    x0, y0, x1, y1 = box
+    return crop.crop(box), {
+        "trimmed": True, "mode": "blank_bands", "left_px": x0, "top_px": y0,
+        "right_px": w - x1, "bottom_px": h - y1, "old_w": w, "old_h": h,
+        "new_w": x1 - x0, "new_h": y1 - y0}
+
+
 # -----------------------------
 # Internal gutter split (THE FIX)
 # -----------------------------
@@ -1128,6 +1181,10 @@ def main() -> int:
                             min_keep_w=int(args.trim_min_keep_w),
                             min_content_frac=float(args.trim_min_content_frac),
                         )
+                        if not trim_info.get("trimmed"):
+                            part_im, band = trim_blank_bands(part_im)
+                            if band.get("trimmed"):
+                                trim_info = dict(band, content_trim=trim_info)
 
                     blank, edge = blank_score_and_edge_density(part_im)
                     is_blankish = (blank >= float(args.blank_threshold) and edge <= float(args.blank_max_edge))
