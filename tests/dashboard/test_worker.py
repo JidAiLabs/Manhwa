@@ -3083,3 +3083,27 @@ def test_a_claim_rewrite_keeps_the_old_claim_and_retries_a_missing_hook(
         worker._h_series_claim(con, {"series_id": 1, "payload": {}}, io.StringIO())
     assert not isinstance(e.value, worker.NonRetryableError)   # free: retried
     assert seen == [True] and claim.read_text() == before
+
+
+def test_a_reprepare_of_a_rendered_chapter_rebuilds_its_script(tmp_path, monkeypatch):
+    """`studio run --until scripted` skipped a rendered chapter, so narration
+    fixed in place never reached the script (ORV Ep39, 2026-09-30:
+    stale_manifest blocked). The prepare rewinds to 'beated' first."""
+    con = _con(tmp_path)
+    _autopilot_series(con, tmp_path, autopilot=0, flags=[])
+    con.execute("UPDATE chapter SET status='rendered' WHERE id=5")
+    con.commit()
+    status_at_run = {}
+
+    def stream(cmd, log, **kw):
+        if "run" in cmd:
+            status_at_run["v"] = con.execute(
+                "SELECT status FROM chapter WHERE id=5").fetchone()[0]
+        return 0
+
+    monkeypatch.setattr(worker, "_stream", stream)
+    monkeypatch.setattr(worker, "_run_prep_and_qa",
+                        lambda c, ch, log, **kw: set())
+    jobs.enqueue(con, "prepare", chapter_id=5)
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    assert status_at_run["v"] == "beated"      # the scripted stage really runs

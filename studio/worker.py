@@ -1133,6 +1133,17 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
                       "--chapters", str(int(ch["number"]))], log)
         if rc != 0:
             raise RuntimeError(f"studio fetch exited {rc}")
+        # `studio run` resumes by status and skips a stage whose output file
+        # exists, so a re-prepare of a chapter past 'scripted' never rebuilt
+        # the script from narration edited in place (2026-09-30: 74 chapters
+        # had stutters fixed in manifest.beats.json; ORV Ep39 blocked on
+        # stale_manifest, the rest passed only because a heal happened to
+        # rebuild it). Same rewind as _h_voiceover, one stage earlier: the
+        # scripted stage is deterministic and free.
+        if ch["status"] in ("scripted", "voiced", "planned", "rendered"):
+            con.execute("UPDATE chapter SET status='beated', "
+                        "updated_at=datetime('now') WHERE id=?", (ch["id"],))
+            con.commit()
         rc = _stream([PY, "-m", "studio", "run", str(ch["series_id"]),
                       "--chapters", str(int(ch["number"])),
                       "--until", "scripted"], log,
