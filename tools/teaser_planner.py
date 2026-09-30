@@ -588,10 +588,10 @@ def hook_landed(line: str, hook: str, edge: str = "") -> bool:
                        if w not in {"that", "this", "with", "from", "into",
                                     "their", "they", "when", "then", "than",
                                     "what", "only", "have", "been", "will"}}
-    said = words(line)
-    if edge and not any(a[:5] == b[:5] for a in said for b in words(edge)):
+    said = {w[:5] for w in words(line)}               # stems: returned ~ returns
+    if edge and not said & {w[:5] for w in words(edge)}:
         return False
-    return len(said & words(hook)) >= 2
+    return len(said & {w[:5] for w in words(hook)}) >= 2
 
 
 # --------------------------------------------------------------------------- #

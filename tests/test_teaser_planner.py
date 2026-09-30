@@ -446,3 +446,13 @@ def test_the_last_line_must_say_the_hooks_edge():
             "panel_narration": [{"scene_file": "p3.jpg", "line": generic}]})
     assert seen["hook_edge"] == edge and "hook_edge" in tp.TEASER_PROMPT
     assert out["hook_edge"] == edge and out["hook_landed"] is False
+
+
+def test_landing_the_hook_counts_word_stems():
+    """Tutorial Tower 2026-09-30: "a survivor has returned" vs the hook's
+    "survivor returns" was scored as not landed."""
+    hook = ("After being trapped in a death loop for twelve years, a forgotten "
+            "survivor returns to a world of hunters.")
+    assert tp.hook_landed("Because a survivor has returned, and he has already "
+                          "conquered the impossible.", hook,
+                          "he has already conquered the impossible") is True
