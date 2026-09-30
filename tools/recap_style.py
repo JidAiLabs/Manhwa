@@ -1600,6 +1600,34 @@ _HANDLE_STUTTER_RE = re.compile(
 _NAME_TAIL_STUTTER_RE = re.compile(
     r"\b([A-Z][\w'’\-]*((?:\s+[\w'’\-]+){0,4}\s+[A-Z][\w'’\-]*))\2\b")
 
+# ANY 2-4 word phrase said twice back to back. _NAME_STUTTER_RE sees one word
+# only, so two-word names always slipped: a corpus scan (2026-09-30) found 71
+# lines ("Yuseung Shin Yuseung Shin", "32nd S-rank commander" x3, "Summoner
+# Bong's Summons Summoner Bong's Summons"), every one a stutter. Plus the
+# hyphen-glued repeat the identity rewrite leaves ("Ildo Jeon-Ildo Jeon").
+_PHRASE_STUTTER_RE = re.compile(r"\b((?:[\w'’\-]+\s+){1,3}[\w'’\-]+)(?:\s+\1\b)+")
+# a stutter repeats a NAME or a handle: prose that repeats itself on purpose
+# ("ran and ran and ran", "day by day") has neither
+_NAMEISH_RE = re.compile(r"(?:.*\b[A-Z0-9])|(?:(?i:the|our|a|an|his|her|their|my|your)\b)")
+# two words at least: "I-I'm" and "Y-Y-YOU!!" are a character stammering
+_HYPHEN_NAME_STUTTER_RE = re.compile(
+    r"\b((?:[A-Z][\w'’]*\s+){1,3}[A-Z][\w'’]*)-\1\b")
+
+
+def _collapse_stutters(ln: str) -> str:
+    for _ in range(3):                       # a collapse can expose another
+        new = _NAME_STUTTER_RE.sub(lambda m: m.group(1), ln)
+        new = _HANDLE_STUTTER_RE.sub(lambda m: m.group(1), new)
+        new = _PHRASE_STUTTER_RE.sub(
+            lambda m: m.group(1) if _NAMEISH_RE.match(m.group(1)) else m.group(0),
+            new)
+        new = _HYPHEN_NAME_STUTTER_RE.sub(lambda m: m.group(1), new)
+        new = _NAME_TAIL_STUTTER_RE.sub(lambda m: m.group(1), new)
+        if new == ln:
+            break
+        ln = new
+    return ln
+
 
 # A protagonist handle glued onto a proper noun: "The protagonist Kim, a
 # second-year student…" (ORV Ep6, 2026-09-18) — the panel's character is
@@ -1731,10 +1759,7 @@ def collapse_name_stutter(beats_obj) -> int:
         if not segs:
             continue
         lines = [s.get("line") or "" for s in segs]
-        new = [_NAME_TAIL_STUTTER_RE.sub(lambda m: m.group(1), _HANDLE_STUTTER_RE.sub(
-                   lambda m: m.group(1),
-                   _NAME_STUTTER_RE.sub(lambda m: m.group(1), ln)))
-               for ln in lines]
+        new = [_collapse_stutters(ln) for ln in lines]
         if new != lines and all(x.strip() for x in new):
             write_segment_lines(b, new)
             changed += sum(1 for a, c in zip(lines, new) if a != c)

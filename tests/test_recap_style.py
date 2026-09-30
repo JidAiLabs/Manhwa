@@ -1486,3 +1486,28 @@ def test_a_name_followed_by_its_own_tail_collapses():
     assert [s["line"] for s in b["beats"][0]["segments"]] == [
         "King of Twelve Suns just smiles.", "As Huiwon Jeong prepares her move.",
         "He ran and ran and ran."]
+
+
+def test_a_repeated_multi_word_name_or_phrase_collapses():
+    """Corpus scan 2026-09-30: 71 lines with a doubled 2-4 word phrase, all
+    stutters (the one-word rule never saw two-word names)."""
+    import recap_style as rs
+    cases = {
+        "Even Junghyeok Yu Junghyeok Yu watches in shock.":
+            "Even Junghyeok Yu watches in shock.",
+        "32nd S-rank commander 32nd S-rank commander 32nd S-rank commander holds out a gift.":
+            "32nd S-rank commander holds out a gift.",
+        "Bong Joohyuk Bong Joohyuk-Bong Joohyuk is furious.":
+            "Bong Joohyuk is furious.",
+        "Summoner Bong's Summons Summoner Bong's Summons and the little ones rest.":
+            "Summoner Bong's Summons and the little ones rest.",
+        "He ran and ran and ran.": "He ran and ran and ran.",
+        "Step by step, day by day, he climbs.": "Step by step, day by day, he climbs.",
+        # a character stammering is dialogue, never a stutter to collapse
+        "He gasps, 'I-I'm fine... Y-Y-YOU!!'": "He gasps, 'I-I'm fine... Y-Y-YOU!!'",
+        "Kite-Kite's wings flare.": "Kite-Kite's wings flare.",
+    }
+    b = {"beats": [{"segments": [{"span": ["%d.jpg" % i], "line": k}
+                                 for i, k in enumerate(cases)]}]}
+    rs.collapse_name_stutter(b)
+    assert [s["line"] for s in b["beats"][0]["segments"]] == list(cases.values())
