@@ -82,6 +82,8 @@ def art_composition(concept: Dict[str, Any]) -> str:
         "- Around them, smaller, reacting: %s\n"
         "- Setting: %s\n"
         "- Light and palette: %s. Genre sign: %s\n"
+        "Nothing covers the main character's face: a window, screen or book "
+        "floats BESIDE him, never in front of his face.\n"
         "Keep the upper-left third calmer and darker, free of faces (a word is "
         "added there later).\n"
         % (art.get("twist"), art.get("question"), art.get("mc"),

@@ -230,6 +230,8 @@ def test_an_art_direction_paints_the_premise_the_hook_and_the_twist(tmp_path,
     assert "an old one-sentence scene" not in p       # the brief replaces it
     assert p.index(art["twist"]) < p.index(art["mc"])  # the twist leads
     assert "upper-left third" in p and "BLANK" in p
+    # ORV's first paint (2026-09-30) put the window over his nose and mouth
+    assert "never in front of his face" in p
     # the props the composition names are allowed (the phone IS the twist)
     assert "or the COMPOSITION above names it" in p
 
