@@ -2437,3 +2437,17 @@ def test_a_letter_the_model_keeps_is_scrubbed_by_code():
 def test_a_place_is_never_the_designed_word():
     hook = dict(_HOOK, labels=[{"text": "REAL WORLD"}, {"text": "WEAKEST HUNTER"}])
     assert "REAL WORLD" not in pc.art_words(hook)
+
+
+def test_a_scrubbed_number_that_still_asks_for_a_number_fails():
+    """FTA live 2026-09-30: the scrub left "a 'Level icon being overwritten by
+    ... an infinite 'Level number" -- the painter would still draw digits."""
+    got = pc.check_art_direction(dict(
+        _GOOD_ART, word="KING",
+        twist="the weakest commuter's window shows a 'Level icon overwritten by "
+              "an infinite 'Level number on the train"), _HOOK, _BRIEF, "B")
+    assert any(f.startswith("4:") for f in got), got
+    # an apostrophe inside a word is not a quote
+    assert pc.check_art_direction(dict(_GOOD_ART, word="KING",
+                                       mc="the commuter's calm face, he's still"),
+                                  _HOOK, _BRIEF, "B") == []

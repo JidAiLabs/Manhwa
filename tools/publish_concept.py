@@ -832,7 +832,9 @@ def build_art_direction_prompt(brief: Dict[str, Any], hook: Dict[str, Any],
         '  "twist": "the ONE thing in the picture that shows the hook, seen '
         'WITHOUT reading any text: an object, a contrast, a reaction. '
         'Concrete, from this story. A screen, window or book that carries '
-        'it shows a PICTURE, never words",\n'
+        'it shows a PICTURE, never words. A rank, level or number is shown as '
+        'a thing that happens (a chain or cage shattering, a window cracking '
+        'apart, a crown of light), never written",\n'
         '  "question": "the question a stranger asks on seeing it, ending '
         'with ?",\n'
         '  "mc": "the main character: how they look (as described above), '
@@ -852,7 +854,8 @@ _STOP = frozenset("that this with from into their there they them what when "
                   "under just than then your being after before other".split())
 _READ_RE = re.compile(r"\b(?:reads?|reading the|says?|written|writes|"
                       r"letters?|caption|spells?|texts?|words?|"
-                      r"instructions?)\b|[\"“”]", re.I)
+                      r"instructions?|numbers?|numerals?|digits?)\b|[\"“”]|"
+                      r"(?-i:(?<![A-Za-z])'(?=[A-Z]))", re.I)
 # ("displays" is not in it: ORV's phone that "displays a vivid image of the
 # monster behind him" IS the picture twist)
 # "instead of text, a vivid image of the monster" is the twist done right
@@ -904,7 +907,9 @@ def check_art_direction(ad: Dict[str, Any], hook: Dict[str, Any],
     if wordy:
         fails.append("4: the picture cannot carry words or numbers (%s): the "
                      "painter prints none, so a screen or window shows a "
-                     "PICTURE or glows blank" % "; ".join(wordy))
+                     "PICTURE or glows blank, and a rank or level is shown as "
+                     "something that happens (a chain shattering, a window "
+                     "cracking)" % "; ".join(wordy))
     word = str(ad.get("word") or "").strip().upper()
     if word not in art_words(hook) or len(word.split()) > 2:
         fails.append("5: the word must be ONE of: %s" % ", ".join(art_words(hook)))
