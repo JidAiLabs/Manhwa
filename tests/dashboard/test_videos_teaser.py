@@ -29,9 +29,11 @@ def test_plan_teaser_enqueues_job(client):
     c, con, sid, bid = client
     r = c.post(f"/series/{sid}/teaser/plan", follow_redirects=False)
     assert r.status_code == 303
+    # an owner click jumps the bulk prepare queue (priority 100), like the
+    # claim preview
     assert con.execute(
-        "SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND series_id=?",
-        (sid,)).fetchone()[0] == 1
+        "SELECT priority FROM job WHERE type='plan_teaser' AND series_id=?",
+        (sid,)).fetchall() == [(30,)]
 
 
 def test_decline_sets_state(client):

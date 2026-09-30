@@ -1730,7 +1730,9 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         # ONE teaser per manhwa, made independently of any video: select a
         # high-stakes hook window across the series' first N processed chapters
         # and render the cold open. The worker does the model select + render.
-        jobs.enqueue(con(), "plan_teaser", series_id=sid)
+        # priority 30 like the claim preview: an owner click must not wait
+        # behind a day of queued prepares (2026-09-30: ~60 were ahead)
+        jobs.enqueue(con(), "plan_teaser", series_id=sid, priority=30)
         return RedirectResponse(f"/series/{sid}", status_code=303)
 
     @app.post("/series/{sid}/teaser/approve")
