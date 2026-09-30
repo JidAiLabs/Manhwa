@@ -2421,3 +2421,14 @@ def test_reference_only_shots_are_not_offered_to_the_hook_writer():
               "with a speech bubble", "tokens": []}]
     p = pc.build_hook_prompt({"premise": "P"}, {}, cands, "B")
     assert "m1 [lead" in p and "m2 [ref" not in p
+
+
+def test_a_letter_the_model_keeps_is_scrubbed_by_code():
+    """FTA dry run 6: "a low-rank 'E' symbol" survived three tries."""
+    stubborn = dict(_GOOD_ART, word="KING",
+                    twist="a glitching window where the weakest commuter's "
+                          "low-rank 'E' symbol shatters on level 11 energy")
+    got = pc.direct_art(_BRIEF, _HOOK, "", "B", lambda p: dict(stubborn))
+    assert "'E'" not in got["twist"] and "11" not in got["twist"]
+    assert not any(f.startswith("4:") for f in got["fails"]), got["fails"]
+    assert "shatters" in got["twist"]

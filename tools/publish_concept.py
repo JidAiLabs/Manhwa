@@ -811,7 +811,9 @@ def build_art_direction_prompt(brief: Dict[str, Any], hook: Dict[str, Any],
         + str(hook.get("sentence") or "") + "\n\n"
         "THE VIDEO TITLES (the picture goes with one of them):\n"
         + "\n".join("  " + t["text"] for t in hook.get("titles") or []) + "\n\n"
-        "WORDS the thumbnail may print (pick ONE; your title must contain it):\n  "
+        "WORDS the thumbnail may print (pick ONE that is TRUE of the main "
+        "character as the story understanding describes him -- an ordinary "
+        "man is not a PRODIGY; your title must contain it):\n  "
         + ", ".join(art_words(hook)) + "\n\n"
         "THE MAIN CHARACTER, as the reference panels the painter copies show "
         "him (take his APPEARANCE from this: hair, face, clothes; his pose and "
@@ -958,6 +960,14 @@ def direct_art(brief: Dict[str, Any], hook: Dict[str, Any], look: str,
             best = dict(ad, fails=fails, look=look)
         if not fails:
             break
+    if any(f.startswith("4:") for f in best.get("fails") or []):
+        # the model kept a letter or a number (FTA: a low-rank 'E' symbol,
+        # three tries): take the quoted capitals and digit tokens out
+        # ourselves; a phrase like "text" cannot be scrubbed and stays failed
+        for k in _PAINTED_KEYS:
+            v = re.sub(r"\s*'[A-Z][A-Z .!?+-]*'", "", str(best.get(k) or ""))
+            best[k] = " ".join(re.sub(r"\S*\d\S*", "", v).split())
+        best["fails"] = check_art_direction(best, hook, brief, banned)
     return best
 
 
