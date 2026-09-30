@@ -2383,3 +2383,41 @@ def test_a_lead_shot_describes_a_person():
                                     "creature with large tusks")
     assert not pc._PERSON_RE.search("a single, light blue eye set within a dark "
                                     "surface")
+
+
+def test_a_quoted_capital_word_or_letter_is_text():
+    """Tutorial Tower dry run 5: a "red 'ERROR' icon"; FTA: an "'E' icon"."""
+    for genre in ("a window with a glitching red 'ERROR' icon",
+                  "a low-rank 'E' icon beside a skull"):
+        assert any(f.startswith("4:") for f in pc.check_art_direction(
+            dict(_GOOD_ART, word="KING", genre=genre), _HOOK, _BRIEF, "B")), genre
+    assert pc.check_art_direction(dict(_GOOD_ART, word="KING",
+                                       mc="in worn-out 'rookie' clothes, bored"),
+                                  _HOOK, _BRIEF, "B") == []
+
+
+def test_the_painter_copies_the_registry_exemplars_first(tmp_path, monkeypatch):
+    import json as _j
+    root = tmp_path / "repo"
+    ep = root / "ongoing" / "orv" / "Episode_1"
+    ex = root / "ongoing" / "orv" / "Episode_6" / "scenes" / "p000010.jpg"
+    ex.parent.mkdir(parents=True)
+    ex.write_bytes(b"x")
+    ep.mkdir(parents=True)
+    (root / "cast").mkdir()
+    (root / "cast" / "orv.json").write_text(_j.dumps({"cast": [
+        {"is_protagonist": True, "exemplars": [
+            "ongoing/orv/Episode_6/scenes/p000010.jpg", "ongoing/orv/gone.jpg"]},
+        {"is_protagonist": False, "exemplars": ["ongoing/orv/Episode_6/x.jpg"]}]}))
+    monkeypatch.setattr(pc, "_TD", str(root / "tools"))
+    assert pc.registry_exemplars([str(ep)]) == [str(ex)]
+    (root / "cast" / "orv.json").unlink()
+    assert pc.registry_exemplars([str(ep)]) == []           # no registry: none
+
+
+def test_reference_only_shots_are_not_offered_to_the_hook_writer():
+    cands = [{"id": "m1", "kind": "lead", "chapter": 0, "desc": "a man", "tokens": []},
+             {"id": "m2", "kind": "ref", "chapter": 1, "desc": "the same man, "
+              "with a speech bubble", "tokens": []}]
+    p = pc.build_hook_prompt({"premise": "P"}, {}, cands, "B")
+    assert "m1 [lead" in p and "m2 [ref" not in p

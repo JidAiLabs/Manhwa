@@ -481,6 +481,10 @@ def moment_candidates(w_eps: List[str], tokens: List[Dict[str, Any]], *,
         cands.append({"kind": "print", "chapter": ci, "file": fn,
                       "path": _path(ci, fn), "desc": _desc(ci, fn)[:160],
                       "tokens": sorted(set(toks), key=rank_value)})
+    # the other clean shots of him are REFERENCES for the painter (who ignores
+    # bubbles), not mock pictures: ORV's painter was down to one panel
+    cands += [dict(c, kind="ref") for c in leads
+              if c["path"] not in {x["path"] for x in cands}]
     for k, c in enumerate(cands, 1):
         c["id"] = "m%d" % k
     return cands
@@ -512,7 +516,7 @@ def build_hook_prompt(brief: Dict[str, Any], printed: Dict[str, List[str]],
                                         c["desc"] or "(no description)",
                                         (" PRINTS " + ", ".join(c["tokens"]))
                                         if c["tokens"] else "")
-        for c in cands) or "  (none)"
+        for c in cands if c["kind"] != "ref") or "  (none)"
     styles = [e["title"] for e in load_examples() if e.get("title")][:6]
     return (
         "You are writing the ONE hook of a manhwa recap series: the sentence "
@@ -710,6 +714,29 @@ def choose_layout(hook: Dict[str, Any], cands: List[Dict[str, Any]],
     return out[:2]
 
 
+def registry_exemplars(w_eps: List[str]) -> List[str]:
+    """The lead's exemplar panels from the owner-curated cast registry
+    (cast/<slug>.json), absolute, existing. The painter copies these first:
+    without a registry "lead" is a guess (Tutorial Tower's three references
+    were him, a dark-haired man and the sunglasses man, 2026-09-30)."""
+    if not w_eps:
+        return []
+    root = os.path.dirname(_TD)
+    slug = os.path.basename(os.path.dirname(os.path.abspath(w_eps[0])))
+    try:
+        reg = json.load(open(os.path.join(root, "cast", slug + ".json")))
+    except (OSError, ValueError):
+        return []
+    out: List[str] = []
+    for c in reg.get("cast") or []:
+        if c.get("is_protagonist"):
+            for p in c.get("exemplars") or []:
+                p = p if os.path.isabs(p) else os.path.join(root, p)
+                if os.path.isfile(p):
+                    out.append(p)
+    return out[:3]
+
+
 def mc_look(cands: List[Dict[str, Any]], n: int = 3) -> str:
     """How the lead looks IN THE WINDOW: the descriptions of his clean solo
     shots, the same panels the painter copies him from. Not the cast guess
@@ -720,7 +747,7 @@ def mc_look(cands: List[Dict[str, Any]], n: int = 3) -> str:
     out: List[str] = []
     for c in cands:
         d = " ".join(str(c.get("desc") or "").split())
-        if c.get("kind") == "lead" and d and d not in out:
+        if c.get("kind") in ("lead", "ref") and d and d not in out:
             out.append(d)
     return " | ".join(out[:n])
 
@@ -865,7 +892,8 @@ def check_art_direction(ad: Dict[str, Any], hook: Dict[str, Any],
     wordy = []
     for k in _PAINTED_KEYS:
         v = _NO_TEXT_RE.sub(" ", str(ad.get(k) or ""))
-        m = _READ_RE.search(v) or re.search(r"\S*\d\S*", v)
+        m = (_READ_RE.search(v) or re.search(r"\S*\d\S*", v)
+             or re.search(r"'[A-Z][A-Z .!?+-]*'", v))
         if m:
             wordy.append("%s: '%s'" % (k, v[max(0, m.start() - 25):m.end() + 15]
                                        .strip()))
@@ -2663,8 +2691,8 @@ def main() -> int:
                 "claim_source": claim_source,
                 "teaser_panels": [str(p.get("scene_file") or "") for p in montage],
                 "climax_chapter_index": climax_ci,
-                "refs": _lead_refs(SCENE_STYLES[0], [
-                    c["path"] for c in cands if c.get("kind") == "lead"]),
+                "refs": _lead_refs(SCENE_STYLES[0], registry_exemplars(w_eps) or [
+                    c["path"] for c in cands if c.get("kind") in ("lead", "ref")]),
                 "badge": "%d CHAPTERS" % len(beats_list),
                 "synopsis": synopsis, "hashtags": hashtags,
                 "description": build_description(synopsis, hashtags),
