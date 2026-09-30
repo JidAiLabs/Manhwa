@@ -536,6 +536,8 @@ def build_hook_prompt(brief: Dict[str, Any], printed: Dict[str, List[str]],
         'status, a humiliating role, a time or an odd situation), the TURN, '
         'his EDGE (the power, with a rank or number the story prints) and the '
         'PAYOFF",\n'
+        '  "edge": "3-8 words: what he has or knows that no one else does '
+        '(the teaser\'s last line says it)",\n'
         '  "low": "the ladder word for where he starts, or empty",\n'
         '  "high": "the ladder word for where he gets to, or empty",\n'
         '  "labels": [{"text": "1-2 ladder words", "subject": "hero or object", '
@@ -596,6 +598,7 @@ def validate_hook(pkg: Dict[str, Any], *, printed: Dict[str, List[str]],
         elif text not in [x["text"] for x in titles]:
             titles.append(row)
     return {"sentence": " ".join(str(pkg.get("hook") or "").split()),
+            "edge": " ".join(str(pkg.get("edge") or "").split()),
             "low": low, "high": high, "labels": labels, "moments": moments,
             "titles": titles, "rejected_titles": rejected}
 

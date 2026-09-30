@@ -420,3 +420,29 @@ def test_the_manifest_records_the_hook_and_whether_the_last_line_lands_it():
     assert out["hook"] == hook and out["hook_moment"] == "p3.jpg"
     assert out["hook_landed"] is True
     assert tp.hook_landed("A quiet commute begins.", hook) is False
+
+
+def test_the_last_line_must_say_the_hooks_edge():
+    """ORV 2026-09-30: "An ordinary man must face the terrifying reality of a
+    world rewritten by a deadly system" shared two hook words and never said he
+    had read the novel. The claim's edge must be SAID."""
+    hook = ("Trapped in a subway car during a sudden apocalypse, an ordinary "
+            "commuter uses the spoilers of a finished novel to manipulate a "
+            "deadly system.")
+    edge = "the spoilers of a finished novel"
+    generic = ("An ordinary man must face the terrifying reality of a world "
+               "rewritten by a deadly system.")
+    assert tp.hook_landed(generic, hook) is True            # the old, loose check
+    assert tp.hook_landed(generic, hook, edge) is False
+    assert tp.hook_landed("But this ordinary commuter holds the spoilers of the "
+                          "finished novel.", hook, edge) is True
+    seen = {}
+    montage = [{"chapter_number": 2, "scene_file": "/abs/ch2/scenes/p3.jpg",
+                "panel_kind": "story", "intensity": "tense", "is_climax": True,
+                "description": "d", "action": "", "dialogue": "", "subjects": []}]
+    out = tp.select_and_write(
+        montage, loglines=[], hook=hook, edge=edge,
+        model_call=lambda p: seen.update(p) or {
+            "panel_narration": [{"scene_file": "p3.jpg", "line": generic}]})
+    assert seen["hook_edge"] == edge and "hook_edge" in tp.TEASER_PROMPT
+    assert out["hook_edge"] == edge and out["hook_landed"] is False

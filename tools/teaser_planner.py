@@ -478,6 +478,7 @@ def select_and_write(
     cast_obj: Optional[Dict[str, Any]] = None,
     vision_by_file: Optional[Dict[str, Any]] = None,
     hook: str = "",
+    edge: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Write per-panel narration over an ALREADY-SELECTED arc montage.
 
@@ -514,6 +515,8 @@ def select_and_write(
     }
     if hook:
         payload["hook"] = hook
+    if edge:
+        payload["hook_edge"] = edge
     resp = model_call(payload)
     if not isinstance(resp, dict):
         return None
@@ -569,19 +572,26 @@ def select_and_write(
                 if teaser["panel_narration"] else "")
         teaser["hook"] = hook
         teaser["hook_moment"] = os.path.basename(str(panels[-1].get("scene_file") or ""))
-        teaser["hook_landed"] = hook_landed(last, hook)
+        teaser["hook_edge"] = edge
+        teaser["hook_landed"] = hook_landed(last, hook, edge)
     return teaser
 
 
-def hook_landed(line: str, hook: str) -> bool:
+def hook_landed(line: str, hook: str, edge: str = "") -> bool:
     """The final line says what the hook promises: it shares at least two of
-    the hook's content words (4+ letters). A cheap, visible check; the owner
-    judges the rest when the teaser plays."""
+    the hook's content words (4+ letters) and, when the claim names the EDGE,
+    a word of the edge (stems: "spoiler" meets "spoilers"). ORV 2026-09-30:
+    "An ordinary man must face ... a deadly system" shared "ordinary" and
+    "system" with the hook and never said he had read the novel. A cheap,
+    visible check; the owner judges the rest when the teaser plays."""
     words = lambda s: {w for w in re.findall(r"[a-z]{4,}", str(s or "").lower())
                        if w not in {"that", "this", "with", "from", "into",
                                     "their", "they", "when", "then", "than",
                                     "what", "only", "have", "been", "will"}}
-    return len(words(line) & words(hook)) >= 2
+    said = words(line)
+    if edge and not any(a[:5] == b[:5] for a in said for b in words(edge)):
+        return False
+    return len(said & words(hook)) >= 2
 
 
 # --------------------------------------------------------------------------- #
@@ -802,7 +812,10 @@ TEASER_PROMPT = (
     "power awakening / transformation) WITHOUT stating any later outcome. When "
     "INPUT_JSON has a `hook`, that sentence is what this series promises and the "
     "climax panel is its moment: the final line LANDS that promise, in your own "
-    "words, and the lines before it build toward it.\n"
+    "words, and the lines before it build toward it. When INPUT_JSON has a "
+    "`hook_edge`, the FINAL line SAYS that edge plainly (what the protagonist "
+    "has or knows that no one else does): it is the premise the series opens "
+    "on, not a spoiler.\n"
     "3. Write a `rewind_line`: one sentence that pivots from the hook back to the "
     "beginning (e.g. 'But to understand how it came to this, we have to go back.').\n"
     "4. Write a short `reason` (why this montage hooks) and a `spoiler_boundary` "
@@ -911,7 +924,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[teaser] no teaser")
         return 0
 
-    hook, climax_file, must = "", "", []
+    hook, edge, climax_file, must = "", "", "", []
     if args.hook_claim:
         try:
             claim = json.load(open(args.hook_claim, encoding="utf-8"))
@@ -920,6 +933,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         h = claim.get("hook") or {}
         paths = {m.get("id"): m.get("path") for m in (claim.get("moments") or [])}
         hook = str(h.get("sentence") or "")
+        edge = str(h.get("edge") or "")
         climax_file = str(paths.get((h.get("moments") or {}).get("hero")) or "")
         before = paths.get((h.get("moments") or {}).get("before"))
         must = [before] if before else []
@@ -948,6 +962,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         cast_obj=cast,
         vision_by_file={},
         hook=hook,
+        edge=edge,
     )
     if not teaser:
         print("[teaser] no teaser")
