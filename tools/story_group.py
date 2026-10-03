@@ -139,10 +139,11 @@ _SYSTEM_CORE = (
     "spans stay in ascending order and never overlap), segment (present | "
     "flashback | dream — MARK flashbacks and dreams), arc_label (a 2-4 word "
     "label for the scene), scene_shift (true ONLY when a span's FIRST panel "
-    "is in a DIFFERENT PLACE than the previous span — a cut to another "
-    "location (another room, outdoors, elsewhere); otherwise omit it. NOT a "
-    "shift: a new or different character, a close-up, a wider view or a "
-    "system card at the SAME place; when unsure, omit). "
+    "SHOWS a place clearly different from the previous span's — an "
+    "establishing view of another location: another room, outdoors, "
+    "elsewhere; otherwise omit it. NEVER for a character close-up, a "
+    "reaction, an arrival or an effect panel at the same place; when unsure, "
+    "omit). "
     "Cover EVERY panel exactly once, in order. Do not "
     "target a fixed number of spans or a fixed panel count. The downstream "
     "script/timeline renders panel-level cues; these spans are only story "
@@ -1136,6 +1137,37 @@ _SYSTEM_CARD_RE = re.compile(
     r"guild|alert|alarm|hp|mp|exp|stat)\b", re.I)
 
 
+def opens_on_establishing_view(shot: Dict[str, Any],
+                               understood_by_file: Dict[str, Dict[str, Any]],
+                               vmap: Dict[str, Dict[str, Any]]) -> bool:
+    """A scene_shift bridge ("Meanwhile, elsewhere…") is right only when the
+    cut OPENS on a view of the new place: the shot's first shown (story) panel
+    draws no person and is not a text panel. Measured 2026-10-04 over 37
+    model-tagged shots in 10 chapters: every true cut opened so (a stone wall,
+    a castle, a night sky — `subjects` may list the building, never a person);
+    every false one opened on a character, an arrival, a text/SFX card or an
+    effect panel. Person-ness is cast_identity's `_looks_person` oracle (the
+    one resolve_figures uses), so no new prose matching is introduced."""
+    from cast_identity import _looks_person
+    for f in shot.get("scene_files") or []:
+        u = understood_by_file.get(f) or {}
+        if (u.get("panel_kind") or "story") != "story":
+            continue                      # captions/cards never open the view
+        v = vmap.get(f) or {}
+        drawn = list(u.get("subjects") or []) + [u.get("description") or ""]
+        return (not any(_looks_person(str(s)) for s in drawn)
+                and not bool(v.get("text_only")))
+    return False
+
+
+def scene_shift_enabled() -> bool:
+    """Feature switch (OFF by default): the tag ships with the plumbing but
+    stays inert until the owner enables it after seeing real bridges — the
+    establishing-opener gate measured ~75% precision on 10 chapters
+    (2026-10-04), so a wrong 'Meanwhile…' would reach ~1 in 4 tagged beats."""
+    return os.environ.get("STUDIO_SCENE_SHIFT", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def title_card_files(vision_items: List[Dict[str, Any]]) -> set:
     """Story title/system cards — 'SYSTEM ACTIVATION.', an age/time card, an RPG
     status window — that the QA layer treats as UNDROPPABLE story beats.
@@ -1442,6 +1474,15 @@ def main() -> int:
     # zoom/echo twins fold to ONE beat BEFORE narration is born (2026-07-16)
     echo_pairs = compute_echo_pairs(story, vmap)
     shots = merge_echo_shots(shots, echo_pairs)
+    # the model's scene_shift survives only on a cut that opens on a view of
+    # the new place (see opens_on_establishing_view) — a character, arrival,
+    # text or effect opener keeps the plain continuity bridge
+    u_by_file = {p.get("scene_file"): p for p in story}
+    enabled = scene_shift_enabled()
+    for s in shots:
+        if s.get("scene_shift") and not (
+                enabled and opens_on_establishing_view(s, u_by_file, vmap)):
+            s["scene_shift"] = False
     shots = annotate_intensity(shots, panels)   # per-shot PACE = peak intensity
     out = {
         "source_understood": os.path.abspath(args.understood),

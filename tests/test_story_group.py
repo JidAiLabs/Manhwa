@@ -1252,12 +1252,15 @@ def test_system_core_defines_scene_shift_closed():
     # terse: the 96-panel benchmark chapter has ~100 tokens of headroom under
     # _PROMPT_TOKEN_BUDGET, and the key is OMITTED on ordinary spans so the
     # response does not grow per beat.
-    # PLACE only (dry run 2026-10-04: "or wholly different characters" tagged
-    # 46% of all shots — close-ups, reactions and arrivals at the same place).
+    # An ESTABLISHING VIEW of another place (dry runs 2026-10-04: "or wholly
+    # different characters" tagged 46% of all shots; "a different place"
+    # 25% at ~40% precision — every true cut opened on an establishing view,
+    # every false one on a character, an arrival or an effect panel).
     core = sg._SYSTEM_CORE
     assert "scene_shift (true ONLY when a span's FIRST panel" in core
-    for phrase in ("DIFFERENT PLACE", "another location", "at the SAME place",
-                   "close-up", "system card", "when unsure, omit"):
+    for phrase in ("SHOWS a place clearly different", "establishing view",
+                   "NEVER for a character close-up", "effect panel",
+                   "when unsure, omit"):
         assert phrase in core, phrase
     assert "scene_shift (true ONLY" in sg.SYSTEM_CHUNK   # chunk calls inherit the core
 
@@ -1326,9 +1329,12 @@ def test_main_emits_scene_shift_and_prompt_version(tmp_path, monkeypatch):
     import json
     import sys as _sys
 
+    # p1 opens on an establishing view (no figure); p2 opens on a character,
+    # so its model tag is dropped by the establishing-opener gate
     understood = {"panels": [
         {"scene_file": f"p{i}.jpg", "description": f"panel {i}", "action": "x",
-         "subjects": ["a man"], "panel_kind": "story", "intensity": "calm"}
+         "subjects": [] if i == 1 else ["a man"], "panel_kind": "story",
+         "intensity": "calm"}
         for i in range(3)]}
     vision = {"items": [{"scene_file": f"p{i}.jpg"} for i in range(3)]}
     up = tmp_path / "manifest.panels.understood.json"
@@ -1343,16 +1349,60 @@ def test_main_emits_scene_shift_and_prompt_version(tmp_path, monkeypatch):
         return ({"chapter": {"logline": "A ridge walk home.",
                              "premise": "He walks alone again."},
                  "beats": [{"from_index": 0, "to_index": 0},
-                           {"from_index": 1, "to_index": 2, "scene_shift": True}]},
+                           {"from_index": 1, "to_index": 1, "scene_shift": True},
+                           {"from_index": 2, "to_index": 2, "scene_shift": True}]},
                 "OK_RAW", {})
 
     monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
     monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setenv("STUDIO_SCENE_SHIFT", "1")
     monkeypatch.setattr(_sys, "argv", [
         "story_group.py", "--understood", str(up),
         "--vision-manifest", str(vp), "--out", str(out)])
     assert sg.main() == 0
     written = json.loads(out.read_text())
-    assert [s["scene_shift"] for s in written["shots"]] == [False, True]
+    assert [s["scene_shift"] for s in written["shots"]] == [False, True, False]
+    # switch off (the shipped default): the same grouping carries no tag
+    monkeypatch.delenv("STUDIO_SCENE_SHIFT")
+    assert sg.main() == 0
+    assert [s["scene_shift"] for s in json.loads(out.read_text())["shots"]] == [False, False, False]
     assert written["_meta"]["prompt_version"] == sg.PROMPT_VERSION
     assert "scene_shift (true ONLY" in seen["system"]
+
+
+def test_scene_shift_needs_an_establishing_opener():
+    # Measured 2026-10-04 over 37 tagged shots in 10 chapters: every true cut
+    # opened on a view of the new place (a story panel drawing no figure);
+    # every false one opened on a character, an arrival, a text/SFX card or an
+    # effect panel. The gate keeps the tag only on the former.
+    u = {"wall.jpg": {"panel_kind": "story", "subjects": []},
+         "castle.jpg": {"panel_kind": "story",
+                        "subjects": ["a large white stone castle with blue roofs"]},
+         "hero.jpg": {"panel_kind": "story",
+                      "subjects": ["a young man in a black tracksuit"]},
+         "ledge.jpg": {"panel_kind": "story", "subjects": ["a pale clawed hand"],
+                       "description": "Two figures stand atop a rocky ledge."},
+         "cap.jpg": {"panel_kind": "caption", "subjects": []},
+         "sfx.jpg": {"panel_kind": "story", "subjects": []}}
+    v = {"sfx.jpg": {"text_only": True}}
+
+    def ok(files):
+        return sg.opens_on_establishing_view({"scene_files": files}, u, v)
+
+    assert ok(["wall.jpg", "hero.jpg"])          # a view of the place, no one drawn
+    assert ok(["castle.jpg", "hero.jpg"])        # a building is a subject, not a person
+    assert ok(["cap.jpg", "wall.jpg"])           # a leading caption never shows
+    assert not ok(["hero.jpg", "wall.jpg"])      # opens on a character
+    assert not ok(["ledge.jpg", "wall.jpg"])     # the person is in the description only
+    assert not ok(["sfx.jpg", "wall.jpg"])       # a text / SFX panel
+    assert not ok([])
+
+
+def test_scene_shift_is_inert_unless_enabled(monkeypatch):
+    # ships OFF: with STUDIO_SCENE_SHIFT unset every tag is dropped at the
+    # post-merge hook, so production narration is unchanged until the owner
+    # turns it on (see scene_shift_enabled)
+    monkeypatch.delenv("STUDIO_SCENE_SHIFT", raising=False)
+    assert sg.scene_shift_enabled() is False
+    monkeypatch.setenv("STUDIO_SCENE_SHIFT", "1")
+    assert sg.scene_shift_enabled() is True
