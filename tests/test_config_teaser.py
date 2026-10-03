@@ -34,3 +34,18 @@ def test_publish_auto_after_chapters_default_and_toml(tmp_path):
     toml = tmp_path / "s.toml"
     toml.write_text('[teaser]\nenabled = false\n')
     assert load(toml).publish_auto_after_chapters == 12
+
+
+def test_row_layout_config_defaults_and_off_switch(tmp_path):
+    # Rows (2-3 panels one line covers, side by side) ship OFF: the owner signs
+    # off one real chapter, then flips row_min_fit to 0.52 in studio.toml.
+    cfg = load(REPO_ROOT / "studio.toml")
+    assert cfg.row_min_fit == 0.0
+    assert cfg.row_min_gap_items == 3
+    toml = tmp_path / "s.toml"
+    toml.write_text('[teaser]\nenabled = false\n')
+    assert load(toml).row_min_fit == 0.52          # default without [render]
+    assert load(toml).row_min_gap_items == 3
+    # 0.0 is the OFF switch — the loader must not read it as "unset"
+    toml.write_text('[render]\nrow_min_fit = 0.0\n')
+    assert load(toml).row_min_fit == 0.0

@@ -2722,3 +2722,100 @@ def test_garbage_substitution_call_site_exempts_narrated_panels():
     assert "forced_dup_subs" in arg, (
         "a narrated panel PROVEN a cross-segment duplicate must still be "
         "substitutable -- the exemption must subtract forced_dup_subs")
+
+
+# ---- row layout (2026-10-04) --------------------------------------------------
+# The 2-3 panels ONE narration line covers fade into one row (RowShot.tsx)
+# instead of cutting one after another. render_prep decides LAST (after every
+# pass that rewrites cuts/filenames/dims); cuts[] stays untouched so every
+# consumer keyed on cuts[].file behaves as before; `row` is an additive item key.
+
+def _row_plan(items, dims):
+    return {"scene_dims": dims, "timeline": items}
+
+
+def _row_item(seg, files, dur=6.0, **extra):
+    per = dur / len(files)
+    cuts = [{"file": f, "start": round(i * per, 3), "dur": round(per, 3)}
+            for i, f in enumerate(files)]
+    return {"segment_id": seg, "duration_sec": dur, "cuts": cuts, **extra}
+
+
+_PORTRAIT = {"w": 800, "h": 1000}
+
+
+def test_assign_rows_marks_eligible_two_and_three_panel_items():
+    dims = {f: dict(_PORTRAIT) for f in ("a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg")}
+    plan = _row_plan([_row_item("g0001_p00", ["a.jpg", "b.jpg"]),
+                      _row_item("g0002_p00", ["c.jpg", "d.jpg", "e.jpg"])], dims)
+    before = json.loads(json.dumps(plan))
+    out, logs = rp.assign_rows(plan, min_fit=0.52, min_gap_items=0)
+    tl = out["timeline"]
+    assert tl[0]["row"] == [{"file": "a.jpg", "enter": 0.0}, {"file": "b.jpg", "enter": 3.0}]
+    assert [r["file"] for r in tl[1]["row"]] == ["c.jpg", "d.jpg", "e.jpg"]
+    assert [r["enter"] for r in tl[1]["row"]] == [0.0, 2.0, 4.0]
+    assert [t["cuts"] for t in tl] == [t["cuts"] for t in before["timeline"]]  # cuts untouched
+    assert plan == before                                                       # input untouched
+    assert [log[0] for log in logs] == ["g0001_p00", "g0002_p00"]
+
+
+def test_assign_rows_skips_ineligible_items():
+    por = dict(_PORTRAIT)
+    dims = {"a.jpg": por, "b.jpg": por, "c.jpg": por, "d.jpg": por,
+            "doc.jpg": {**por, "doc": True}, "sys.jpg": {**por, "sys": True},
+            "tall.jpg": {"w": 1200, "h": 3954},      # h/w >= 2.0: the sliver of v1
+            "wide.jpg": {"w": 1400, "h": 1000}}      # w/h >= 1.3: cover branch
+    items = [_row_item("doc", ["a.jpg", "doc.jpg"]),
+             _row_item("sys", ["a.jpg", "sys.jpg"]),
+             _row_item("tall", ["a.jpg", "tall.jpg"]),
+             _row_item("wide", ["a.jpg", "wide.jpg"]),
+             _row_item("one", ["a.jpg"]),
+             _row_item("four", ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]),
+             _row_item("nodims", ["a.jpg", "zz.jpg"]),
+             _row_item("branding", ["a.jpg", "b.jpg"], branding="outro")]
+    held = _row_item("held", ["a.jpg", "b.jpg"]); held["cuts"][1]["held"] = True
+    split = _row_item("split", ["a.jpg", "b.jpg"])
+    split["cuts"][0].update(file2="a_b.jpg", layout="split2")
+    kv = _row_item("kv", ["a.jpg", "b.jpg"]); kv["cuts"][0]["ken_variety"] = True
+    items += [held, split, kv]
+    out, logs = rp.assign_rows(_row_plan(items, dims), min_fit=0.52, min_gap_items=0)
+    assert all("row" not in t for t in out["timeline"]) and logs == []
+
+
+def test_assign_rows_rations_rows_and_honours_the_off_switch():
+    dims = {f"p{i}.jpg": dict(_PORTRAIT) for i in range(12)}
+    items = [_row_item(f"g{i:04d}_p00", [f"p{2 * i}.jpg", f"p{2 * i + 1}.jpg"])
+             for i in range(6)]
+    out, _ = rp.assign_rows(_row_plan(items, dims), min_fit=0.52, min_gap_items=3)
+    assert [i for i, t in enumerate(out["timeline"]) if "row" in t] == [0, 4]
+    out, _ = rp.assign_rows(_row_plan(items, dims), min_fit=0.52, min_gap_items=0)
+    assert [i for i, t in enumerate(out["timeline"]) if "row" in t] == list(range(6))
+    out, logs = rp.assign_rows(_row_plan(items, dims), min_fit=0.0, min_gap_items=0)
+    assert all("row" not in t for t in out["timeline"]) and logs == []     # OFF
+
+
+def test_row_fit_threshold_boundary():
+    # three 1200x1000 panels: H = (1920-2*96-2*28)/(3*1.2) = 464.4 px, so each
+    # panel shows at 464.4/1000 = 0.464 of its height vs 0.9504 shown alone
+    # (0.88*1080/1000) -> fit 0.489
+    dims = {f: {"w": 1200, "h": 1000} for f in ("a.jpg", "b.jpg", "c.jpg")}
+    fit = rp._row_fit([dims[f] for f in dims])
+    assert 0.48 < fit < 0.49
+    plan = _row_plan([_row_item("g", list(dims))], dims)
+    assert "row" in rp.assign_rows(plan, min_fit=0.48, min_gap_items=0)[0]["timeline"][0]
+    assert "row" not in rp.assign_rows(plan, min_fit=0.49, min_gap_items=0)[0]["timeline"][0]
+
+
+def test_renderer_sources_draw_rows():
+    """Pins the TS side of the row contract: plan.ts types `row`, Shot.tsx
+    renders a RowShot instead of the cut loop when it is set, and RowShot.tsx
+    mirrors render_prep's geometry constants."""
+    src = Path(__file__).resolve().parent.parent / "remotion" / "src"
+    plan_ts = (src / "plan.ts").read_text()
+    shot = (src / "Shot.tsx").read_text()
+    row = (src / "RowShot.tsx").read_text()
+    assert "row?: {file: string; enter: number}[]" in plan_ts
+    assert "<RowShot" in shot and "item.row" in shot
+    for const in ("ROW_MX = 96", "ROW_MY = 54", "ROW_GAP = 28", "ENTER_SEC = 0.5",
+                  "SLIDE_PX = 70", "EXIT_FADE_SEC = 0.4"):
+        assert const in row, const

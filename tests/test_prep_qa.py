@@ -2638,3 +2638,28 @@ def test_grounding_note_for_scene_shift_beats(monkeypatch, tmp_path):
     assert flags == []
     assert "OPENS A NEW SCENE" in seen["beta"]
     assert "OPENS A NEW SCENE" not in seen["alpha"]
+
+
+def test_plan_flags_row_files_must_be_cuts_with_dims():
+    """render_prep.assign_rows derives row[].file from the item's own cuts, so a
+    stray row file can only come from a pass-ordering regression — surfaced
+    for review (ERROR, not in the worker's blocking set); plans without rows
+    never see it."""
+    dims = {f: {"w": 800, "h": 1000} for f in ("a.jpg", "b.jpg", "c.jpg")}
+
+    def row_flags(item, d=dims):
+        plan = _plan([item]); plan["scene_dims"] = d
+        fl = pq.plan_flags(plan, clean_files={"a.jpg", "b.jpg", "c.jpg"},
+                           audio_exists=lambda p: True)
+        return [f for f in fl if f["code"] == "row_file_unknown"]
+
+    def row(*files):
+        return [{"file": f, "enter": 4.0 * i} for i, f in enumerate(files)]
+
+    assert row_flags(_item("g0001_p00", ["a.jpg", "b.jpg"], row=row("a.jpg", "b.jpg"))) == []
+    assert row_flags(_item("g0001_p00", ["a.jpg", "b.jpg"])) == []          # no row: no flag
+    fl = row_flags(_item("g0001_p00", ["a.jpg", "b.jpg"], row=row("a.jpg", "c.jpg")))
+    assert [f["severity"] for f in fl] == [pq.ERROR] and fl[0]["scene"] == "c.jpg"
+    fl = row_flags(_item("g0001_p00", ["a.jpg", "b.jpg"], row=row("a.jpg", "b.jpg")),
+                   d={"a.jpg": dims["a.jpg"]})
+    assert [f["scene"] for f in fl] == ["b.jpg"]                            # no dims

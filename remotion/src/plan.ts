@@ -64,6 +64,11 @@ export type TimelineItem = {
   // story-structure tag from story_group: "present" | "flashback" | "dream".
   // The renderer applies a faded/sepia + vignette look when not "present".
   segment?: string;
+  // render_prep.assign_rows: the 2-3 panels this line narrates, side by side
+  // (RowShot.tsx); enter = seconds into the item when each fades in (its first
+  // cut's start). cuts[] stays intact — every QA/dashboard consumer keeps
+  // reading it; only the renderer reads row.
+  row?: {file: string; enter: number}[];
 };
 
 export type SceneDims = {

@@ -1018,6 +1018,22 @@ def _default_art_only_push_frac() -> float:
         return 0.0
 
 
+def _default_row_min_fit() -> float:
+    try:
+        from studio.config import load as _load
+        return float(getattr(_load(), "row_min_fit", 0.52))
+    except Exception:
+        return 0.52
+
+
+def _default_row_min_gap_items() -> int:
+    try:
+        from studio.config import load as _load
+        return int(getattr(_load(), "row_min_gap_items", 3))
+    except Exception:
+        return 3
+
+
 def _default_panel_weights() -> str:
     try:
         from studio.detect.yolo_panels import default_weights
@@ -2345,6 +2361,81 @@ _KV_SPLIT3_FACTOR = 1.5     # display > 1.5x cap -> 3 sub-cuts, else 2
 _KV_WEIGHTS = {2: (0.45, 0.55), 3: (0.35, 0.35, 0.30)}
 _KV_MIN_SUBCUT_SEC = 2.0    # never manufacture a flash_cut
 
+# ---- row layout (2026-10-04) --------------------------------------------------
+# The 2-3 panels ONE narration line covers fade side by side into one row
+# (remotion/src/RowShot.tsx) instead of cutting one after another. Geometry
+# MUST mirror RowShot.tsx: outer margins, gap, and the "shown alone" box
+# (1 - 2*DEFAULT_SAFE_INSET, Cut.tsx) the fit is measured against.
+_ROW_MX, _ROW_MY, _ROW_GAP = 96, 54, 28
+_ROW_SOLO_BOX = 0.88
+_FRAME_W, _FRAME_H = 1920, 1080
+
+
+def _row_fit(dims: List[Dict[str, Any]]) -> float:
+    """min over the row's panels of (height shown in the row) / (height shown
+    alone): 1.0 = as big as solo, 0.5 = half. The row height is capped by the
+    frame height and by the width the panels' aspect ratios need."""
+    n = len(dims)
+    ar = [float(d["w"]) / float(d["h"]) for d in dims]
+    row_h = min(_FRAME_H - 2 * _ROW_MY,
+                (_FRAME_W - 2 * _ROW_MX - _ROW_GAP * (n - 1)) / sum(ar))
+    return min((row_h / float(d["h"]))
+               / min(_ROW_SOLO_BOX * _FRAME_W / float(d["w"]),
+                     _ROW_SOLO_BOX * _FRAME_H / float(d["h"]))
+               for d in dims)
+
+
+def assign_rows(plan: Dict[str, Any], *, min_fit: float, min_gap_items: int,
+                tall_aspect: float = _TALL_SCROLL_MIN_ASPECT,
+                wide_aspect: float = _WIDE_COVER_MIN_ASPECT,
+                ) -> Tuple[Dict[str, Any], List[Tuple[str, List[str], float]]]:
+    """Mark items whose 2-3 distinct panels fit one row: item["row"] =
+    [{file, enter}] (enter = seconds into the item the panel's first cut
+    starts = when the narration reaches it). cuts[] is NEVER touched, so every
+    consumer keyed on cuts[].file (span cover, judges, dashboard) is unchanged;
+    the renderer alone reads `row`. Runs LAST in main() — after every pass
+    that drops, substitutes, splits or re-crops cuts — so the files and dims
+    it reads are final. Returns (new_plan, [(segment_id, files, fit)]).
+
+    Skipped: branding items; any held / split2 / ken_variety cut (stand-ins and
+    sub-cuts are not the line's own panels); doc or sys panels (text is read at
+    full size); tall strips (a sliver beside a normal panel) and wide panels
+    (the cover branch); 1 or 4+ panels; missing dims; fit < min_fit; and a row
+    closer than min_gap_items items to the previous row. min_fit <= 0 = OFF."""
+    out = json.loads(json.dumps(plan))
+    logs: List[Tuple[str, List[str], float]] = []
+    if min_fit <= 0:
+        return out, logs
+    dims = out.get("scene_dims") or {}
+    last_row: Optional[int] = None
+    for i, item in enumerate(out.get("timeline") or []):
+        if item.get("branding"):
+            continue
+        cuts = item.get("cuts") or []
+        if any(c.get("held") or c.get("file2") or c.get("layout")
+               or c.get("ken_variety") for c in cuts):
+            continue
+        enter: Dict[str, float] = {}
+        for c in cuts:
+            enter.setdefault(str(c.get("file") or ""), float(c.get("start") or 0.0))
+        files = [f for f in enter if f]
+        if not 2 <= len(files) <= 3:
+            continue
+        d = [dims.get(f) or {} for f in files]
+        if any(not x.get("w") or not x.get("h") or x.get("doc") or x.get("sys")
+               or float(x["h"]) / float(x["w"]) >= tall_aspect
+               or float(x["w"]) / float(x["h"]) >= wide_aspect for x in d):
+            continue
+        fit = _row_fit(d)
+        if fit < min_fit:
+            continue
+        if last_row is not None and i - last_row - 1 < min_gap_items:
+            continue
+        item["row"] = [{"file": f, "enter": round(enter[f], 4)} for f in files]
+        last_row = i
+        logs.append((str(item.get("segment_id") or ""), files, fit))
+    return out, logs
+
 
 def _motion_honored_dims(dims_entry: Optional[Dict[str, Any]]) -> bool:
     """True when Cut.tsx's DEFAULT contain branch renders this file — the only
@@ -3371,6 +3462,14 @@ def main() -> int:
                          "statically past this is split into ken-varied "
                          "sub-cuts (V1); half of it gates the husk re-crop "
                          "(V3)")
+    ap.add_argument("--row-min-fit", type=float, default=_default_row_min_fit(),
+                    help="[render].row_min_fit — the 2-3 panels one line "
+                         "covers share one row when each shows at >= this "
+                         "fraction of its solo size; <= 0 disables rows")
+    ap.add_argument("--row-min-gap-items", type=int,
+                    default=_default_row_min_gap_items(),
+                    help="[render].row_min_gap_items — at least this many "
+                         "ordinary items between two rows")
     ap.add_argument("--panel-weights",
                     default=_default_panel_weights(),
                     help="trained webtoon YOLO (default: studio.toml [detect] "
@@ -4427,6 +4526,13 @@ def main() -> int:
               f"-> re-framed IN PLACE as a push-in "
               f"({scene_dims.get(shown_f, {}).get('w')}x"
               f"{scene_dims.get(shown_f, {}).get('h')})")
+
+    # LAST pass: every cut/filename/dim above is final, so the row decision
+    # cannot go stale (the visual heal and dashboard drops rerun render_prep).
+    out_plan, row_logs = assign_rows(out_plan, min_fit=args.row_min_fit,
+                                     min_gap_items=args.row_min_gap_items)
+    for seg, files, fit in row_logs:
+        print(f"[ok] {seg}: ROW {' | '.join(files)} (fit={fit:.2f})")
 
     which = "none" if args.no_branding else args.branding
     if which != "none":

@@ -3031,6 +3031,18 @@ def plan_flags(plan: Dict[str, Any], *, clean_files: set,
                                    scene=str(c.get("file")), segment_id=seg))
             prev_file = c.get("file")
 
+        # row layout (render_prep.assign_rows): every row panel must be one of
+        # this item's cuts and have dims — rows are DERIVED from cuts, so a
+        # stray file is a pass-ordering regression. ERROR for the review list;
+        # never in the worker's blocking set (old plans carry no row).
+        cut_files = {str(c.get("file") or "") for c in cuts}
+        for r in item.get("row") or []:
+            rf = str(r.get("file") or "")
+            if rf not in cut_files or rf not in dims:
+                flags.append(_flag("row_file_unknown", ERROR,
+                                   "row panel is not among the item's cuts or "
+                                   "has no scene_dims", scene=rf, segment_id=seg))
+
         tile = sum(float(c.get("dur") or 0.0) for c in cuts)
         item_dur = float(item.get("duration_sec") or 0.0)
         if abs(tile - item_dur) > 0.51:

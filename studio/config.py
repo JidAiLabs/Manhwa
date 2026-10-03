@@ -101,6 +101,14 @@ class Config:
                                              # genuine own-panel hold is
                                              # content-driven pacing and stays
                                              # legal at any length.
+    row_min_fit: float = 0.52               # [render] row layout: the 2-3
+                                             # panels ONE line covers share a
+                                             # row when each shows at >= this
+                                             # fraction of its solo size;
+                                             # <= 0 disables rows (studio.toml
+                                             # ships 0.0 until owner sign-off)
+    row_min_gap_items: int = 3              # [render] ordinary items between
+                                             # two rows (back-to-back = dizzy)
     narration_sanitize: bool = True         # advertiser-safety pass over the
                                              # FINAL narration before TTS: the
                                              # scripted stage runs
@@ -218,6 +226,9 @@ def load(path: Path | None = None) -> Config:
         art_only_straddle_push_frac=float(
             os.environ.get("STUDIO_ART_ONLY_PUSH_FRAC")
             or r.get("art_only_straddle_push_frac", 0.0) or 0.0),
+        # rows: 0.0 is the OFF switch, so no `or default` here
+        row_min_fit=float(r.get("row_min_fit", 0.52)),
+        row_min_gap_items=int(r.get("row_min_gap_items", 3)),
         narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
                                      bool(m.get("narration_sanitize", True))),
         teaser_enabled=_env_bool("STUDIO_TEASER_ENABLED",

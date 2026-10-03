@@ -2,6 +2,7 @@ import React from 'react';
 import {AbsoluteFill, Audio, Sequence, staticFile} from 'remotion';
 import {CutView} from './Cut';
 import {publicRelAudio, SceneDims, TimelineItem, toFrames, toStartFrame} from './plan';
+import {RowShot} from './RowShot';
 
 /**
  * One timeline item (= one narration group): its narration audio at the shot
@@ -23,10 +24,24 @@ export const Shot: React.FC<{
 
   const flashback = item.segment === 'flashback' || item.segment === 'dream';
 
+  // A row replaces the cut montage for this line (every row panel needs dims;
+  // without them fall back to the cuts — render_prep's QA check flags it).
+  const row =
+    item.row && item.row.length >= 2 && item.row.every((r) => !!sceneDims[r.file])
+      ? item.row
+      : undefined;
+
   const body = (
     <>
       {item.tts_audio ? <Audio src={staticFile(publicRelAudio(item.tts_audio))} /> : null}
-      {cuts.map((c, i) => {
+      {row ? (
+        <RowShot
+          row={row}
+          durationInFrames={toFrames(item.duration_sec)}
+          scenesSubdir={scenesSubdir}
+          sceneDims={sceneDims}
+        />
+      ) : cuts.map((c, i) => {
         // A cut runs until the NEXT cut's snapped start; the last cut runs to
         // the item's end. Giving each cut its own ceil'd length left the item's
         // final frame uncovered whenever the last cut's snapped end fell one
