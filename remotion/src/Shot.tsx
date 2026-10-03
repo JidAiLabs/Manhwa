@@ -26,25 +26,31 @@ export const Shot: React.FC<{
   const body = (
     <>
       {item.tts_audio ? <Audio src={staticFile(publicRelAudio(item.tts_audio))} /> : null}
-      {cuts.map((c, i) => (
-        <Sequence
-          key={`${item.segment_id}_c${i}`}
-          from={toStartFrame(c.start)}
-          durationInFrames={toFrames(c.dur)}
-        >
-          <CutView
-            file={c.file}
-            file2={c.layout === 'split2' ? c.file2 : undefined}
-            durationInFrames={toFrames(c.dur)}
-            // Per-panel motion (its pan ends on THIS panel's face) when the
-            // planner emitted one; else the shot-level default.
-            motion={c.motion ?? item.motion}
-            camera={item.camera}
-            scenesSubdir={scenesSubdir}
-            dims={sceneDims[c.file]}
-          />
-        </Sequence>
-      ))}
+      {cuts.map((c, i) => {
+        // A cut runs until the NEXT cut's snapped start; the last cut runs to
+        // the item's end. Giving each cut its own ceil'd length left the item's
+        // final frame uncovered whenever the last cut's snapped end fell one
+        // short of the item's ceil'd length (ch141 2:10.03: a black frame).
+        const from = toStartFrame(c.start);
+        const end = i + 1 < cuts.length ? toStartFrame(cuts[i + 1].start) : toFrames(item.duration_sec);
+        const len = end - from;
+        if (len <= 0) return null; // sub-frame cut: its neighbour covers it
+        return (
+          <Sequence key={`${item.segment_id}_c${i}`} from={from} durationInFrames={len}>
+            <CutView
+              file={c.file}
+              file2={c.layout === 'split2' ? c.file2 : undefined}
+              durationInFrames={len}
+              // Per-panel motion (its pan ends on THIS panel's face) when the
+              // planner emitted one; else the shot-level default.
+              motion={c.motion ?? item.motion}
+              camera={item.camera}
+              scenesSubdir={scenesSubdir}
+              dims={sceneDims[c.file]}
+            />
+          </Sequence>
+        );
+      })}
     </>
   );
 
