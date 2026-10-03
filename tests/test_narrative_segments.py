@@ -2323,7 +2323,7 @@ def test_main_scene_shift_rides_payload_prompt_and_beat(tmp_path, monkeypatch):
     shots = [{"shot_id": 7, "scene_files": list(FILES), "arc_label": "opening",
               "intensity": "tense", "scene_shift": True}]
     out, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT], shots=shots)
-    assert calls[0]["user_payload"]["scene_shift"] is True
+    assert calls[0]["user_payload"]["scene_shift"].startswith("TRUE")
     assert "SCENE SHIFT" in calls[0]["system_instruction"]
     assert out["beats"][0]["scene_shift"] is True
     # untagged (the default shots): absent from payload and beat alike

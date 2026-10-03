@@ -343,10 +343,12 @@ def test_pack_group_payload_scene_shift_key_exists_only_when_tagged():
     base = {"shot_id": 3, "scene_files": ["a.jpg", "b.jpg"]}
     assert "scene_shift" not in gnp._pack_group_payload(base, vision, story)
     tagged = dict(base, scene_shift=True)
-    assert gnp._pack_group_payload(tagged, vision, story)["scene_shift"] is True
+    # the value IS the ask (the dialogue_voice pattern): a bare true was ignored
+    ask = gnp._pack_group_payload(tagged, vision, story)["scene_shift"]
+    assert ask.startswith("TRUE") and "Meanwhile" in ask and "transition clause" in ask
     # opens on a system card -> no bridge request
     card_first = dict(story, **{"a.jpg": {"description": "x", "panel_kind": "system"}})
     assert "scene_shift" not in gnp._pack_group_payload(tagged, vision, card_first)
     # a leading caption is never shown; the first SHOWN panel decides
     cap_first = dict(story, **{"a.jpg": {"description": "x", "panel_kind": "caption"}})
-    assert gnp._pack_group_payload(tagged, vision, cap_first)["scene_shift"] is True
+    assert gnp._pack_group_payload(tagged, vision, cap_first)["scene_shift"].startswith("TRUE")

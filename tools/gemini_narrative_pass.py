@@ -648,10 +648,19 @@ def _pack_group_payload(
     # card's line IS the card's printed text (segments_from_sentences /
     # system_card_line), so a transition clause there would displace the read;
     # the card itself already marks the cut. Captions are never shown.
+    # The value is the instruction itself (like dialogue_voice): a bare `true`
+    # plus a rule buried in the system prompt was ignored on the real ch141
+    # cut (2026-10-04 e2e — "The heavy silence of the stone chamber…", no
+    # transition clause). The model reads the payload; the ask lives there.
     if group.get("scene_shift"):
         first = next((s for s in scenes if s["panel_kind"] != "caption"), None)
         if first is not None and first["panel_kind"] != "system":
-            payload["scene_shift"] = True
+            payload["scene_shift"] = (
+                "TRUE — this beat OPENS IN ANOTHER PLACE than the previous line. "
+                "Begin your FIRST sentence with a short transition clause "
+                "('Meanwhile, …' / 'Elsewhere, …' / 'Far from the …, …' / 'Back "
+                "at the …, …' — vary it), then say what is drawn here; never "
+                "carry the previous line's place or pronouns over.")
     return payload
 
 
