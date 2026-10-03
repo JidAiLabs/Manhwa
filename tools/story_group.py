@@ -44,6 +44,12 @@ _SEGMENTS = ("present", "flashback", "dream")
 # one context span/shot. Operators can pass --max-beat-len 0 to disable.
 DEFAULT_MAX_BEAT_LEN = 6
 
+# Stamped into groups.json/story.json _meta (same key story_pass/panel_understand
+# use) so a dry run or an audit can tell which prompt grouped a chapter.
+# sg_v3 (2026-10-04): per-shot `scene_shift` — the grouper records the
+# scene/location change it is told to split on, instead of discarding it.
+PROMPT_VERSION = "sg_v3"
+
 # GROUP_SCHEMA asks for INDEX RANGES, not filename echoes. The old schema made
 # beats.scene_files an array of strings and forced the model to type out every
 # panel filename per beat -- on a ~96-panel chapter (~30 beats) that is ~30
@@ -72,6 +78,7 @@ _BEATS_ITEMS_SCHEMA: Dict[str, Any] = {
         "segment": {"type": "STRING", "enum": list(_SEGMENTS)},
         "arc_label": {"type": "STRING"},
         "why": {"type": "STRING"},
+        "scene_shift": {"type": "BOOLEAN"},
     },
     "required": ["from_index", "to_index"],
 }
@@ -131,7 +138,12 @@ _SYSTEM_CORE = (
     "and the next span's from_index must be greater than this span's to_index: "
     "spans stay in ascending order and never overlap), segment (present | "
     "flashback | dream — MARK flashbacks and dreams), arc_label (a 2-4 word "
-    "label for the scene). Cover EVERY panel exactly once, in order. Do not "
+    "label for the scene), scene_shift (true ONLY when a span's FIRST panel "
+    "is in a different place than the previous span, or shows wholly "
+    "different characters — a cut to someone elsewhere; otherwise omit it. "
+    "Not a shift: someone ARRIVING where we already are, a reaction shot, "
+    "close-up, wider view or system card; when unsure, omit). "
+    "Cover EVERY panel exactly once, in order. Do not "
     "target a fixed number of spans or a fixed panel count. The downstream "
     "script/timeline renders panel-level cues; these spans are only story "
     "context and must follow the source's natural rhythm.\n"
@@ -454,27 +466,32 @@ def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
     assign: Dict[str, tuple] = {}
     for bi, b in enumerate(model_beats or []):
         seg, arc = _norm_segment(b.get("segment")), str(b.get("arc_label") or "").strip()
+        shift = bool(b.get("scene_shift"))
         for sf in (b.get("scene_files") or []):
-            assign.setdefault(str(sf), (bi, seg, arc))
+            assign.setdefault(str(sf), (bi, seg, arc, shift))
 
     shots: List[Dict[str, Any]] = []
     cur: Optional[Dict[str, Any]] = None
     for sf in scene_order:
         info = assign.get(sf)
         if info is not None:
-            bi, seg, arc = info
+            bi, seg, arc, shift = info
         elif cur is not None:                       # unassigned → continue beat
-            bi, seg, arc = cur["_bi"], cur["segment"], cur["arc_label"]
+            bi, seg, arc, shift = cur["_bi"], cur["segment"], cur["arc_label"], False
         else:
-            bi, seg, arc = -1, "present", ""
-        if (cur is None or bi != cur["_bi"]
-                or (limit > 0 and len(cur["scene_files"]) >= limit)):
-            cur = {"_bi": bi, "scene_files": [], "segment": seg, "arc_label": arc}
+            bi, seg, arc, shift = -1, "present", "", False
+        new_beat = cur is None or bi != cur["_bi"]
+        if new_beat or (limit > 0 and len(cur["scene_files"]) >= limit):
+            # scene_shift opens only the FIRST shot of a model beat — a forced
+            # max_beat_len continuation is the same scene, not a new one.
+            cur = {"_bi": bi, "scene_files": [], "segment": seg, "arc_label": arc,
+                   "scene_shift": shift and new_beat}
             shots.append(cur)
         cur["scene_files"].append(sf)
 
     return [{"shot_id": i, "scene_files": s["scene_files"],
-             "segment": s["segment"], "arc_label": s["arc_label"]}
+             "segment": s["segment"], "arc_label": s["arc_label"],
+             "scene_shift": s["scene_shift"]}
             for i, s in enumerate(shots, 1)]
 
 
@@ -573,6 +590,7 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
             "segment": b.get("segment"),
             "arc_label": b.get("arc_label"),
             "why": b.get("why"),
+            "scene_shift": bool(b.get("scene_shift")),
         })
     return expanded, ""
 
@@ -900,6 +918,8 @@ def merge_caption_solos(shots: List[Dict[str, Any]], caption_set: set
                 and back[i + 1]["segment"] == s["segment"]):
             nxt = back[i + 1]
             nxt["scene_files"] = list(s["scene_files"]) + list(nxt["scene_files"])
+            if s.get("scene_shift"):        # the caption opened the new scene
+                nxt["scene_shift"] = True
             out.append(nxt)
             i += 2
         else:
@@ -921,6 +941,8 @@ def merge_caption_solos(shots: List[Dict[str, Any]], caption_set: set
             if j + 1 < len(out):
                 out[j + 1]["scene_files"] = (list(s["scene_files"])
                                              + list(out[j + 1]["scene_files"]))
+                if s.get("scene_shift"):
+                    out[j + 1]["scene_shift"] = True
                 continue
         final.append(s)
     for i, s in enumerate(final, 1):
@@ -1434,7 +1456,8 @@ def main() -> int:
         "echo_pairs": [[a, b] for a, b in echo_pairs],
         "shots": shots,
     }
-    write_manifest(args.out, out, inputs=(args.understood,), tool="story_group")
+    write_manifest(args.out, out, inputs=(args.understood,), tool="story_group",
+                   extra_meta={"prompt_version": PROMPT_VERSION})
 
     # Chapter STORY SPINE (logline + premise + ordered arc) — the through-line the
     # narrator uses so beats connect into one story instead of isolated captions.
@@ -1447,7 +1470,8 @@ def main() -> int:
         "arc": [{"group_id": s["shot_id"], "arc_label": s["arc_label"],
                  "segment": s["segment"]} for s in shots],
     }
-    write_manifest(story_out, spine, inputs=(args.understood,), tool="story_group")
+    write_manifest(story_out, spine, inputs=(args.understood,), tool="story_group",
+                   extra_meta={"prompt_version": PROMPT_VERSION})
     print(f"[ok] wrote={args.out} scenes={len(story)} shots={len(shots)} "
           f"(story-grouped) excluded={len(excluded)} | spine={story_out} "
           f"logline={'y' if spine['logline'] else 'n'}")

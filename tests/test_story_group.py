@@ -1231,3 +1231,120 @@ def test_a_beat_lying_entirely_past_the_end_is_dropped_not_clamped():
         [{"from_index": 0, "to_index": 5, "segment": "present"},
          {"from_index": 3, "to_index": 9, "segment": "present"}], order)
     assert "overlaps or precedes" in err3
+
+
+# ---------------------------------------------------------------------------
+# scene_shift (2026-10-04). The grouper is told to START a new span at "a scene
+# or location change" but never recorded WHY, so the writer bridged every beat
+# as the same scene ("the heavy silence of the chamber…" spoken over a cut to
+# another place and other people — Tutorial Tower ch141 3:19). The tag rides
+# each shot of groups.json; absent == false for every older manifest.
+# ---------------------------------------------------------------------------
+
+def test_scene_shift_is_a_boolean_in_beat_schema():
+    assert sg._BEATS_ITEMS_SCHEMA["properties"]["scene_shift"] == {"type": "BOOLEAN"}
+    assert "scene_shift" not in sg._BEATS_ITEMS_SCHEMA["required"]
+
+
+def test_system_core_defines_scene_shift_closed():
+    # A closed definition (place OR wholly different cast; arrivals/reactions/
+    # close-ups/system cards are NOT shifts; unsure -> omit), kept inline and
+    # terse: the 96-panel benchmark chapter has ~100 tokens of headroom under
+    # _PROMPT_TOKEN_BUDGET, and the key is OMITTED on ordinary spans so the
+    # response does not grow per beat.
+    core = sg._SYSTEM_CORE
+    assert "scene_shift (true ONLY when a span's FIRST panel" in core
+    for phrase in ("different place", "wholly different characters", "ARRIVING",
+                   "system card", "when unsure, omit"):
+        assert phrase in core, phrase
+    assert "scene_shift (true ONLY" in sg.SYSTEM_CHUNK   # chunk calls inherit the core
+
+
+def test_expand_index_ranges_carries_scene_shift():
+    order = [f"p{i}" for i in range(6)]
+    expanded, issue = sg.expand_index_ranges([
+        {"from_index": 0, "to_index": 2},
+        {"from_index": 3, "to_index": 5, "scene_shift": True}], order)
+    assert issue == ""
+    assert expanded[0]["scene_shift"] is False      # absent -> False
+    assert expanded[1]["scene_shift"] is True
+
+
+def test_scene_shift_marks_only_the_first_shot_of_a_model_beat():
+    order = [f"p{i}" for i in range(12)]
+    shots = sg.repair_to_shots(order, [
+        {"scene_files": order[:8], "scene_shift": True},
+        {"scene_files": order[8:10]},                 # untagged beat; p10/p11 unassigned
+    ], max_beat_len=4)
+    assert [s["scene_files"] for s in shots] == [order[:4], order[4:8], order[8:12]]
+    # a forced max_beat_len continuation is NOT a scene change; a continuation
+    # of unassigned panels never opens one either
+    assert [s["scene_shift"] for s in shots] == [True, False, False]
+
+
+def test_leading_caption_forward_fold_keeps_scene_shift():
+    # pass 2: a stranded "MEANWHILE, AT THE TOWER" caption solo folds FORWARD
+    # into the next same-segment beat — that beat opens the new scene now
+    shots = [
+        {"shot_id": 1, "scene_files": ["c0"], "segment": "present",
+         "arc_label": "cap", "scene_shift": True},
+        {"shot_id": 2, "scene_files": ["p1", "p2"], "segment": "present",
+         "arc_label": "scene", "scene_shift": False}]
+    merged = sg.merge_caption_solos(shots, {"c0"})
+    assert [s["scene_files"] for s in merged] == [["c0", "p1", "p2"]]
+    assert merged[0]["scene_shift"] is True
+    # pass 3 (cross-segment, caption first): same guarantee
+    shots = [
+        {"shot_id": 1, "scene_files": ["c0"], "segment": "flashback",
+         "arc_label": "cap", "scene_shift": True},
+        {"shot_id": 2, "scene_files": ["p1"], "segment": "present",
+         "arc_label": "scene", "scene_shift": False}]
+    merged = sg.merge_caption_solos(shots, {"c0"})
+    assert [s["scene_files"] for s in merged] == [["c0", "p1"]]
+    assert merged[0]["scene_shift"] is True
+
+
+def test_merge_seam_keeps_left_shot_scene_shift():
+    # pin: the seam fold keeps the LEFT shot's dict ({**a}), so the tag that
+    # opened the beat survives the chunk boundary
+    left = [{**_shot(["p0", "p1"]), "scene_shift": True}]
+    right = [{**_shot(["p2", "p3"]), "scene_shift": False}]
+    merged = sg._merge_seam(left, right, max_beat_len=6)
+    assert [s["scene_files"] for s in merged] == [["p0", "p1", "p2", "p3"]]
+    assert merged[0]["scene_shift"] is True
+
+
+def test_main_emits_scene_shift_and_prompt_version(tmp_path, monkeypatch):
+    import json
+    import sys as _sys
+
+    understood = {"panels": [
+        {"scene_file": f"p{i}.jpg", "description": f"panel {i}", "action": "x",
+         "subjects": ["a man"], "panel_kind": "story", "intensity": "calm"}
+        for i in range(3)]}
+    vision = {"items": [{"scene_file": f"p{i}.jpg"} for i in range(3)]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps(understood))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    out = tmp_path / "manifest.groups.json"
+    seen = {}
+
+    def fake_call(**kw):
+        seen["system"] = kw["system_instruction"]
+        return ({"chapter": {"logline": "A ridge walk home.",
+                             "premise": "He walks alone again."},
+                 "beats": [{"from_index": 0, "to_index": 0},
+                           {"from_index": 1, "to_index": 2, "scene_shift": True}]},
+                "OK_RAW", {})
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setenv("STUDIO_BEATS_NUM_CTX", "8192")
+    monkeypatch.setattr(_sys, "argv", [
+        "story_group.py", "--understood", str(up),
+        "--vision-manifest", str(vp), "--out", str(out)])
+    assert sg.main() == 0
+    written = json.loads(out.read_text())
+    assert [s["scene_shift"] for s in written["shots"]] == [False, True]
+    assert written["_meta"]["prompt_version"] == sg.PROMPT_VERSION
+    assert "scene_shift (true ONLY" in seen["system"]
