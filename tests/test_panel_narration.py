@@ -328,3 +328,25 @@ def test_pack_group_payload_legacy_understanding_unchanged():
                             "action": "He runs."}}
     scene = gnp._pack_group_payload(group, vision, understood)["scenes_signals"][0]
     assert "impact_sfx" not in scene and "strikes_or_weapons" not in scene
+
+
+# ---------------------------------------------------------------------------
+# scene_shift (2026-10-04): story_group tags a shot that opens in another place
+# / on other people; the writer's payload carries it ONLY then, and never when
+# the beat opens on a system card (a solo card's line IS the card's text).
+# ---------------------------------------------------------------------------
+
+def test_pack_group_payload_scene_shift_key_exists_only_when_tagged():
+    vision = {f: {"vision": {}} for f in ("a.jpg", "b.jpg")}
+    story = {"a.jpg": {"description": "A stone wall.", "panel_kind": "story"},
+             "b.jpg": {"description": "A man pants.", "panel_kind": "story"}}
+    base = {"shot_id": 3, "scene_files": ["a.jpg", "b.jpg"]}
+    assert "scene_shift" not in gnp._pack_group_payload(base, vision, story)
+    tagged = dict(base, scene_shift=True)
+    assert gnp._pack_group_payload(tagged, vision, story)["scene_shift"] is True
+    # opens on a system card -> no bridge request
+    card_first = dict(story, **{"a.jpg": {"description": "x", "panel_kind": "system"}})
+    assert "scene_shift" not in gnp._pack_group_payload(tagged, vision, card_first)
+    # a leading caption is never shown; the first SHOWN panel decides
+    cap_first = dict(story, **{"a.jpg": {"description": "x", "panel_kind": "caption"}})
+    assert gnp._pack_group_payload(tagged, vision, cap_first)["scene_shift"] is True

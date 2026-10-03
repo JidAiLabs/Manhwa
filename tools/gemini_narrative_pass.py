@@ -642,6 +642,16 @@ def _pack_group_payload(
     # — byte-compatible otherwise.
     if ledger_facts:
         payload["facts"] = ledger_facts
+    # story_group's scene-shift tag (2026-10-04): this beat opens in another
+    # place / on other people than the line just spoken. Key exists ONLY when
+    # tagged AND the beat's first SHOWN panel is not a system card — a solo
+    # card's line IS the card's printed text (segments_from_sentences /
+    # system_card_line), so a transition clause there would displace the read;
+    # the card itself already marks the cut. Captions are never shown.
+    if group.get("scene_shift"):
+        first = next((s for s in scenes if s["panel_kind"] != "caption"), None)
+        if first is not None and first["panel_kind"] != "system":
+            payload["scene_shift"] = True
     return payload
 
 
@@ -2925,6 +2935,18 @@ def main() -> int:
         "      continuation) — and NEVER open cold with a scene reset ('The scene\n"
         "      shows…', 'In a dark ravine, a figure…', 'We see…'). The bridge is still a\n"
         "      complete, independently speakable sentence.\n"
+        "      SCENE SHIFT — the ONE exception to the no-reset rule: when\n"
+        "      INPUT_JSON.scene_shift is true, THIS beat opens somewhere ELSE or on\n"
+        "      DIFFERENT people than the line just spoken. Do NOT carry that line's place\n"
+        "      or its 'he'/'she'/'the chamber' over as if we were still there. Your first\n"
+        "      sentence still bridges — by MARKING THE CUT: begin it with a short\n"
+        "      transition CLAUSE (part of that sentence, never a sentence of its own),\n"
+        "      then name what is drawn HERE. Vary the clause every time ('Meanwhile, …',\n"
+        "      'Elsewhere, …', 'Far from the gate, …', 'Back at the tower, …', 'While he\n"
+        "      burns, …'); it may refer only to the place or people just LEFT (already\n"
+        "      established) or to what is drawn here — never a new location. NEVER phrase\n"
+        "      it 'In a/the X, a…', 'The scene…', 'We see…', 'enter the', 'step into', or\n"
+        "      name the camera. The clause counts inside the sentence's word cap.\n"
         "    - TONAL CONTINUITY: it is ONE narrator telling ONE continuous story, not\n"
         "      separate clips. Do NOT hard-jump the energy between beats — when this\n"
         "      beat's intensity is far from the line just spoken (a calm aside right\n"
@@ -3446,6 +3468,10 @@ def main() -> int:
         beat["scene_selection"] = normalize_scene_selection(
             beat.get("scene_selection"), payload["scene_files"]
         )
+        # the grouper's scene-shift tag rides the beat so prep_qa (cold_open
+        # exemption, grounding note) reads it from beats.json alone
+        if g.get("scene_shift"):
+            beat["scene_shift"] = True
         beats_out.append(beat)
 
         # Throttle between groups (burst prevention)

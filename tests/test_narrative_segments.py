@@ -2314,3 +2314,19 @@ def test_a_lone_paren_is_a_misread_bracket_and_a_wrapped_line_stays_one_sentence
     assert gnp._speak_card("[HP (HEALTH) 100]") == "Hp (health) 100."
     assert gnp._speak_card("NAME: DOKJA KIM\nSUPPORTING CONSTELLATION: NONE") == \
         "Name: dokja kim. Supporting constellation: none."
+
+
+def test_main_scene_shift_rides_payload_prompt_and_beat(tmp_path, monkeypatch):
+    # story_group's tag reaches the writer's payload, the system prompt holds
+    # the SCENE SHIFT exception to the no-reset rule, and the beat carries the
+    # tag so prep_qa can read it from beats.json alone
+    shots = [{"shot_id": 7, "scene_files": list(FILES), "arc_label": "opening",
+              "intensity": "tense", "scene_shift": True}]
+    out, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT], shots=shots)
+    assert calls[0]["user_payload"]["scene_shift"] is True
+    assert "SCENE SHIFT" in calls[0]["system_instruction"]
+    assert out["beats"][0]["scene_shift"] is True
+    # untagged (the default shots): absent from payload and beat alike
+    out, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT])
+    assert "scene_shift" not in calls[0]["user_payload"]
+    assert "scene_shift" not in out["beats"][0]
