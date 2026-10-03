@@ -37,15 +37,16 @@ def test_publish_auto_after_chapters_default_and_toml(tmp_path):
 
 
 def test_row_layout_config_defaults_and_off_switch(tmp_path):
-    # Rows (2-3 panels one line covers, side by side) ship OFF: the owner signs
-    # off one real chapter, then flips row_min_fit to 0.52 in studio.toml.
+    # Rows (2-3 panels one line covers, side by side) are OFF unless the owner
+    # writes row_min_fit (0.52) into studio.toml after signing off one real
+    # chapter — OFF is the default EVERYWHERE (dataclass, loader, render_prep
+    # fallback), so a toml missing the line can never turn rows on unreviewed.
     cfg = load(REPO_ROOT / "studio.toml")
-    assert cfg.row_min_fit == 0.0
+    assert 0.0 <= cfg.row_min_fit <= 1.0           # the owner's value, whatever it is
     assert cfg.row_min_gap_items == 3
     toml = tmp_path / "s.toml"
     toml.write_text('[teaser]\nenabled = false\n')
-    assert load(toml).row_min_fit == 0.52          # default without [render]
+    assert load(toml).row_min_fit == 0.0           # no [render] -> OFF
     assert load(toml).row_min_gap_items == 3
-    # 0.0 is the OFF switch — the loader must not read it as "unset"
-    toml.write_text('[render]\nrow_min_fit = 0.0\n')
-    assert load(toml).row_min_fit == 0.0
+    toml.write_text('[render]\nrow_min_fit = 0.52\n')
+    assert load(toml).row_min_fit == 0.52          # the enable value round-trips

@@ -1019,11 +1019,13 @@ def _default_art_only_push_frac() -> float:
 
 
 def _default_row_min_fit() -> float:
+    # OFF unless studio.toml enables rows: a missing/unloadable config must
+    # never turn an unreviewed layout on
     try:
         from studio.config import load as _load
-        return float(getattr(_load(), "row_min_fit", 0.52))
+        return float(getattr(_load(), "row_min_fit", 0.0))
     except Exception:
-        return 0.52
+        return 0.0
 
 
 def _default_row_min_gap_items() -> int:
