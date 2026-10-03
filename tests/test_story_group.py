@@ -1252,10 +1252,12 @@ def test_system_core_defines_scene_shift_closed():
     # terse: the 96-panel benchmark chapter has ~100 tokens of headroom under
     # _PROMPT_TOKEN_BUDGET, and the key is OMITTED on ordinary spans so the
     # response does not grow per beat.
+    # PLACE only (dry run 2026-10-04: "or wholly different characters" tagged
+    # 46% of all shots — close-ups, reactions and arrivals at the same place).
     core = sg._SYSTEM_CORE
     assert "scene_shift (true ONLY when a span's FIRST panel" in core
-    for phrase in ("different place", "wholly different characters", "ARRIVING",
-                   "system card", "when unsure, omit"):
+    for phrase in ("DIFFERENT PLACE", "another location", "at the SAME place",
+                   "close-up", "system card", "when unsure, omit"):
         assert phrase in core, phrase
     assert "scene_shift (true ONLY" in sg.SYSTEM_CHUNK   # chunk calls inherit the core
 
@@ -1273,13 +1275,19 @@ def test_expand_index_ranges_carries_scene_shift():
 def test_scene_shift_marks_only_the_first_shot_of_a_model_beat():
     order = [f"p{i}" for i in range(12)]
     shots = sg.repair_to_shots(order, [
-        {"scene_files": order[:8], "scene_shift": True},
-        {"scene_files": order[8:10]},                 # untagged beat; p10/p11 unassigned
+        {"scene_files": order[:4]},
+        {"scene_files": order[4:12], "scene_shift": True},   # 8 panels: forced split
     ], max_beat_len=4)
     assert [s["scene_files"] for s in shots] == [order[:4], order[4:8], order[8:12]]
-    # a forced max_beat_len continuation is NOT a scene change; a continuation
-    # of unassigned panels never opens one either
-    assert [s["scene_shift"] for s in shots] == [True, False, False]
+    # a forced max_beat_len continuation is NOT a scene change
+    assert [s["scene_shift"] for s in shots] == [False, True, False]
+    # the chapter's FIRST shot is never a shift, whatever the model said
+    first = sg.repair_to_shots(order[:2], [{"scene_files": order[:2], "scene_shift": True}])
+    assert first[0]["scene_shift"] is False
+    # a continuation of unassigned panels never opens one either
+    tail = sg.repair_to_shots(order[:6], [{"scene_files": order[:2]},
+                                          {"scene_files": order[2:4], "scene_shift": True}])
+    assert [s["scene_shift"] for s in tail] == [False, True]
 
 
 def test_leading_caption_forward_fold_keeps_scene_shift():

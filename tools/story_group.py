@@ -139,10 +139,10 @@ _SYSTEM_CORE = (
     "spans stay in ascending order and never overlap), segment (present | "
     "flashback | dream — MARK flashbacks and dreams), arc_label (a 2-4 word "
     "label for the scene), scene_shift (true ONLY when a span's FIRST panel "
-    "is in a different place than the previous span, or shows wholly "
-    "different characters — a cut to someone elsewhere; otherwise omit it. "
-    "Not a shift: someone ARRIVING where we already are, a reaction shot, "
-    "close-up, wider view or system card; when unsure, omit). "
+    "is in a DIFFERENT PLACE than the previous span — a cut to another "
+    "location (another room, outdoors, elsewhere); otherwise omit it. NOT a "
+    "shift: a new or different character, a close-up, a wider view or a "
+    "system card at the SAME place; when unsure, omit). "
     "Cover EVERY panel exactly once, in order. Do not "
     "target a fixed number of spans or a fixed panel count. The downstream "
     "script/timeline renders panel-level cues; these spans are only story "
@@ -483,9 +483,11 @@ def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
         new_beat = cur is None or bi != cur["_bi"]
         if new_beat or (limit > 0 and len(cur["scene_files"]) >= limit):
             # scene_shift opens only the FIRST shot of a model beat — a forced
-            # max_beat_len continuation is the same scene, not a new one.
+            # max_beat_len continuation is the same scene, not a new one — and
+            # never the chapter's first shot (nothing precedes it to cut from;
+            # the model tagged 6 of 10 first spans in the sg_v3 dry run).
             cur = {"_bi": bi, "scene_files": [], "segment": seg, "arc_label": arc,
-                   "scene_shift": shift and new_beat}
+                   "scene_shift": shift and new_beat and bool(shots)}
             shots.append(cur)
         cur["scene_files"].append(sf)
 
