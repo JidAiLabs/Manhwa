@@ -2108,7 +2108,10 @@ def cold_open_flags(beats_obj: Any) -> List[Dict[str, Any]]:
     recap_style.is_cold_opener (shared with narration_punchup's bridge
     preservation). The detail carries the PREVIOUS line so the heal note is
     the exact (prev, this) bridge rewrite. First beat of the chapter is
-    exempt — there is nothing to bridge from."""
+    exempt — there is nothing to bridge from. A beat story_group tagged
+    `scene_shift` (it opens in another place / on other people) is exempt too:
+    re-establishing the scene IS the bridge there, and the heal note would
+    push the writer back into the same-scene continuation."""
     from recap_style import is_cold_opener
     flags: List[Dict[str, Any]] = []
     if not isinstance(beats_obj, dict):
@@ -2120,7 +2123,8 @@ def cold_open_flags(beats_obj: Any) -> List[Dict[str, Any]]:
             continue
         seg_id = f"g{int(b.get('group_id') or 0):04d}"
         first = str(segs[0].get("line") or "").strip()
-        if prev_line and first and is_cold_opener(first):
+        if (prev_line and first and is_cold_opener(first)
+                and not b.get("scene_shift")):
             flags.append(_flag(
                 "cold_open", WARN,
                 f"beat opens cold ({first[:60]!r}) instead of bridging from "
@@ -2614,7 +2618,8 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                     model: str = "gemma4:26b",
                     cache_path: Optional[str] = None,
                     uncertain_files: Optional[set] = None,
-                    vitems: Optional[Dict[str, Dict[str, Any]]] = None
+                    vitems: Optional[Dict[str, Dict[str, Any]]] = None,
+                    shift_groups: Optional[set] = None,
                     ) -> List[Dict[str, Any]]:
     """Stronger 'eyes' than semantic_alignment_flags: per beat, judge whether the
     narration INVENTS or MIS-NAMES anything absent from every panel the beat
@@ -2711,6 +2716,14 @@ def grounding_flags(plan: Dict[str, Any], clean_dir: str, *,
                     + ", ".join(hedged[:3])
                     + " as visually AMBIGUOUS — hedged/vague wording about "
                     "them is correct grounding, never 'weak'.")
+        # story_group tagged this beat as opening a new scene: its transition
+        # clause names the place/people just LEFT, which no panel here draws.
+        m = _SEG_GROUP_RE.match(seg)
+        if m and int(m.group(1)) in (shift_groups or ()):
+            note += ("\nNOTE: this beat OPENS A NEW SCENE (another place or "
+                     "other characters than the previous line). A short "
+                     "transition clause such as 'Meanwhile' / 'Elsewhere' / "
+                     "'Back at …' is EXPECTED there and is not an invention.")
         # the writer's OTHER evidence: text PRINTED on the panels this line
         # voices. Without it the judge reports every dialogue-grounded line as
         # invented (it cannot read painted chat text at frame scale, and the
@@ -3461,7 +3474,10 @@ def main() -> int:
                 str(p.get("scene_file") or "")
                 for p in ((understood_obj or {}).get("panels") or [])
                 if p.get("uncertain")},
-            vitems=vitems))
+            vitems=vitems,
+            shift_groups={int(b["group_id"]) for b in
+                          ((beats_obj or {}).get("beats") or [])
+                          if b.get("scene_shift") and b.get("group_id") is not None}))
         flags = _suppress_grounded_mismatches(
             flags, beats_obj, vitems)
 

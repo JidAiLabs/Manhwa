@@ -2608,3 +2608,33 @@ def test_dark_composition_with_a_seen_subject_is_warn_not_a_void():
         vitem={"panel_kind": "story", "ocr_clean": "", "n_words": 0,
                "subjects": []})}
     assert sev.get("blank_crop") == pq.ERROR
+
+
+def test_grounding_note_for_scene_shift_beats(monkeypatch, tmp_path):
+    """A beat story_group tagged scene_shift opens elsewhere; its transition
+    clause ('Meanwhile…') names nothing drawn, so the judge is told it is
+    expected — not an invention. Untagged beats get no such note."""
+    import sys
+    import types
+    import json as _json
+
+    seen = {}
+
+    def chat(**kw):
+        content = str(kw["messages"][0]["content"])
+        key = "beta" if "beta narration" in content else "alpha"
+        seen[key] = content
+        return {"message": {"content": _json.dumps({"ok": True, "issue": ""})}}
+
+    fake = types.ModuleType("ollama")
+    fake.chat = chat
+    monkeypatch.setitem(sys.modules, "ollama", fake)
+    for f in ("a.jpg", "b.jpg"):
+        (tmp_path / f).write_bytes(b"jpg")
+    plan = {"timeline": [_seg("g0001_p00", "alpha narration", ["a.jpg"]),
+                         _seg("g0003_p00", "beta narration", ["b.jpg"])]}
+    monkeypatch.setenv("STUDIO_QA_CONC", "1")
+    flags = pq.grounding_flags(plan, str(tmp_path), shift_groups={3})
+    assert flags == []
+    assert "OPENS A NEW SCENE" in seen["beta"]
+    assert "OPENS A NEW SCENE" not in seen["alpha"]

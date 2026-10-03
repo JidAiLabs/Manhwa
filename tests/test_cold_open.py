@@ -87,3 +87,15 @@ def test_punchup_rejects_cold_reset_of_a_flowing_line():
     # an already-cold original may stay cold (no new regression introduced)
     assert npu.validate_line("The scene shows a ravine.",
                              "The scene shows a deep ravine.", [])
+
+
+def test_cold_open_exempts_scene_shift_beats():
+    # story_group tagged the beat as opening a new scene: re-establishing the
+    # scene IS the bridge there, and the cold_open heal note ("bridge from the
+    # previous line") would push the writer back into the same-scene defect.
+    beats = _beats("The scene shows a mountain range.",
+                   "In a dark ravine, a figure stirs.")
+    beats["beats"][1]["scene_shift"] = True
+    assert pq.cold_open_flags(beats) == []
+    del beats["beats"][1]["scene_shift"]
+    assert [f["code"] for f in pq.cold_open_flags(beats)] == ["cold_open"]
