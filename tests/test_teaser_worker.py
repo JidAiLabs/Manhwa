@@ -21,7 +21,7 @@ FIXED_NOW = "2026-06-28T00:00:00+00:00"
 
 
 def _fake_cfg(**overrides):
-    """A cfg double covering every attribute _h_teaser/_autostart_intro_if_ready
+    """A cfg double covering every attribute _h_teaser
     read — Task 13 wiring widened that surface (spoiler/cost-guard params +
     narration_sanitize + teaser_enabled), so tests that pin down one field
     still need the rest present. Callers override only what they care about."""
@@ -343,11 +343,11 @@ def test_h_teaser_sanitize_before_tts_unresolved_fails(tmp_path, monkeypatch):
     assert tool_calls == ["script_expander.py"]
 
 
-def test_autostart_intro_skipped_when_teaser_disabled(tmp_path, monkeypatch):
-    """teaser_enabled=False gates ONLY the auto-start detection path — the
-    manual dashboard 'Plan teaser' button (post_teaser_plan in app.py, which
-    enqueues plan_teaser directly with no cfg check at all) stays
-    unconditional, per the brief's explicit requirement."""
+def test_manual_plan_teaser_ignores_teaser_enabled(tmp_path, monkeypatch):
+    """The manual dashboard 'Plan teaser' button (post_teaser_plan in app.py,
+    which enqueues plan_teaser directly with no cfg check at all) stays
+    unconditional whatever [teaser].enabled says. (The auto-start path that
+    flag used to gate was removed 2026-10-04.)"""
     import studio.worker as w
     from studio.dashboard import jobs
 
@@ -356,12 +356,6 @@ def test_autostart_intro_skipped_when_teaser_disabled(tmp_path, monkeypatch):
     con.execute("UPDATE series SET autopilot=1 WHERE id=?", (sid,))
     con.commit()
     monkeypatch.setattr(w, "_beats_cfg", lambda: _fake_cfg(teaser_enabled=False))
-
-    # AUTO-START: disabled -> no plan_teaser even though fully rendered +
-    # autopilot is on (both other preconditions satisfied).
-    w._autostart_intro_if_ready(con, cids[-1], io.StringIO())
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
-                       ).fetchone()[0] == 0
 
     # MANUAL: the button's own enqueue call is untouched by this flag.
     jobs.enqueue(con, "plan_teaser", bundle_id=bid, payload={})
