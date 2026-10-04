@@ -68,9 +68,9 @@ max_same_image_hold_sec = 10.0
 # consumer). row_min_fit = each panel must show at >= this fraction of the size
 # it would have alone (0.52 admits 6,874 of 8,714 multi-panel lines over 848
 # chapters); 0.0 = OFF, and OFF is also the code default when this line is
-# absent. Set 0.52 after signing off one real chapter — read fresh by every
-# render_prep run, no deploy/restart.
-row_min_fit = 0.0
+# absent. Owner signed off the ch141 review reel 2026-10-04 -> ON. Read fresh by
+# every render_prep run, no deploy/restart.
+row_min_fit = 0.52
 # at least this many ordinary items between two rows (back-to-back rows read dizzy)
 row_min_gap_items = 3
 # Shown-frame policy for story panels (render_prep --bubble-shown-mode):
