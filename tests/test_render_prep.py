@@ -2819,3 +2819,12 @@ def test_renderer_sources_draw_rows():
     for const in ("ROW_MX = 96", "ROW_MY = 54", "ROW_GAP = 28", "ENTER_SEC = 0.5",
                   "SLIDE_PX = 70", "EXIT_FADE_SEC = 0.4"):
         assert const in row, const
+
+
+def test_assign_rows_off_switch_does_not_copy_the_plan():
+    # review 2026-10-04: with rows OFF every production run serialized the whole
+    # plan for a no-op; OFF returns the plan itself
+    dims = {"a.jpg": dict(_PORTRAIT), "b.jpg": dict(_PORTRAIT)}
+    plan = _row_plan([_row_item("g0001_p00", ["a.jpg", "b.jpg"])], dims)
+    out, logs = rp.assign_rows(plan, min_fit=0.0, min_gap_items=3)
+    assert out is plan and logs == []

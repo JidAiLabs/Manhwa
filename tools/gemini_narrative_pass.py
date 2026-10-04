@@ -3477,9 +3477,11 @@ def main() -> int:
         beat["scene_selection"] = normalize_scene_selection(
             beat.get("scene_selection"), payload["scene_files"]
         )
-        # the grouper's scene-shift tag rides the beat so prep_qa (cold_open
-        # exemption, grounding note) reads it from beats.json alone
-        if g.get("scene_shift"):
+        # the scene-shift ASK rides the beat so prep_qa (cold_open exemption,
+        # grounding note) reads it from beats.json alone — keyed on the payload,
+        # not the group tag: a beat opening on a system card is tagged but never
+        # asked to bridge, and QA must not treat it as if it were
+        if "scene_shift" in payload:
             beat["scene_shift"] = True
         beats_out.append(beat)
 

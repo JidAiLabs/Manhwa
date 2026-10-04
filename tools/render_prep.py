@@ -2404,10 +2404,10 @@ def assign_rows(plan: Dict[str, Any], *, min_fit: float, min_gap_items: int,
     full size); tall strips (a sliver beside a normal panel) and wide panels
     (the cover branch); 1 or 4+ panels; missing dims; fit < min_fit; and a row
     closer than min_gap_items items to the previous row. min_fit <= 0 = OFF."""
-    out = json.loads(json.dumps(plan))
     logs: List[Tuple[str, List[str], float]] = []
     if min_fit <= 0:
-        return out, logs
+        return plan, logs                    # OFF: no copy, nothing to mark
+    out = json.loads(json.dumps(plan))
     dims = out.get("scene_dims") or {}
     last_row: Optional[int] = None
     for i, item in enumerate(out.get("timeline") or []):

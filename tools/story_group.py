@@ -467,7 +467,7 @@ def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
     assign: Dict[str, tuple] = {}
     for bi, b in enumerate(model_beats or []):
         seg, arc = _norm_segment(b.get("segment")), str(b.get("arc_label") or "").strip()
-        shift = bool(b.get("scene_shift"))
+        shift = b.get("scene_shift") is True    # never a truthy "false" string
         for sf in (b.get("scene_files") or []):
             assign.setdefault(str(sf), (bi, seg, arc, shift))
 
@@ -593,7 +593,7 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
             "segment": b.get("segment"),
             "arc_label": b.get("arc_label"),
             "why": b.get("why"),
-            "scene_shift": bool(b.get("scene_shift")),
+            "scene_shift": b.get("scene_shift") is True,
         })
     return expanded, ""
 

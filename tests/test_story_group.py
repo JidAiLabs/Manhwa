@@ -1406,3 +1406,16 @@ def test_scene_shift_is_inert_unless_enabled(monkeypatch):
     assert sg.scene_shift_enabled() is False
     monkeypatch.setenv("STUDIO_SCENE_SHIFT", "1")
     assert sg.scene_shift_enabled() is True
+
+
+def test_scene_shift_accepts_only_a_real_true():
+    # review 2026-10-04: a loosely formatted "false" string must not read as a
+    # tag (the "null values masquerading as signals" class)
+    order = ["p0", "p1", "p2", "p3"]
+    expanded, _ = sg.expand_index_ranges([
+        {"from_index": 0, "to_index": 1},
+        {"from_index": 2, "to_index": 3, "scene_shift": "false"}], order)
+    assert expanded[1]["scene_shift"] is False
+    shots = sg.repair_to_shots(order, [{"scene_files": order[:2]},
+                                       {"scene_files": order[2:], "scene_shift": "false"}])
+    assert [s["scene_shift"] for s in shots] == [False, False]

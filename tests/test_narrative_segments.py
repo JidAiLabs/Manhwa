@@ -494,10 +494,11 @@ def _write_manifests(tmp_path, files=tuple(FILES), system_files=(),
 
 
 def _run_main(tmp_path, monkeypatch, responses, extra_argv=(),
-              caption_files=(), shots=None, ocr=None):
+              caption_files=(), shots=None, ocr=None, system_files=()):
     """Drive gnp.main() with a stubbed model that returns `responses` in order
     (the last response repeats if the tool asks again)."""
     g, v, u = _write_manifests(tmp_path, caption_files=caption_files,
+                               system_files=system_files,
                                shots=shots, ocr=ocr)
     out = tmp_path / "beats.json"
     calls = []
@@ -2328,5 +2329,18 @@ def test_main_scene_shift_rides_payload_prompt_and_beat(tmp_path, monkeypatch):
     assert out["beats"][0]["scene_shift"] is True
     # untagged (the default shots): absent from payload and beat alike
     out, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT])
+    assert "scene_shift" not in calls[0]["user_payload"]
+    assert "scene_shift" not in out["beats"][0]
+
+
+def test_scene_shift_stamp_follows_the_ask_not_the_group_tag(tmp_path, monkeypatch):
+    # review 2026-10-04: a tagged beat that OPENS on a system card gets no ask
+    # (the card's line is its printed text) — so it must not be stamped either,
+    # or prep_qa would exempt it from cold_open and brief the judge for a
+    # bridge that was never requested
+    shots = [{"shot_id": 7, "scene_files": list(FILES), "arc_label": "opening",
+              "intensity": "tense", "scene_shift": True}]
+    out, calls = _run_main(tmp_path, monkeypatch, [_PROSE_MODEL_BEAT], shots=shots,
+                           system_files=(FILES[0],))
     assert "scene_shift" not in calls[0]["user_payload"]
     assert "scene_shift" not in out["beats"][0]
