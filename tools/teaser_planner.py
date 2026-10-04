@@ -676,6 +676,18 @@ def materialize_teaser_dir(
         p for p in (teaser.get("panel_narration") or [])
         if str(p.get("scene_file") or "") in kept_set
     ]
+    # The pivot ("But to understand how…, we have to go back…"): the model has
+    # always written `rewind_line`, but it was only ever shown on the dashboard
+    # card — the teaser hard-cut from its hook line into chapter 1's first
+    # sentence. It rides the LAST (climax) panel's line as ONE clip, so the
+    # panel simply holds while it is spoken; hook_landed was judged upstream on
+    # the hook line alone. A letterless placeholder ("...") is not a sentence.
+    rewind = str(teaser.get("rewind_line") or "").strip()
+    if panel_narration and re.search(r"[A-Za-z]", rewind):
+        last = dict(panel_narration[-1])
+        base = str(last.get("line") or "").strip()
+        last["line"] = f"{base} {rewind}" if base else rewind
+        panel_narration[-1] = last
     narration = " ".join(
         seg["line"]
         for seg in beat_segments({"panel_narration": panel_narration}))
@@ -863,10 +875,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # parsed but unused — kept so the caller can label the run. Renamed from
     # --bundle-id when the teaser moved from a bundle to its series.
     ap.add_argument("--series-id", type=int, required=False, default=0)
-    ap.add_argument("--chapter-dirs", nargs="+", required=True,
-                    help="ep_dirs of the bundle's chapters, in reading order")
+    ap.add_argument("--chapter-dirs", nargs="+", default=[],
+                    help="ep_dirs of the bundle's chapters, in reading order "
+                         "(required unless --reuse-manifest)")
     ap.add_argument("--out-dir", required=True,
                     help="synthetic teaser dir to materialize (dist/bundle_<id>/teaser)")
+    ap.add_argument("--reuse-manifest", action="store_true",
+                    help="rebuild --out-dir from its existing manifest.teaser.json "
+                         "(no window selection, no model call)")
     # model backend (mirrors gemini_narrative_pass / story_group)
     ap.add_argument("--backend", choices=["ollama"], default="ollama",
                     help="deprecated no-op: local ollama is the only backend")
@@ -915,7 +931,29 @@ def _build_model_call(args: argparse.Namespace):
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    chapter_dirs = list(args.chapter_dirs)
+    if args.reuse_manifest:
+        # Rebuild an EXISTING teaser dir from its saved manifest.teaser.json:
+        # no window selection, no model call — the lines stay exactly what the
+        # owner reviewed; only materialize's rendering of them changes (e.g.
+        # the pivot line now voiced). Cast comes from the dir too.
+        out_dir = Path(args.out_dir)
+        try:
+            teaser = json.load(open(out_dir / "manifest.teaser.json", encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"[teaser] --reuse-manifest: no usable manifest.teaser.json "
+                  f"in {out_dir} ({e})")
+            return 1
+        try:
+            cast = json.load(open(out_dir / "manifest.cast.json", encoding="utf-8"))
+        except (OSError, ValueError):
+            cast = {"cast": []}
+        materialize_teaser_dir(teaser, out_dir, cast=cast)
+        print(f"[teaser] re-materialized {out_dir} from its manifest (no model call)")
+        return 0
+    chapter_dirs = list(args.chapter_dirs or [])
+    if not chapter_dirs:
+        print("[teaser] --chapter-dirs is required unless --reuse-manifest")
+        return 2
 
     panels = load_bundle_panels(chapter_dirs, max_scan_chapters=args.max_scan_chapters)
 

@@ -456,3 +456,59 @@ def test_landing_the_hook_counts_word_stems():
     assert tp.hook_landed("Because a survivor has returned, and he has already "
                           "conquered the impossible.", hook,
                           "he has already conquered the impossible") is True
+
+
+# ---------------------------------------------------------------------------
+# The pivot line (2026-10-04). The model has always written a `rewind_line`
+# ("But to understand how…, we have to go back…") and the dashboard showed
+# it, but materialize built the voiced beat from panel_narration only — so
+# every teaser hard-cut from its hook line into chapter 1's first sentence.
+# ---------------------------------------------------------------------------
+
+def _teaser_src(tmp_path, line="He holds the script."):
+    src = tmp_path / "ch5"
+    (src / "scenes").mkdir(parents=True, exist_ok=True)
+    (src / "scenes" / "scene_0007.jpg").write_bytes(b"\xff\xd8\xff")
+    (src / "manifest.scenes.json").write_text(json.dumps(
+        {"scenes": [{"out_file": "scene_0007.jpg"}]}))
+    ns = "ch5__scene_0007.jpg"
+    return {"source_chapters": [5], "scene_files": [ns],
+            "panel_sources": {ns: str(src / "scenes" / "scene_0007.jpg")},
+            "panel_narration": [{"scene_file": ns, "line": line}],
+            "rewind_line": "But to see how he got here, we go back to the train.",
+            "reason": "r", "spoiler_boundary": "s"}
+
+
+def test_materialize_voices_the_rewind_line_after_the_hook(tmp_path):
+    teaser = _teaser_src(tmp_path)
+    tp.materialize_teaser_dir(teaser, tmp_path / "t1", cast={"cast": []})
+    beat = json.loads((tmp_path / "t1" / "manifest.beats.json").read_text())["beats"][0]
+    # ONE clip over the climax panel: hook line + pivot
+    assert beat["panel_narration"][-1]["line"] == (
+        "He holds the script. But to see how he got here, we go back to the train.")
+    assert beat["narration"].endswith("we go back to the train.")
+    assert teaser["panel_narration"][-1]["line"] == "He holds the script."   # input untouched
+    # a letterless placeholder ("...") is not a sentence: nothing is appended
+    teaser["rewind_line"] = "..."
+    tp.materialize_teaser_dir(teaser, tmp_path / "t2", cast={"cast": []})
+    beat = json.loads((tmp_path / "t2" / "manifest.beats.json").read_text())["beats"][0]
+    assert beat["panel_narration"][-1]["line"] == "He holds the script."
+
+
+def test_main_reuse_manifest_rematerializes_without_a_model_call(tmp_path, monkeypatch):
+    # an EXISTING teaser dir (manifest.teaser.json + cast) is rebuilt from its
+    # saved manifest: no window selection, no model call, no --chapter-dirs
+    teaser = _teaser_src(tmp_path)
+    out_dir = tmp_path / "teaser"
+    out_dir.mkdir()
+    (out_dir / "manifest.teaser.json").write_text(json.dumps(teaser))
+    (out_dir / "manifest.cast.json").write_text(json.dumps({"cast": []}))
+
+    def no_model(args):
+        raise AssertionError("the model must not be called on --reuse-manifest")
+
+    monkeypatch.setattr(tp, "_build_model_call", no_model)
+    assert tp.main(["--out-dir", str(out_dir), "--reuse-manifest"]) == 0
+    beat = json.loads((out_dir / "manifest.beats.json").read_text())["beats"][0]
+    assert beat["panel_narration"][-1]["line"].endswith("we go back to the train.")
+    assert (out_dir / "scenes" / "ch5__scene_0007.jpg").exists()
