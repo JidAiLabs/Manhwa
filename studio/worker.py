@@ -1281,8 +1281,8 @@ def _autopropose_publish_if_ready(con: sqlite3.Connection, series_id: int,
         thumbnail, approval or any earlier series_claim job exists.
       * TEASER — the cold open is bundle-scoped, so if the series has NO bundle
         yet, auto-create a 'debut' bundle of exactly those first N chapters,
-        then enqueue plan_teaser as a PROPOSAL (no auto_intro -> teaser_state
-        becomes 'planned' -> shows a review card, and blocks only THAT bundle's
+        then enqueue plan_teaser as a PROPOSAL (teaser_state becomes
+        'planned' -> shows a review card, and blocks only THAT bundle's
         concat, never chapter work). If the operator already made bundles, we
         respect their layout and do nothing.
 
@@ -1298,7 +1298,7 @@ def _autopropose_publish_if_ready(con: sqlite3.Connection, series_id: int,
 
     # --- teaser (debut bundle) --- atomic get-or-create closes the two-thread
     # check-and-create race; only the thread that actually creates the bundle
-    # enqueues its (proposal, no auto_intro) teaser.
+    # enqueues its proposal teaser.
     if cfg.teaser_enabled:
         bid = bundles.create_debut_bundle_once(
             con, series_id, ready[:threshold],
@@ -1647,65 +1647,6 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
         con.execute("UPDATE chapter SET status='rendered' WHERE id=?",
                     (ch["id"],))
         con.commit()
-    # AUTO-INTRO: if this render completed the LAST chapter of an autopilot
-    # bundle, kick off the arc teaser -> auto-approve -> intro+ch1 concat chain.
-    _autostart_intro_if_ready(con, ch["id"], log)
-
-
-def _autostart_intro_if_ready(con: sqlite3.Connection, chapter_id: int,
-                              log: TextIO) -> None:
-    """After a chapter reaches 'rendered': for each bundle it belongs to, if the
-    bundle is now FULLY rendered, its series has autopilot on, and the teaser was
-    never planned (teaser_state == 'none'), enqueue ONE plan_teaser job carrying
-    auto_intro=True (the worker then auto-approves it + builds intro+ch1). Fires
-    once per bundle — guarded by teaser_state AND a dedupe on any existing
-    plan_teaser job, so a second render-completion pass can't double-enqueue.
-    A no-op when autopilot is off (the manual Plan-teaser path is preserved) OR
-    when [teaser].enabled is False — that config knob gates ONLY this
-    auto-start path; the manual dashboard 'Plan teaser' button stays
-    unconditional."""
-    cfg = _beats_cfg()
-    if not cfg.teaser_enabled:
-        return
-    rows = con.execute("SELECT bundle_id FROM bundle_chapter WHERE chapter_id=?",
-                       (chapter_id,)).fetchall()
-    for (bid,) in rows:
-        b = con.execute("SELECT series_id FROM bundle WHERE id=?",
-                        (bid,)).fetchone()
-        if not b:
-            continue
-        # the teaser is per MANHWA now, so its state lives on the series
-        ts = con.execute("SELECT teaser_state FROM series WHERE id=?",
-                         (b[0],)).fetchone()
-        if not ts or ts[0] != "none":
-            continue                          # already planned/approved/declined
-        ap = con.execute("SELECT autopilot FROM series WHERE id=?",
-                         (b[0],)).fetchone()
-        if not (ap and ap[0]):
-            continue                          # autopilot off -> manual only
-        cids = bundles.bundle_chapters(con, bid)
-        if not cids:
-            continue
-        qs = ",".join("?" for _ in cids)
-        n_rendered = con.execute(
-            f"SELECT COUNT(*) FROM chapter WHERE id IN ({qs}) AND "
-            "status='rendered'", cids).fetchone()[0]
-        if n_rendered != len(cids):
-            continue                          # bundle not finished yet
-        # dedupe: never enqueue a second plan_teaser for the same bundle.
-        # 'failed' is included: an auto-PROPOSED teaser (from the publish
-        # auto-proposer) that failed leaves teaser_state='none', so without
-        # counting 'failed' here this autopilot path would re-plan it as an
-        # auto_intro — silently AUTO-APPROVING a teaser the operator never
-        # reviewed. A bundle with ANY prior teaser attempt is left alone.
-        if con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                       "series_id=? AND state IN ('queued','running','done',"
-                       "'failed')", (b[0],)).fetchone()[0]:
-            continue
-        jobs.enqueue(con, "plan_teaser", series_id=b[0],
-                     payload={"auto_intro_bundle": bid})
-        log.write(f"[autopilot] bundle {bid} fully rendered -> auto-planning "
-                  "arc teaser (intro+ch1)\n")
 
 
 def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
@@ -1746,8 +1687,7 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
     state_row = con.execute("SELECT teaser_state FROM series WHERE id=?",
                             (sid,)).fetchone()
     keep_approved = bool(state_row and state_row[0] == "approved"
-                         and (base / "teaser.mp4").exists()
-                         and not (job.get("payload") or {}).get("auto_intro_bundle"))
+                         and (base / "teaser.mp4").exists())
     out_dir = base / ("teaser_next" if keep_approved else "teaser")
     teaser_mp4 = base / ("teaser_next.mp4" if keep_approved else "teaser.mp4")
     if keep_approved:
@@ -1852,23 +1792,14 @@ def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
             raise RuntimeError("remotion (teaser) failed")
         if not seg.exists():
             raise RuntimeError(f"teaser render missing {seg}")
-        # 3) copy to the bundle's teaser.mp4, then either park for manual review
-        # or — in AUTO mode (the autopilot auto-intro chain) — auto-approve and
-        # immediately queue the intro+ch1 concat with NO human click.
+        # 3) copy to the series' teaser.mp4 and park it for the owner's review.
+        # (The autopilot chain that auto-approved a teaser and built a
+        # teaser + chapter-1-only file was removed 2026-10-04: the teaser
+        # belongs to the series' first video BUNDLE, prepended by _h_concat,
+        # and is never approved without a human.)
         teaser_mp4.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(str(seg), str(teaser_mp4))
-        auto_bid = (job.get("payload") or {}).get("auto_intro_bundle")
-        if auto_bid:
-            con.execute("UPDATE series SET teaser_state='approved' WHERE id=?",
-                        (sid,))
-            con.commit()
-            gates.approve(con, "teaser", series_id=sid, note="autopilot")
-            gates.approve(con, "concat", bundle_id=auto_bid, note="autopilot")
-            jobs.enqueue(con, "concat", bundle_id=auto_bid,
-                         payload={"intro_ch1": True})
-            log.write("[autopilot] teaser rendered -> auto-approved; intro+ch1 "
-                      "concat queued\n")
-        elif keep_approved:
+        if keep_approved:
             log.write("[teaser] the new teaser waits in teaser_next/ for "
                       "review; the approved one stays live until it is "
                       "approved\n")
@@ -1883,11 +1814,6 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
     if not allowed:
         raise NonRetryableError(f"concat blocked: {why}")
     bid = job["bundle_id"]
-    if (job.get("payload") or {}).get("intro_ch1"):
-        # AUTO-INTRO deliverable: teaser + the bundle's FIRST chapter only (NOT
-        # the whole pack) -> dist/bundle_<id>/intro_ch1_FINAL.mp4.
-        _concat_intro_ch1(con, bid, log)
-        return
     segs = []
     for cid in bundles.bundle_chapters(con, bid):
         ch = _chapter(con, cid)
@@ -1931,46 +1857,6 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
     con.execute("UPDATE bundle SET state='concatenated', output_path=? "
                 "WHERE id=?", (str(out), bid))
     con.commit()
-
-
-def _concat_intro_ch1(con: sqlite3.Connection, bid: int, log: TextIO) -> None:
-    """The auto-intro deliverable: the approved arc teaser (cold open) +
-    the bundle's FIRST chapter -> dist/bundle_<id>/intro_ch1_FINAL.mp4. This is
-    NOT the whole-pack concat — it is the single 'intro + chapter 1' video the
-    channel publishes first. Audio is re-encoded to AAC (the stream-copy concat
-    of mixed sources otherwise plays muted in QuickTime); +faststart moves the
-    moov atom up for instant playback."""
-    cids = bundles.bundle_chapters(con, bid)
-    if not cids:
-        raise RuntimeError(f"bundle {bid} has no chapters")
-    first = _chapter(con, cids[0])
-    found = paths.find_segment_mp4(Path(first["ep_dir"] or ""))
-    if not found:
-        raise RuntimeError(f"chapter {cids[0]} (bundle {bid} first) has no "
-                           "rendered segment")
-    segs = [str(found)]
-    # the teaser is per MANHWA (dist/series_<id>), not per video
-    _sr = con.execute("SELECT series_id FROM bundle WHERE id=?",
-                      (bid,)).fetchone()
-    teaser_mp4 = (REPO / "dist" / f"series_{_sr[0]}" / "teaser.mp4"
-                  if _sr else REPO / "dist" / "missing" / "teaser.mp4")
-    trow = con.execute("SELECT teaser_state FROM series WHERE id=?",
-                       (_sr[0],)).fetchone() if _sr else None
-    if trow and trow[0] == "approved" and teaser_mp4.exists():
-        segs = [str(teaser_mp4)] + segs          # teaser is the cold open
-    out_dir = REPO / "dist" / f"bundle_{bid}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / "intro_ch1_FINAL.mp4"
-    lf = out_dir / "intro_ch1_concat.txt"
-    lf.write_text("".join(f"file '{s}'\n" for s in segs))
-    argv = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
-            "-i", str(lf), "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart", str(out)]
-    with record_stage(con, chapter_id=None, stage="concat"):
-        rc = _stream(argv, log)
-        if rc != 0:
-            raise RuntimeError(f"ffmpeg (intro+ch1) exited {rc}")
-    log.write(f"[intro] wrote {out}\n")
 
 
 def _h_discovery_scan(con: sqlite3.Connection, job: Dict[str, Any],

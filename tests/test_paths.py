@@ -2,7 +2,7 @@
 
 find_segment_mp4 mirrors the concat handlers' old "segment_*.mp4 else *.mp4"
 glob fallback, but picks the NEWEST match by mtime instead of the
-alphabetically-first one (worker._h_concat / _concat_intro_ch1 used to do
+alphabetically-first one (worker._h_concat used to do
 ``sorted(rdir.glob(...))[0]``).
 """
 import os

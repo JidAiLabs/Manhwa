@@ -91,8 +91,12 @@ Asura→**Nano Machine** (murim), Webtoon→**Omniscient Reader** (apocalypse), 
   `_h_teaser` (job `plan_teaser`) renders `dist/series_<id>/teaser.mp4`. `series.teaser_state`
   (none|planned|approved|declined): a `planned` teaser blocks the series' FIRST bundle's concat
   until reviewed; `_h_concat` prepends it only when `approved`. Dashboard: Series page
-  "Intro teaser" button + review card. `[teaser].enabled` gates ONLY the two automatic paths
-  (auto-debut bundle, autopilot intro); the manual button always works. (This paragraph said
+  "Intro teaser" button + review card. `[teaser].enabled` gates ONLY the automatic auto-debut
+  bundle proposal; the manual button always works. The autopilot "intro" chain (last chapter
+  rendered → auto plan_teaser → auto-approve → a teaser + chapter-1-only `intro_ch1_FINAL.mp4`)
+  was REMOVED 2026-10-04: the teaser belongs to the series' first video BUNDLE, which `_h_concat`
+  prepends, and no teaser is approved without the owner. Since 2026-10-04 the teaser's
+  model-written `rewind_line` is voiced after the hook as the climax panel's last clip. (This paragraph said
   `dist/bundle_<id>/` and `bundle.teaser_state` for months after the migration. ORV's own
   teaser sat in `dist/series_1/teaser_src/`, a name no code reads, until it was renamed to
   `teaser/` on 2026-09-21; the copy `teaser_src.bak_2026-09-21` beside it can be deleted.)

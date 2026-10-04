@@ -989,75 +989,25 @@ def _seed_bundle(con, *, autopilot=1, n=2, teaser_state="none",
     return 1
 
 
-def _teaser_on(monkeypatch):
-    """Pin [teaser].enabled for a test instead of reading production config.
+# ---------------------------------------------------------------------------
+# The autopilot "intro+ch1" chain (last chapter rendered -> auto plan_teaser ->
+# auto-approve -> concat teaser + chapter 1 only) was REMOVED 2026-10-04: the
+# owner's teaser belongs to the series' first video BUNDLE (_h_concat prepends
+# it), never to a chapter-1-only file, and no teaser is approved without a
+# human. These pin the absence.
+# ---------------------------------------------------------------------------
 
-    _autostart_intro_if_ready gates on _beats_cfg().teaser_enabled, so these
-    tests were asserting behaviour that depended on studio.toml — they broke the
-    moment the owner turned the auto-start off. A unit test must supply its own
-    config; only the gate is read, the rest of the path queries the DB.
-    """
-    monkeypatch.setattr(
-        worker, "_beats_cfg",
-        lambda: types.SimpleNamespace(teaser_enabled=True))
-
-
-def test_autostart_intro_enqueues_plan_teaser_once(tmp_path, monkeypatch):
-    """All chapters rendered + autopilot on + teaser_state none -> exactly one
-    plan_teaser (carrying auto_intro), and a second pass does NOT re-enqueue."""
-    _teaser_on(monkeypatch)
-    con = _con(tmp_path)
-    bid = _seed_bundle(con, autopilot=1)
-    worker._autostart_intro_if_ready(con, 2, _io.StringIO())   # last ch rendered
-    n = con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                    "series_id=?", (1,)).fetchone()[0]
-    assert n == 1
-    import json as _j
-    pj = con.execute("SELECT payload_json FROM job WHERE type='plan_teaser'"
-                     ).fetchone()[0]
-    assert _j.loads(pj).get("auto_intro_bundle") == 1
-    # second pass (e.g. another render-completion check) must NOT double-enqueue
-    worker._autostart_intro_if_ready(con, 2, _io.StringIO())
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                       "series_id=?", (1,)).fetchone()[0] == 1
+def test_intro_ch1_chain_is_gone():
+    assert not hasattr(worker, "_autostart_intro_if_ready")
+    assert not hasattr(worker, "_concat_intro_ch1")
 
 
-def test_autostart_intro_skips_when_teaser_state_not_none(tmp_path):
-    con = _con(tmp_path)
-    _seed_bundle(con, autopilot=1, teaser_state="planned")
-    worker._autostart_intro_if_ready(con, 2, _io.StringIO())
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
-                       ).fetchone()[0] == 0
-
-
-def test_autostart_intro_skipped_when_autopilot_off(tmp_path):
-    """Autopilot OFF -> the manual path is preserved (no auto plan_teaser)."""
-    con = _con(tmp_path)
-    _seed_bundle(con, autopilot=0)
-    worker._autostart_intro_if_ready(con, 2, _io.StringIO())
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
-                       ).fetchone()[0] == 0
-
-
-def test_autostart_intro_skips_when_not_all_rendered(tmp_path):
-    con = _con(tmp_path)
-    _seed_bundle(con, autopilot=1)
-    con.execute("UPDATE chapter SET status='voiced' WHERE id=2")   # one pending
-    con.commit()
-    worker._autostart_intro_if_ready(con, 1, _io.StringIO())
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
-                       ).fetchone()[0] == 0
-
-
-def test_teaser_auto_mode_approves_and_enqueues_concat(tmp_path, monkeypatch):
-    """A plan_teaser carrying auto_intro: when the teaser renders, the worker
-    auto-approves (teaser_state='approved') and enqueues the intro+ch1 concat
-    with NO manual approval."""
+def test_teaser_job_always_parks_for_review(tmp_path, monkeypatch):
+    """A plan_teaser carrying the legacy auto_intro_bundle payload behaves like
+    a manual click: teaser_state='planned', nothing approved, no concat queued."""
     con = _con(tmp_path)
     bid = _seed_bundle(con, autopilot=1, ep_root=tmp_path)
     monkeypatch.setattr(worker, "REPO", tmp_path)
-    # pre-stage the synthetic teaser dir + its render output so the handler's
-    # existence checks pass with every subprocess mocked out.
     tdir = tmp_path / "dist" / "series_1" / "teaser"
     (tdir / "render").mkdir(parents=True)
     (tdir / "manifest.teaser.json").write_text("{}")
@@ -1069,13 +1019,10 @@ def test_teaser_auto_mode_approves_and_enqueues_concat(tmp_path, monkeypatch):
     jobs.enqueue(con, "plan_teaser", series_id=1,
                  payload={"auto_intro_bundle": bid})
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
-    assert con.execute("SELECT teaser_state FROM series WHERE id=?",
-                       (bid,)).fetchone()[0] == "approved"
-    cj = con.execute("SELECT payload_json FROM job WHERE type='concat' AND "
-                     "bundle_id=?", (bid,)).fetchall()
-    assert len(cj) == 1
-    import json as _j
-    assert _j.loads(cj[0][0]).get("intro_ch1") is True
+    assert con.execute("SELECT teaser_state FROM series WHERE id=1"
+                       ).fetchone()[0] == "planned"
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='concat'"
+                       ).fetchone()[0] == 0
 
 
 def test_teaser_manual_mode_parks_for_review(tmp_path, monkeypatch):
@@ -1100,22 +1047,20 @@ def test_teaser_manual_mode_parks_for_review(tmp_path, monkeypatch):
                        ).fetchone()[0] == 0
 
 
-def test_concat_intro_ch1_builds_final_with_aac(tmp_path, monkeypatch):
-    """The intro+ch1 concat = teaser + the bundle's FIRST chapter, written to
-    dist/bundle_<id>/intro_ch1_FINAL.mp4 with -c:v copy -c:a aac -b:a 192k
-    -movflags +faststart (the QuickTime-mute-safe flags)."""
+def test_concat_ignores_legacy_intro_ch1_payload_and_builds_the_whole_pack(
+        tmp_path, monkeypatch):
+    """The only concat is the bundle: [approved teaser, ch1 ... chN] ->
+    bundle.mp4. A stale intro_ch1 payload must not yield a chapter-1-only file."""
     con = _con(tmp_path)
     bid = _seed_bundle(con, autopilot=1, teaser_state="approved",
                        ep_root=tmp_path)
-    ep1 = tmp_path / "ep1" / "render"
-    ep1.mkdir(parents=True)
-    (ep1 / "segment_both.mp4").write_text("v")
+    for i in (1, 2):
+        ep = tmp_path / f"ep{i}" / "render"
+        ep.mkdir(parents=True)
+        (ep / "segment_both.mp4").write_text("v")
     from studio.dashboard import gates as g
     g.approve(con, "concat", bundle_id=bid)
     monkeypatch.setattr(worker, "REPO", tmp_path)
-    bdir = tmp_path / "dist" / f"bundle_{bid}"
-    bdir.mkdir(parents=True)
-    # the teaser is per MANHWA now — dist/series_<id>/teaser.mp4
     sdir = tmp_path / "dist" / "series_1"
     sdir.mkdir(parents=True)
     (sdir / "teaser.mp4").write_text("t")
@@ -1128,14 +1073,10 @@ def test_concat_intro_ch1_builds_final_with_aac(tmp_path, monkeypatch):
     jobs.enqueue(con, "concat", bundle_id=bid, payload={"intro_ch1": True})
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     cmd = captured["cmd"]
-    assert cmd[cmd.index("-c:v") + 1] == "copy"
-    assert cmd[cmd.index("-c:a") + 1] == "aac"
-    assert cmd[cmd.index("-b:a") + 1] == "192k"
-    assert cmd[cmd.index("-movflags") + 1] == "+faststart"
-    assert str(bdir / "intro_ch1_FINAL.mp4") in cmd
-    lf = (bdir / "intro_ch1_concat.txt").read_text()
-    assert "teaser.mp4" in lf and "segment_both.mp4" in lf
-    assert lf.index("teaser.mp4") < lf.index("segment_both.mp4")   # teaser first
+    assert str(tmp_path / "dist" / f"bundle_{bid}" / "bundle.mp4") in cmd
+    assert not any("intro_ch1" in c for c in cmd)
+    lf = (tmp_path / "dist" / f"bundle_{bid}" / "concat.txt").read_text()
+    assert lf.index("teaser.mp4") < lf.index("ep1/") < lf.index("ep2/")  # teaser, then EVERY chapter
 
 
 # ---- orphan-reap on restart: pgid persistence + identity-checked kill ------
@@ -1237,12 +1178,14 @@ def test_reap_pgid_tolerates_already_gone_process(monkeypatch):
     assert worker._reap_pgid(4242) is False
 
 
-def test_render_segment_triggers_auto_intro_for_last_chapter(
+def test_render_segment_last_chapter_never_auto_plans_a_teaser(
         tmp_path, monkeypatch):
     """End-to-end: rendering the LAST chapter of an autopilot bundle flips it to
-    'rendered' AND enqueues the auto plan_teaser (the hook is wired into the
-    render-completion path)."""
-    _teaser_on(monkeypatch)
+    'rendered' and enqueues NOTHING else — the auto-intro chain (auto
+    plan_teaser -> auto-approve -> teaser+ch1 concat) was removed 2026-10-04;
+    teasers are planned by the owner's click or the publish proposer only."""
+    monkeypatch.setattr(worker, "_beats_cfg",
+                        lambda: types.SimpleNamespace(teaser_enabled=True))
     con = _con(tmp_path)
     bid = _seed_bundle(con, autopilot=1, status="rendered", ep_root=tmp_path)
     # ch2 is the one we're about to render: pending + gated green
@@ -1260,8 +1203,8 @@ def test_render_segment_triggers_auto_intro_for_last_chapter(
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     assert con.execute("SELECT status FROM chapter WHERE id=2"
                        ).fetchone()[0] == "rendered"
-    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND "
-                       "series_id=?", (1,)).fetchone()[0] == 1
+    assert con.execute("SELECT COUNT(*) FROM job WHERE type='plan_teaser'"
+                       ).fetchone()[0] == 0
 
 
 def test_render_branding_defaults_both(tmp_path, monkeypatch):
@@ -2356,37 +2299,6 @@ def test_failed_thumbnail_proposal_is_not_re_fired_every_prepare(tmp_path,
     worker._autopropose_publish_if_ready(con, 1, io.StringIO())  # next prepare
     assert con.execute("SELECT COUNT(*) FROM job WHERE type='series_claim'"
                        ).fetchone()[0] == 1
-
-
-def test_autostart_intro_leaves_a_failed_proposed_teaser_alone(tmp_path,
-                                                               monkeypatch):
-    """A proposed teaser that FAILED leaves teaser_state='none'. The autopilot
-    auto-intro path must NOT then re-plan it as an auto_intro (which would
-    auto-approve a teaser the operator never reviewed)."""
-    monkeypatch.setattr(worker, "_beats_cfg",
-                        lambda: _cfg_pub(teaser_enabled=True))
-    con = _con(tmp_path)
-    con.execute("INSERT INTO series (id, source, series_url, slug, title, "
-                "added_at, autopilot) VALUES (1,'a','u','s','S','t',1)")
-    ep = tmp_path / "ch1"
-    ep.mkdir()
-    con.execute("INSERT INTO chapter (id, series_id, number, label, url, "
-                "status, ep_dir, updated_at) VALUES (1,1,1,'C1','u','rendered',"
-                "?,'t')", (str(ep),))
-    bid = con.execute("INSERT INTO bundle (series_id, kind, teaser_state) "
-                      "VALUES (1,'manual','none')").lastrowid
-    con.execute("INSERT INTO bundle_chapter (bundle_id, chapter_id, position) "
-                "VALUES (?,1,0)", (bid,))
-    # a prior PROPOSED teaser that failed
-    con.execute("INSERT INTO job (type, bundle_id, state) VALUES "
-                "('plan_teaser', ?, 'failed')", (bid,))
-    con.commit()
-    import io
-    worker._autostart_intro_if_ready(con, 1, io.StringIO())
-    autos = con.execute(
-        "SELECT COUNT(*) FROM job WHERE type='plan_teaser' AND bundle_id=? "
-        "AND state='queued'", (bid,)).fetchone()[0]
-    assert autos == 0, "autopilot re-planned a failed proposal as auto_intro"
 
 
 def test_heal_visual_drops_never_drops_a_narrated_MULTI_panel_span(tmp_path, monkeypatch):
