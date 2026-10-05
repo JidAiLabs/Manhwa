@@ -1241,38 +1241,47 @@ def test_a_beat_lying_entirely_past_the_end_is_dropped_not_clamped():
 # each shot of groups.json; absent == false for every older manifest.
 # ---------------------------------------------------------------------------
 
-def test_scene_shift_is_a_boolean_in_beat_schema():
-    assert sg._BEATS_ITEMS_SCHEMA["properties"]["scene_shift"] == {"type": "BOOLEAN"}
-    assert "scene_shift" not in sg._BEATS_ITEMS_SCHEMA["required"]
+def test_shift_spans_is_a_top_level_index_list_not_a_per_beat_key():
+    # 2026-10-05: a per-beat BOOLEAN was emitted on EVERY beat ("scene_shift":
+    # true on 23 of 24 beats of Tutorial Tower ch151) — noise, and ~22 chars per
+    # beat on a reply that already truncates at the context edge. The tag is
+    # now ONE short top-level list of the from_index of each span that opens a
+    # new place: zero cost on ordinary beats.
+    assert "scene_shift" not in sg._BEATS_ITEMS_SCHEMA["properties"]
+    for schema in (sg.GROUP_SCHEMA, sg.BEATS_ONLY_SCHEMA):
+        assert schema["properties"]["shift_spans"] == {"type": "ARRAY", "items": {"type": "INTEGER"}}
+        assert "shift_spans" not in schema["required"]
 
 
-def test_system_core_defines_scene_shift_closed():
-    # A closed definition (place OR wholly different cast; arrivals/reactions/
-    # close-ups/system cards are NOT shifts; unsure -> omit), kept inline and
-    # terse: the 96-panel benchmark chapter now sits ~2 tokens under
-    # _PROMPT_TOKEN_BUDGET, and the key is OMITTED on ordinary spans so the
-    # response does not grow per beat.
-    # An ESTABLISHING VIEW of another place (dry runs 2026-10-04: "or wholly
-    # different characters" tagged 46% of all shots; "a different place"
-    # 25% at ~40% precision — every true cut opened on an establishing view,
-    # every false one on a character, an arrival or an effect panel).
+def test_system_core_defines_shift_spans_closed():
+    # An ESTABLISHING VIEW of another place, as a top-level index list (dry
+    # runs 2026-10-04: "or wholly different characters" tagged 46% of shots;
+    # "a different place" 25% at ~40% precision — every true cut opened on an
+    # establishing view, every false one on a character, an arrival or an
+    # effect panel). Terse: the 96-panel benchmark sits ~2 tokens under
+    # _PROMPT_TOKEN_BUDGET.
     core = sg._SYSTEM_CORE
-    assert "scene_shift (true ONLY when a span's FIRST panel" in core
-    for phrase in ("SHOWS a place clearly different", "establishing view",
-                   "NEVER for a character close-up", "effect panel",
-                   "when unsure, omit"):
+    assert "shift_spans" in core
+    for phrase in ("from_index of each span whose FIRST panel SHOWS a place clearly different",
+                   "establishing view", "NEVER for a character close-up", "effect panel",
+                   "[] when none"):
         assert phrase in core, phrase
-    assert "scene_shift (true ONLY" in sg.SYSTEM_CHUNK   # chunk calls inherit the core
+    assert "scene_shift (true ONLY" not in core
+    assert "shift_spans" in sg.SYSTEM_CHUNK   # chunk calls inherit the core
 
 
-def test_expand_index_ranges_carries_scene_shift():
+def test_expand_index_ranges_marks_shift_spans_by_from_index():
     order = [f"p{i}" for i in range(6)]
-    expanded, issue = sg.expand_index_ranges([
-        {"from_index": 0, "to_index": 2},
-        {"from_index": 3, "to_index": 5, "scene_shift": True}], order)
+    beats = [{"from_index": 0, "to_index": 2},
+             {"from_index": 3, "to_index": 5, "scene_shift": True}]   # stray per-beat key: ignored
+    expanded, issue = sg.expand_index_ranges(beats, order, shift_spans=[3])
     assert issue == ""
-    assert expanded[0]["scene_shift"] is False      # absent -> False
-    assert expanded[1]["scene_shift"] is True
+    assert [b["scene_shift"] for b in expanded] == [False, True]
+    expanded, _ = sg.expand_index_ranges(beats, order)                 # no list -> never
+    assert [b["scene_shift"] for b in expanded] == [False, False]
+    # only real integers count ("3", 3.0, True, out-of-range indices are ignored)
+    expanded, _ = sg.expand_index_ranges(beats, order, shift_spans=["3", 3.0, True, 99])
+    assert [b["scene_shift"] for b in expanded] == [False, False]
 
 
 def test_scene_shift_marks_only_the_first_shot_of_a_model_beat():
@@ -1349,8 +1358,9 @@ def test_main_emits_scene_shift_and_prompt_version(tmp_path, monkeypatch):
         return ({"chapter": {"logline": "A ridge walk home.",
                              "premise": "He walks alone again."},
                  "beats": [{"from_index": 0, "to_index": 0},
-                           {"from_index": 1, "to_index": 1, "scene_shift": True},
-                           {"from_index": 2, "to_index": 2, "scene_shift": True}]},
+                           {"from_index": 1, "to_index": 1},
+                           {"from_index": 2, "to_index": 2}],
+                 "shift_spans": [1, 2]},
                 "OK_RAW", {})
 
     monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
@@ -1367,7 +1377,7 @@ def test_main_emits_scene_shift_and_prompt_version(tmp_path, monkeypatch):
     assert sg.main() == 0
     assert [s["scene_shift"] for s in json.loads(out.read_text())["shots"]] == [False, False, False]
     assert written["_meta"]["prompt_version"] == sg.PROMPT_VERSION
-    assert "scene_shift (true ONLY" in seen["system"]
+    assert "shift_spans" in seen["system"]
 
 
 def test_scene_shift_needs_an_establishing_opener():
@@ -1408,14 +1418,10 @@ def test_scene_shift_is_inert_unless_enabled(monkeypatch):
     assert sg.scene_shift_enabled() is True
 
 
-def test_scene_shift_accepts_only_a_real_true():
-    # review 2026-10-04: a loosely formatted "false" string must not read as a
-    # tag (the "null values masquerading as signals" class)
+def test_repair_to_shots_reads_only_a_real_true():
+    # the expanded beat's scene_shift is a bool from expand_index_ranges; a
+    # loosely formatted "false" must never read as a tag
     order = ["p0", "p1", "p2", "p3"]
-    expanded, _ = sg.expand_index_ranges([
-        {"from_index": 0, "to_index": 1},
-        {"from_index": 2, "to_index": 3, "scene_shift": "false"}], order)
-    assert expanded[1]["scene_shift"] is False
     shots = sg.repair_to_shots(order, [{"scene_files": order[:2]},
                                        {"scene_files": order[2:], "scene_shift": "false"}])
     assert [s["scene_shift"] for s in shots] == [False, False]

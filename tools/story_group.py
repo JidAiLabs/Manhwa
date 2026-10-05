@@ -48,7 +48,7 @@ DEFAULT_MAX_BEAT_LEN = 6
 # use) so a dry run or an audit can tell which prompt grouped a chapter.
 # sg_v3 (2026-10-04): per-shot `scene_shift` — the grouper records the
 # scene/location change it is told to split on, instead of discarding it.
-PROMPT_VERSION = "sg_v3"
+PROMPT_VERSION = "sg_v4"
 
 # GROUP_SCHEMA asks for INDEX RANGES, not filename echoes. The old schema made
 # beats.scene_files an array of strings and forced the model to type out every
@@ -78,7 +78,6 @@ _BEATS_ITEMS_SCHEMA: Dict[str, Any] = {
         "segment": {"type": "STRING", "enum": list(_SEGMENTS)},
         "arc_label": {"type": "STRING"},
         "why": {"type": "STRING"},
-        "scene_shift": {"type": "BOOLEAN"},
     },
     "required": ["from_index", "to_index"],
 }
@@ -91,6 +90,11 @@ GROUP_SCHEMA: Dict[str, Any] = {
             "premise": {"type": "STRING", "minLength": 12},
         }, "required": ["logline", "premise"]},
         "beats": {"type": "ARRAY", "items": _BEATS_ITEMS_SCHEMA},
+        # from_index of each span that OPENS on a view of another place — one
+        # short list instead of a key on every beat (2026-10-05: a per-beat
+        # BOOLEAN came back true on 23 of 24 beats and fattened a reply that
+        # already truncates at the context edge)
+        "shift_spans": {"type": "ARRAY", "items": {"type": "INTEGER"}},
     },
     "required": ["chapter", "beats"],
 }
@@ -104,7 +108,8 @@ GROUP_SCHEMA: Dict[str, Any] = {
 # evidence. Beats only; no chapter key at all.
 BEATS_ONLY_SCHEMA: Dict[str, Any] = {
     "type": "OBJECT",
-    "properties": {"beats": {"type": "ARRAY", "items": _BEATS_ITEMS_SCHEMA}},
+    "properties": {"beats": {"type": "ARRAY", "items": _BEATS_ITEMS_SCHEMA},
+                   "shift_spans": {"type": "ARRAY", "items": {"type": "INTEGER"}}},
     "required": ["beats"],
 }
 
@@ -138,12 +143,11 @@ _SYSTEM_CORE = (
     "and the next span's from_index must be greater than this span's to_index: "
     "spans stay in ascending order and never overlap), segment (present | "
     "flashback | dream — MARK flashbacks and dreams), arc_label (a 2-4 word "
-    "label for the scene), scene_shift (true ONLY when a span's FIRST panel "
-    "SHOWS a place clearly different from the previous span's — an "
-    "establishing view of another location: another room, outdoors, "
-    "elsewhere; otherwise omit it. NEVER for a character close-up, a "
-    "reaction, an arrival or an effect panel at the same place; when unsure, "
-    "omit). "
+    "label for the scene). Return shift_spans: the from_index of each span "
+    "whose FIRST panel SHOWS a place clearly different from the previous "
+    "span's (an establishing view of another location), [] when none. NEVER "
+    "for a character close-up, a reaction, an arrival or an effect panel at "
+    "the same place. "
     "Cover EVERY panel exactly once, in order. Do not "
     "target a fixed number of spans or a fixed panel count. The downstream "
     "script/timeline renders panel-level cues; these spans are only story "
@@ -498,7 +502,8 @@ def repair_to_shots(scene_order: List[str], model_beats: List[Dict[str, Any]],
             for i, s in enumerate(shots, 1)]
 
 
-def expand_index_ranges(beats: Any, scene_order: List[str]
+def expand_index_ranges(beats: Any, scene_order: List[str],
+                        shift_spans: Any = None
                         ) -> tuple[List[Dict[str, Any]], str]:
     """Validate + expand the model's GROUP_SCHEMA {from_index,to_index} beats
     into the classic {scene_files, segment, arc_label, why} shape
@@ -526,6 +531,9 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
         return [], "beats is missing or empty"
     expanded: List[Dict[str, Any]] = []
     prev_to = -1
+    # the model's shift_spans: from_index values of spans that OPEN on a view
+    # of another place; only real integers count (never bool/str/float)
+    shifts = {x for x in (shift_spans or []) if isinstance(x, int) and not isinstance(x, bool)}
     for i, b in enumerate(beats):
         if not isinstance(b, dict):
             return [], f"beat {i} is not an object"
@@ -593,7 +601,9 @@ def expand_index_ranges(beats: Any, scene_order: List[str]
             "segment": b.get("segment"),
             "arc_label": b.get("arc_label"),
             "why": b.get("why"),
-            "scene_shift": b.get("scene_shift") is True,
+            "scene_shift": isinstance(b.get("from_index"), int)
+                           and not isinstance(b.get("from_index"), bool)
+                           and b.get("from_index") in shifts,
         })
     return expanded, ""
 
@@ -649,7 +659,8 @@ def _validated_beats_or_raise(parsed: Any, raw: Any, scene_order: List[str],
     expanded: List[Dict[str, Any]] = []
     if check_ranges and not spine_issue:
         if isinstance(parsed, dict):
-            expanded, range_issue = expand_index_ranges(parsed.get("beats"), scene_order)
+            expanded, range_issue = expand_index_ranges(
+                parsed.get("beats"), scene_order, shift_spans=parsed.get("shift_spans"))
         elif parsed is None:
             # a chunk call that never parsed AT ALL must fail loudly too --
             # falling through with expanded=[] would let repair_to_shots
@@ -1391,7 +1402,8 @@ def main() -> int:
                 # returning, so group_panels/repair_to_shots never need to
                 # know ranges exist.
                 expanded_beats, range_issue = expand_index_ranges(
-                    parsed.get("beats"), scene_order)
+                    parsed.get("beats"), scene_order,
+                    shift_spans=parsed.get("shift_spans"))
                 issue = range_issue
             if isinstance(parsed, dict) and not issue:
                 return {**parsed, "beats": expanded_beats}
