@@ -1447,3 +1447,23 @@ def test_scene_shift_gate_reads_vision_scene_labels_and_faces():
     assert not ok({"labels": [{"desc": "art"}, {"desc": "illustrations"}], "faces": []})  # no place word
     assert ok({})                                                               # legacy: no labels key
     assert sg.opens_on_establishing_view({"scene_files": ["wall.jpg"]}, u, {})   # no vision at all
+
+
+def test_licensed_title_panel_is_excluded_even_when_understood_as_system():
+    # ch151: the chapter logo was understood as a 'system' card, so
+    # keep_by_understanding shielded it from the OCR chrome rule and the writer voiced
+    # the licensed title. The licensed-title set is OR-ed in AFTER every rescue.
+    title = "The Tutorial Tower of the Advanced Player"
+    items = [
+        {"scene_file": "p000008.jpg", "panel_kind": "system",
+         "ocr_clean": "TOWER OF\nTHE ADVANCED\nPLAYER"},
+        {"scene_file": "p000009.jpg", "panel_kind": "system",
+         "ocr_clean": "QUEST DIRECTIONS. NUMBER OF PLAYERS TO KILL: 1."},
+    ]
+    assert sg.licensed_title_files(items, title) == {"p000008.jpg"}
+    assert sg.licensed_title_files(items, "") == set()
+    # the series folder name IS the title's words for every tracked series — the
+    # fallback when the CLI gets no --series-title (prep_qa does the same)
+    assert sg.series_title_fallback(
+        "/x/ongoing/the-tutorial-tower-of-the-advanced-player/Chapter 151/manifest.vision.json"
+    ) == "the tutorial tower of the advanced player"

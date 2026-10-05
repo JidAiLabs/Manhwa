@@ -1140,6 +1140,27 @@ def chrome_files(vision_items: List[Dict[str, Any]], series_title: str) -> set:
     return out
 
 
+def licensed_title_files(vision_items: List[Dict[str, Any]], series_title: str) -> set:
+    """Panels whose OCR IS the licensed series title (the chapter logo) — a HARD RULE
+    (owner): never shown, never voiced, whatever the understanding called them
+    (ch151's logo was a 'system' card the writer then read aloud). OR-ed into the
+    exclusion AFTER every rescue (keep_by_understanding, title_card_files)."""
+    from scene_chrome import is_licensed_title_scene
+    if not series_title:
+        return set()
+    return {it.get("scene_file") for it in vision_items
+            if it.get("scene_file") and is_licensed_title_scene(it, series_title)}
+
+
+def series_title_fallback(vision_manifest_path: str) -> str:
+    """The series folder name (ongoing/<slug>/<label>/manifest…) read as title words —
+    the slug equals the title's words for every tracked series (checked 2026-10-05),
+    and it is what prep_qa already falls back to. Used when the CLI gets no
+    --series-title (the pipeline's grouped stage never passed one)."""
+    slug = os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(vision_manifest_path))))
+    return " ".join(re.findall(r"[a-z0-9]+", slug.lower()))
+
+
 # in-world system-card vocabulary — the signal that a flat card the LLM mislabeled
 # 'chrome' is actually a kept story beat (a status/quest/skill/notification window),
 # NOT a chapter-number or scanlator credits card (which carry none of this and stay
@@ -1280,6 +1301,7 @@ def main() -> int:
     panels = [p for p in (understood.get("panels") or []) if p.get("scene_file")]
 
     vmap = {it.get("scene_file"): it for it in (vision.get("items") or [])}
+    series_title = args.series_title or series_title_fallback(args.vision_manifest)
     if args.keep_chrome:
         excluded: set = set()
     else:
@@ -1300,12 +1322,17 @@ def main() -> int:
                                  if str(p.get("panel_kind") or "").lower()
                                  in ("story", "caption", "system") and not p.get("error")}
         ocr_chrome = chrome_files(list(vmap.values()),
-                                  args.series_title) - keep_by_understanding
+                                  series_title) - keep_by_understanding
         # NEVER drop a story title/system card (age/time/status/org card) even if the
         # LLM mislabelled a flat info-card as chrome — same detector prep_qa uses, so
         # this can never trip the 'system_card_dropped' QA error.
         cards = title_card_files(list(vmap.values()))
-        excluded = (understood_nonstory | ocr_chrome | effect_only) - cards
+        # …except the LICENSED title/logo: a hard rule that outranks every rescue above.
+        licensed = licensed_title_files(list(vmap.values()), series_title)
+        excluded = ((understood_nonstory | ocr_chrome | effect_only) - cards) | licensed
+        if licensed:
+            print(f"[licensed] dropped {len(licensed)} series title/logo panel(s) "
+                  f"(hard rule, title={series_title!r}): {sorted(licensed)}")
         if understood_nonstory:
             print(f"[nonstory] understanding dropped {len(understood_nonstory)}: "
                   f"{sorted(understood_nonstory)}")

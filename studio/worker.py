@@ -312,6 +312,10 @@ _CRITICAL_QA_CODES = {
     # a whole stitch chunk rendered as one panel (detection under-segmented) —
     # heal can't fix a crop, so block → re-stitch/re-detect rather than ship it
     "chunk_as_panel",
+    # the licensed series title/logo on screen — the owner's hard rule. story_group
+    # excludes it at grouping; this only fires on a stale path (keep-base groups,
+    # hand-run tools) and the remedy is a re-group, never a heal (2026-10-05).
+    "licensed_title_shown",
     # an in-world system/status panel (a story beat) dropped before render. Now
     # that the story_group rescue keeps mislabeled-chrome system cards, a genuine
     # drop is rare — but it MUST block (a missing plot beat), not ship green.

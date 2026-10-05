@@ -202,3 +202,39 @@ def test_system_panel_is_never_chrome():
     # they must never be classified as chrome regardless of sparse OCR or midtones.
     assert sc.is_chrome_scene({"panel_kind": "system", "ocr_clean": ""}, midtone_frac=0.02) is False
     assert sc.is_chrome_scene({"panel_kind": "system", "ocr_clean": "QUEST DIRECTIONS"}, midtone_frac=0.5) is False
+
+
+# ---- the licensed series title/logo is a HARD RULE (owner, 2026-10-05) --------------
+# The multimodal understanding read Tutorial Tower's chapter logo as a 'system' card
+# (ch151) or 'story' (ch167); the writer then VOICED it ("Welcome to the Tutorial Tower
+# of the Advanced Player.") over the logo image. The understanding cannot know what is
+# licensed, so the title rule outranks its verdict.
+
+TT = "The Tutorial Tower of the Advanced Player"
+
+
+def test_licensed_title_logo_outranks_the_understanding_verdict():
+    # the real ch151 logo: OCR missed the stylized 'Tutorial', the model said 'system'
+    logo = {"panel_kind": "system", "ocr_clean": "TOWER OF\nTHE ADVANCED\nPLAYER"}
+    assert sc.is_licensed_title_scene(logo, TT) is True
+    assert sc.is_chrome_scene(logo, series_title=TT) is True
+    # the real ch2 logo: one OCR-garbled word, the model said 'story'
+    art_logo = {"panel_kind": "story", "ocr_clean": "THE TUTORIAL\nTOWER OF\nTEADVANCED\nPLAYER"}
+    assert sc.is_chrome_scene(art_logo, series_title=TT) is True
+    # no title given -> the understanding stays authoritative (unchanged behaviour)
+    assert sc.is_chrome_scene(logo) is False
+
+
+def test_licensed_title_needs_the_distinctive_words_not_stopwords_or_dialogue():
+    # story panels whose only OCR is a title STOPWORD (real: TT ch138 'of', DK ch2 'THE 00')
+    assert sc.is_chrome_scene({"panel_kind": "story", "ocr_clean": "of"}, series_title=TT) is False
+    assert sc.is_chrome_scene({"panel_kind": "story", "ocr_clean": "THE 00"},
+                              series_title="Return of the Apocalypse-Class Death Knight") is False
+    # an in-world card that reuses ONE title word (real: Wimp ch5)
+    assert sc.is_chrome_scene({"panel_kind": "system", "ocr_clean": "THE TOWER\nCOLLAPSES..."},
+                              series_title="A Wimp’s Strategy Guide to Conquer the Tower") is False
+    # dialogue that says the title as an in-world term (real: Nano Machine ch2/ch3)
+    assert sc.is_chrome_scene({"panel_kind": "story", "ocr_clean": "NANO\nMACHINE?\nU\nYES, MASTER."},
+                              series_title="Nano Machine") is False
+    assert sc.is_chrome_scene({"panel_kind": "story", "ocr_clean": "DEATH KNIGHT!"},
+                              series_title="Return of the Apocalypse-Class Death Knight") is False

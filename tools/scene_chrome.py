@@ -62,6 +62,30 @@ def _norm_words(s: str) -> list:
     return _WORD_RE.findall((s or "").lower())
 
 
+# function words a title shares with any sentence — never evidence of the logo
+# ('of' alone was a story panel's whole OCR in TT ch138; 'THE 00' in DK ch2)
+_TITLE_STOP = frozenset({"the", "of", "a", "an", "and", "in", "from", "to", "s",
+                         "is", "for", "on", "my", "i"})
+
+
+def is_licensed_title_scene(item: dict, series_title: str) -> bool:
+    """True when the panel's OCR IS the licensed series title (the chapter logo /
+    title card): at least 60% of the title's distinctive words are present and at
+    most ONE word is not a title word (one OCR-garbled letter run — 'TEADVANCED',
+    'JUTORIAL' — is how a real logo reads). Measured 2026-10-05 over 12 series:
+    every Tutorial Tower logo (65/65, three OCR garbles) matches; no in-world
+    dialogue or card does ('NANO MACHINE? YES, MASTER.', 'THE TOWER COLLAPSES...').
+    ponytail: a bubble that says ONLY a two-word title ('NANO MACHINE') would match
+    — zero in the corpus; add a punctuation/bubble check if one ever appears."""
+    distinct = {w for w in _norm_words(series_title) if w not in _TITLE_STOP and len(w) >= 3}
+    words = _norm_words(str(item.get("ocr_clean") or ""))
+    if not distinct or not words:
+        return False
+    title_words = set(_norm_words(series_title))
+    covered = len(set(words) & distinct) / len(distinct)
+    return covered >= 0.6 and sum(1 for w in words if w not in title_words) <= 1
+
+
 def needs_image_stats(ocr: str) -> bool:
     """Callers should compute midtone_frac for these OCR signatures: empty
     OCR (stylized number cards) or a site hit that may be a mere watermark."""
@@ -96,6 +120,12 @@ def is_chrome_scene(
     was '1'). 'system' = in-world game/UI cards (quest/status/notification/alarm/
     system-message) — always PLOT, never decorative chrome.
     """
+    # Rule 0 — HARD RULE, above the understanding: the licensed series title/logo is
+    # never shown and never voiced. The model read Tutorial Tower's chapter logo as a
+    # 'system' card (ch151) / 'story' (ch167) and the writer voiced it; the model
+    # cannot know what is licensed, so this is decided before its verdict (2026-10-05).
+    if series_title and is_licensed_title_scene(item, series_title):
+        return True
     kind = str(item.get("panel_kind") or "").strip().lower()
     if kind in ("story", "caption", "system"):
         return False

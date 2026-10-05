@@ -52,7 +52,7 @@ for _p in (_TOOLS_DIR, _REPO_ROOT):
 import render_prep as rp                      # art/bubble metrics, detector
 from beats_segments import beat_segments
 from render_prep import multi_scale_contained
-from scene_chrome import is_chrome_scene, needs_image_stats
+from scene_chrome import is_chrome_scene, is_licensed_title_scene, needs_image_stats
 from studio.qa_flags import longest_common_run
 from narration_consistency import (audio_consistency, is_nullish_line,
                                    is_unvoiceable_line,
@@ -691,8 +691,15 @@ def vision_flags(parent: str, vitem: Dict[str, Any], *,
                  segment_id: str = "") -> List[Dict[str, Any]]:
     d = dims_entry or {}
     flags: List[Dict[str, Any]] = []
-    if is_chrome_scene(vitem, series_title=series_title,
-                       midtone_frac=midtone_frac):
+    if series_title and is_licensed_title_scene(vitem, series_title):
+        # HARD RULE (owner): the licensed series title/logo is never on screen.
+        # Its own BLOCKING code (worker._CRITICAL_QA_CODES), not cosmetic chrome_leak.
+        flags.append(_flag("licensed_title_shown", ERROR,
+                           f"the licensed series title/logo is SHOWN — "
+                           f"ocr={str(vitem.get('ocr_clean'))[:80]!r}",
+                           scene=parent, segment_id=segment_id))
+    elif is_chrome_scene(vitem, series_title=series_title,
+                         midtone_frac=midtone_frac):
         flags.append(_flag("chrome_leak", ERROR,
                            f"chrome per scene_chrome rules is SHOWN — "
                            f"ocr={str(vitem.get('ocr_clean'))[:80]!r}",

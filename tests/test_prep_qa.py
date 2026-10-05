@@ -382,8 +382,23 @@ def test_vision_flags_chrome_leak_via_title_dominance():
              "text_coverage": 0.05, "n_words": 2}
     fl = pq.vision_flags("p000029.jpg", vitem, dims_entry={"doc": False},
                          series_title="Omniscient Reader")
-    assert any(f["code"] == "chrome_leak" and f["severity"] == "ERROR"
+    # a shown panel that IS the title graduated from cosmetic chrome_leak to the
+    # BLOCKING licensed_title_shown (hard rule, 2026-10-05); still an ERROR
+    assert any(f["code"] == "licensed_title_shown" and f["severity"] == "ERROR"
                for f in fl)
+
+
+def test_vision_flags_licensed_title_shown_blocks_even_for_a_system_kind():
+    # ch151: the chapter logo understood as a 'system' card and SHOWN while voiced.
+    # A licensed title/logo on screen is a hard rule -> its own BLOCKING code.
+    vitem = {"panel_kind": "system", "ocr_clean": "TOWER OF\nTHE ADVANCED\nPLAYER",
+             "text_only": True, "text_coverage": 0.49, "n_words": 5}
+    fl = pq.vision_flags("p000008.jpg", vitem, dims_entry={"doc": True},
+                         series_title="The Tutorial Tower of the Advanced Player")
+    codes = {f["code"] for f in fl}
+    assert "licensed_title_shown" in codes and "chrome_leak" not in codes
+    from studio.worker import _CRITICAL_QA_CODES
+    assert "licensed_title_shown" in _CRITICAL_QA_CODES
 
 
 def test_vision_flags_empty_bubble_shown_errors():
