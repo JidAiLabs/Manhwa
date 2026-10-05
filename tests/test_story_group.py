@@ -1419,3 +1419,24 @@ def test_scene_shift_accepts_only_a_real_true():
     shots = sg.repair_to_shots(order, [{"scene_files": order[:2]},
                                        {"scene_files": order[2:], "scene_shift": "false"}])
     assert [s["scene_shift"] for s in shots] == [False, False]
+
+
+def test_scene_shift_gate_reads_vision_scene_labels_and_faces():
+    # 2026-10-05: Apple Vision's on-device scene labels + face/body detections
+    # (stored per panel by vision_extract) separate establishing views from
+    # character/effect/text openers with no model call — measured on dry run 3:
+    # 11 true / 2 false of 13 kept. A legacy entry without labels falls back to
+    # the person-heuristic rule so old manifests behave exactly as before.
+    u = {"wall.jpg": {"panel_kind": "story", "subjects": [], "description": "A curved stone wall."}}
+
+    def ok(vision):
+        return sg.opens_on_establishing_view(
+            {"scene_files": ["wall.jpg"]}, u, {"wall.jpg": {"vision": vision}})
+
+    place = [{"desc": "structure", "score": 0.9}, {"desc": "brick", "score": 0.8}]
+    assert ok({"labels": place, "faces": []})                                   # a view of a place
+    assert not ok({"labels": place + [{"desc": "people"}, {"desc": "adult"}], "faces": []})
+    assert not ok({"labels": place, "faces": [{"bbox": [0, 0, 1, 1], "confidence": 0.9}]})
+    assert not ok({"labels": [{"desc": "art"}, {"desc": "illustrations"}], "faces": []})  # no place word
+    assert ok({})                                                               # legacy: no labels key
+    assert sg.opens_on_establishing_view({"scene_files": ["wall.jpg"]}, u, {})   # no vision at all

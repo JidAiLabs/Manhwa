@@ -1137,17 +1137,33 @@ _SYSTEM_CARD_RE = re.compile(
     r"guild|alert|alarm|hp|mp|exp|stat)\b", re.I)
 
 
+# Apple Vision's on-device scene-classification identifiers (vision.labels[].desc,
+# tools/apple_vision.py labels()) observed on the corpus's TRUE place cuts, and
+# the ones that mark a drawn person. A closed set over the classifier's own
+# vocabulary — not prose matching.
+_PLACE_LABELS = frozenset({
+    "outdoor", "sky", "night_sky", "blue_sky", "cloudy", "structure", "building",
+    "castle", "skyscraper", "brick", "portal", "window", "roof", "arch", "landscape",
+    "moon", "celestial_body", "street", "road", "city", "interior", "room", "hall",
+    "forest", "tree", "mountain", "water", "sea", "field", "wall", "bridge", "corridor",
+})
+_PEOPLE_LABELS = frozenset({"people", "adult", "child", "person", "face"})
+
+
 def opens_on_establishing_view(shot: Dict[str, Any],
                                understood_by_file: Dict[str, Dict[str, Any]],
                                vmap: Dict[str, Dict[str, Any]]) -> bool:
     """A scene_shift bridge ("Meanwhile, elsewhere…") is right only when the
     cut OPENS on a view of the new place: the shot's first shown (story) panel
-    draws no person and is not a text panel. Measured 2026-10-04 over 37
-    model-tagged shots in 10 chapters: every true cut opened so (a stone wall,
-    a castle, a night sky — `subjects` may list the building, never a person);
-    every false one opened on a character, an arrival, a text/SFX card or an
-    effect panel. Person-ness is cast_identity's `_looks_person` oracle (the
-    one resolve_figures uses), so no new prose matching is introduced."""
+    draws no person and is not a text panel, and — when the vision manifest
+    carries Apple Vision's scene labels — shows a PLACE (a place label, no
+    people label, no face/body detection). Measured 2026-10-04 over 37
+    model-tagged shots in 10 chapters: the person heuristic alone kept 15 (11
+    true: a stone wall, a castle, a night sky…; 4 false: a bare foot, an effect
+    panel, a creature, an SFX card); the labels+faces rule drops the SFX card
+    and the creature (no place label) → 11 true / 2 false of 13 kept, with no
+    model call. Person-ness is cast_identity's `_looks_person` oracle (the one
+    resolve_figures uses); a legacy manifest without labels keeps the old rule."""
     from cast_identity import _looks_person
     for f in shot.get("scene_files") or []:
         u = understood_by_file.get(f) or {}
@@ -1155,8 +1171,16 @@ def opens_on_establishing_view(shot: Dict[str, Any],
             continue                      # captions/cards never open the view
         v = vmap.get(f) or {}
         drawn = list(u.get("subjects") or []) + [u.get("description") or ""]
-        return (not any(_looks_person(str(s)) for s in drawn)
-                and not bool(v.get("text_only")))
+        if any(_looks_person(str(s)) for s in drawn) or bool(v.get("text_only")):
+            return False
+        vis = v.get("vision") or {}
+        if "labels" in vis:
+            labels = {str(x.get("desc") or "").lower()
+                      for x in (vis.get("labels") or []) if isinstance(x, dict)}
+            return (bool(labels & _PLACE_LABELS)
+                    and not (labels & _PEOPLE_LABELS)
+                    and not (vis.get("faces") or []))
+        return True
     return False
 
 
@@ -1479,10 +1503,14 @@ def main() -> int:
     # text or effect opener keeps the plain continuity bridge
     u_by_file = {p.get("scene_file"): p for p in story}
     enabled = scene_shift_enabled()
+    n_tagged = sum(1 for s in shots if s.get("scene_shift"))
     for s in shots:
         if s.get("scene_shift") and not (
                 enabled and opens_on_establishing_view(s, u_by_file, vmap)):
             s["scene_shift"] = False
+    print(f"[story_group] scene_shift: {n_tagged} tagged, "
+          f"{sum(1 for s in shots if s.get('scene_shift'))} kept "
+          f"(STUDIO_SCENE_SHIFT={'on' if enabled else 'off'})")
     shots = annotate_intensity(shots, panels)   # per-shot PACE = peak intensity
     out = {
         "source_understood": os.path.abspath(args.understood),
