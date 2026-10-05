@@ -352,3 +352,16 @@ def test_pack_group_payload_scene_shift_key_exists_only_when_tagged():
     # a leading caption is never shown; the first SHOWN panel decides
     cap_first = dict(story, **{"a.jpg": {"description": "x", "panel_kind": "caption"}})
     assert gnp._pack_group_payload(tagged, vision, cap_first)["scene_shift"].startswith("TRUE")
+
+
+def test_scene_shift_ask_rotates_its_example_openers_per_beat():
+    # ch151 (2026-10-05): all three bridged beats opened "Elsewhere, …" — the
+    # ask listed the same first example every time. Rotate the examples by
+    # beat so consecutive bridges are offered different openers.
+    vision = {"a.jpg": {"vision": {}}}
+    story = {"a.jpg": {"description": "A stone wall.", "panel_kind": "story"}}
+    asks = [gnp._pack_group_payload({"shot_id": gid, "scene_files": ["a.jpg"], "scene_shift": True},
+                                    vision, story)["scene_shift"] for gid in (7, 8, 9)]
+    firsts = [a.split("('")[1].split(",")[0] for a in asks]   # the first quoted example
+    assert len(set(firsts)) == 3, firsts
+    assert all(a.startswith("TRUE") and "transition clause" in a for a in asks)

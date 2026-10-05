@@ -655,12 +655,18 @@ def _pack_group_payload(
     if group.get("scene_shift"):
         first = next((s for s in scenes if s["panel_kind"] != "caption"), None)
         if first is not None and first["panel_kind"] != "system":
+            # rotate the example openers by beat: offered the same list, the
+            # model opened every bridged beat of ch151 with "Elsewhere, …"
+            openers = ["'Meanwhile, …'", "'Elsewhere, …'", "'Far from the …, …'",
+                       "'Back at the …, …'", "'While he …, …'"]
+            k = payload["group_id"] % len(openers)
+            examples = " / ".join(openers[k:] + openers[:k])
             payload["scene_shift"] = (
                 "TRUE — this beat OPENS IN ANOTHER PLACE than the previous line. "
                 "Begin your FIRST sentence with a short transition clause "
-                "('Meanwhile, …' / 'Elsewhere, …' / 'Far from the …, …' / 'Back "
-                "at the …, …' — vary it), then say what is drawn here; never "
-                "carry the previous line's place or pronouns over.")
+                f"({examples} — vary it, never the one you used last), then say "
+                "what is drawn here; never carry the previous line's place or "
+                "pronouns over.")
     return payload
 
 
