@@ -144,20 +144,21 @@ def test_chapter_spine_complete_rejects_blank_fields():
     assert not sg._chapter_spine_complete({})
 
 
-def test_grouping_num_ctx_pinned_to_verified_ceiling():
-    """GROUND-TRUTHED 2026-07-07 (`ollama show gemma4:26b`, both machines):
-    the Air's Modelfile pins num_ctx 8192; the Mini has no Modelfile cap but
-    16384 is the production-verified SWA-thrash wedge and the ORV grouping
-    truncated silently when 12288+ was requested. The old max(12288, n)
-    normalization requested context the fleet never grants — every request
-    now pins to the 8192 ceiling the payload budget is calibrated against."""
-    assert sg._GROUP_NUM_CTX == 8192
-    assert sg._normalized_group_num_ctx(None) == 8192
-    assert sg._normalized_group_num_ctx(8192) == 8192
-    assert sg._normalized_group_num_ctx(16384) == 8192   # never the wedge zone
-    assert sg._normalized_group_num_ctx(4096) == 8192    # never starved either
-    # the payload budget keeps ~1000+ tokens of output headroom under it
-    assert sg._PROMPT_TOKEN_BUDGET <= sg._GROUP_NUM_CTX - 1000
+def test_grouping_num_ctx_is_the_writers_window():
+    """2026-10-05: the grouping call runs in the SAME 16384 window the
+    narration writer has used in production since 2026-09-14 (ollama 0.33.2,
+    the July SWA-thrash stall no longer reproduces). The old 8192 pin left
+    ~1100 tokens for the reply at the budget edge while a 24-beat reply
+    measured 1257 tokens: 23 prepares failed with a truncated grouping reply
+    (Tutorial Tower ch151 three times). Measured on ch151 at 16384: 31 s,
+    parsed, prompt_eval_count within 2% of the estimate. The input budget
+    (7000, the shrink/chunk threshold) is unchanged; only the reply has room.
+    Every requested value still normalizes to the one window."""
+    assert sg._GROUP_NUM_CTX == 16384
+    for requested in (None, 8192, 16384, 4096, "x"):
+        assert sg._normalized_group_num_ctx(requested) == 16384
+    # the reply room at the budget edge is now ample (was ~1100 tokens)
+    assert sg._GROUP_NUM_CTX - sg._PROMPT_TOKEN_BUDGET >= 4000
 
 
 def test_nonstory_files_drops_chrome_empty_and_parse_failures():

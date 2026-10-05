@@ -264,28 +264,29 @@ def _dump_story_group_raw(ep_dir: str, *, raw_response: Any, parsed_obj: Any,
     return path
 
 
-# THE VERIFIED EFFECTIVE CONTEXT CEILING for gemma4:26b in this fleet.
-# Ground-truthed 2026-07-07 (read-only `ollama show gemma4:26b` on both
-# machines): the Air's Modelfile pins `PARAMETER num_ctx 8192` (model-level
-# cap); the Mini's Modelfile has NO num_ctx parameter, so the request rules
-# there — but 16384 requests are the production-verified SWA-cache-thrash
-# wedge (~32min stalls, see gemini_narrative_pass's num_ctx comment), and the
-# ORV ep1 grouping truncated silently at ~10.5K tokens when this path
-# requested 12288+. 8192 is also exactly what per-beat narration runs at
-# (STUDIO_BEATS_NUM_CTX default). Requesting above it wedges or silently
-# clamps; requesting below it starves the _PROMPT_TOKEN_BUDGET-sized prompt.
-_GROUP_NUM_CTX = 8192
+# THE GROUPING CALL'S CONTEXT WINDOW: the same 16384 the narration writer has
+# used on every call in production since 2026-09-14 (_BEATS_WINDOW; ollama
+# 0.33.2 on the Mini — the July 2026 SWA-cache-thrash stall that once pinned
+# this to 8192 no longer reproduces, and sharing the writer's window saves a
+# model reload between the grouping and writing stages).
+#
+# Why not 8192 any more (2026-10-05): the input is budgeted to ~7000 tokens
+# (_PROMPT_TOKEN_BUDGET, within 2% of ollama's prompt_eval_count on a real
+# chapter), which left ~1100 tokens for the REPLY — and a 24-beat reply
+# measured 1257 tokens. 23 prepares failed on a truncated grouping reply
+# (Tutorial Tower ch151 three times). At 16384 the same chapter grouped in
+# 31 s, parsed. The input budget and the shrink/chunk ladder are unchanged;
+# only the reply has room. (History: the Air's Modelfile once pinned 8192;
+# the Air is no longer a factory.)
+_GROUP_NUM_CTX = 16384
 
 
 def _normalized_group_num_ctx(value: Any) -> int:
-    """Pin the grouping call to the VERIFIED effective ceiling (8192 — see
-    _GROUP_NUM_CTX). The old behavior (max(12288, requested), default 16384)
-    asked for context the fleet never actually grants: above the Air's
-    model-level cap, into the Mini's SWA-thrash wedge zone, and past the point
-    where ollama silently truncates the prompt. Any requested value — higher,
-    lower, or unparseable — normalizes to the one size the payload budget
-    below is calibrated against (*value* is accepted only so the CLI flag
-    stays wire-compatible)."""
+    """Pin the grouping call to ONE window (_GROUP_NUM_CTX, the writer's
+    16384) whatever was requested — higher, lower or unparseable — so ollama
+    never reloads the model between window sizes mid-chapter and the payload
+    budget below is always calibrated against the same window (*value* is
+    accepted only so the CLI flag stays wire-compatible)."""
     del value
     return _GROUP_NUM_CTX
 
@@ -363,14 +364,14 @@ def _shrink_payload(payload: Dict[str, Any], limit: int) -> Dict[str, Any]:
 # real content, while still forcing a 200+-panel chapter (the backlog scale)
 # into the chunked fallback below.
 #
-# 7000 is sized against the VERIFIED 8192 ceiling (_GROUP_NUM_CTX — Air
-# Modelfile `num_ctx 8192`, Mini wedges/truncates above it; checked 2026-07-07
-# via `ollama show gemma4:26b` on both machines): 8192 minus ~1000 tokens of
-# output headroom (a realistic range-beats response measured ~550 tokens),
-# with the remainder absorbing the chars/3.5 estimate error. Future
-# calibration signal: ollama returns the ACTUAL prompt size as
-# `prompt_eval_count` (already surfaced as usage["input"] by
-# _call_model_with_backoff) — compare it against _prompt_token_estimate on
+# 7000 is the INPUT budget — the single-call-vs-chunk threshold — and is kept
+# at the value calibrated for the old 8192 window so chunking frequency does
+# not change. Calibrated 2026-10-05 on a real 78-panel chapter: estimate 6473
+# vs ollama prompt_eval_count 6611 (ratio 1.021). The window is now 16384
+# (_GROUP_NUM_CTX), so the reply has ~9000 tokens of room instead of ~1100 —
+# a 24-beat reply measures ~840-1260 tokens. Future calibration signal:
+# `prompt_eval_count` is surfaced as usage["input"] by
+# _call_model_with_backoff — compare it against _prompt_token_estimate on
 # real chapters before ever moving this number; do not guess.
 _CHARS_PER_TOKEN = 3.5
 _PROMPT_TOKEN_BUDGET = 7000
@@ -1265,9 +1266,9 @@ def main() -> int:
                     help="0 = deterministic beat boundaries + segment tags")
     ap.add_argument(
         "--num-ctx", type=int,
-        default=int(os.environ.get("STUDIO_GROUP_NUM_CTX", "8192")),
+        default=int(os.environ.get("STUDIO_GROUP_NUM_CTX", "16384")),
         help="Ollama context for the grouping call. Normalized to the "
-             "verified 8192 effective ceiling regardless (see "
+             "writer's 16384 window regardless (see "
              "_normalized_group_num_ctx) — the payload budget guarantees the "
              "prompt fits it; higher requests wedge/clamp, lower ones starve "
              "the budgeted prompt")
@@ -1320,10 +1321,9 @@ def main() -> int:
     story = [p for p in panels if p.get("scene_file") not in excluded]
 
     model = args.model
-    # _call_model reads STUDIO_BEATS_NUM_CTX. Grouping runs at the SAME
-    # verified 8192 ceiling as per-beat narration (_GROUP_NUM_CTX):
-    # fit_grouping_payload guarantees the prompt fits under it, so this
-    # call never needs — and the fleet never grants — more.
+    # _call_model reads STUDIO_BEATS_NUM_CTX. Grouping runs in the SAME
+    # 16384 window as the narration writer (_GROUP_NUM_CTX): the input is
+    # budgeted to ~7000 tokens by fit_grouping_payload, the rest is reply room.
     os.environ["STUDIO_BEATS_NUM_CTX"] = str(
         _normalized_group_num_ctx(args.num_ctx))
 
