@@ -1249,7 +1249,7 @@ def test_scene_shift_is_a_boolean_in_beat_schema():
 def test_system_core_defines_scene_shift_closed():
     # A closed definition (place OR wholly different cast; arrivals/reactions/
     # close-ups/system cards are NOT shifts; unsure -> omit), kept inline and
-    # terse: the 96-panel benchmark chapter has ~100 tokens of headroom under
+    # terse: the 96-panel benchmark chapter now sits ~2 tokens under
     # _PROMPT_TOKEN_BUDGET, and the key is OMITTED on ordinary spans so the
     # response does not grow per beat.
     # An ESTABLISHING VIEW of another place (dry runs 2026-10-04: "or wholly
