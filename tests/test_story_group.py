@@ -264,6 +264,77 @@ def test_effect_only_keeps_establishing_atmosphere_panels():
     assert "field.jpg" not in dropped and "ruin.jpg" not in dropped
 
 
+# --- wordless floating system_box cards (2026-10-08, TT ch102 p000037) -------
+# YOLO boxes a lone painted hangul glyph as system_box; the floating card became
+# its own panel; gemma read it 'story' ("a glowing purple symbol or character")
+# and the narrator voiced "A purple symbol drifts through the void". 'character'
+# counts as a concrete noun, so effect_only_files kept it. Real ch102 geometry.
+_GLYPH_SCENE = {"out_file": "p000037.jpg", "chunk_file": "c.jpg", "chunk_w": 1080,
+                "chunk_h": 16302, "box_px_xyxy": [540, 13395, 791, 13721]}
+_GLYPH_CARD = {"box": [0.821936, 0.503389, 0.841445, 0.729163],
+               "classes": ["system_box"]}
+_GLYPH_DESC = ("A glowing, light purple circular symbol or character is centered "
+               "against a dark, blurry background.")
+
+
+def _glyph(desc=_GLYPH_DESC, kind="story", ocr="", card=_GLYPH_CARD, vision=None,
+           **extra):
+    panel = {"scene_file": "p000037.jpg", "panel_kind": kind, "subjects": [],
+             "dialogue": "", "description": desc, **extra}
+    vmap = {"p000037.jpg": {"scene_file": "p000037.jpg", "ocr_clean": ocr,
+                            "vision": vision or {}}}
+    cards = {"c.jpg": [card]} if card else {}
+    return sg.wordless_card_files([panel], vmap, [_GLYPH_SCENE], cards)
+
+
+def test_wordless_card_drops_a_lone_glyph_the_model_read_as_story():
+    assert _glyph() == {"p000037.jpg"}
+    # a hangul sfx transcription is not words for the narrator
+    assert _glyph(sfx_text="웅") == {"p000037.jpg"}
+    assert _glyph("A large, stylized Korean character glows in red and orange "
+                  "against a dark, streaked background.") == {"p000037.jpg"}
+
+
+def test_wordless_card_keeps_art_bearing_cards():
+    assert _glyph("A close-up view of large, pale purple fingers reaching "
+                  "toward the viewer.") == set()
+    # an object the noun list doesn't know: no glyph word, so it is not lettering
+    assert _glyph("A glowing blue orb floats against a dark background.") == set()
+    assert _glyph("A large stylized purple Korean character over a blue-toned "
+                  "landscape.") == set()
+
+
+def test_wordless_card_keeps_lettering_painted_over_people():
+    # ORV Ep8 p000092: SLAM painted over two people in a corridor; gemma described
+    # only the letters, Apple Vision labelled 'people'/'adult' — real art, kept.
+    slam = "Large, stylized white letters spelling 'SLAM' dominate the frame."
+    people = {"labels": [{"desc": "art", "score": 0.59},
+                         {"desc": "people", "score": 0.35}], "faces": []}
+    assert _glyph(slam) == {"p000037.jpg"}
+    assert _glyph(slam, vision=people) == set()
+    assert _glyph(slam, vision={"labels": [], "faces": [{"bbox": [0, 0, 1, 1]}]}) == set()
+
+
+def test_wordless_card_needs_positive_lettering_or_effect_evidence():
+    # names nothing concrete but nothing says lettering/effect either -> keep
+    assert _glyph("A small grey object rests in the dark.") == set()
+
+
+def test_wordless_card_only_fires_on_a_real_floating_system_box():
+    assert _glyph(card=None) == set()                       # not a card: art panel
+    half = {"box": [0.821678, 0.5, 0.8318, 0.732407], "classes": ["system_box"]}
+    assert _glyph(card=half) == set()                       # IoU ~0.51 < 0.6
+    bubble = {**_GLYPH_CARD, "classes": ["speech_bubble"]}
+    assert _glyph(card=bubble) == set()
+
+
+def test_wordless_card_never_touches_text_or_non_story_reads():
+    assert _glyph(ocr="WARNING") == set()
+    assert _glyph(kind="system") == set()
+    assert _glyph(dialogue="Hm?") == set()
+    assert _glyph(subjects=["a glowing symbol"]) == set()
+
+
 def test_caption_solo_beat_folds_into_previous_same_segment_beat():
     panels = [{"scene_file": "p0", "panel_kind": "story"},
               {"scene_file": "c1", "panel_kind": "caption"},

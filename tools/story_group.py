@@ -891,6 +891,59 @@ def effect_only_files(panels: List[Dict[str, Any]]) -> set:
     return out
 
 
+# A lone painted SFX glyph the detector boxed as system_box reads as "a glowing
+# purple symbol or character". These words are what makes it lettering, and
+# 'character'/'letter' are the glyph senses that must not count as concrete nouns.
+_GLYPH_RE = re.compile(
+    r"\b(?:symbols?|glyphs?|characters?|letters?|lettering|hangul|korean|katakana|"
+    r"runes?|sound[- ]effects?|sfx|onomatopoeia)\b")
+_ART_NOUNS = _CONCRETE_NOUNS - {"character", "letter"}
+
+
+def wordless_card_files(panels: List[Dict[str, Any]], vmap: Dict[str, Dict[str, Any]],
+                        scenes: List[Dict[str, Any]],
+                        cards_by_chunk: Dict[str, List[Dict[str, Any]]],
+                        min_iou: float = 0.6) -> set:
+    """scene_files that are a FLOATING system_box card (promote_floating_cards made
+    the box its own panel; it touches no art panel) which the understanding read as
+    'story' with no subject and no words, and describes as lettering with nothing
+    concrete drawn — a lone painted SFX glyph (TT ch102 p000037, narrated "A purple
+    symbol drifts through the void"). effect_only_files misses these because
+    'Korean character' names a concrete noun. Any concrete noun keeps the card."""
+    from panel_understand import _iou_xyxy
+    by_file = {str(s.get("out_file")): s for s in scenes or []}
+    out = set()
+    for p in panels:
+        sf = p.get("scene_file")
+        if (not sf or p.get("error") or p.get("subjects")
+                or str(p.get("panel_kind") or "").strip().lower() != "story"
+                or str(p.get("dialogue") or "").strip()
+                or str((vmap.get(sf) or {}).get("ocr_clean") or "").strip()):
+            continue
+        desc = str(p.get("description") or "").lower()
+        if not _GLYPH_RE.search(desc) or set(re.findall(r"[a-z]+", desc)) & _ART_NOUNS:
+            continue
+        # lettering painted OVER people (ORV Ep8 "SLAM" across two characters):
+        # the description named only the letters; Apple Vision saw the people.
+        vis = (vmap.get(sf) or {}).get("vision") or {}
+        if vis.get("faces") or {str(x.get("desc") or "").lower() for x in (
+                vis.get("labels") or []) if isinstance(x, dict)} & _PEOPLE_LABELS:
+            continue
+        sc = by_file.get(sf) or {}
+        cw, ch = float(sc.get("chunk_w") or 0), float(sc.get("chunk_h") or 0)
+        box = sc.get("box_px_xyxy")
+        if not box or not cw or not ch:
+            continue
+        for card in cards_by_chunk.get(str(sc.get("chunk_file")), []) or []:
+            b = card.get("box") or []
+            if "system_box" in (card.get("classes") or []) and len(b) == 4 and _iou_xyxy(
+                    (b[1] * cw, b[0] * ch, b[3] * cw, b[2] * ch),
+                    tuple(float(v) for v in box)) >= min_iou:
+                out.add(sf)
+                break
+    return out
+
+
 def caption_files(panels: List[Dict[str, Any]]) -> set:
     """scene_files the understanding marked 'caption' — text-only monologue/
     transition cards (e.g. a black card 'BACK THEN, I HAD NO IDEA.'). Their WORDS
@@ -1315,6 +1368,18 @@ def main() -> int:
         # alternative (dropping at render, AFTER the line is written) guaranteed the
         # narration↔image mismatch the user kept hitting.
         effect_only = effect_only_files(panels)
+        # A lone SFX glyph the detector promoted to a floating system_box card.
+        ep_dir = os.path.dirname(os.path.abspath(args.vision_manifest))
+        pm = os.path.join(ep_dir, "manifest.panels.expanded.json")
+        if not os.path.exists(pm):
+            pm = os.path.join(ep_dir, "manifest.panels.json")
+        sm = os.path.join(ep_dir, "manifest.scenes.json")
+        glyph_cards: set = set()
+        if os.path.exists(pm) and os.path.exists(sm):
+            glyph_cards = wordless_card_files(
+                panels, vmap, load_json(sm).get("scenes") or [],
+                {str(c.get("chunk_file")): c.get("cards_norm") or []
+                 for c in (load_json(pm).get("chunks") or [])})
         # the understanding is AUTHORITATIVE: never let the brittle OCR-regex drop a
         # panel it classified as real story/caption content (that silently lost 2 ORV
         # story panels — the regex vetoed a 'story' verdict on garbled OCR).
@@ -1329,13 +1394,17 @@ def main() -> int:
         cards = title_card_files(list(vmap.values()))
         # …except the LICENSED title/logo: a hard rule that outranks every rescue above.
         licensed = licensed_title_files(list(vmap.values()), series_title)
-        excluded = ((understood_nonstory | ocr_chrome | effect_only) - cards) | licensed
+        excluded = ((understood_nonstory | ocr_chrome | effect_only | glyph_cards)
+                    - cards) | licensed
         if licensed:
             print(f"[licensed] dropped {len(licensed)} series title/logo panel(s) "
                   f"(hard rule, title={series_title!r}): {sorted(licensed)}")
         if understood_nonstory:
             print(f"[nonstory] understanding dropped {len(understood_nonstory)}: "
                   f"{sorted(understood_nonstory)}")
+        if glyph_cards - cards:
+            print(f"[glyph] dropped {len(glyph_cards - cards)} wordless floating "
+                  f"system_box card(s) (lone SFX lettering): {sorted(glyph_cards - cards)}")
         if effect_only - cards:
             print(f"[effect] dropped {len(effect_only - cards)} pure-effect panel(s) "
                   f"(no concrete subject): {sorted(effect_only - cards)}")
