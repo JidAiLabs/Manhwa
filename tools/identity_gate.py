@@ -12,6 +12,7 @@ single deterministic identity oracle); this module never guesses.
 """
 from __future__ import annotations
 
+import copy
 import re
 import sys
 import os
@@ -21,7 +22,17 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from beats_segments import beat_segments, write_segment_lines  # noqa: E402
-from cast_identity import subject_actor_nouns_ex  # noqa: E402
+from cast_identity import _HANDLE_LEAD, subject_actor_nouns_ex  # noqa: E402
+
+# How Rule 2 treats a MULTI-WORD name ("the Book of Command", "John Kosack"):
+#   old     — today's behaviour: swap one token, leaving "Choohino of Command";
+#   replace — the whole name is the unit and is replaced whole;
+#   keep    — a proper multi-word name the writer wrote is left alone
+#             (descriptive handles like "the hooded leader" are still replaced);
+#   shadow  — apply OLD, stamp what REPLACE and KEEP would have written in
+#             beat["actor_rewrites_shadow"] for grading (2026-10-08 plan).
+# ponytail: env switch exists only until the shadow grading picks a variant.
+_NAMES_MODE_ENV = "STUDIO_IDENTITY_NAMES"
 
 _PROT_HANDLE_RE = re.compile(r"\bour (?:guy|boy|man|protagonist)\b",
                              re.IGNORECASE)
@@ -85,6 +96,54 @@ def spoken_names(cast: Any) -> Dict[str, str]:
     return out
 
 
+def name_forms(cast: Any) -> Dict[str, List[str]]:
+    """{canonical_name: [canonical, aliases…, spoken_name]} — every written form
+    of a member, so a multi-word name is recognised whichever form the line
+    uses (the cap_protagonist_name lesson: a rewriter built from one name needs
+    every alias)."""
+    if isinstance(cast, dict):
+        cast = cast.get("cast")
+    out: Dict[str, List[str]] = {}
+    for m in (cast or []):
+        if not isinstance(m, dict):
+            continue
+        key = str(m.get("canonical_name") or "").strip()
+        if not key:
+            continue
+        forms = [key] + [str(a).strip() for a in (m.get("aliases") or [])
+                         if str(a).strip()]
+        say = str(m.get("spoken_name") or "").strip()
+        if say:
+            forms.append(say)
+        out[key] = list(dict.fromkeys(forms))
+    return out
+
+
+def _full_name_at(line: str, start: int, end: int, members: Set[str],
+                  names: Dict[str, List[str]]):
+    """(match, proper) for the longest multi-word name of *members* written in
+    *line* that covers line[start:end], else (None, False). *proper* = the
+    form carries a capitalised word ("the Book of Command") rather than being
+    a descriptive handle ("the hooded leader")."""
+    forms = []
+    for mbr in members:
+        for f in (names or {}).get(mbr) or [mbr]:
+            words = re.findall(r"[\w'’-]+", f)
+            while words and words[0].lower() in _HANDLE_LEAD:
+                words = words[1:]
+            if len(words) >= 2:
+                forms.append((words, any(w[:1].isupper() for w in words)))
+    lead = "|".join(sorted(_HANDLE_LEAD))
+    for words, proper in sorted(forms, key=lambda x: -len(x[0])):
+        pat = re.compile(r"\b(?:(?:" + lead + r")\s+)?"
+                         + r"\s+".join(map(re.escape, words))
+                         + r"(?P<poss>'s)?\b", re.IGNORECASE)
+        for m in pat.finditer(line):
+            if m.start() <= start and end <= m.end():
+                return m, proper
+    return None, False
+
+
 def _figure_handle(name: str, spoken: Optional[Dict[str, str]] = None) -> str:
     """Speakable handle for a resolved cast name: the cast's own spoken form
     when it has one, else 'unnamed assassin' -> 'the assassin'; the
@@ -98,7 +157,36 @@ def _figure_handle(name: str, spoken: Optional[Dict[str, str]] = None) -> str:
 
 
 def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
-                          ledger=None, spoken=None, kinds=None):
+                          ledger=None, spoken=None, kinds=None, names=None,
+                          site="", mode=None):
+    """The identity gate (see _enforce). *names* = name_forms(cast); *mode* =
+    old|replace|keep|shadow, default from STUDIO_IDENTITY_NAMES (shadow). In
+    shadow mode OLD is applied and every segment where REPLACE or KEEP would
+    differ is recorded in beat["actor_rewrites_shadow"] with its *site*."""
+    mode = mode or os.environ.get(_NAMES_MODE_ENV, "shadow")
+    args = (figures_by_file, noun_map, protagonist_names)
+    kw = dict(ledger=ledger, spoken=spoken, kinds=kinds, names=names)
+    if mode != "shadow":
+        return _enforce(beat, *args, mode=mode, **kw)
+    pre = [s["line"] or "" for s in beat_segments(beat)]
+    alt = {}
+    for v in ("replace", "keep"):
+        b2 = copy.deepcopy(beat)
+        _enforce(b2, *args, mode=v, **kw)
+        alt[v] = [s["line"] or "" for s in beat_segments(b2)]
+    rw = _enforce(beat, *args, mode="old", **kw)
+    segs = beat_segments(beat)
+    for i, s in enumerate(segs):
+        old = s["line"] or ""
+        if i < len(pre) and (alt["replace"][i] != old or alt["keep"][i] != old):
+            beat.setdefault("actor_rewrites_shadow", []).append({
+                "site": site, "span": list(s["span"] or []), "pre": pre[i],
+                "old": old, "replace": alt["replace"][i], "keep": alt["keep"][i]})
+    return rw
+
+
+def _enforce(beat, figures_by_file, noun_map, protagonist_names,
+             ledger=None, spoken=None, kinds=None, names=None, mode="old"):
     """Deterministic identity gate (2026-07-16 wave): a line may claim the
     protagonist ('our guy'/'our protagonist'/a protagonist name-noun) ONLY
     when the span's cast_identity-resolved figures include the protagonist;
@@ -208,11 +296,22 @@ def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
             if not repl or repl.lower().find(noun) >= 0:
                 continue                      # ambiguous / no-op rewrite
             pat = re.compile(
-                r"\b(?:(?:our|the|a|an)\s+)?" + re.escape(noun)
-                + r"(?P<poss>'s)?\b", re.IGNORECASE)
-            new, n = pat.subn(
-                lambda m: repl + (m.group("poss") or ""), line, count=1)
-            if n and new != line:
+                r"\b(?:(?:our|the|a|an)\s+)?(?P<noun>" + re.escape(noun)
+                + r")(?P<poss>'s)?\b", re.IGNORECASE)
+            mo = pat.search(line)
+            if not mo:
+                continue
+            # The token may be one word of a multi-word name ("The Book of
+            # Command"): swapping it alone left "Choohino of Command" (TT ch102).
+            full, proper = (None, False) if mode == "old" else _full_name_at(
+                line, mo.start("noun"), mo.end("noun"), members, names)
+            if full is not None:
+                if mode == "keep" and proper:
+                    continue
+                mo = full
+            new = (line[:mo.start()] + repl + (mo.group("poss") or "")
+                   + line[mo.end():])
+            if new != line:
                 rewrites.append(f"'{noun}' -> {repl!r}"
                                 + (" (dead actor)" if all_dead else ""))
                 line = new

@@ -3024,6 +3024,7 @@ def main() -> int:
         from cast_identity import actor_noun_map, resolve_figures_by_file
         from identity_gate import protagonist_names as _prot_names
         from identity_gate import spoken_names as _spoken_names
+        from identity_gate import name_forms as _name_forms
         # Ledger dead-sets: a killed entity must stop resolving on later
         # panels (the oracle fix — a dead leader kept claiming look-alike
         # assassin panels via the faction tie).
@@ -3043,6 +3044,7 @@ def main() -> int:
         actor_nouns = actor_noun_map(cast_list)
         protagonist_names = _prot_names(cast_list)
         spoken_map = _spoken_names(cast_list)
+        names_map = _name_forms(cast_list)
     def _dead_at(gid: int) -> set:
         """Who the chapter record has already killed by this beat — the floor
         every restore guard below needs, or it hands back the exact line the
@@ -3472,7 +3474,8 @@ def main() -> int:
                                        spoken=spoken_map,
                                        kinds={f: str((u.get("panel_kind") or ""))
                                               for f, u in (u_by_file or {}).items()
-                                              if isinstance(u, dict)})
+                                              if isinstance(u, dict)},
+                                       names=names_map, site="writer")
             if rw:
                 beat["actor_rewrites"] = rw
                 for msg in rw:

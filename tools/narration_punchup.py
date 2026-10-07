@@ -814,7 +814,7 @@ def apply_post_punchup_backstop(
     n_dups = dedupe_consecutive_panel_lines(out)
     n_actor = 0
     from cast_identity import actor_noun_map, cast_profiles, resolve_figures
-    from identity_gate import (enforce_actor_handles,
+    from identity_gate import (enforce_actor_handles, name_forms,
                                protagonist_names, spoken_names)
     profiles = cast_profiles(cast_obj or {"cast": []})
     noun_map = actor_noun_map(cast_obj or {"cast": []})
@@ -836,7 +836,9 @@ def apply_post_punchup_backstop(
                     spoken=spoken,
                     kinds={f: str((u.get("panel_kind") or ""))
                            for f, u in (understood_by_file or {}).items()
-                           if isinstance(u, dict)}))
+                           if isinstance(u, dict)},
+                    names=name_forms(cast_obj or {"cast": []}),
+                    site="punchup"))
     # Deterministic name budget, LAST: the prompt rule moved naming from 20%
     # of lines to 13% and stalled there; the cap lands it exactly. It also
     # VARIES the post-cap handle ('the prince'/'our guy'/'our boy') so the tail

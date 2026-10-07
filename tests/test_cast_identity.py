@@ -466,6 +466,93 @@ def test_handle_gate_hands_off_ambiguous_and_ungrounded_spans():
     assert g.enforce_actor_handles(b3, figs3, _NM, _PROT) == []
 
 
+# ---- 2026-10-08: a multi-word name is never rewritten piecemeal --------------
+# TT ch102 shipped "Choohino of Command admits…": Rule 2 swapped the token
+# 'book' inside "The Book of Command". 174 shipped segments / 119 chapters carry
+# such residue. OLD = today's behaviour (kept for the shadow comparison);
+# REPLACE = the whole name is the unit; KEEP = a proper multi-word name the
+# writer wrote is left alone (descriptive handles are still rewritten).
+import tools.identity_gate as ig  # noqa: E402
+
+_CHOO = {"p1.jpg": [{"name": "Choohino", "evidence": "purple hair"}]}
+_MASON = {"p1.jpg": [{"name": "Mason", "evidence": "grey hair"}]}
+
+
+def _gate(line, nm, figs, mode, names=None):
+    b = _beat(line)
+    ig.enforce_actor_handles(b, figs, nm, set(), names=names, mode=mode)
+    return b["segments"][0]["line"]
+
+
+def test_name_gate_book_of_command_variants():
+    nm = {"book": {"the Book of Command"}, "choohino": {"Choohino"}}
+    line = "The Book of Command admits to having observed her."
+    assert _gate(line, nm, _CHOO, "old") == (
+        "Choohino of Command admits to having observed her.")
+    assert _gate(line, nm, _CHOO, "replace") == "Choohino admits to having observed her."
+    assert _gate(line, nm, _CHOO, "keep") == line
+
+
+def test_name_gate_title_with_other_determiner():
+    nm = {"priest": {"the High Priest"}}
+    line = "Behind them, his High Priest stares coldly."
+    assert _gate(line, nm, _MASON, "old") == "Behind them, his High Mason stares coldly."
+    assert _gate(line, nm, _MASON, "replace") == "Behind them, Mason stares coldly."
+    assert _gate(line, nm, _MASON, "keep") == line
+
+
+def test_name_gate_two_part_name_and_alias():
+    nm = {"john": {"John Kosack"}, "kosack": {"John Kosack"}}
+    assert _gate("John Kosack smiles.", nm, _MASON, "old") == "Mason Mason smiles."  # stutter
+    assert _gate("John Kosack smiles.", nm, _MASON, "replace") == "Mason smiles."
+    assert _gate("John Kosack smiles.", nm, _MASON, "keep") == "John Kosack smiles."
+    # the full form lives only in an alias of the member
+    nm2 = {"john": {"Kosack"}}
+    names = {"Kosack": ["Kosack", "John Kosack"]}
+    assert _gate("John Kosack smiles.", nm2, _MASON, "replace", names) == "Mason smiles."
+
+
+def test_name_gate_one_decision_per_name():
+    nm = {t: {"Cheon Yoo Jong"} for t in ("cheon", "yoo", "jong")}
+    assert _gate("Cheon Yoo Jong strikes.", nm, _MASON, "replace") == "Mason strikes."
+    assert _gate("Cheon Yoo Jong strikes.", nm, _MASON, "keep") == "Cheon Yoo Jong strikes."
+
+
+def test_name_gate_never_touches_the_object_position_full_name():
+    nm = {"book": {"the Book of Command"}}
+    out = _gate("The book glows as Choohino lifts the Book of Command.", nm,
+                _CHOO, "replace")
+    assert out.endswith("lifts the Book of Command.")
+
+
+def test_name_gate_descriptive_handle_is_still_rewritten_under_keep():
+    nm = {"leader": {"the hooded leader"}}
+    line = "The hooded leader raises his blade."
+    assert _gate(line, nm, _MASON, "old") == "The hooded Mason raises his blade."
+    assert _gate(line, nm, _MASON, "replace") == "Mason raises his blade."
+    assert _gate(line, nm, _MASON, "keep") == "Mason raises his blade."
+
+
+def test_name_gate_shadow_applies_old_and_stamps_both_variants(monkeypatch):
+    monkeypatch.delenv("STUDIO_IDENTITY_NAMES", raising=False)
+    nm = {"book": {"the Book of Command"}}
+    b = _beat("The Book of Command admits it.")
+    ig.enforce_actor_handles(b, _CHOO, nm, set(), site="writer")
+    assert b["segments"][0]["line"] == "Choohino of Command admits it."   # OLD live
+    rec = b["actor_rewrites_shadow"][0]
+    assert rec == {"site": "writer", "span": ["p1.jpg"],
+                   "pre": "The Book of Command admits it.",
+                   "old": "Choohino of Command admits it.",
+                   "replace": "Choohino admits it.",
+                   "keep": "The Book of Command admits it."}
+
+
+def test_name_forms_collects_canonical_aliases_and_spoken():
+    cast = {"cast": [{"canonical_name": "Kosack", "aliases": ["John Kosack"],
+                      "spoken_name": "the swordsman"}]}
+    assert ig.name_forms(cast) == {"Kosack": ["Kosack", "John Kosack", "the swordsman"]}
+
+
 # ---- 2026-07-16 wave: actor_count_mismatch (plural over single-figure span) --
 
 def test_actor_count_fires_on_plural_over_single_figure_span():
