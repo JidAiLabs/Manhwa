@@ -355,7 +355,7 @@ def test_prompt_version_bumped_for_impact_fields():
     # re-understand with two-person strikes direction-verified against the
     # neighbouring dialogue; pu_v5 added structured actions, pu_v4 evidence
     # discipline, pu_v3 appearance-aware subjects, pu_v2 impact awareness).
-    assert pu.PROMPT_VERSION == "pu_v8"
+    assert pu.PROMPT_VERSION == "pu_v7"
 
 
 def test_panel_schema_adds_impact_fields_backward_compatibly():
@@ -521,15 +521,12 @@ def test_tall_strip_merges_uncertain_any_window(monkeypatch, tmp_path):
     assert merged["uncertain"] is True         # any-window OR
 
 
-def test_prompt_version_is_pu_v8():
-    assert pu.PROMPT_VERSION == "pu_v8"
-    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v8")
-
-
-def test_sfx_lettering_alone_is_empty_but_words_are_not():
-    # pu_v8: a lone painted sound is not a scene; a readable name/title is.
-    assert "SOUND-EFFECT lettering ALONE" in pu.SYSTEM
-    assert "Readable WORDS that name or say something" in pu.SYSTEM
+def test_prompt_version_is_pu_v7():
+    # pu_v8 was used and reverted (2026-10-08); records stamped with it are
+    # stale, so the version must never be pu_v8 again.
+    assert pu.PROMPT_VERSION == "pu_v7"
+    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v7")
+    assert "SOUND-EFFECT lettering ALONE" not in pu.SYSTEM
 
 
 def test_model_safe_image_downscales_tall_panels(tmp_path):

@@ -122,12 +122,7 @@ SYSTEM = (
     "a chat, a game UI) is NOT chrome — that is the story world; classify it 'story'.\n"
     "    'empty' = NO content: a blank or near-blank frame, a plain gradient / "
     "speed-line / texture transition with no subject, or speech bubbles with NO "
-    "readable text, or painted SOUND-EFFECT lettering ALONE: an onomatopoeia - a "
-    "SOUND, not words ('BOOM', 'SLAM', Korean hangul sound syllables) - with no "
-    "character, creature, object, or place drawn. A sound is not a scene. Readable "
-    "WORDS that name or say something (a name, a title, a skill, a message) are never "
-    "'empty' - they are caption or system; lettering painted OVER real art is 'story' "
-    "(transcribe it in sfx_text).\n"
+    "readable text.\n"
     "    'caption' = TEXT WITHOUT A SCENE: either the story's narrative VOICE as "
     "text on a plain card (an author monologue or scene-setting / transition line, "
     "e.g. a plain card carrying a retrospective or scene-setting line in the "
@@ -189,14 +184,13 @@ SYSTEM = (
 # the classifier toward one series' vocabulary and puts source text in our
 # prompt. Replaced with descriptions of the pattern. Examples steer
 # classification, so this is a material prompt change.
-# pu_v8: painted SFX lettering ALONE is 'empty'. The detector boxes lone Korean
-# SFX glyphs as system_box cards, each became its own panel, and the old prompt
-# had no class for "a sound, not a scene" — gemma called a lone glyph 'story'
-# ("a glowing purple symbol") and the narrator voiced it (TT ch102 p000037).
-# Measured A/B on 20 real crops: 11/11 glyph crops -> empty, 9/9 system windows,
-# name/title cards and character art with SFX unchanged. Invalidates ALL pu_v7
-# records, INTENDED.
-PROMPT_VERSION = "pu_v8"
+# pu_v8 (2026-10-07, 424cba04) added "painted SFX lettering ALONE is 'empty'" and
+# was REVERTED 2026-10-08: on a random 41-panel story sample it blanked a sword
+# clash carrying a big SFX (RotA ch71 p000004), and it shifted wording enough
+# ('hand and an arm' -> 'limb') that story_group's effect filter dropped a real
+# shackle panel (TT ch102 p000031). Records stamped pu_v8 are invalid; the next
+# real bump is pu_v9 — never reuse pu_v8.
+PROMPT_VERSION = "pu_v7"
 
 # --- extreme-tall strips: windowed understanding -----------------------------
 # A cover/credits strip (ORV Ep0: 800x7540) downscaled to model resolution is
