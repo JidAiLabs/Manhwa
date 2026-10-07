@@ -208,6 +208,21 @@ def test_system_box_never_touches_a_story_panel():
     assert panels[0]["panel_kind"] == "story"
 
 
+def test_system_box_never_promotes_an_empty_panel():
+    # a-wimp ch37 p000109: a lone painted SFX glyph the model correctly read as
+    # 'empty'; the detector fires on glyphs too, and the promoted 'system' card
+    # was narrated "The moment holds." The override re-files misfiled TEXT only.
+    panels = [{
+        "scene_file": "p000109.jpg", "panel_kind": "empty",
+        "description": "A stylized, abstract blue graphic shape against a "
+                       "textured background.", "dialogue": "", "subjects": []}]
+    items = [{"scene_file": "p000109.jpg", "scene_path": "/s/p000109.jpg"}]
+    n = pu.apply_system_card_overrides(
+        panels, items, detect_fn=lambda sp: 0.9, log=lambda _m: None)
+    assert n == 0
+    assert panels[0]["panel_kind"] == "empty"
+
+
 def test_system_box_no_detection_leaves_caption_folded():
     # A normal text-only narration caption with NO system_box detection stays
     # caption (its words ride the neighbouring beat's narration).

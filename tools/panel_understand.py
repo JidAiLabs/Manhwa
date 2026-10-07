@@ -122,7 +122,12 @@ SYSTEM = (
     "a chat, a game UI) is NOT chrome — that is the story world; classify it 'story'.\n"
     "    'empty' = NO content: a blank or near-blank frame, a plain gradient / "
     "speed-line / texture transition with no subject, or speech bubbles with NO "
-    "readable text.\n"
+    "readable text, or painted SOUND-EFFECT lettering ALONE: an onomatopoeia - a "
+    "SOUND, not words ('BOOM', 'SLAM', Korean hangul sound syllables) - with no "
+    "character, creature, object, or place drawn. A sound is not a scene. Readable "
+    "WORDS that name or say something (a name, a title, a skill, a message) are never "
+    "'empty' - they are caption or system; lettering painted OVER real art is 'story' "
+    "(transcribe it in sfx_text).\n"
     "    'caption' = TEXT WITHOUT A SCENE: either the story's narrative VOICE as "
     "text on a plain card (an author monologue or scene-setting / transition line, "
     "e.g. a plain card carrying a retrospective or scene-setting line in the "
@@ -184,7 +189,14 @@ SYSTEM = (
 # the classifier toward one series' vocabulary and puts source text in our
 # prompt. Replaced with descriptions of the pattern. Examples steer
 # classification, so this is a material prompt change.
-PROMPT_VERSION = "pu_v7"
+# pu_v8: painted SFX lettering ALONE is 'empty'. The detector boxes lone Korean
+# SFX glyphs as system_box cards, each became its own panel, and the old prompt
+# had no class for "a sound, not a scene" — gemma called a lone glyph 'story'
+# ("a glowing purple symbol") and the narrator voiced it (TT ch102 p000037).
+# Measured A/B on 20 real crops: 11/11 glyph crops -> empty, 9/9 system windows,
+# name/title cards and character art with SFX unchanged. Invalidates ALL pu_v7
+# records, INTENDED.
+PROMPT_VERSION = "pu_v8"
 
 # --- extreme-tall strips: windowed understanding -----------------------------
 # A cover/credits strip (ORV Ep0: 800x7540) downscaled to model resolution is
@@ -656,8 +668,12 @@ def understand_panels(items: List[Dict[str, Any]], call_fn: Callable[..., Any],
         # pu_v5 extends the trigger: a strike being DELIVERED (in_use) with an
         # 'unclear' actor/target demands commitment on WHO strikes WHOM —
         # accepted only when the second read clears the unclear direction.
+        # Story reads only: an empty/caption/chrome panel has no subject to
+        # commit to, and demanding one turned a blank cloud frame into a
+        # 'story' sky the narrator had to voice (TT ch102 p000011).
         strike_hedge = unclear_strike(rec)
         if ((rec.get("uncertain") or strike_hedge)
+                and rec.get("panel_kind") == "story"
                 and not rec.get("error") and not dims):
             payload = build_payload(it, ctx, impact_regions=regions)
             if strike_hedge and not rec.get("uncertain"):
@@ -977,8 +993,11 @@ def apply_inworld_screen_overrides(
 # fires class-1 on a tall multi-frame STORY strip (p000005, a falling character,
 # cover 0.93) and on a plain SPEECH-BUBBLE husk (p000020 "PEASANT BLOOD...",
 # cover 0.92). So the override is GUARDED three ways:
-#   * only rescue panels the grouper would FOLD/DROP (caption/empty) — a 'story'
-#     panel with real subjects is trusted and never demoted by a detector FP;
+#   * only rescue a 'caption' — TEXT the model misfiled. A 'story' panel with
+#     real subjects is trusted and never demoted by a detector FP; an 'empty'
+#     one has no text to rescue — the detector also fires on lone painted SFX
+#     glyphs, and all 24 fleet empty->system promotions (2026-10-07) were
+#     glyphs, streaks or blanks the narrator then had to voice;
 #   * never a panel the understanding describes as a speech/dialogue/thought
 #     bubble (character speech, not a system message) — excludes the husk;
 #   * require the system_box to DOMINATE the panel (a system card IS the panel),
@@ -1020,7 +1039,7 @@ def apply_system_card_overrides(
         *, weights_path: Optional[str] = None, device: str = "mps",
         detect_fn: Optional[Callable[[str], Optional[float]]] = None,
         log: Callable[[str], None] = print) -> int:
-    """Force panel_kind='system' on a folded caption/empty panel that the trained
+    """Force panel_kind='system' on a folded caption panel that the trained
     system_box detector fires on (the in-world notification / stat card the
     grouper would otherwise drop). Returns the count promoted. Fail-SOFT: a
     missing weights file or an unavailable detector logs loudly and leaves every
@@ -1033,7 +1052,7 @@ def apply_system_card_overrides(
     the panel covered by system-window detections, or None if the image is missing."""
     path_by_file = {it.get("scene_file"): it.get("scene_path") for it in items}
     cand = [p for p in panels
-            if str(p.get("panel_kind") or "").strip().lower() in ("caption", "empty")
+            if str(p.get("panel_kind") or "").strip().lower() == "caption"
             and not _describes_speech_bubble(p.get("description"))]
     if not cand:
         return 0
@@ -1115,14 +1134,14 @@ def apply_card_class_overrides(
         scenes: List[Dict[str, Any]],
         cards_by_chunk: Dict[str, List[Dict[str, Any]]],
         *, log: Callable[[str], None] = print, min_iou: float = 0.5) -> int:
-    """panel_kind='system' for a chrome/caption/empty panel whose scene IS a
+    """panel_kind='system' for a chrome/caption panel whose scene IS a
     promoted radio/system card (scene box IoU >= *min_iou* with the card box in
     chunk px). Story panels are never touched. Returns the count stamped."""
     by_file = {str(s.get("out_file")): s for s in scenes}
     n = 0
     for p in panels:
         kind = str(p.get("panel_kind") or "").strip().lower()
-        if kind not in ("chrome", "caption", "empty"):
+        if kind not in ("chrome", "caption"):
             continue
         sc = by_file.get(str(p.get("scene_file")))
         if not sc:
@@ -1214,7 +1233,7 @@ def main() -> int:
         panels, items, weights_path=args.panel_weights, device=args.device,
         log=lambda m: print(m, flush=True))
     if sysn:
-        print(f"[ok] system-card override: {sysn} caption/empty->system")
+        print(f"[ok] system-card override: {sysn} caption->system")
     # Detect-stage card class (promoted radio/system cards) — the tiled element
     # pass saw the jagged notice at chunk scale; on the tight crop nothing does.
     try:

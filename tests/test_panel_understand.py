@@ -355,7 +355,7 @@ def test_prompt_version_bumped_for_impact_fields():
     # re-understand with two-person strikes direction-verified against the
     # neighbouring dialogue; pu_v5 added structured actions, pu_v4 evidence
     # discipline, pu_v3 appearance-aware subjects, pu_v2 impact awareness).
-    assert pu.PROMPT_VERSION == "pu_v7"
+    assert pu.PROMPT_VERSION == "pu_v8"
 
 
 def test_panel_schema_adds_impact_fields_backward_compatibly():
@@ -478,6 +478,29 @@ def test_forced_choice_reask_commits_or_keeps_hedged():
     assert "reask" not in out[0]
 
 
+def test_forced_choice_reask_never_turns_an_empty_panel_into_a_scene():
+    # TT ch102 p000011 (2026-10-06): a near-blank cloud frame read 'empty' +
+    # uncertain ("no discernible subjects"); the re-ask demanded a committed
+    # subject, got "a dark, cloudy sky" as 'story', and the narrator voiced
+    # "The sky is looking pretty grim, which is a nice touch for the mounting
+    # tension." An empty panel has no subject to commit to — never re-asked.
+    items = [{"scene_file": "p0.jpg", "scene_path": "/nonexistent/p0.jpg"}]
+    calls = []
+
+    def fn(payload, image_path):
+        calls.append("forced_choice_notice" in payload)
+        if len(calls) == 1:
+            return {"description": "a dark, cloudy texture with no discernible "
+                                   "subjects", "action": "", "intensity": "calm",
+                    "panel_kind": "empty", "uncertain": True}
+        return {"description": "a dark, cloudy sky", "action": "",
+                "intensity": "calm", "panel_kind": "story"}
+
+    out = pu.understand_panels(items, fn)
+    assert calls == [False]
+    assert out[0]["panel_kind"] == "empty"
+
+
 def test_tall_strip_merges_uncertain_any_window(monkeypatch, tmp_path):
     from PIL import Image
     p = tmp_path / "strip.jpg"
@@ -498,9 +521,15 @@ def test_tall_strip_merges_uncertain_any_window(monkeypatch, tmp_path):
     assert merged["uncertain"] is True         # any-window OR
 
 
-def test_prompt_version_is_pu_v7():
-    assert pu.PROMPT_VERSION == "pu_v7"
-    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v7")
+def test_prompt_version_is_pu_v8():
+    assert pu.PROMPT_VERSION == "pu_v8"
+    assert pu.TALL_WINDOWS_VERSION.startswith("pu_v8")
+
+
+def test_sfx_lettering_alone_is_empty_but_words_are_not():
+    # pu_v8: a lone painted sound is not a scene; a readable name/title is.
+    assert "SOUND-EFFECT lettering ALONE" in pu.SYSTEM
+    assert "Readable WORDS that name or say something" in pu.SYSTEM
 
 
 def test_model_safe_image_downscales_tall_panels(tmp_path):
@@ -635,6 +664,19 @@ def test_card_class_override_stamps_radio_and_system_cards_system():
     n = pu.apply_card_class_overrides(panels, scenes, cards_by_chunk, log=lambda m: None)
     assert n == 2
     assert [p["panel_kind"] for p in panels] == ["system", "system", "caption"]
+
+
+def test_card_class_override_never_promotes_an_empty_panel():
+    # A floating system_box on a lone painted SFX glyph (TT/RotA/wimp: 24 of 24
+    # fleet empty->system promotions were glyphs, streaks or blanks) — the model
+    # saw no content, so there is no misfiled text to rescue.
+    scenes = [{"out_file": "p000037.jpg", "chunk_file": "c.jpg", "chunk_w": 1080,
+               "chunk_h": 16302, "box_px_xyxy": [540, 13395, 791, 13721]}]
+    cards = {"c.jpg": [{"box": [0.821936, 0.503389, 0.841445, 0.729163],
+                        "classes": ["system_box"]}]}
+    panels = [{"scene_file": "p000037.jpg", "panel_kind": "empty", "dialogue": ""}]
+    assert pu.apply_card_class_overrides(panels, scenes, cards, log=lambda m: None) == 0
+    assert panels[0]["panel_kind"] == "empty"
 
 
 def test_card_class_override_never_touches_story_panels():
