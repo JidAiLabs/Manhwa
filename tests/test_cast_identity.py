@@ -533,8 +533,16 @@ def test_name_gate_descriptive_handle_is_still_rewritten_under_keep():
     assert _gate(line, nm, _MASON, "keep") == "Mason raises his blade."
 
 
-def test_name_gate_shadow_applies_old_and_stamps_both_variants(monkeypatch):
+def test_name_gate_default_is_keep(monkeypatch):
     monkeypatch.delenv("STUDIO_IDENTITY_NAMES", raising=False)
+    b = _beat("The Book of Command admits it.")
+    ig.enforce_actor_handles(b, _CHOO, {"book": {"the Book of Command"}}, set())
+    assert b["segments"][0]["line"] == "The Book of Command admits it."
+    assert "actor_rewrites_shadow" not in b
+
+
+def test_name_gate_shadow_applies_old_and_stamps_both_variants(monkeypatch):
+    monkeypatch.setenv("STUDIO_IDENTITY_NAMES", "shadow")
     nm = {"book": {"the Book of Command"}}
     b = _beat("The Book of Command admits it.")
     ig.enforce_actor_handles(b, _CHOO, nm, set(), site="writer")

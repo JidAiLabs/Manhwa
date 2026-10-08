@@ -1,0 +1,11 @@
+{
+  "_readme": "Owner-curated series cast for Dragon-Devouring Mage, applied to every chapter by cast_builder --series-cast. Only the protagonist is locked: cast_builder filed his real name as a separate 'ally' each chapter, so the name rotation (recap_style.cap_protagonist_name) never rotated 'Russel Raymond' and the identity gate swapped his lines to other characters. No visual_description here, so each chapter keeps its own look.",
+  "series": "dragon-devouring-mage",
+  "cast": [
+    {
+      "canonical_name": "our protagonist",
+      "aliases": ["Russel Raymond", "Russel"],
+      "is_protagonist": true
+    }
+  ]
+}

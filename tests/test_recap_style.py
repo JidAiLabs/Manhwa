@@ -1035,6 +1035,24 @@ def test_vary_reduces_our_guy_repetition():
                              "Prince Cheon wins."]
 
 
+def test_rotation_never_rewrites_a_name_inside_quoted_dialogue():
+    """DDM ch11 (2026-10-08): "'Nice to see you here, Russel Raymond,' Dariah
+    says" became "'Nice to see you here, the protagonist,'" — characters SAY
+    the name; the narrator's handle never goes inside their speech."""
+    import tools.recap_style as rs
+    B = {"beats": [_beat(1, "Prince Cheon appears.",
+                         "'Nice to see you here, Prince Cheon,' she says.",
+                         "A voice bellows, 'Prince Cheon!!'",
+                         "Prince Cheon's guard can't move.",
+                         "Prince Cheon nods.")]}
+    rs.cap_protagonist_name(B, _prot_cast(), keep=1, vary=True)
+    ln = _lines(B)
+    assert ln[1] == "'Nice to see you here, Prince Cheon,' she says."
+    assert ln[2] == "A voice bellows, 'Prince Cheon!!'"
+    assert "Prince Cheon" not in ln[3] and "can't move." in ln[3]   # rotated
+    assert "Prince Cheon" not in ln[4]
+
+
 def test_vary_preserves_sentence_case_and_possessive():
     import tools.recap_style as rs
     B = {"beats": [_beat(1, "Prince Cheon starts.", "Prince Cheon acts.",

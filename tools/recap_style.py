@@ -1480,6 +1480,18 @@ def _strip_redundant_determiner(before: str, repl: str) -> str:
     return repl
 
 
+def _quoted_spans(line: str):
+    """(open, close) index pairs of quoted dialogue in *line*. An apostrophe
+    between two letters (I'm, Dokja's) is not a quote mark.
+    ponytail: marks pair in order, so a plural possessive (students' ) can
+    misalign the pairs of that one line; fine until a real line shows it."""
+    marks = [i for i, ch in enumerate(line)
+             if ch in "\"\u201c\u201d"
+             or (ch in "'\u2018\u2019" and not (0 < i < len(line) - 1
+                 and line[i - 1].isalpha() and line[i + 1].isalpha()))]
+    return list(zip(marks[::2], marks[1::2]))
+
+
 def cap_protagonist_name(beats_obj, cast, keep: int = 1,
                          handle: str = "our guy", vary: bool = True,
                          name_every: int = 0) -> int:
@@ -1540,7 +1552,10 @@ def cap_protagonist_name(beats_obj, cast, keep: int = 1,
             out = []
             last = 0
             changed = False
+            quoted = _quoted_spans(line)
             for m in combined.finditer(line):
+                if any(a < m.start() < b for a, b in quoted):
+                    continue          # a character SAYS the name: never a handle
                 core = m.group("name") or m.group("handle")
                 poss = m.group("poss") or ""
                 if m.group("name") is not None:

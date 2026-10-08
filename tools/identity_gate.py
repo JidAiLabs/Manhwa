@@ -30,8 +30,10 @@ from cast_identity import _HANDLE_LEAD, subject_actor_nouns_ex  # noqa: E402
 #   keep    — a proper multi-word name the writer wrote is left alone
 #             (descriptive handles like "the hooded leader" are still replaced);
 #   shadow  — apply OLD, stamp what REPLACE and KEEP would have written in
-#             beat["actor_rewrites_shadow"] for grading (2026-10-08 plan).
-# ponytail: env switch exists only until the shadow grading picks a variant.
+#             beat["actor_rewrites_shadow"] for grading.
+# KEEP is the default since 2026-10-08: shadow graded it right 27/27 (DDM) and
+# 38/40 offline across 8 series; REPLACE 6/27. The protagonist's kept name is
+# then rotated into handles by recap_style.cap_protagonist_name.
 _NAMES_MODE_ENV = "STUDIO_IDENTITY_NAMES"
 
 _PROT_HANDLE_RE = re.compile(r"\bour (?:guy|boy|man|protagonist)\b",
@@ -160,10 +162,10 @@ def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
                           ledger=None, spoken=None, kinds=None, names=None,
                           site="", mode=None):
     """The identity gate (see _enforce). *names* = name_forms(cast); *mode* =
-    old|replace|keep|shadow, default from STUDIO_IDENTITY_NAMES (shadow). In
+    old|replace|keep|shadow, default from STUDIO_IDENTITY_NAMES (keep). In
     shadow mode OLD is applied and every segment where REPLACE or KEEP would
     differ is recorded in beat["actor_rewrites_shadow"] with its *site*."""
-    mode = mode or os.environ.get(_NAMES_MODE_ENV, "shadow")
+    mode = mode or os.environ.get(_NAMES_MODE_ENV, "keep")
     args = (figures_by_file, noun_map, protagonist_names)
     kw = dict(ledger=ledger, spoken=spoken, kinds=kinds, names=names)
     if mode != "shadow":
