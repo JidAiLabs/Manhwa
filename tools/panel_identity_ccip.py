@@ -386,9 +386,10 @@ def _protagonist(cast_path: Path) -> Optional[str]:
 
 
 def identify_chapter(ep_dir, profile: Optional[Dict[str, Any]],
-                     index: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                     index: Dict[str, Any], write: bool = True) -> Optional[Dict[str, Any]]:
     """manifest.identity.json for one chapter, or None (nothing written) while
-    the series profile is provisional: the keyword identity then stands."""
+    the series profile is provisional: the keyword identity then stands.
+    write=False computes it in memory (the sweep's census)."""
     if not profile or profile.get("status") != "active":
         return None
     ep = Path(ep_dir)
@@ -415,6 +416,8 @@ def identify_chapter(ep_dir, profile: Optional[Dict[str, Any]],
                    "others": len(r) - len(names) + max(0, persons - len(r)),
                    "mc": mc, "heads": len(r), "diff": round(float(d.min()), 3)}
     obj: Dict[str, Any] = {"panels": out}
+    if not write:
+        return obj
     write_manifest(ep / "manifest.identity.json", obj, inputs=[understood, cast_path],
                    tool="panel_identity_ccip",
                    extra_meta={"backend": "ccip", "profile_version": profile.get("version"),
