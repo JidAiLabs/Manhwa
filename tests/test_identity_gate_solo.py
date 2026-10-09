@@ -180,3 +180,16 @@ def test_heal_writer_call_carries_the_identity(tmp_path, monkeypatch):
     writer = next(c for c in seen if any(str(x).endswith("gemini_narrative_pass.py") for x in c))
     i = writer.index("--identity")
     assert writer[i + 1] == str(ep / "manifest.identity.json")
+
+
+def test_unconfirmed_rule_ab_knob(monkeypatch):
+    """Variant B of the 2026-10-10 writer A/B: 'unknown' means NOT CONFIRMED,
+    not absent — the picture misses the protagonist on ~half his panels."""
+    import tools.recap_style as rs
+    base = "x never guess a name for an unknown. y a wrong name is worse than a plain description. z"
+    monkeypatch.delenv("STUDIO_FIGURES_UNCONFIRMED", raising=False)
+    assert rs.apply_unconfirmed_rule(base) == base
+    monkeypatch.setenv("STUDIO_FIGURES_UNCONFIRMED", "1")
+    out = rs.apply_unconfirmed_rule(base)
+    assert out.count(rs.UNCONFIRMED_NOT_ABSENT) == 1
+    assert "not absent" in rs.UNCONFIRMED_NOT_ABSENT.lower()

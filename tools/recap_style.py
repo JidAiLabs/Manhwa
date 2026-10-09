@@ -95,6 +95,29 @@ mystery to preserve — but once the story's own text or the panel's figures lis
 identifies someone, use their name."""
 
 
+
+# TEMPORARY A/B knob (2026-10-10, docs/plans/2026-10-10-ccip-character-identity.md
+# step 7): image identity confirms only the protagonist and misses him on about
+# half his panels, so "unknown" there is NOT CONFIRMED, not absent. Variant B
+# (STUDIO_FIGURES_UNCONFIRMED=1) says so; the A/B decides, then this knob goes.
+UNCONFIRMED_NOT_ABSENT = (
+    "An unknown figure is NOT CONFIRMED, not absent: the picture confirms only the "
+    "protagonist and misses him on about half the panels he is in. When the story or "
+    "the dialogue makes it clear an unknown figure IS the protagonist, refer to him as "
+    "you would anywhere else (a pronoun or his usual handle), never by a description of "
+    "his looks. Never give an unknown figure a SIDE character's name.")
+_UNCONFIRMED_ANCHORS = ("never guess a name for an unknown.",
+                        "a wrong name is worse than a plain description.")
+
+
+def apply_unconfirmed_rule(text: str) -> str:
+    if os.environ.get("STUDIO_FIGURES_UNCONFIRMED") != "1":
+        return text
+    for a in _UNCONFIRMED_ANCHORS:
+        if a in text:
+            return text.replace(a, a + " " + UNCONFIRMED_NOT_ABSENT, 1)
+    return text
+
 _TAG_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 _POINTER_RE = re.compile(

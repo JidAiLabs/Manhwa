@@ -3066,6 +3066,8 @@ def main() -> int:
     # downstream regardless.
     system_body = (system_body + "\n\n" + SAFE_NARRATION_RULES + "\n\n"
                    + _DIALOGUE_RULE + "\n\n" + RECAP_STYLE_RULES)
+    from recap_style import apply_unconfirmed_rule      # step-7 A/B knob, off by default
+    system_body = apply_unconfirmed_rule(system_body)
     # resolve niche: explicit CLI args win; else read the episode manifest next to --out
     niche_p, niche_s = args.niche, args.niche_secondary
     if not niche_p:
