@@ -19,9 +19,11 @@ echo "== python venvs (exact lockfiles)"
 [ -d .eval_venv ]   || python3.12 -m venv .eval_venv
 [ -d .qwen_venv ]   || python3.12 -m venv .qwen_venv
 [ -d .kokoro_venv ] || python3.12 -m venv .kokoro_venv
+[ -d .identity_venv ] || python3.12 -m venv .identity_venv
 .eval_venv/bin/pip install -q -r requirements-eval.lock.txt
 .qwen_venv/bin/pip install -q -r requirements-qwen.lock.txt
 .kokoro_venv/bin/pip install -q -r requirements-kokoro.lock.txt
+.identity_venv/bin/pip install -q -r requirements-identity.lock.txt
 
 echo "== remotion"
 (cd remotion && npm install --silent)

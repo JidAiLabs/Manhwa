@@ -2,7 +2,7 @@ import os
 import sys
 import tomllib
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -121,6 +121,22 @@ class Config:
                                              # chapter with unresolved blocks. ON
                                              # by default (safety); env
                                              # STUDIO_NARRATION_SANITIZE wins.
+    identity_python: str = ""                # [identity] python: the image-
+                                             # identity venv (dghs-imgutils +
+                                             # onnxruntime; own venv like TTS)
+    identity_backend: str = "gemma"          # [identity] backend: "ccip" (head
+                                             # fingerprints, every series) |
+                                             # "gemma" (exemplar forced-choice,
+                                             # registry exemplars only) | "off"
+    identity_series: dict[str, str] = field(default_factory=dict)
+                                             # [identity.series] slug -> backend;
+                                             # env STUDIO_IDENTITY_BACKEND beats it
+
+    def identity_backend_for(self, slug: str) -> str:
+        if os.environ.get("STUDIO_IDENTITY_BACKEND"):
+            return self.identity_backend     # fleet-wide rollback lever
+        return _valid_identity_backend(
+            self.identity_series.get(slug) or self.identity_backend)
 
 def _env_bool(name: str, default: bool) -> bool:
     """Tri-state env override for a boolean flag. Unset → *default*; otherwise
@@ -146,12 +162,24 @@ def _valid_segmentation(val: str) -> str:
     return v
 
 
-def _resolve_tts_python(val: str) -> str:
+_IDENTITY_BACKENDS = ("ccip", "gemma", "off")
+
+
+def _valid_identity_backend(val: str) -> str:
+    v = str(val or "").strip().lower() or "gemma"
+    if v not in _IDENTITY_BACKENDS:
+        print(f"[config] invalid identity.backend={v!r} — falling back to "
+              "'gemma'", file=sys.stderr)
+        return "gemma"
+    return v
+
+
+def _resolve_tts_python(val: str, env_name: str = "STUDIO_TTS_PYTHON") -> str:
     """Host-agnostic local-TTS interpreter. STUDIO_TTS_PYTHON env wins (per-host
     override); a RELATIVE path resolves against the repo root so one committed
     studio.toml works on every host (no hardcoded /Users/<name> — that broke the
     voiced stage after the Air->Mini move). An absolute path is honored as-is."""
-    env = os.environ.get("STUDIO_TTS_PYTHON")
+    env = os.environ.get(env_name)
     if env:
         return env
     if not val:
@@ -193,6 +221,7 @@ def load(path: Path | None = None) -> Config:
     n = data.get("narration", {})
     r = data.get("render", {})
     pub = data.get("publish", {})
+    ident = data.get("identity", {})
     return Config(
         sites=sites,
         yolo_weights=(lambda _w: _w if _w.is_absolute()
@@ -244,4 +273,11 @@ def load(path: Path | None = None) -> Config:
         publish_auto_after_chapters=int(
             os.environ.get("STUDIO_PUBLISH_AUTO_AFTER")
             or pub.get("auto_after_chapters", 12)),
+        identity_python=_resolve_tts_python(ident.get("python", ""),
+                                            "STUDIO_IDENTITY_PYTHON"),
+        identity_backend=_valid_identity_backend(
+            os.environ.get("STUDIO_IDENTITY_BACKEND")
+            or ident.get("backend", "gemma")),
+        identity_series={str(k): str(v) for k, v
+                         in (ident.get("series") or {}).items()},
     )

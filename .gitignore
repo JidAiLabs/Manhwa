@@ -18,5 +18,9 @@ keys/
 .tts_venv/
 .qwen_venv/
 .kokoro_venv/
+.identity_venv/
+.mlx_venv/
+.mlx_vlm_venv/
+dist/
 .playwright-mcp/
 .worktrees/
