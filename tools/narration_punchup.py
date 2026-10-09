@@ -785,12 +785,25 @@ def _ledger_obj(ep_dir: str) -> Dict[str, Any]:
         return {}
 
 
+def _identity_obj(ep_dir: str) -> Optional[Dict[str, Any]]:
+    """manifest.identity.json (WHO the picture shows) or None when absent —
+    the same authority the writer's gate used, so this re-run cannot undo it."""
+    if not ep_dir:
+        return None
+    try:
+        obj = json.load(open(os.path.join(ep_dir, "manifest.identity.json")))
+        return obj if isinstance(obj, dict) and obj.get("panels") is not None else None
+    except Exception:
+        return None
+
+
 def apply_post_punchup_backstop(
     out: Dict[str, Any],
     cast_obj: Dict[str, Any],
     vision_by_file: Dict[str, Any],
     understood_by_file: Dict[str, Any],
     ledger: Optional[Dict[str, Any]] = None,
+    identity: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, int]:
     """Re-assert the identity/dedup backstop AFTER the persona pass, in place.
 
@@ -813,9 +826,9 @@ def apply_post_punchup_backstop(
         understood_by_file or {})
     n_dups = dedupe_consecutive_panel_lines(out)
     n_actor = 0
-    from cast_identity import actor_noun_map, cast_profiles, resolve_figures
+    from cast_identity import actor_noun_map, cast_profiles, resolve_figures_by_file
     from identity_gate import (enforce_actor_handles, name_forms,
-                               protagonist_names, spoken_names)
+                               protagonist_names, solo_mc_resolver, spoken_names)
     profiles = cast_profiles(cast_obj or {"cast": []})
     noun_map = actor_noun_map(cast_obj or {"cast": []})
     prot = protagonist_names(cast_obj or {"cast": []})
@@ -826,9 +839,15 @@ def apply_post_punchup_backstop(
             from story_ledger import dead_sets_by_file
             excluded = dead_sets_by_file(
                 ledger, list(understood_by_file or {}))
-        figures_by_file = {fn: resolve_figures(p, profiles,
-                                               excluded=excluded.get(fn))
-                           for fn, p in (understood_by_file or {}).items()}
+        # the writer's authority, not a word-matching re-run: re-resolving
+        # by keyword here turned the image's "our guy" back into "Namwoon Kim"
+        figures_by_file = resolve_figures_by_file(
+            {"panels": [dict(p, scene_file=fn) for fn, p
+                        in (understood_by_file or {}).items()]},
+            cast_obj, excluded_by_file=excluded, identity=identity)
+        solo = solo_mc_resolver(
+            identity, understood_by_file or {},
+            {f: (v or {}).get("ocr_clean") for f, v in (vision_by_file or {}).items()})
         if figures_by_file:
             for b in out.get("beats") or []:
                 n_actor += len(enforce_actor_handles(
@@ -838,7 +857,7 @@ def apply_post_punchup_backstop(
                            for f, u in (understood_by_file or {}).items()
                            if isinstance(u, dict)},
                     names=name_forms(cast_obj or {"cast": []}),
-                    site="punchup"))
+                    solo_mc=solo))
     # Deterministic name budget, LAST: the prompt rule moved naming from 20%
     # of lines to 13% and stalled there; the cap lands it exactly. It also
     # VARIES the post-cap handle ('the prince'/'our guy'/'our boy') so the tail
@@ -1049,7 +1068,8 @@ def main() -> int:
         out, _cast_obj(args.cast),
         _vision_by_file(args.episode_dir),
         _understood_by_file(args.episode_dir),
-        ledger=_ledger_obj(args.episode_dir) or None)
+        ledger=_ledger_obj(args.episode_dir) or None,
+        identity=_identity_obj(args.episode_dir))
 
     write_manifest(args.out, out, tool="narration_punchup",
                    extra_meta=_prior_inputs_extra_meta(beats_obj))

@@ -417,13 +417,13 @@ def _beat(line, span=("p1.jpg",)):
             "narration": line}
 
 
-def test_handle_gate_rewrites_protagonist_handle_over_helper_span():
+def test_handle_gate_never_repoints_a_protagonist_handle():
+    # 2026-10-10: re-pointing "our protagonist" to a keyword-resolved figure was
+    # right ~1 time in 4 (54 graded); the picture, not the gate, decides now
     figs = {"p1.jpg": [{"name": "unnamed assassin", "evidence": "a masked figure"}]}
     b = _beat("Blue sparks crackle around our protagonist.")
-    rw = g.enforce_actor_handles(b, figs, _NM, _PROT)
-    assert rw and "protagonist handle" in rw[0]
-    assert b["segments"][0]["line"] == (
-        "Blue sparks crackle around the assassin.")
+    assert g.enforce_actor_handles(b, figs, _NM, _PROT) == []
+    assert b["segments"][0]["line"] == "Blue sparks crackle around our protagonist."
 
 
 def test_handle_gate_keeps_handle_when_protagonist_resolved():
@@ -433,20 +433,25 @@ def test_handle_gate_keeps_handle_when_protagonist_resolved():
     assert b["segments"][0]["line"] == "Our guy staggers upright."
 
 
-def test_handle_gate_neutral_for_unknown_only_span():
+def test_handle_gate_leaves_an_unknown_only_span_alone():
+    # unconfirmed is not absent: being vague is allowed, a neutral rewrite of
+    # the writer's handle is not evidence-backed
     figs = {"p1.jpg": [{"name": "unknown",
                         "evidence": "a masked figure in a dark hooded cloak"}]}
     b = _beat("Our protagonist lunges forward.")
-    rw = g.enforce_actor_handles(b, figs, _NM, _PROT)
-    assert rw
-    assert b["segments"][0]["line"].startswith("The masked figure lunges") or \
-        b["segments"][0]["line"].startswith("the masked figure lunges")
+    assert g.enforce_actor_handles(b, figs, _NM, _PROT) == []
+    assert b["segments"][0]["line"] == "Our protagonist lunges forward."
 
 
 def test_handle_gate_rewrites_wrong_actor_noun_and_keeps_possessive():
     figs = {"p1.jpg": [{"name": "our protagonist", "evidence": "purple hair"}]}
+    # keyword figures alone are not evidence enough
     b = _beat("The assassin's eyes burn with resolve.")
-    rw = g.enforce_actor_handles(b, figs, _NM, _PROT)
+    assert g.enforce_actor_handles(b, figs, _NM, _PROT) == []
+    # the picture shows the protagonist alone on the span: rewritten
+    b = _beat("The assassin's eyes burn with resolve.")
+    rw = g.enforce_actor_handles(b, figs, _NM, _PROT,
+                                 solo_mc=lambda span: "our protagonist")
     assert rw and "'assassin'" in rw[0]
     assert b["segments"][0]["line"] == "our protagonist's eyes burn with resolve."
 
@@ -466,93 +471,60 @@ def test_handle_gate_hands_off_ambiguous_and_ungrounded_spans():
     assert g.enforce_actor_handles(b3, figs3, _NM, _PROT) == []
 
 
-# ---- 2026-10-08: a multi-word name is never rewritten piecemeal --------------
-# TT ch102 shipped "Choohino of Command admits…": Rule 2 swapped the token
-# 'book' inside "The Book of Command". 174 shipped segments / 119 chapters carry
-# such residue. OLD = today's behaviour (kept for the shadow comparison);
-# REPLACE = the whole name is the unit; KEEP = a proper multi-word name the
-# writer wrote is left alone (descriptive handles are still rewritten).
+# ---- a multi-word or proper name is never rewritten -------------------------
+# TT ch102 shipped "Choohino of Command admits…": the gate swapped the token
+# 'book' inside "The Book of Command" (174 segments / 119 chapters). KEEP won
+# the 2026-10-08 shadow 27/27 and is now the only behaviour: a name the writer
+# wrote stays; a descriptive handle on a solo-protagonist span is replaced.
 import tools.identity_gate as ig  # noqa: E402
 
 _CHOO = {"p1.jpg": [{"name": "Choohino", "evidence": "purple hair"}]}
 _MASON = {"p1.jpg": [{"name": "Mason", "evidence": "grey hair"}]}
 
 
-def _gate(line, nm, figs, mode, names=None):
+def _gate(line, nm, figs, names=None):
     b = _beat(line)
-    ig.enforce_actor_handles(b, figs, nm, set(), names=names, mode=mode)
+    solo = next(f["name"] for f in figs["p1.jpg"])
+    ig.enforce_actor_handles(b, figs, nm, set(), names=names,
+                             solo_mc=lambda span: solo)
     return b["segments"][0]["line"]
 
 
-def test_name_gate_book_of_command_variants():
+def test_name_gate_book_of_command_is_kept():
     nm = {"book": {"the Book of Command"}, "choohino": {"Choohino"}}
     line = "The Book of Command admits to having observed her."
-    assert _gate(line, nm, _CHOO, "old") == (
-        "Choohino of Command admits to having observed her.")
-    assert _gate(line, nm, _CHOO, "replace") == "Choohino admits to having observed her."
-    assert _gate(line, nm, _CHOO, "keep") == line
+    assert _gate(line, nm, _CHOO) == line
 
 
-def test_name_gate_title_with_other_determiner():
+def test_name_gate_title_with_other_determiner_is_kept():
     nm = {"priest": {"the High Priest"}}
     line = "Behind them, his High Priest stares coldly."
-    assert _gate(line, nm, _MASON, "old") == "Behind them, his High Mason stares coldly."
-    assert _gate(line, nm, _MASON, "replace") == "Behind them, Mason stares coldly."
-    assert _gate(line, nm, _MASON, "keep") == line
+    assert _gate(line, nm, _MASON) == line
 
 
-def test_name_gate_two_part_name_and_alias():
+def test_name_gate_two_part_name_and_alias_are_kept():
     nm = {"john": {"John Kosack"}, "kosack": {"John Kosack"}}
-    assert _gate("John Kosack smiles.", nm, _MASON, "old") == "Mason Mason smiles."  # stutter
-    assert _gate("John Kosack smiles.", nm, _MASON, "replace") == "Mason smiles."
-    assert _gate("John Kosack smiles.", nm, _MASON, "keep") == "John Kosack smiles."
-    # the full form lives only in an alias of the member
-    nm2 = {"john": {"Kosack"}}
+    assert _gate("John Kosack smiles.", nm, _MASON) == "John Kosack smiles."
     names = {"Kosack": ["Kosack", "John Kosack"]}
-    assert _gate("John Kosack smiles.", nm2, _MASON, "replace", names) == "Mason smiles."
+    assert _gate("John Kosack smiles.", {"john": {"Kosack"}}, _MASON, names) == \
+        "John Kosack smiles."
 
 
 def test_name_gate_one_decision_per_name():
     nm = {t: {"Cheon Yoo Jong"} for t in ("cheon", "yoo", "jong")}
-    assert _gate("Cheon Yoo Jong strikes.", nm, _MASON, "replace") == "Mason strikes."
-    assert _gate("Cheon Yoo Jong strikes.", nm, _MASON, "keep") == "Cheon Yoo Jong strikes."
+    assert _gate("Cheon Yoo Jong strikes.", nm, _MASON) == "Cheon Yoo Jong strikes."
 
 
 def test_name_gate_never_touches_the_object_position_full_name():
     nm = {"book": {"the Book of Command"}}
-    out = _gate("The book glows as Choohino lifts the Book of Command.", nm,
-                _CHOO, "replace")
+    out = _gate("The book glows as Choohino lifts the Book of Command.", nm, _CHOO)
     assert out.endswith("lifts the Book of Command.")
 
 
-def test_name_gate_descriptive_handle_is_still_rewritten_under_keep():
+def test_name_gate_descriptive_handle_is_replaced_whole():
     nm = {"leader": {"the hooded leader"}}
-    line = "The hooded leader raises his blade."
-    assert _gate(line, nm, _MASON, "old") == "The hooded Mason raises his blade."
-    assert _gate(line, nm, _MASON, "replace") == "Mason raises his blade."
-    assert _gate(line, nm, _MASON, "keep") == "Mason raises his blade."
-
-
-def test_name_gate_default_is_keep(monkeypatch):
-    monkeypatch.delenv("STUDIO_IDENTITY_NAMES", raising=False)
-    b = _beat("The Book of Command admits it.")
-    ig.enforce_actor_handles(b, _CHOO, {"book": {"the Book of Command"}}, set())
-    assert b["segments"][0]["line"] == "The Book of Command admits it."
-    assert "actor_rewrites_shadow" not in b
-
-
-def test_name_gate_shadow_applies_old_and_stamps_both_variants(monkeypatch):
-    monkeypatch.setenv("STUDIO_IDENTITY_NAMES", "shadow")
-    nm = {"book": {"the Book of Command"}}
-    b = _beat("The Book of Command admits it.")
-    ig.enforce_actor_handles(b, _CHOO, nm, set(), site="writer")
-    assert b["segments"][0]["line"] == "Choohino of Command admits it."   # OLD live
-    rec = b["actor_rewrites_shadow"][0]
-    assert rec == {"site": "writer", "span": ["p1.jpg"],
-                   "pre": "The Book of Command admits it.",
-                   "old": "Choohino of Command admits it.",
-                   "replace": "Choohino admits it.",
-                   "keep": "The Book of Command admits it."}
+    assert _gate("The hooded leader raises his blade.", nm, _MASON) == \
+        "Mason raises his blade."
 
 
 def test_name_forms_collects_canonical_aliases_and_spoken():
@@ -1058,24 +1030,19 @@ def test_identity_gate_leaves_a_system_cards_printed_name_alone():
     noun_map = {"dokja": {"our protagonist"}, "kim": {"our protagonist"}}
     line = "Name: Dokja Kim. Supporting constellation: none."
 
-    def run(kinds):
+    def run(kinds, solo=None):
         beat = {"group_id": 1,
                 "segments": [{"span": ["p1.jpg"], "line": line}]}
         rw = enforce_actor_handles(beat, figs, noun_map, {"our protagonist"},
-                                   kinds=kinds)
+                                   kinds=kinds, solo_mc=solo)
         return beat["segments"][0]["line"], rw
 
-    card, rw_card = run({"p1.jpg": "system"})
+    card, rw_card = run({"p1.jpg": "system"}, solo=lambda span: "Someone Else")
     assert card == line and rw_card == []          # printed name survives
-
-    # a STORY panel is still gated: naming someone the panel does not show
-    # is exactly what this guard exists to catch
-    story, rw_story = run({"p1.jpg": "story"})
-    assert story != line and rw_story
-
-    # and with no kinds at all, behaviour is unchanged (older callers)
-    legacy, rw_legacy = run(None)
-    assert (legacy, rw_legacy) == (story, rw_story)
+    # since 2026-10-10 a proper name is never rewritten on a story panel either
+    # (actor_mismatch reports it); unknown-only figures are no evidence at all
+    assert run({"p1.jpg": "story"}) == (line, [])
+    assert run(None) == (line, [])
 
 
 # ---- the IMAGE decides when panel_identity confirmed the panel --------------

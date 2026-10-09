@@ -12,7 +12,6 @@ single deterministic identity oracle); this module never guesses.
 """
 from __future__ import annotations
 
-import copy
 import re
 import sys
 import os
@@ -22,22 +21,9 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from beats_segments import beat_segments, write_segment_lines  # noqa: E402
-from cast_identity import _HANDLE_LEAD, subject_actor_nouns_ex  # noqa: E402
+from cast_identity import (_HANDLE_LEAD, subject_actor_nouns_ex,  # noqa: E402
+                           subject_person_count)
 
-# How Rule 2 treats a MULTI-WORD name ("the Book of Command", "John Kosack"):
-#   old     — today's behaviour: swap one token, leaving "Choohino of Command";
-#   replace — the whole name is the unit and is replaced whole;
-#   keep    — a proper multi-word name the writer wrote is left alone
-#             (descriptive handles like "the hooded leader" are still replaced);
-#   shadow  — apply OLD, stamp what REPLACE and KEEP would have written in
-#             beat["actor_rewrites_shadow"] for grading.
-# KEEP is the default since 2026-10-08: shadow graded it right 27/27 (DDM) and
-# 38/40 offline across 8 series; REPLACE 6/27. The protagonist's kept name is
-# then rotated into handles by recap_style.cap_protagonist_name.
-_NAMES_MODE_ENV = "STUDIO_IDENTITY_NAMES"
-
-_PROT_HANDLE_RE = re.compile(r"\bour (?:guy|boy|man|protagonist)\b",
-                             re.IGNORECASE)
 _HANDLE_STOP = frozenset({"a", "an", "the", "in", "with", "and", "of", "on"})
 
 
@@ -158,59 +144,89 @@ def _figure_handle(name: str, spoken: Optional[Dict[str, str]] = None) -> str:
     return name
 
 
+def _base(f: Any) -> str:
+    return os.path.basename(str(f or ""))
+
+
+def solo_mc_resolver(identity: Any, understood_by_file: Dict[str, Any],
+                     text_by_file: Optional[Dict[str, str]] = None,
+                     fold_reach: int = 3):
+    """span -> the protagonist's name when the PICTURE shows him alone on every
+    panel the line voices, else None. None (no resolver) without an identity.
+
+    A panel is solo when the image pass confirmed him on its one head, the
+    understanding lists one person, and nothing is written on it (speech,
+    caption, OCR: an off-panel speaker may be who the line is about). A panel
+    with no person and no text does not veto. The window is the span's range
+    in chapter order widened over adjacent non-story panels, as far as
+    prep_qa._covered_panels reaches: a caption folds its words into the
+    neighbouring line, so the line may be about whoever the caption names."""
+    if not identity:
+        return None
+    recs = identity.get("panels", identity) if isinstance(identity, dict) else {}
+    texts = {_base(f): str(t or "") for f, t in (text_by_file or {}).items()}
+    order: List[str] = []
+    kind: Dict[str, str] = {}
+    solo: Dict[str, str] = {}
+    for f, u in (understood_by_file or {}).items():
+        b = _base(f)
+        u = u if isinstance(u, dict) else {}
+        order.append(b)
+        kind[b] = str(u.get("panel_kind") or "").lower()
+        written = (str(u.get("dialogue") or "") + texts.get(b, "")).strip()
+        persons = sum(subject_person_count(str(x)) for x in (u.get("subjects") or []))
+        rec = recs.get(b) if isinstance(recs, dict) else None
+        if written:
+            continue
+        if persons == 0 and not (rec or {}).get("heads"):
+            solo[b] = ""
+        elif (rec and rec.get("mc") and rec.get("heads") == 1 and persons == 1
+              and not rec.get("others") and rec.get("names")
+              and kind[b] not in ("system", "caption")):
+            solo[b] = str(rec["names"][0])
+    at = {b: i for i, b in enumerate(order)}
+
+    def resolve(span) -> Optional[str]:
+        idx = [at.get(_base(f)) for f in span or []]
+        if not idx or None in idx:
+            return None
+        lo, hi = min(idx), max(idx)
+        for step in (-1, 1):
+            k, n = (lo if step < 0 else hi) + step, 0
+            while 0 <= k < len(order) and n < fold_reach and kind[order[k]] != "story":
+                lo, hi, k, n = min(lo, k), max(hi, k), k + step, n + 1
+        got = {solo.get(b) for b in order[lo:hi + 1]}
+        if None in got:
+            return None
+        got.discard("")
+        return got.pop() if len(got) == 1 else None
+    return resolve
+
+
 def enforce_actor_handles(beat, figures_by_file, noun_map, protagonist_names,
                           ledger=None, spoken=None, kinds=None, names=None,
-                          site="", mode=None):
-    """The identity gate (see _enforce). *names* = name_forms(cast); *mode* =
-    old|replace|keep|shadow, default from STUDIO_IDENTITY_NAMES (keep). In
-    shadow mode OLD is applied and every segment where REPLACE or KEEP would
-    differ is recorded in beat["actor_rewrites_shadow"] with its *site*."""
-    mode = mode or os.environ.get(_NAMES_MODE_ENV, "keep")
-    args = (figures_by_file, noun_map, protagonist_names)
-    kw = dict(ledger=ledger, spoken=spoken, kinds=kinds, names=names)
-    if mode != "shadow":
-        return _enforce(beat, *args, mode=mode, **kw)
-    pre = [s["line"] or "" for s in beat_segments(beat)]
-    alt = {}
-    for v in ("replace", "keep"):
-        b2 = copy.deepcopy(beat)
-        _enforce(b2, *args, mode=v, **kw)
-        alt[v] = [s["line"] or "" for s in beat_segments(b2)]
-    rw = _enforce(beat, *args, mode="old", **kw)
-    segs = beat_segments(beat)
-    for i, s in enumerate(segs):
-        old = s["line"] or ""
-        if i < len(pre) and (alt["replace"][i] != old or alt["keep"][i] != old):
-            beat.setdefault("actor_rewrites_shadow", []).append({
-                "site": site, "span": list(s["span"] or []), "pre": pre[i],
-                "old": old, "replace": alt["replace"][i], "keep": alt["keep"][i]})
-    return rw
+                          solo_mc=None):
+    """Deterministic identity gate — positive evidence only (2026-10-10).
 
+    Two rules over each segment's subject-position, singular actor-nouns
+    (pattern authority shared with prep_qa: cast_identity.subject_actor_nouns):
+      * DEAD ACTOR (story ledger, 2026-07-20): a noun whose cast members are
+        all dead by this beat is rewritten to who the span shows — the single
+        resolved figure, the ledger's single actor, or a neutral handle;
+      * SOLO PROTAGONIST: when solo_mc(span) (solo_mc_resolver) says the
+        picture shows only the protagonist on every panel the line voices, a
+        DESCRIPTIVE noun for someone else ("the guard") becomes his handle.
+    A proper name the writer wrote ("Namwoon", "the Book of Command") is
+    never rewritten: 88% from the image is not enough to overrule a name the
+    writer read on the page; prep_qa's actor_mismatch reports it instead.
 
-def _enforce(beat, figures_by_file, noun_map, protagonist_names,
-             ledger=None, spoken=None, kinds=None, names=None, mode="old"):
-    """Deterministic identity gate (2026-07-16 wave): a line may claim the
-    protagonist ('our guy'/'our protagonist'/a protagonist name-noun) ONLY
-    when the span's cast_identity-resolved figures include the protagonist;
-    any subject-position actor-noun disjoint from the span's figures is
-    rewritten noun-for-noun to what the panel actually shows — but only in
-    the UNAMBIGUOUS case (exactly one resolved figure, singular noun; the
-    all-unknown span gets a neutral evidence-derived handle). Everything
-    else is left for the actor_mismatch heal net. Shares its pattern
-    authority with prep_qa (cast_identity.subject_actor_nouns/actor_noun_map)
-    so guard and QA can never disagree. Returns 'old -> new' descriptions;
-    lines are edited in place via write_segment_lines (spans untouched).
-
-    2026-07-20 story-state wave — an optional *ledger* (manifest.ledger.json
-    object) upgrades three formerly-hands-off cases:
-      - multi-figure span: when the ledger's panel_actions attribute the
-        span's action to exactly ONE living entity, that entity's handle
-        breaks the tie (the old gate bailed on every fight panel);
-      - a noun whose cast members are ALL in this beat's dead_by_now is
-        rewritten even if a stale figure resolution still lists them;
-      - zero-figure span: a protagonist handle is re-pointed when the beat's
-        facts place the protagonist absent AND the span has one clear actor.
-    Without a ledger, behavior is byte-identical to the 2026-07-16 gate."""
+    Removed (measured right ~1 time in 4 over 54 graded rewrites, 2026-10-09):
+    re-pointing protagonist handles, rewriting toward keyword-resolved
+    figures, neutral handles on all-unknown spans, the ledger tie-break
+    outside dead actors, and the old/replace/shadow name modes. Without an
+    identity manifest the gate rewrites nothing but dead actors.
+    Returns 'old -> new' descriptions; lines are edited in place via
+    write_segment_lines (spans untouched)."""
     segs = beat_segments(beat)
     if not segs:
         return []
@@ -224,7 +240,6 @@ def _enforce(beat, figures_by_file, noun_map, protagonist_names,
             if fn:
                 actions_by_file.setdefault(fn, []).append(a)
     dead_now = set(facts.get("dead_by_now") or [])
-    present = set(facts.get("present") or [])
     rewrites: List[str] = []
     lines = [s["line"] or "" for s in segs]
     new_lines = list(lines)
@@ -233,89 +248,66 @@ def _enforce(beat, figures_by_file, noun_map, protagonist_names,
         if not line:
             continue
         span = s["span"] or []
-        # A SYSTEM CARD is text on a screen, not a claim about who is drawn.
-        # ORV Ep210 p000001 prints "NAME: DOKJA KIM"; no figure resolves on a
-        # window, so the zero-figure rule below re-pointed the protagonist's
-        # printed name to an evidence handle and the card read "Name: the blue
-        # digital." Every rule here is about who a panel SHOWS, and a card
-        # shows nobody -- so a span that is only cards is left alone.
+        # A SYSTEM CARD is text on a screen, not a claim about who is drawn
+        # (ORV Ep210 "NAME: DOKJA KIM" became "Name: the blue digital").
         if span and kinds and all(
                 str((kinds or {}).get(fn) or "") == "system" for fn in span):
             continue
         span_figs = [f for fn in span
                      for f in (figures_by_file.get(fn) or [])]
-        # living entities the ledger says ACT in this span (tie-breaker)
         span_actors = {str(a.get("actor"))
                        for fn in span for a in actions_by_file.get(fn, [])
                        if a.get("actor")
                        and a.get("actor") != "unclear"} - dead_now
-        if not span_figs:
-            # no figure ground truth -> hands off, UNLESS the ledger places
-            # the protagonist absent from this beat and names one clear actor
-            if (facts and present and protagonist_names
-                    and not (present & protagonist_names)
-                    and len(span_actors) == 1
-                    and _PROT_HANDLE_RE.search(line)):
-                repl = _figure_handle(next(iter(span_actors)), spoken)
-                new = _PROT_HANDLE_RE.sub(repl, line, count=1)
-                if new != line:
-                    rewrites.append(
-                        f"protagonist handle -> {repl!r} (ledger)")
-                    new_lines[i] = new
-            continue
         named = {f["name"] for f in span_figs
                  if f.get("name") and f["name"] != "unknown"}
+        solo = solo_mc(span) if solo_mc else None
 
-        def _repl_for() -> str:
+        def _dead_repl() -> str:
+            if solo:
+                return _figure_handle(solo, spoken)
             if len(named) == 1:
                 return _figure_handle(next(iter(named)), spoken)
+            if not span_figs:
+                return ""
             if not named:
                 return _neutral_from_evidence(span_figs)
             if len(span_actors) == 1:         # ledger breaks the tie
                 return _figure_handle(next(iter(span_actors)), spoken)
             return ""                         # multi-figure: ambiguous
 
-        # 1. protagonist handle over a span that doesn't resolve them
-        if (protagonist_names and not (named & protagonist_names)
-                and _PROT_HANDLE_RE.search(line)):
-            repl = _repl_for()
-            if repl:
-                new = _PROT_HANDLE_RE.sub(repl, line, count=1)
-                if new != line:
-                    rewrites.append(f"protagonist handle -> {repl!r}")
-                    line = new
-        # 2. subject-position actor-noun disjoint from the span's figures
-        #    (singular only; plurals are the actor_count heal net's job).
-        #    A noun whose members are ALL dead by this beat is never a valid
-        #    subject even when a stale resolution still lists them.
         for noun, members, plural in subject_actor_nouns_ex(line, noun_map):
-            all_dead = bool(members) and members <= dead_now
-            if plural or ((members & named) and not all_dead):
+            if plural:
+                continue                      # the actor_count heal net's job
+            if bool(members) and members <= dead_now:
+                if named & protagonist_names and members & named:
+                    continue
+                repl, why = _dead_repl(), " (dead actor)"
+            elif solo and solo not in members:
+                repl, why = _figure_handle(solo, spoken), ""
+            else:
                 continue
-            if named & protagonist_names and members & named:
-                continue
-            repl = _repl_for()
-            if not repl or repl.lower().find(noun) >= 0:
+            if not repl or noun in repl.lower():
                 continue                      # ambiguous / no-op rewrite
             pat = re.compile(
-                r"\b(?:(?:our|the|a|an)\s+)?(?P<noun>" + re.escape(noun)
+                r"\b(?:(?P<art>our|the|a|an)\s+)?(?P<noun>" + re.escape(noun)
                 + r")(?P<poss>'s)?\b", re.IGNORECASE)
             mo = pat.search(line)
             if not mo:
                 continue
-            # The token may be one word of a multi-word name ("The Book of
-            # Command"): swapping it alone left "Choohino of Command" (TT ch102).
-            full, proper = (None, False) if mode == "old" else _full_name_at(
+            # one word of a multi-word name ("The Book of Command"): swapping it
+            # alone left "Choohino of Command" (TT ch102) — the name is the unit
+            full, proper = _full_name_at(
                 line, mo.start("noun"), mo.end("noun"), members, names)
+            if proper or (not why and not mo.group("art")
+                          and line[mo.start("noun")].isupper()):
+                continue                      # a proper name: never rewritten
             if full is not None:
-                if mode == "keep" and proper:
-                    continue
                 mo = full
             new = (line[:mo.start()] + repl + (mo.group("poss") or "")
                    + line[mo.end():])
             if new != line:
-                rewrites.append(f"'{noun}' -> {repl!r}"
-                                + (" (dead actor)" if all_dead else ""))
+                rewrites.append(f"'{noun}' -> {repl!r}{why}")
                 line = new
         new_lines[i] = line
     if new_lines != lines and all(x.strip() for x in new_lines):

@@ -716,6 +716,9 @@ def _regen_flagged(ep: Path, cfg, corr_path: str, env, log: TextIO) -> None:
              # chapter fact record: the FACTS block + ledger-aware gate ride
              # every heal cycle too (the writer fail-softs if it is absent)
              "--ledger", str(ep / "manifest.ledger.json"),
+             # WHO the picture shows: without it a heal re-roll re-resolved
+             # figures by word matching and re-named the image's unknowns
+             "--identity", str(ep / "manifest.identity.json"),
              # Match the primary pass (studio/pipeline.py). Heal is the
              # EXPENSIVE writer path — it re-narrates flagged groups every
              # cycle — so it must not be the one paying the 6-image premium:

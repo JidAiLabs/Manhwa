@@ -680,17 +680,17 @@ def _beat(line, span=("p1.jpg",), gid=8):
             "narration": line}
 
 
-def test_gate_ledger_breaks_multi_figure_tie():
-    # hero + faction both resolved on the span (multi-figure -> the old gate
-    # bailed with ""); the noun 'leader' is disjoint from the span's figures
-    # and the ledger's single arbitrated actor breaks the tie
+def test_gate_ledger_tie_break_is_for_dead_actors_only():
+    # 2026-10-10: rewriting a LIVING actor toward keyword figures (with or
+    # without the ledger's tie-break) was right ~1 time in 4; only the dead-
+    # actor rule keeps the ledger tie-break (test below)
     figs = {"p1.jpg": [{"name": "our protagonist", "evidence": "blue sash"},
                        {"name": "the assassins", "evidence": "cloaks"}]}
     led = _ledger()
-    b = _beat("The leader finishes the job, leaving our guy broken.")
-    rw = ig.enforce_actor_handles(b, figs, _NM, _PROT, ledger=led)
-    assert rw and "'leader'" in rw[0]
-    assert b["segments"][0]["line"].startswith("our protagonist finishes")
+    line = "The leader finishes the job, leaving our guy broken."
+    b = _beat(line)                     # g8: the leader is still alive
+    assert ig.enforce_actor_handles(b, figs, _NM, _PROT, ledger=led) == []
+    assert b["segments"][0]["line"] == line
 
 
 def test_gate_without_ledger_is_byte_identical_hands_off():
@@ -717,7 +717,7 @@ def test_gate_rewrites_dead_actor_even_when_figures_stale():
     assert "the assassins" in b["segments"][0]["line"].lower()
 
 
-def test_gate_zero_figure_span_repoints_protagonist_handle():
+def test_gate_zero_figure_span_leaves_the_protagonist_handle_alone():
     led = _ledger()
     led2 = dict(led)
     # a beat whose facts place ONLY the assassins present, one clear actor
@@ -728,9 +728,9 @@ def test_gate_zero_figure_span_repoints_protagonist_handle():
         {"scene_file": "p2.jpg", "actor": "the assassins", "verb": "recoil",
          "target": "", "evidence": "visual", "raw": {}}]
     b = _beat("Our guy recoils in disbelief.", span=("p2.jpg",), gid=9)
-    rw = ig.enforce_actor_handles(b, {}, _NM, _PROT, ledger=led2)
-    assert rw and "(ledger)" in rw[0]
-    assert b["segments"][0]["line"] == "the assassins recoils in disbelief."
+    # the ledger re-point was the protagonist-handle rule (removed 2026-10-10)
+    assert ig.enforce_actor_handles(b, {}, _NM, _PROT, ledger=led2) == []
+    assert b["segments"][0]["line"] == "Our guy recoils in disbelief."
 
 
 # ---- actor_mismatch false positives (the 21 that drove the heal loop) -------
@@ -843,9 +843,10 @@ def test_dead_actor_is_report_only():
 
 # ---- punchup backstop: gate re-runs after the persona pass ------------------
 
-def test_punchup_backstop_reverts_reintroduced_our_guy():
-    # persona pass re-attached 'our guy' to a helper-only span; the backstop's
-    # gate re-run (the extraction's whole point) rewrites it back
+def test_punchup_backstop_leaves_a_protagonist_handle_to_the_picture():
+    # the backstop re-runs the SAME gate as the writer: it no longer re-points
+    # protagonist handles by word matching (right ~1 in 4); a wrong "our guy"
+    # is the image identity's job upstream
     understood_by_file = {
         "p1.jpg": {"scene_file": "p1.jpg",
                    "subjects": ["a masked figure in a dark hooded cloak "
@@ -856,8 +857,12 @@ def test_punchup_backstop_reverts_reintroduced_our_guy():
                        "line": "Our guy slips through the smoke."}],
          "narration": "Our guy slips through the smoke."}]}
     stats = np_.apply_post_punchup_backstop(out, CAST, {}, understood_by_file)
-    assert stats["actor_handles_rewritten"] == 1
-    assert "our guy" not in out["beats"][0]["segments"][0]["line"].lower()
+    assert stats["actor_handles_rewritten"] == 0
+    # still the protagonist (the handle rotation may vary "our guy" into his
+    # title), never the helper the keyword gate used to put there
+    line = out["beats"][0]["segments"][0]["line"]
+    assert line in ("Our guy slips through the smoke.",
+                    "The prince slips through the smoke.")
 
 
 def test_punchup_backstop_ledger_threads_dead_exclusion():

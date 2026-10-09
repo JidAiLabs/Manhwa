@@ -644,15 +644,21 @@ def resolve_figures(understanding: Optional[Dict[str, Any]],
 
 def _figures_from_identity(panel: Dict[str, Any],
                            record: Optional[Dict[str, Any]],
-                           excluded: Optional[Set[str]] = None
+                           excluded: Optional[Set[str]] = None,
+                           profiles: Sequence[Dict[str, Any]] = ()
                            ) -> List[Dict[str, str]]:
-    """Figures for ONE panel from the IMAGE pass (panel_identity).
+    """Figures for ONE panel from the IMAGE pass (panel_identity[_ccip]).
 
     Confirmed names carry evidence 'image'. Everyone else is 'unknown' with the
     panel's own subject text as evidence, so the writer can say "the
     white-haired guy" instead of guessing a name. A panel the pass never
-    confirmed (absent record) is all-unknown: no keyword fallback, because a
-    fallback is exactly how a wrong name got in (ORV Ep6).
+    confirmed (absent record) is all-unknown: no APPEARANCE fallback, because
+    that is exactly how a wrong name got in (ORV Ep6).
+
+    A member whose NAME the panel's own text prints (resolve_figures' name
+    path, never appearance) is added with evidence 'page: ...': the image pass
+    confirms only the protagonist, so without this every side character the
+    page names would lose his name the day image identity is switched on.
     """
     subjects = [str(s).strip() for s in ((panel or {}).get("subjects") or [])
                 if str(s).strip()]
@@ -667,6 +673,13 @@ def _figures_from_identity(panel: Dict[str, Any],
     for i in range(max(0, unknowns)):
         out.append({"name": "unknown",
                     "evidence": subjects[i] if i < len(subjects) else ""})
+    blob = set(_tokens(" ".join(str((panel or {}).get(k) or "")
+                                for k in ("description", "action", "dialogue"))))
+    have = set(names) | set(excluded or ())
+    for p in profiles:
+        hits = sorted(p["name_tokens"] & blob)
+        if hits and p["name"] not in have and p.get("embodied", True):
+            out.append({"name": p["name"], "evidence": f"page: {'+'.join(hits[:3])}"})
     return out
 
 
@@ -687,8 +700,11 @@ def resolve_figures_by_file(understood_obj: Any, cast: Any,
     profiles = cast_profiles(cast)
     if not profiles:
         return {}
-    by_base = (identity or {}).get("panels") if isinstance(identity, dict) \
-        and "panels" in identity else identity
+    # {} is how a missing manifest loads (prep_qa._load_manifest): absent,
+    # not "the image pass confirmed nobody on any panel"
+    by_base = None if not identity else (
+        identity.get("panels") if isinstance(identity, dict)
+        and "panels" in identity else identity)
     out: Dict[str, List[Dict[str, str]]] = {}
     for p in ((understood_obj or {}).get("panels") or []):
         if isinstance(p, dict) and p.get("scene_file"):
@@ -696,7 +712,7 @@ def resolve_figures_by_file(understood_obj: Any, cast: Any,
             excluded = (excluded_by_file or {}).get(fn)
             if by_base is not None:
                 rec = by_base.get(fn.rsplit("/", 1)[-1], by_base.get(fn))
-                out[fn] = _figures_from_identity(p, rec, excluded)
+                out[fn] = _figures_from_identity(p, rec, excluded, profiles)
             else:
                 out[fn] = resolve_figures(p, profiles, excluded=excluded)
     return out

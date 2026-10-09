@@ -2162,7 +2162,6 @@ def glue_echo_spans(segs, echo_of, surviving):
 # story-state wave) so narration_punchup's post-punchup backstop can re-run
 # the same gate after the persona rewrite. Re-exported here for callers/tests.
 from identity_gate import (  # noqa: E402
-    _PROT_HANDLE_RE,
     _figure_handle,
     _neutral_from_evidence,
     enforce_actor_handles,
@@ -3018,6 +3017,7 @@ def main() -> int:
     # — so resolution happens at read time, tools/cast_identity.py; prep_qa's
     # actor_mismatch gate shares the same authority). {} without cast/understood.
     figures_by_file: Dict[str, List[Dict[str, str]]] = {}
+    solo_mc = None
     actor_nouns: Dict[str, Any] = {}
     protagonist_names: set = set()
     if cast_list and u_by_file:
@@ -3041,6 +3041,10 @@ def main() -> int:
         figures_by_file = resolve_figures_by_file(
             understood_m, cast_list, excluded_by_file=excluded_by_file,
             identity=identity_m or None)
+        from identity_gate import solo_mc_resolver
+        solo_mc = solo_mc_resolver(
+            identity_m or None, u_by_file,
+            {f: (v or {}).get("ocr_clean") for f, v in (vision_by_file or {}).items()})
         actor_nouns = actor_noun_map(cast_list)
         protagonist_names = _prot_names(cast_list)
         spoken_map = _spoken_names(cast_list)
@@ -3475,7 +3479,7 @@ def main() -> int:
                                        kinds={f: str((u.get("panel_kind") or ""))
                                               for f, u in (u_by_file or {}).items()
                                               if isinstance(u, dict)},
-                                       names=names_map, site="writer")
+                                       names=names_map, solo_mc=solo_mc)
             if rw:
                 beat["actor_rewrites"] = rw
                 for msg in rw:
