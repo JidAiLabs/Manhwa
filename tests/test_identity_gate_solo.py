@@ -193,3 +193,14 @@ def test_unconfirmed_rule_ab_knob(monkeypatch):
     out = rs.apply_unconfirmed_rule(base)
     assert out.count(rs.UNCONFIRMED_NOT_ABSENT) == 1
     assert "not absent" in rs.UNCONFIRMED_NOT_ABSENT.lower()
+
+
+def test_printed_text_reads_raw_ocr_words_when_ocr_clean_is_empty():
+    """TT ch82 p000100: a full speech bubble, 10 OCR words, ocr_clean '' — the
+    solo check read only ocr_clean and called the panel silent."""
+    v = {"ocr_clean": "", "vision": {"ocr_words": [{"t": "WELL,"}, {"t": "ANYWAY,"}]}}
+    assert ig.printed_text(v) == "WELL, ANYWAY,"
+    assert ig.printed_text({"ocr_clean": "HALT"}) == "HALT"
+    assert ig.printed_text(None) == ""
+    line = "The guard draws his sword."
+    assert _gate(line, ["p1.jpg"], SOLO, SOLO_ID, {"p1.jpg": ig.printed_text(v)})[0] == line

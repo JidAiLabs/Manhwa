@@ -148,6 +148,17 @@ def _base(f: Any) -> str:
     return os.path.basename(str(f or ""))
 
 
+def printed_text(vision_item: Any) -> str:
+    """Everything OCR read on a panel: ocr_clean, else the raw words (2% of TT
+    panels with words have an empty ocr_clean — a full speech bubble included)."""
+    v = vision_item if isinstance(vision_item, dict) else {}
+    clean = str(v.get("ocr_clean") or "").strip()
+    if clean:
+        return clean
+    words = ((v.get("vision") or {}).get("ocr_words")) or []
+    return " ".join(str(w.get("t") or "") for w in words if isinstance(w, dict)).strip()
+
+
 def solo_mc_resolver(identity: Any, understood_by_file: Dict[str, Any],
                      text_by_file: Optional[Dict[str, str]] = None,
                      fold_reach: int = 3):

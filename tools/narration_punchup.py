@@ -828,7 +828,8 @@ def apply_post_punchup_backstop(
     n_actor = 0
     from cast_identity import actor_noun_map, cast_profiles, resolve_figures_by_file
     from identity_gate import (enforce_actor_handles, name_forms,
-                               protagonist_names, solo_mc_resolver, spoken_names)
+                               printed_text, protagonist_names, solo_mc_resolver,
+                               spoken_names)
     profiles = cast_profiles(cast_obj or {"cast": []})
     noun_map = actor_noun_map(cast_obj or {"cast": []})
     prot = protagonist_names(cast_obj or {"cast": []})
@@ -847,7 +848,7 @@ def apply_post_punchup_backstop(
             cast_obj, excluded_by_file=excluded, identity=identity)
         solo = solo_mc_resolver(
             identity, understood_by_file or {},
-            {f: (v or {}).get("ocr_clean") for f, v in (vision_by_file or {}).items()})
+            {f: printed_text(v) for f, v in (vision_by_file or {}).items()})
         if figures_by_file:
             for b in out.get("beats") or []:
                 n_actor += len(enforce_actor_handles(

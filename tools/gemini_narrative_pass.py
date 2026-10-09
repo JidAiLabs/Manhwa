@@ -3041,10 +3041,10 @@ def main() -> int:
         figures_by_file = resolve_figures_by_file(
             understood_m, cast_list, excluded_by_file=excluded_by_file,
             identity=identity_m or None)
-        from identity_gate import solo_mc_resolver
+        from identity_gate import printed_text, solo_mc_resolver
         solo_mc = solo_mc_resolver(
             identity_m or None, u_by_file,
-            {f: (v or {}).get("ocr_clean") for f, v in (vision_by_file or {}).items()})
+            {f: printed_text(v) for f, v in (vision_by_file or {}).items()})
         actor_nouns = actor_noun_map(cast_list)
         protagonist_names = _prot_names(cast_list)
         spoken_map = _spoken_names(cast_list)

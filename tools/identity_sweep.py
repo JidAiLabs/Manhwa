@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import panel_identity_ccip as pic  # noqa: E402
 from beats_segments import beat_segments  # noqa: E402
 from cast_identity import actor_noun_map, subject_actor_nouns_ex  # noqa: E402
-from identity_gate import solo_mc_resolver  # noqa: E402
+from identity_gate import printed_text, solo_mc_resolver  # noqa: E402
 
 DRIFT_RUN = 5
 DRIFT_FRAC = 0.10
@@ -61,7 +61,7 @@ def census_chapter(ep: Path, identity: Dict[str, Any]) -> List[Dict[str, Any]]:
     understood = _json(ep / "manifest.panels.understood.json").get("panels") or []
     ubf = {str(u.get("scene_file")): u for u in understood if u.get("scene_file")}
     vision = _json(ep / "manifest.vision.json").get("items") or []
-    text = {str(v.get("scene_file")): v.get("ocr_clean") or "" for v in vision
+    text = {str(v.get("scene_file")): printed_text(v) for v in vision
             if v.get("scene_file")}
     solo = solo_mc_resolver(identity, ubf, text)
     noun_map = actor_noun_map(_json(ep / "manifest.cast.json"))
