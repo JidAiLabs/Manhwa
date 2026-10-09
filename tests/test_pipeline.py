@@ -472,9 +472,11 @@ def _capturing_stub(ep_dir: Path):
         "timeline_planner.py":        "render.plan.json",
     }
     calls: list[tuple[str, list[str]]] = []
+    kw: dict[str, dict] = {}
 
     def stub(script_name, args_list, **kwargs):
         calls.append((script_name, list(args_list)))
+        kw[script_name] = kwargs
         if script_name == "narration_sanitize_pass.py":
             # a real run always writes a PARSEABLE marker; a bare .touch()
             # would leave it empty, which the voiced-stage freshness backstop
@@ -490,6 +492,7 @@ def _capturing_stub(ep_dir: Path):
             mp.touch()
 
     stub.calls = calls  # type: ignore[attr-defined]
+    stub.kw = kw  # type: ignore[attr-defined]
     return stub
 
 
@@ -519,7 +522,7 @@ _GROUPED_MARKERS = ["manifest.stitch.json", "manifest.panels.expanded.json",
 class TestBeatedCastWiring:
     """_stage_beated builds the chapter cast (once) and threads --cast through."""
 
-    def _run(self, tmp_path, monkeypatch, *, pre_cast: bool):
+    def _run(self, tmp_path, monkeypatch, *, pre_cast: bool, cfg=None, stub=None):
         import studio.pipeline as pipeline_mod
 
         ep_dir = tmp_path / "ep"
@@ -531,7 +534,7 @@ class TestBeatedCastWiring:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
 
-        stub = _capturing_stub(ep_dir)
+        stub = stub or _capturing_stub(ep_dir)
         monkeypatch.setattr(pipeline_mod, "_run_tool", stub)
 
         con = connect(tmp_path / "test.db")
@@ -544,8 +547,68 @@ class TestBeatedCastWiring:
             import os, time
             now = time.time() + 60
             os.utime(ep_dir / "manifest.cast.json", (now, now))
-        pipeline_mod.run_chapter(con, chapter, _make_cfg(tmp_path), now_fn=_now)
+        pipeline_mod.run_chapter(con, chapter, cfg or _make_cfg(tmp_path), now_fn=_now)
         return stub, repo.get_chapter(con, chapter.id), ep_dir
+
+    def _ccip_cfg(self, tmp_path, **kw):
+        import dataclasses
+        return dataclasses.replace(_make_cfg(tmp_path), identity_python="/id/py", **kw)
+
+    def test_ccip_backend_identifies_from_pictures_before_the_writer(self, tmp_path,
+                                                                    monkeypatch):
+        """Every series, no exemplars needed; runs in its own venv."""
+        stub, _ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=False,
+                                      cfg=self._ccip_cfg(tmp_path, identity_backend="ccip"))
+        names = [n for n, _ in stub.calls]
+        assert "panel_identity.py" not in names
+        assert names.index("cast_builder.py") < names.index("panel_identity_ccip.py") \
+            < names.index("gemini_narrative_pass.py")
+        argv = next(a for n, a in stub.calls if n == "panel_identity_ccip.py")
+        assert argv[argv.index("--episode-dir") + 1] == str(ep_dir)
+        assert "--series-cast" not in argv            # no registry beside it
+        assert stub.kw["panel_identity_ccip.py"]["python_exe"] == "/id/py"
+
+    def test_ccip_passes_the_registry_for_exemplar_pins(self, tmp_path, monkeypatch):
+        reg = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.json"
+        reg.parent.mkdir(parents=True)
+        reg.write_text('{"cast": []}')
+        stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False,
+                                   cfg=self._ccip_cfg(tmp_path, identity_backend="ccip"))
+        argv = next(a for n, a in stub.calls if n == "panel_identity_ccip.py")
+        assert argv[argv.index("--series-cast") + 1] == str(reg)
+
+    def test_ccip_failure_never_blocks_the_chapter(self, tmp_path, monkeypatch):
+        """A detector/model failure leaves the chapter on the keyword path —
+        and removes an identity file that is no longer this chapter's truth."""
+        ep_dir = tmp_path / "ep"
+        inner = _capturing_stub(ep_dir)
+
+        def stub(script_name, args_list, **kwargs):
+            inner(script_name, args_list, **kwargs)
+            if script_name == "panel_identity_ccip.py":
+                (ep_dir / "manifest.identity.json").write_text("{}")
+                raise RuntimeError("onnxruntime exploded")
+        stub.calls = inner.calls
+        _s, _ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=False, stub=stub,
+                                    cfg=self._ccip_cfg(tmp_path, identity_backend="ccip"))
+        assert "gemini_narrative_pass.py" in [n for n, _ in inner.calls]
+        assert not (ep_dir / "manifest.identity.json").exists()
+
+    def test_backend_off_runs_no_identity_pass(self, tmp_path, monkeypatch):
+        reg = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.json"
+        reg.parent.mkdir(parents=True)
+        reg.write_text('{"cast": [{"canonical_name": "X", "is_protagonist": true,'
+                       ' "exemplars": ["a.jpg", "b.jpg"]}]}')
+        stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False,
+                                   cfg=self._ccip_cfg(tmp_path, identity_backend="off"))
+        names = [n for n, _ in stub.calls]
+        assert "panel_identity.py" not in names and "panel_identity_ccip.py" not in names
+
+    def test_backend_per_series_override(self, tmp_path, monkeypatch):
+        cfg = self._ccip_cfg(tmp_path, identity_backend="gemma",
+                             identity_series={tmp_path.name: "ccip"})
+        stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False, cfg=cfg)
+        assert "panel_identity_ccip.py" in [n for n, _ in stub.calls]
 
     def test_cast_built_before_narrative_pass_and_flag_passed(self, tmp_path, monkeypatch):
         stub, ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=False)

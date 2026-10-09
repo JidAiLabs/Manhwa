@@ -425,7 +425,26 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         # the understanding or the registry moves — the narration is written
         # from this, so a stale identity is a wrong name in a finished chapter.
         identity = ep_dir / "manifest.identity.json"
-        if series_cast.exists() and _identity_exemplars(series_cast):
+        backend = cfg.identity_backend_for(ep_dir.parent.name)
+        if backend == "ccip":
+            # 2026-10-10: the protagonist recognized from pictures, every series,
+            # no exemplars needed (tools/panel_identity_ccip.py). Re-run on
+            # every narration build — cached heads make it seconds — so it is
+            # always consistent with the cast built just above (no deps edge:
+            # one would mark finished chapters stale). Fail-soft like the
+            # story pass: a model failure leaves the keyword identity.
+            try:
+                _run_tool("panel_identity_ccip.py",
+                          ["--episode-dir", str(ep_dir)]
+                          + (["--series-cast", str(series_cast)]
+                             if series_cast.exists() else []),
+                          python_exe=cfg.identity_python)
+            except Exception as e:
+                identity.unlink(missing_ok=True)
+                print(f"[beated] image identity FAILED ({e}) -> keyword "
+                      "identity stands")
+        elif (backend == "gemma" and series_cast.exists()
+              and _identity_exemplars(series_cast)):
             id_stale = (identity.exists()
                         and (_artifact_is_stale(ep_dir, "manifest.identity.json")
                              or series_cast.stat().st_mtime > identity.stat().st_mtime))

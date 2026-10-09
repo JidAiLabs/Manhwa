@@ -344,3 +344,18 @@ def test_real_wrong_exemplars_keep_the_series_provisional():
     tt_seed = pic.build_profile(tt_idx)["seed"]["feat"]
     prof = pic.build_profile(idx, pins=np.asarray([tt_seed], dtype=np.float32))
     assert prof["status"] == "provisional"
+
+
+def test_run_while_provisional_removes_a_leftover_identity(tmp_path):
+    """Provisional = the keyword identity stands; a file left by an earlier
+    profile or another backend would silently keep naming from it."""
+    ep = tmp_path / "series" / "Chapter_1"
+    _scene(ep, "p1.jpg")
+    _understood(ep, [{"scene_file": "p1.jpg", "panel_kind": "story",
+                      "subjects": ["a man"]}])
+    (ep / "manifest.identity.json").write_text('{"panels": {"p1.jpg": {"names": ["X"]}}}')
+    got = pic.run(ep, heads_fn=lambda p: [((0, 0, 1, 1), 0.9)],
+                  embed_fn=lambda items: np.ones((len(items), DIM), np.float32))
+    assert got is None
+    assert not (ep / "manifest.identity.json").exists()
+    assert pic.load_profile(ep.parent)["status"] == "provisional"

@@ -438,7 +438,13 @@ def run(ep_dir, series_cast=None, *, heads_fn=None, embed_fn=None) -> Optional[D
             save_profile(ep.parent, prof)
             print(f"[identity] profile v{prof['version']} {prof['status']} "
                   f"{prof.get('reasons') or ''} {prof.get('alarms') or ''} {prof.get('stats')}")
-    return identify_chapter(ep, prof, index)
+    got = identify_chapter(ep, prof, index)
+    if got is None and (ep / "manifest.identity.json").exists():
+        # provisional = the keyword identity stands; a leftover file from an
+        # earlier profile or another backend would keep naming from it
+        (ep / "manifest.identity.json").unlink()
+        print("[identity] removed a leftover manifest.identity.json (profile provisional)")
+    return got
 
 
 # ---------------------------------------------------------------- grading
