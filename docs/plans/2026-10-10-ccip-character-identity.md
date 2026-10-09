@@ -152,3 +152,33 @@ task); `_figures_from_identity` evidence-by-position mis-indexing.
   --sheet`; grade; `python -m studio run 1 --chapters 6`; read `manifest.identity.json` + beats.
 - Fleet: `tools/identity_sweep.py --series ongoing/<slug>` per series; census + alarms reviewed with the owner before
   any re-narration is queued.
+
+## Implementation notes — where the data changed the plan (2026-10-10)
+
+Measured on the spike's real features (now `tests/fixtures/ccip_spike_fixture.*`: 717 ORV + 489 TT heads),
+before any constant was written:
+
+- **CCIP difference == (1 − cos)/2** of the features (max error 0.00000 vs `ccip_batch_differences`, 300 heads),
+  so fingerprints compare in numpy; only detection + embedding need onnxruntime.
+- **Otsu dropped; the cut is FIXED at 0.15.** Otsu valley: ORV 0.175, TT 0.21 — and 0.145/0.150 with RANDOM
+  references at the same η (0.68–0.71), so it measures nothing. By-eye grading is the only calibration we have
+  (ORV ≈88% @0.20, TT ≈90%+ @0.15); 0.15 is the cut that holds for both.
+- **FP proxy dropped.** "Two heads matching in one panel" is 46% (ORV) / 24% (TT) of matched multi-head panels at
+  0.15; the sheet shows it is mostly the protagonist next to a look-alike talking to him (sometimes him drawn
+  twice). Such a panel is never named; the rate is no calibration signal.
+- **Dominance redefined:** seed density vs the densest head among heads ≥ 0.20 from every reference (the next
+  group). ORV 8.8×, TT 5.5×; a deliberately wrong seed scores < 1. The "densest non-matching head" in the plan
+  scored 1.17–1.56 because near-misses of the protagonist count as non-matching.
+- **"Same character?" checks use the cut (0.15), not CCIP's 0.178.** ORV's and TT's leads are 0.165 apart. Owner
+  exemplars sit 0.091/0.102 from ORV's automatic references; TT's lead 0.164 — so exemplar agreement is "every
+  pin within the cut of a reference", and continuity on refresh is judged at the cut.
+- **Cross-series control (new, free):** heads of another series are certainly not this protagonist. ORV's profile
+  names 8% of TT heads; TT's names 27% of ORV heads (both leads are dark-haired young men). The sweep reports
+  this per series; a high rate is the signal to tighten that series. TT's precision is graded on the real sheet
+  before TT is switched on.
+- **No deps edge identity ← cast:** it would mark existing identity files stale wherever a cast was rebuilt
+  later, and stale manifests block QA. ccip re-runs on every narration build instead (cached heads: seconds).
+- **Solo window = no written text at all** on any voiced panel (understood dialogue OR OCR): the understood
+  `dialogue` field is filled on 1 of 71 ORV Ep6 story panels, so it cannot be the only veto.
+- **Sweep `--apply` (queue re-prepares) not built:** backfills are the owner's decision; the sweep reports.
+- Tool reproduces the spike exactly on the Mini (77/77 heads, fingerprint diff 0.0); 16 s/chapter uncached.
