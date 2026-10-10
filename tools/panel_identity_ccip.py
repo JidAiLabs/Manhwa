@@ -558,7 +558,8 @@ def main() -> int:
     else:
         P = got["panels"]
         print(f"[ok] identity (ccip): {len(P)} panels with heads, "
-              f"{sum(1 for v in P.values() if v['mc'])} the protagonist")
+              f"{sum(1 for v in P.values() if v.get('cand'))} picture candidates "
+              "(named only after gemma confirms them)")
     if args.sheet:
         print(f"[identity] sheet: {contact_sheet(Path(args.episode_dir).parent, args.sheet)} heads "
               f"-> {args.sheet}")
