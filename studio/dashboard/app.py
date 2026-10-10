@@ -713,6 +713,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     failed=jobs.failed_chapters(c, sid),
                     autopilot=bool(autopilot),
                     narration_style=style or "default",
+                    identity=_identity_card(sid),
                     thumb_exists=thumb_exists, thumb_ready=thumb_ready,
                     thumb_v=int(thumb.stat().st_mtime) if thumb_exists else 0,
                     thumb_approved=gates.thumbnail_approved(c, sid),
@@ -867,6 +868,58 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         p = REPO / "dist" / f"series_{sid}" / "thumbnail_yt.jpg"
         if not p.exists():
             return PlainTextResponse("no thumbnail yet", status_code=404)
+        return FileResponse(str(p), media_type="image/jpeg")
+
+    def _series_slug(sid: int) -> str:
+        row = rcon(sid).execute("SELECT slug FROM series WHERE id=?", (sid,)).fetchone()
+        return str(row[0]) if row else ""
+
+    def _identity_exemplars(slug: str) -> List[Dict[str, Any]]:
+        """The panels gemma confirms the protagonist against
+        (cast/<slug>.exemplars.json, picked by eye): 2 of the protagonist, then
+        2 of ONE look-alike. Served by INDEX only, and only from ongoing/ — a
+        path never comes from the browser."""
+        try:
+            ex = json.loads((REPO / "cast" / f"{slug}.exemplars.json").read_text())
+        except (OSError, ValueError):
+            return []
+        root = (REPO / "ongoing").resolve()
+        out = []
+        for role, key in (("protagonist", "protagonist"), ("look-alike", "decoy")):
+            for rel in ex.get(key) or []:
+                path = (REPO / str(rel)).resolve()
+                parts = path.relative_to(root).parts if path.is_relative_to(root) else ()
+                out.append({"role": role, "path": path if parts else None,
+                            "label": " ".join(parts[1:2] + parts[-1:]) if parts else str(rel)})
+        return out
+
+    def _identity_card(sid: int) -> Dict[str, Any]:
+        slug = _series_slug(sid)
+        try:
+            from studio.config import load as _load_cfg
+            backend = _load_cfg().identity_backend_for(slug)
+        except Exception:                                   # noqa: BLE001
+            backend = "?"
+        try:
+            check = json.loads((REPO / "dist" / "identity_check" / f"{slug}.json").read_text())
+        except (OSError, ValueError):
+            check = None
+        return {"backend": backend, "exemplars": _identity_exemplars(slug), "check": check,
+                "sheet": (REPO / "dist" / "identity_check" / f"{slug}_sheet.jpg").exists()}
+
+    @app.get("/identity/series/{sid}/exemplar/{idx}")
+    def identity_exemplar(sid: int, idx: int):
+        items = _identity_exemplars(_series_slug(sid))
+        if not 0 <= idx < len(items) or not items[idx]["path"] \
+                or not items[idx]["path"].is_file():
+            return PlainTextResponse("no such exemplar", status_code=404)
+        return FileResponse(str(items[idx]["path"]), media_type="image/jpeg")
+
+    @app.get("/identity/series/{sid}/check_sheet")
+    def identity_check_sheet(sid: int):
+        p = REPO / "dist" / "identity_check" / f"{_series_slug(sid)}_sheet.jpg"
+        if not p.is_file():
+            return PlainTextResponse("no identity check yet", status_code=404)
         return FileResponse(str(p), media_type="image/jpeg")
 
     def _ref_candidates(sid: int) -> List[Dict[str, Any]]:
