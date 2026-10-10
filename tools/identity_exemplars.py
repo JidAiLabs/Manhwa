@@ -323,8 +323,9 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
         if len(prot) < 2:
             continue
         # one person reached from two seeds (Death Knight 2026-10-10: two
-        # candidates 0.044 apart, gemma then answered by position)
-        same = next((c for c in cands if float(np.median(
+        # candidates 0.044 apart, gemma then answered by position) — or one
+        # mixed group of faces reached twice (same close-ups, wide spread)
+        same = next((c for c in cands if set(prot) & set(c["prot"]) or float(np.median(
             pic.ccip_diff(F[prot], F[c["prot"]]))) < pic.CUT), None)
         if same is not None:
             same["rules"].append(rule)

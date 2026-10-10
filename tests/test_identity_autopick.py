@@ -214,3 +214,25 @@ def test_two_seeds_on_one_person_are_one_candidate(tmp_path, monkeypatch):
     leads = [who[c["protagonist"][0]["path"]] for c in obj["candidates"]]
     assert len(leads) == len(set(leads))
     assert obj["auto"]["rules"]["runner_up"] == obj["auto"]["rules"]["most_present"]
+
+
+def test_a_mixed_group_reached_twice_is_one_candidate(tmp_path, monkeypatch):
+    # Death Knight re-run: two seeds in one wide group of different faces got
+    # the SAME close-ups (median spread 0.13 > CUT, so the median rule missed it)
+    sd, who = _series(tmp_path, PLAN)
+    real = ie._typical
+    seen = {}
+
+    def typical(sd_, rows, F, j, k, radius, ok=None, cap=400):
+        out = real(sd_, rows, F, j, k, radius, ok=ok, cap=cap)
+        if k == 6:                                   # lead close-ups: one shared set
+            seen.setdefault("first", out)
+            return seen["first"] if who[str(sd_ / rows[j][0] / "scenes" / rows[j][1]["panel"])] \
+                != "mc" else out
+        return out
+    monkeypatch.setattr(ie, "_typical", typical)
+    monkeypatch.setattr(pic, "CUT", -1.0)            # the median rule never merges
+    obj = ie.auto_pick(sd, tmp_path / "a.json", chat=_chat_picking(who, "mc"),
+                       load=lambda p: str(p).encode())
+    sets = [tuple(h["path"] for h in c["protagonist"]) for c in obj["candidates"]]
+    assert len(sets) == len(set(sets))
