@@ -2243,10 +2243,26 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
 }
 
 
+def _paused(lane: "str | None") -> bool:
+    """<repo>/.worker_pause stops a lane from CLAIMING new jobs; running jobs
+    finish normally. Content = lanes to pause ("gpu,tts"); empty = all lanes.
+    The safe way to free the GPU for an experiment: freezing the worker with
+    SIGSTOP (2026-10-10) tripped its wall-clock watchdogs and failed a prepare.
+    `echo gpu,tts > .worker_pause` to pause, `rm .worker_pause` to resume."""
+    try:
+        text = (REPO / ".worker_pause").read_text()
+    except OSError:
+        return False
+    lanes = {x.strip() for x in text.replace("\n", ",").split(",") if x.strip()}
+    return not lanes or (lane or "") in lanes
+
+
 def run_once(con: sqlite3.Connection, *, handlers=None,
              log_dir: str = "logs/jobs",
              lane: "str | None" = None) -> bool:
     handlers = HANDLERS if handlers is None else handlers
+    if _paused(lane):
+        return False
     job = jobs.claim_next(con, lane=lane)
     if not job:
         return False

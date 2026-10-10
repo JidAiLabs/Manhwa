@@ -24,3 +24,4 @@ keys/
 dist/
 .playwright-mcp/
 .worktrees/
+.worker_pause
