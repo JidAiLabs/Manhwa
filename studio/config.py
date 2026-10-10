@@ -132,9 +132,14 @@ class Config:
                                              # [identity.series] slug -> backend;
                                              # env STUDIO_IDENTITY_BACKEND beats it
 
-    def identity_backend_for(self, slug: str) -> str:
+    def identity_backend_for(self, slug: str, confirmed: bool = False) -> str:
+        """*confirmed*: the series has exemplars confirmed on the Series page
+        (confirmed_exemplars) — that click switches it to ccip unless the toml
+        names the series."""
         if os.environ.get("STUDIO_IDENTITY_BACKEND"):
             return self.identity_backend     # fleet-wide rollback lever
+        if slug not in self.identity_series and confirmed:
+            return "ccip"
         return _valid_identity_backend(
             self.identity_series.get(slug) or self.identity_backend)
 
@@ -163,6 +168,23 @@ def _valid_segmentation(val: str) -> str:
 
 
 _IDENTITY_BACKENDS = ("ccip", "gemma", "off")
+
+
+def confirmed_exemplars(series_dir: Path) -> Path:
+    """Exemplars a person confirmed on the Series page (not git-tracked: the
+    Mini's dashboard writes it)."""
+    return Path(series_dir) / ".identity" / "exemplars.json"
+
+
+def identity_exemplars_path(series_dir: Path, repo: Path = REPO_ROOT) -> "Path | None":
+    """The exemplars gemma confirms the protagonist against: the set confirmed
+    on the Series page wins (the newest decision), else the hand-picked
+    cast/<slug>.exemplars.json, else None."""
+    for p in (confirmed_exemplars(series_dir),
+              Path(repo) / "cast" / f"{Path(series_dir).name}.exemplars.json"):
+        if p.exists():
+            return p
+    return None
 
 
 def _valid_identity_backend(val: str) -> str:

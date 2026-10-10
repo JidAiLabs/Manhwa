@@ -1914,15 +1914,52 @@ def _h_identity_check(con: sqlite3.Connection, job: Dict[str, Any],
     a stream of gemma calls, so it queues behind prepares instead of stacking
     on them (2026-10-10: an out-of-band gemma loop beside the worker coincided
     with a Metal GPU hang). Touches no chapter."""
+    from studio.config import identity_exemplars_path
     payload = job["payload"] or {}
     slug = str(payload["series_slug"])
+    ex = identity_exemplars_path(REPO / "ongoing" / slug, REPO)
+    if ex is None:
+        raise RuntimeError(f"identity check: {slug} has no exemplars")
     cmd = [PY, str(REPO / "tools" / "panel_identity.py"),
            "--check-series", str(REPO / "ongoing" / slug),
-           "--verify-ccip", str(REPO / "cast" / f"{slug}.exemplars.json"),
+           "--verify-ccip", str(ex),
            "--n", str(int(payload.get("n") or 40))]
     rc = _stream(cmd, log)
     if rc != 0:
         raise RuntimeError(f"identity check exited {rc}")
+
+
+def _h_identity_propose(con: sqlite3.Connection, job: Dict[str, Any],
+                        log: TextIO) -> None:
+    """The automatic exemplar PROPOSAL for one series
+    (tools/identity_exemplars.py --auto: the candidate leads, gemma's choice
+    asked twice), then the gemma check of that choice into
+    dist/identity_check/proposed/. The Series page shows both; a person
+    confirms or swaps it there — nothing is switched on here. gpu lane."""
+    payload = job["payload"] or {}
+    slug = str(payload["series_slug"])
+    sd = REPO / "ongoing" / slug
+    out = sd / ".identity" / "exemplars.proposed.json"
+    out.unlink(missing_ok=True)
+    rc = _stream([PY, str(REPO / "tools" / "identity_exemplars.py"),
+                  "--series", str(sd), "--auto", str(out)], log)
+    if rc != 0:
+        raise RuntimeError(f"identity proposal exited {rc}")
+    check_dir = REPO / "dist" / "identity_check" / "proposed"
+    for f in (check_dir / f"{slug}.json", check_dir / f"{slug}_sheet.jpg"):
+        f.unlink(missing_ok=True)
+    try:
+        chosen = json.loads(out.read_text()).get("protagonist")
+    except (OSError, ValueError):
+        chosen = None
+    if not chosen:
+        log.write("[identity] no lead chosen automatically - nothing to check\n")
+        return
+    rc = _stream([PY, str(REPO / "tools" / "panel_identity.py"),
+                  "--check-series", str(sd), "--verify-ccip", str(out),
+                  "--n", str(int(payload.get("n") or 40)), "--out-dir", str(check_dir)], log)
+    if rc != 0:
+        raise RuntimeError(f"identity proposal check exited {rc}")
 
 
 def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
@@ -2240,6 +2277,7 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
     "refresh": _h_refresh,
     "refresh_facts": _h_refresh_facts,
     "identity_check": _h_identity_check,
+    "identity_propose": _h_identity_propose,
 }
 
 

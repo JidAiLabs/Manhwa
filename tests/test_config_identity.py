@@ -1,7 +1,7 @@
 """[identity] config: the image-identity venv + backend switch (2026-10-10)."""
 import pytest
 
-from studio.config import REPO_ROOT, load
+from studio.config import REPO_ROOT, identity_exemplars_path, load
 
 
 @pytest.fixture(autouse=True)
@@ -50,3 +50,27 @@ def test_identity_backend_per_series_and_env_rollback(tmp_path, monkeypatch):
     # the env lever is a fleet-wide rollback: it beats every per-series entry
     monkeypatch.setenv("STUDIO_IDENTITY_BACKEND", "off")
     assert load(toml).identity_backend_for("omniscient-reader") == "off"
+
+
+def test_exemplars_confirmed_on_the_series_page_switch_the_series_on(tmp_path, monkeypatch):
+    toml = tmp_path / "studio.toml"
+    toml.write_text('[identity]\nbackend = "gemma"\n'
+                    '[identity.series]\n"held-off" = "off"\n')
+    cfg = load(toml)
+    assert cfg.identity_backend_for("clan", confirmed=True) == "ccip"
+    assert cfg.identity_backend_for("clan") == "gemma"
+    assert cfg.identity_backend_for("held-off", confirmed=True) == "off"   # the toml wins
+    monkeypatch.setenv("STUDIO_IDENTITY_BACKEND", "off")
+    assert load(toml).identity_backend_for("clan", confirmed=True) == "off"
+
+
+def test_the_confirmed_exemplars_win_over_the_hand_picked_file(tmp_path):
+    sd = tmp_path / "ongoing" / "clan"
+    assert identity_exemplars_path(sd, tmp_path) is None
+    (tmp_path / "cast").mkdir()
+    cast = tmp_path / "cast" / "clan.exemplars.json"
+    cast.write_text("{}")
+    assert identity_exemplars_path(sd, tmp_path) == cast
+    (sd / ".identity").mkdir(parents=True)
+    (sd / ".identity" / "exemplars.json").write_text("{}")
+    assert identity_exemplars_path(sd, tmp_path) == sd / ".identity" / "exemplars.json"

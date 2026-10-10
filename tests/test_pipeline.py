@@ -586,6 +586,24 @@ class TestBeatedCastWiring:
         assert argv[argv.index("--episode-dir") + 1] == str(ep_dir)
         assert not stub.kw["panel_identity.py"].get("python_exe")
 
+    def test_exemplars_confirmed_on_the_series_page_switch_ccip_on(self, tmp_path,
+                                                                   monkeypatch):
+        """A click on the Series page (ongoing/<slug>/.identity/exemplars.json)
+        turns the picture identity on and seeds its profile; it beats the
+        hand-picked cast file."""
+        cast = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.exemplars.json"
+        cast.parent.mkdir(parents=True)
+        cast.write_text('{"protagonist": ["a", "b"], "decoy": ["c", "d"]}')
+        ex = tmp_path / ".identity" / "exemplars.json"
+        ex.parent.mkdir()
+        ex.write_text('{"seed": "exemplars", "protagonist": ["a", "b"], "decoy": ["c", "d"]}')
+        stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False,
+                                   cfg=self._ccip_cfg(tmp_path, identity_backend="gemma"))
+        pic = next(a for n, a in stub.calls if n == "panel_identity_ccip.py")
+        ver = next(a for n, a in stub.calls if n == "panel_identity.py")
+        assert pic[pic.index("--exemplars") + 1] == str(ex)
+        assert ver[ver.index("--verify-ccip") + 1] == str(ex)
+
     def test_no_exemplars_file_means_no_gemma_verify(self, tmp_path, monkeypatch):
         stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False,
                                    cfg=self._ccip_cfg(tmp_path, identity_backend="ccip"))

@@ -425,7 +425,10 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         # the understanding or the registry moves — the narration is written
         # from this, so a stale identity is a wrong name in a finished chapter.
         identity = ep_dir / "manifest.identity.json"
-        backend = cfg.identity_backend_for(ep_dir.parent.name)
+        from studio.config import confirmed_exemplars, identity_exemplars_path
+        exemplars = identity_exemplars_path(ep_dir.parent, _REPO_ROOT)
+        backend = cfg.identity_backend_for(
+            ep_dir.parent.name, confirmed=confirmed_exemplars(ep_dir.parent).exists())
         if backend == "ccip":
             # 2026-10-10: the protagonist recognized from pictures, every series,
             # no exemplars needed (tools/panel_identity_ccip.py). Re-run on
@@ -437,7 +440,8 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                 _run_tool("panel_identity_ccip.py",
                           ["--episode-dir", str(ep_dir)]
                           + (["--series-cast", str(series_cast)]
-                             if series_cast.exists() else []),
+                             if series_cast.exists() else [])
+                          + (["--exemplars", str(exemplars)] if exemplars else []),
                           python_exe=cfg.identity_python)
             except Exception as e:
                 identity.unlink(missing_ok=True)
@@ -448,9 +452,9 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
             # alone ~70-85%, both agreeing ~95%). No exemplars file = nobody is
             # named. Runs in THIS interpreter (ollama lives here). A failure
             # keeps the unverified file: it names nobody, which is vague, never
-            # the keyword guesses an unlink would bring back.
-            exemplars = _REPO_ROOT / "cast" / f"{ep_dir.parent.name}.exemplars.json"
-            if exemplars.exists():
+            # the keyword guesses an unlink would bring back. The exemplars are
+            # the set confirmed on the Series page, else cast/<slug>.exemplars.json.
+            if exemplars:
                 try:
                     _run_tool("panel_identity.py",
                               ["--episode-dir", str(ep_dir),

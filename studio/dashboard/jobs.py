@@ -46,6 +46,7 @@ LANES = {
     "refresh_facts": "gpu",
     # validating a series' picture + gemma identity: a stream of gemma calls
     "identity_check": "gpu",
+    "identity_propose": "gpu",       # the automatic exemplar proposal: gemma
     # --- qwen TTS: its own lane, OVERLAPS a gemma prepare ---
     "voiceover": "tts",
     # --- CPU / ffmpeg / remotion: no local model ---

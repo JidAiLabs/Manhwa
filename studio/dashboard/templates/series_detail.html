@@ -60,7 +60,7 @@
 <h2>Character identity <small>— who gemma checks the protagonist against (picture match proposes, gemma confirms)</small></h2>
 <div class="row">
 {% if identity.exemplars %}
-<span class="kv">backend: <b>{{ identity.backend }}</b>{% if identity.backend != 'ccip' %} — not switched on yet{% endif %}</span>
+<span class="kv">backend: <b>{{ identity.backend }}</b>{% if identity.backend != 'ccip' %} — not switched on yet{% endif %} · exemplars {{ 'confirmed on this page' if identity.source == 'confirmed' else 'hand-picked' }}</span>
 </div>
 <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-start">
 {% for e in identity.exemplars %}
@@ -80,6 +80,38 @@
 {% else %}
 <span class="kv">no exemplars — the picture check is not set up for this series; characters are identified the old way (word matching)</span>
 {% endif %}
+</div>
+{% set prop = identity.proposal %}
+{% if prop %}
+<div class="row"><span class="kv"><b>Automatic proposal.</b>
+{% if prop.auto.chosen is not none %}gemma chose <b>person {{ 'ABCD'[prop.auto.chosen] }}</b>{% if prop.auto.asked_gemma %} (asked twice, order reversed: same answer){% else %} (the only candidate){% endif %}.
+{% if prop.check %} Against these panels gemma confirmed <b>{{ prop.check.confirmed }} of {{ prop.check.n }}</b> sampled candidates{% if prop.sheet %} — <a href="/identity/series/{{ sid }}/check_sheet?proposed=1" target="_blank" style="color:var(--acc)">grading sheet ↗</a>{% endif %}.{% endif %}
+{% else %}gemma could not decide who the protagonist is{% if prop.auto.answers %} (answers {{ prop.auto.answers|join(', ') }}){% endif %} — pick the person below.{% endif %}
+Tick 2 protagonist panels and 2 look-alike panels (the first two are ticked), then confirm. Nothing changes until you do.</span></div>
+{% for c in prop.candidates %}
+<details {% if c.chosen or prop.auto.chosen is none %}open{% endif %} style="margin:6px 0">
+<summary class="kv">person {{ c.letter }}{% if c.chosen %} — gemma's choice{% endif %}</summary>
+<form method="post" action="/identity/series/{{ sid }}/confirm">
+<input type="hidden" name="cand" value="{{ c.k }}">
+{% for role, label, items in [('prot', 'protagonist', c.protagonist), ('decoy', 'look-alike (one other character)', c.decoy)] %}
+<div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-start">
+<span class="kv" style="width:110px">{{ label }}</span>
+{% for lab in items %}
+<label style="text-align:center"><img src="/identity/series/{{ sid }}/proposed/{{ c.k }}/{{ 'protagonist' if role == 'prot' else 'decoy' }}/{{ loop.index0 }}" alt="{{ label }}" style="height:150px;border-radius:6px;border:2px solid {{ 'var(--acc)' if role == 'prot' else '#888' }}"><br>
+<input type="checkbox" name="{{ role }}" value="{{ loop.index0 }}" {% if loop.index0 < 2 %}checked{% endif %}> <span class="kv">{{ lab }}</span></label>
+{% endfor %}
+</div>
+{% endfor %}
+<button type="submit">Use person {{ c.letter }} — switch the picture check on</button>
+</form>
+</details>
+{% endfor %}
+<form method="post" action="/identity/series/{{ sid }}/proposal/discard" style="display:inline"><button type="submit">Discard the proposal</button></form>
+{% endif %}
+<div class="row">
+{% if identity.proposing %}<span class="kv">automatic proposal {{ identity.proposing }} (worker job identity_propose, gpu lane)…</span>
+{% else %}<form method="post" action="/identity/series/{{ sid }}/propose" style="display:inline"><button type="submit">{{ 'Propose again' if prop or identity.exemplars else 'Propose exemplars automatically' }}</button></form>
+<span class="kv">gemma picks the protagonist and a look-alike from the series' faces; you confirm</span>{% endif %}
 </div>
 
 <h2>Publish <small>— read it top to bottom, then paint once. Everything above the paint button is free.</small></h2>

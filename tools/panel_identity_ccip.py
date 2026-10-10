@@ -484,17 +484,41 @@ def identify_chapter(ep_dir, profile: Optional[Dict[str, Any]],
     return obj
 
 
-def run(ep_dir, series_cast=None, *, heads_fn=None, embed_fn=None) -> Optional[Dict[str, Any]]:
-    """index this chapter -> refresh the series profile when due -> identify."""
+def _seed_exemplars(path) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """An exemplars file marked seed: exemplars, and a key of its lead's faces
+    (a new pick rebuilds the profile); (None, None) otherwise."""
+    try:
+        ex = json.loads(Path(path).read_text()) if path else None
+    except (OSError, ValueError):
+        ex = None
+    if not isinstance(ex, dict) or ex.get("seed") != "exemplars":
+        return None, None
+    faces = (ex.get("heads") or {}).get("protagonist") or ex.get("protagonist")
+    return ex, hashlib.sha1(json.dumps(faces, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def run(ep_dir, series_cast=None, *, exemplars=None, heads_fn=None,
+        embed_fn=None) -> Optional[Dict[str, Any]]:
+    """index this chapter -> refresh the series profile when due -> identify.
+    *exemplars* marked seed: exemplars (confirmed on the Series page) grow the
+    profile from the picked lead instead of the most-drawn face."""
     ep = Path(ep_dir)
     index = index_chapter(ep, heads_fn=heads_fn, embed_fn=embed_fn)
+    ex, ex_key = _seed_exemplars(exemplars)
     with profile_lock(ep.parent):
         prof = load_profile(ep.parent)
         indexes = load_indexes(ep.parent)
-        if profile_due(prof, len(indexes)):
-            pins = (pin_features(series_cast, heads_fn=heads_fn, embed_fn=embed_fn)
-                    if series_cast else None)
-            prof = build_profile(indexes, pins=pins, prior=prof)
+        if profile_due(prof, len(indexes)) or (prof or {}).get("exemplars_key") != ex_key:
+            if ex is not None:
+                sf = exemplar_feats(indexes, ex)
+                prof = (build_profile(indexes, prior=prof, seed_feats=sf) if sf is not None
+                        else {**build_profile([], prior=prof), "chapters_indexed": len(indexes),
+                              "reasons": ["the exemplar faces are not in the index"]})
+            else:
+                pins = (pin_features(series_cast, heads_fn=heads_fn, embed_fn=embed_fn)
+                        if series_cast else None)
+                prof = build_profile(indexes, pins=pins, prior=prof)
+            prof["exemplars_key"] = ex_key
             save_profile(ep.parent, prof)
             print(f"[identity] profile v{prof['version']} {prof['status']} "
                   f"{prof.get('reasons') or ''} {prof.get('alarms') or ''} {prof.get('stats')}")
@@ -549,9 +573,11 @@ def main() -> int:
     ap.add_argument("--episode-dir", required=True)
     ap.add_argument("--series-cast", default="",
                     help="cast/<slug>.json; protagonist exemplars become pinned references")
+    ap.add_argument("--exemplars", default="",
+                    help="exemplars file; seed: exemplars grows the profile from its lead")
     ap.add_argument("--sheet", default="", help="also write a grading contact sheet here")
     args = ap.parse_args()
-    got = run(args.episode_dir, args.series_cast or None)
+    got = run(args.episode_dir, args.series_cast or None, exemplars=args.exemplars or None)
     if got is None:
         print("[identity] ccip profile provisional -> no manifest.identity.json "
               "(keyword identity stands)")

@@ -15,7 +15,8 @@ import sqlite3
 import time
 from pathlib import Path
 from html import escape
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote_plus, urlparse
 
 from fastapi import FastAPI, Form, Request
@@ -874,38 +875,77 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         row = rcon(sid).execute("SELECT slug FROM series WHERE id=?", (sid,)).fetchone()
         return str(row[0]) if row else ""
 
-    def _identity_exemplars(slug: str) -> List[Dict[str, Any]]:
-        """The panels gemma confirms the protagonist against
-        (cast/<slug>.exemplars.json, picked by eye): 2 of the protagonist, then
-        2 of ONE look-alike. Served by INDEX only, and only from ongoing/ — a
-        path never comes from the browser."""
-        try:
-            ex = json.loads((REPO / "cast" / f"{slug}.exemplars.json").read_text())
-        except (OSError, ValueError):
-            return []
+    def _panel_under_ongoing(rel: Any) -> Tuple[Optional[Path], str]:
+        """A panel path from a server-side exemplars file, served only from
+        ongoing/ (a path never comes from the browser)."""
         root = (REPO / "ongoing").resolve()
+        path = (REPO / str(rel)).resolve()
+        parts = path.relative_to(root).parts if path.is_relative_to(root) else ()
+        return (path if parts else None,
+                " ".join(parts[1:2] + parts[-1:]) if parts else str(rel))
+
+    def _identity_exemplars(slug: str) -> List[Dict[str, Any]]:
+        """The panels gemma confirms the protagonist against: the set confirmed
+        on this page (ongoing/<slug>/.identity/exemplars.json), else the
+        hand-picked cast/<slug>.exemplars.json — 2 of the protagonist, then 2
+        of ONE look-alike. Served by INDEX only."""
+        from studio.config import identity_exemplars_path
+        try:
+            ex = json.loads(identity_exemplars_path(REPO / "ongoing" / slug, REPO).read_text())
+        except (OSError, ValueError, AttributeError):
+            return []
         out = []
         for role, key in (("protagonist", "protagonist"), ("look-alike", "decoy")):
             for rel in ex.get(key) or []:
-                path = (REPO / str(rel)).resolve()
-                parts = path.relative_to(root).parts if path.is_relative_to(root) else ()
-                out.append({"role": role, "path": path if parts else None,
-                            "label": " ".join(parts[1:2] + parts[-1:]) if parts else str(rel)})
+                path, label = _panel_under_ongoing(rel)
+                out.append({"role": role, "path": path, "label": label})
         return out
 
+    def _identity_proposal(slug: str) -> Optional[Dict[str, Any]]:
+        try:
+            prop = json.loads((REPO / "ongoing" / slug / ".identity"
+                               / "exemplars.proposed.json").read_text())
+        except (OSError, ValueError):
+            return None
+        return prop if isinstance(prop, dict) and prop.get("candidates") else None
+
     def _identity_card(sid: int) -> Dict[str, Any]:
+        from studio.config import confirmed_exemplars
         slug = _series_slug(sid)
+        confirmed = confirmed_exemplars(REPO / "ongoing" / slug)
         try:
             from studio.config import load as _load_cfg
-            backend = _load_cfg().identity_backend_for(slug)
+            backend = _load_cfg().identity_backend_for(slug, confirmed=confirmed.exists())
         except Exception:                                   # noqa: BLE001
             backend = "?"
-        try:
-            check = json.loads((REPO / "dist" / "identity_check" / f"{slug}.json").read_text())
-        except (OSError, ValueError):
-            check = None
-        return {"backend": backend, "exemplars": _identity_exemplars(slug), "check": check,
-                "sheet": (REPO / "dist" / "identity_check" / f"{slug}_sheet.jpg").exists()}
+
+        def check(sub: str) -> Optional[Dict[str, Any]]:
+            try:
+                return json.loads((REPO / "dist" / "identity_check" / sub / f"{slug}.json")
+                                  .read_text())
+            except (OSError, ValueError):
+                return None
+        prop = _identity_proposal(slug)
+        cands = []
+        for k, c in enumerate((prop or {}).get("candidates") or []):
+            cands.append({"k": k, "letter": "ABCD"[k] if k < 4 else str(k),
+                          "chosen": prop["auto"].get("chosen") == k,
+                          "protagonist": [_panel_under_ongoing(h["path"])[1]
+                                          for h in c.get("protagonist") or []],
+                          "decoy": [_panel_under_ongoing(h["path"])[1]
+                                    for h in c.get("decoy") or []]})
+        busy = rcon(sid).execute(
+            "SELECT state FROM job WHERE type='identity_propose' AND series_id=? "
+            "AND state IN ('queued','running') ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+        return {"backend": backend, "exemplars": _identity_exemplars(slug),
+                "source": "confirmed" if confirmed.exists() else "hand-picked",
+                "check": check(""),
+                "sheet": (REPO / "dist" / "identity_check" / f"{slug}_sheet.jpg").exists(),
+                "proposal": ({"auto": prop.get("auto") or {}, "candidates": cands,
+                              "check": check("proposed"),
+                              "sheet": (REPO / "dist" / "identity_check" / "proposed"
+                                        / f"{slug}_sheet.jpg").exists()} if prop else None),
+                "proposing": busy[0] if busy else None}
 
     @app.get("/identity/series/{sid}/exemplar/{idx}")
     def identity_exemplar(sid: int, idx: int):
@@ -916,11 +956,78 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         return FileResponse(str(items[idx]["path"]), media_type="image/jpeg")
 
     @app.get("/identity/series/{sid}/check_sheet")
-    def identity_check_sheet(sid: int):
-        p = REPO / "dist" / "identity_check" / f"{_series_slug(sid)}_sheet.jpg"
+    def identity_check_sheet(sid: int, proposed: int = 0):
+        p = (REPO / "dist" / "identity_check" / ("proposed" if proposed else "")
+             / f"{_series_slug(sid)}_sheet.jpg")
         if not p.is_file():
             return PlainTextResponse("no identity check yet", status_code=404)
         return FileResponse(str(p), media_type="image/jpeg")
+
+    @app.get("/identity/series/{sid}/proposed/{cand}/{role}/{idx}")
+    def identity_proposed_panel(sid: int, cand: int, role: str, idx: int):
+        prop = _identity_proposal(_series_slug(sid)) or {}
+        cands = prop.get("candidates") or []
+        heads = (cands[cand].get(role) or []) if 0 <= cand < len(cands) \
+            and role in ("protagonist", "decoy") else []
+        path = _panel_under_ongoing(heads[idx]["path"])[0] if 0 <= idx < len(heads) else None
+        if not path or not path.is_file():
+            return PlainTextResponse("no such panel", status_code=404)
+        return FileResponse(str(path), media_type="image/jpeg")
+
+    @app.post("/identity/series/{sid}/propose")
+    def identity_propose(sid: int):
+        # gemma on the gpu lane; priority 30 like other owner clicks
+        jobs.enqueue(con(), "identity_propose", series_id=sid,
+                     payload={"series_slug": _series_slug(sid)}, priority=30)
+        return RedirectResponse(f"/series/{sid}", status_code=303)
+
+    @app.post("/identity/series/{sid}/confirm")
+    def identity_confirm(sid: int, cand: int = Form(...), prot: List[int] = Form([]),
+                         decoy: List[int] = Form([])):
+        """The person's pick from the proposal becomes the series' exemplars
+        and switches the picture identity on for its next chapters. Only
+        INDEXES come from the browser; the panels come from the proposal."""
+        from studio.config import confirmed_exemplars
+        slug = _series_slug(sid)
+        prop = _identity_proposal(slug)
+        cands = (prop or {}).get("candidates") or []
+        if not 0 <= cand < len(cands):
+            return PlainTextResponse("no such proposal", status_code=404)
+        c = cands[cand]
+        P = sorted(set(prot))
+        D = sorted(set(decoy))
+        if len(P) != 2 or len(D) != 2 or not all(0 <= i < len(c["protagonist"]) for i in P) \
+                or not all(0 <= i < len(c["decoy"]) for i in D):
+            return PlainTextResponse("tick exactly 2 protagonist panels and 2 look-alike "
+                                     "panels", status_code=400)
+        heads = {"protagonist": [c["protagonist"][i] for i in P],
+                 "decoy": [c["decoy"][i] for i in D]}
+        obj = {"_readme": "Exemplars CONFIRMED on the Series page from the automatic "
+                          "proposal (tools/identity_exemplars.py --auto). seed: exemplars = "
+                          "the picture profile grows from these faces.",
+               "series": slug, "seed": "exemplars",
+               "protagonist": [h["path"] for h in heads["protagonist"]],
+               "decoy": [h["path"] for h in heads["decoy"]], "heads": heads,
+               "confirmed": {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                             "candidate": cand,
+                             "gemma_choice": (prop.get("auto") or {}).get("chosen"),
+                             "as_proposed": P == [0, 1] and D == [0, 1]}}
+        out = confirmed_exemplars(REPO / "ongoing" / slug)
+        tmp = out.with_suffix(".tmp")
+        tmp.write_text(json.dumps(obj, indent=2) + "\n")
+        tmp.replace(out)
+        (out.parent / "exemplars.proposed.json").unlink(missing_ok=True)
+        for f in (f"{slug}.json", f"{slug}_sheet.jpg"):   # the old set's check
+            (REPO / "dist" / "identity_check" / f).unlink(missing_ok=True)
+        jobs.enqueue(con(), "identity_check", series_id=sid,
+                     payload={"series_slug": slug}, priority=30)
+        return RedirectResponse(f"/series/{sid}", status_code=303)
+
+    @app.post("/identity/series/{sid}/proposal/discard")
+    def identity_discard(sid: int):
+        (REPO / "ongoing" / _series_slug(sid) / ".identity"
+         / "exemplars.proposed.json").unlink(missing_ok=True)
+        return RedirectResponse(f"/series/{sid}", status_code=303)
 
     def _ref_candidates(sid: int) -> List[Dict[str, Any]]:
         """Suggested reference panels (written by a thumbnail_refs job): ONE
