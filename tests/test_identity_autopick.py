@@ -198,3 +198,17 @@ def test_production_run_grows_the_profile_from_confirmed_exemplars(tmp_path):
     assert who_of(pic.load_profile(sd), who, sd) == "y"
     run(None)                                                       # removed: unseeded again
     assert not pic.load_profile(sd)["seeded"]
+
+
+def test_two_seeds_on_one_person_are_one_candidate(tmp_path, monkeypatch):
+    # Death Knight 2026-10-10: "most present" and "runner up" landed on the
+    # same young man (close-ups 0.044 apart) and gemma answered by position
+    sd, who = _series(tmp_path, PLAN)
+    real = ie._seeds
+    monkeypatch.setattr(ie, "_seeds", lambda F, chap: {**real(F, chap),
+                                                        "runner_up": real(F, chap)["most_present"]})
+    obj = ie.auto_pick(sd, tmp_path / "a.json", chat=_chat_picking(who, "mc"),
+                       load=lambda p: str(p).encode())
+    leads = [who[c["protagonist"][0]["path"]] for c in obj["candidates"]]
+    assert len(leads) == len(set(leads))
+    assert obj["auto"]["rules"]["runner_up"] == obj["auto"]["rules"]["most_present"]

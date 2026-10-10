@@ -312,21 +312,25 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
     F = np.asarray(feats, dtype=np.float32)
     chap = np.asarray([r[0] for r in rows])
     seeds = _seeds(F, chap)
-    leads: List[int] = []                         # distinct candidate leads
-    for rule in ("most_present", "most_chapters", "most_drawn", "runner_up"):
-        j = seeds.get(rule)
-        if j is not None and all(pic.ccip_diff(F[j:j + 1], F[g:g + 1])[0, 0] >= pic.CUT
-                                 for g in leads):
-            leads.append(j)
     cands: List[Dict[str, Any]] = []
-    for g in leads:
+    for rule in ("most_present", "most_chapters", "most_drawn", "runner_up"):
+        g = seeds.get(rule)
+        if g is None:
+            continue
         prot, medoid = _typical(sd, rows, F, g, 6, pic.REF_TIGHT)
         if len(prot) < 2:
+            continue
+        # one person reached from two seeds (Death Knight 2026-10-10: two
+        # candidates 0.044 apart, gemma then answered by position)
+        same = next((c for c in cands if float(np.median(
+            pic.ccip_diff(F[prot], F[c["prot"]]))) < pic.CUT), None)
+        if same is not None:
+            same["rules"].append(rule)
             continue
         dl = pic.ccip_diff(F, F[prot + [medoid]]).min(axis=1)
         dec = _decoy(sd, rows, F, chap, dl)
         if len(dec) >= 2:
-            cands.append({"seed": g, "prot": prot, "decoy": dec})
+            cands.append({"rules": [rule], "prot": prot, "decoy": dec})
     if not cands:
         print(f"[auto-pick] {sd.name}: no candidate lead with 2 close-ups and a recurring "
               "look-alike -> nothing proposed")
@@ -339,9 +343,6 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
                      if Path(path(j)).resolve().is_relative_to(REPO) else path(j))
     head = lambda j: {"path": rel(j), "chapter": rows[j][0], "panel": rows[j][1]["panel"],
                       "box": rows[j][1]["box"]}
-    of = lambda j: next((k for k, c in enumerate(cands)
-                         if pic.ccip_diff(F[j:j + 1], F[c["seed"]:c["seed"] + 1])[0, 0] < pic.CUT),
-                        None)
     obj: Dict[str, Any] = {
         "_readme": "PROPOSED exemplars (tools/identity_exemplars.py --auto): each candidate "
                    "lead with close-ups of him and of one recurring look-alike, most typical "
@@ -350,7 +351,8 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
         "series": sd.name, "seed": "exemplars",
         "auto": {"version": 2, "candidates": len(cands), "asked_gemma": len(cands) > 1,
                  "answers": answers, "chosen": chosen,
-                 "rules": {r: of(j) for r, j in seeds.items()}},
+                 "rules": {r: next((k for k, c in enumerate(cands) if r in c["rules"]), None)
+                           for r in seeds}},
         "candidates": [{"protagonist": [head(j) for j in c["prot"]],
                         "decoy": [head(j) for j in c["decoy"]]} for c in cands]}
     if chosen is not None:
