@@ -895,7 +895,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         except (OSError, ValueError, AttributeError):
             return []
         out = []
-        for role, key in (("protagonist", "protagonist"), ("look-alike", "decoy")):
+        for role, key in (("protagonist", "protagonist"), ("NOT him: look-alike", "decoy")):
             for rel in ex.get(key) or []:
                 path, label = _panel_under_ongoing(rel)
                 out.append({"role": role, "path": path, "label": label})

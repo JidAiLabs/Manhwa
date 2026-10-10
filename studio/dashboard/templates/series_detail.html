@@ -57,7 +57,7 @@
 <span class="kv">applies the next time a chapter's narration is written (prepare / rebuild); captions always stay verbatim</span>
 </div>
 
-<h2>Character identity <small>— who gemma checks the protagonist against (picture match proposes, gemma confirms)</small></h2>
+<h2>Character identity <small>— gemma is shown the protagonist (blue) and a DIFFERENT character who looks similar (grey, "NOT him"), so it learns to tell them apart</small></h2>
 <div class="row">
 {% if identity.exemplars %}
 <span class="kv">backend: <b>{{ identity.backend }}</b>{% if identity.backend != 'ccip' %} — not switched on yet{% endif %} · exemplars {{ 'confirmed on this page' if identity.source == 'confirmed' else 'hand-picked' }}</span>
@@ -87,13 +87,13 @@
 {% if prop.auto.chosen is not none %}{% if prop.auto.chosen_by == 'gemma' %}gemma chose <b>person {{ 'ABCD'[prop.auto.chosen] }}</b> (asked twice, order reversed: same answer).{% elif prop.auto.chosen_by == 'rules' %}gemma could not decide (answers {{ prop.auto.answers|join(', ') }}); the picture rule chose <b>person {{ 'ABCD'[prop.auto.chosen] }}</b> — check it.{% else %}<b>person {{ 'ABCD'[prop.auto.chosen] }}</b> is the only candidate.{% endif %}
 {% if prop.check %} Against these panels gemma confirmed <b>{{ prop.check.confirmed }} of {{ prop.check.n }}</b> sampled candidates{% if prop.sheet %} — <a href="/identity/series/{{ sid }}/check_sheet?proposed=1" target="_blank" style="color:var(--acc)">grading sheet ↗</a>{% endif %}.{% endif %}
 {% else %}gemma could not decide who the protagonist is{% if prop.auto.answers %} (answers {{ prop.auto.answers|join(', ') }}){% endif %} — pick the person below.{% endif %}
-Tick 2 protagonist panels and 2 look-alike panels (the first two are ticked), then confirm. Nothing changes until you do.</span></div>
+Tick 2 protagonist panels and 2 "NOT him" panels (the first two are ticked), then confirm. The grey row is meant to be someone else: a look-alike gemma must not mistake for the protagonist. Nothing changes until you do.</span></div>
 {% for c in prop.candidates %}
 <details {% if c.chosen or prop.auto.chosen is none %}open{% endif %} style="margin:6px 0">
 <summary class="kv">person {{ c.letter }}{% if c.chosen %} — proposed{% endif %}</summary>
 <form method="post" action="/identity/series/{{ sid }}/confirm">
 <input type="hidden" name="cand" value="{{ c.k }}">
-{% for role, label, items in [('prot', 'protagonist', c.protagonist), ('decoy', 'look-alike (one other character)', c.decoy)] %}
+{% for role, label, items in [('prot', 'protagonist', c.protagonist), ('decoy', 'NOT him: look-alike (a different character)', c.decoy)] %}
 <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-start">
 <span class="kv" style="width:110px">{{ label }}</span>
 {% for lab in items %}
