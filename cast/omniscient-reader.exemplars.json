@@ -1,0 +1,17 @@
+{
+  "_readme": "Exemplar panels gemma confirms the protagonist against (tools/panel_identity.py --verify-ccip). ORV: the owner's own registry exemplars (cast/omniscient-reader.json), copied 2026-10-10.",
+  "series": "omniscient-reader",
+  "protagonist": [
+    "ongoing/omniscient-reader/Episode_6/scenes/p000010.jpg",
+    "ongoing/omniscient-reader/Episode_6/scenes/p000037.jpg"
+  ],
+  "decoy": [
+    "ongoing/omniscient-reader/Episode_125/scenes/p000016.jpg",
+    "ongoing/omniscient-reader/Episode_128/scenes/p000060.jpg"
+  ],
+  "picked": {
+    "protagonist": "our protagonist",
+    "decoy": "Michio Shoji",
+    "by": "owner"
+  }
+}

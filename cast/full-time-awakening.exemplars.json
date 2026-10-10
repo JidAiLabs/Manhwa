@@ -1,0 +1,22 @@
+{
+  "_readme": "Exemplar panels gemma confirms the protagonist against (tools/panel_identity.py --verify-ccip). protagonist = 2 close-ups of him; decoy = 2 close-ups of ONE look-alike. Proposed by tools/identity_exemplars.py, picked by eye.",
+  "series": "full-time-awakening",
+  "protagonist": [
+    "ongoing/full-time-awakening/Chapter_130/scenes/p000016.jpg",
+    "ongoing/full-time-awakening/Chapter_72/scenes/p000003.jpg"
+  ],
+  "decoy": [
+    "ongoing/full-time-awakening/Chapter_91/scenes/p000003.jpg",
+    "ongoing/full-time-awakening/Chapter_109/scenes/p000031.jpg"
+  ],
+  "picked": {
+    "protagonist": [
+      "M5",
+      "M10"
+    ],
+    "decoy": [
+      "G1b",
+      "G1d"
+    ]
+  }
+}

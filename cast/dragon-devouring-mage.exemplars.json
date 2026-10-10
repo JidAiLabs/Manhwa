@@ -1,0 +1,22 @@
+{
+  "_readme": "Exemplar panels gemma confirms the protagonist against (tools/panel_identity.py --verify-ccip). protagonist = 2 close-ups of him; decoy = 2 close-ups of ONE look-alike. Proposed by tools/identity_exemplars.py, picked by eye.",
+  "series": "dragon-devouring-mage",
+  "protagonist": [
+    "ongoing/dragon-devouring-mage/Chapter_32/scenes/p000063.jpg",
+    "ongoing/dragon-devouring-mage/Chapter_35/scenes/p000048.jpg"
+  ],
+  "decoy": [
+    "ongoing/dragon-devouring-mage/Chapter_37/scenes/p000069.jpg",
+    "ongoing/dragon-devouring-mage/Chapter_36/scenes/p000064.jpg"
+  ],
+  "picked": {
+    "protagonist": [
+      "M2",
+      "M3"
+    ],
+    "decoy": [
+      "G1b",
+      "G1d"
+    ]
+  }
+}

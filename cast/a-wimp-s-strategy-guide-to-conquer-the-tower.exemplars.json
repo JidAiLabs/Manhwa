@@ -1,0 +1,22 @@
+{
+  "_readme": "Exemplar panels gemma confirms the protagonist against (tools/panel_identity.py --verify-ccip). protagonist = 2 close-ups of him; decoy = 2 close-ups of ONE look-alike. Proposed by tools/identity_exemplars.py, picked by eye.",
+  "series": "a-wimp-s-strategy-guide-to-conquer-the-tower",
+  "protagonist": [
+    "ongoing/a-wimp-s-strategy-guide-to-conquer-the-tower/Chapter_13/scenes/p000029.jpg",
+    "ongoing/a-wimp-s-strategy-guide-to-conquer-the-tower/Chapter_14/scenes/p000073.jpg"
+  ],
+  "decoy": [
+    "ongoing/a-wimp-s-strategy-guide-to-conquer-the-tower/Chapter_45/scenes/p000004.jpg",
+    "ongoing/a-wimp-s-strategy-guide-to-conquer-the-tower/Chapter_5/scenes/p000110.jpg"
+  ],
+  "picked": {
+    "protagonist": [
+      "M5",
+      "M8"
+    ],
+    "decoy": [
+      "G2a",
+      "G2b"
+    ]
+  }
+}

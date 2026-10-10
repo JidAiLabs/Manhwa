@@ -1,0 +1,22 @@
+{
+  "_readme": "Exemplar panels gemma confirms the protagonist against (tools/panel_identity.py --verify-ccip). protagonist = 2 close-ups of him; decoy = 2 close-ups of ONE look-alike. Proposed by tools/identity_exemplars.py, picked by eye.",
+  "series": "the-tutorial-tower-of-the-advanced-player",
+  "protagonist": [
+    "ongoing/the-tutorial-tower-of-the-advanced-player/Chapter_103/scenes/p000098.jpg",
+    "ongoing/the-tutorial-tower-of-the-advanced-player/Chapter_111/scenes/p000093.jpg"
+  ],
+  "decoy": [
+    "ongoing/the-tutorial-tower-of-the-advanced-player/Chapter_136/scenes/p000041.jpg",
+    "ongoing/the-tutorial-tower-of-the-advanced-player/Chapter_115/scenes/p000041.jpg"
+  ],
+  "picked": {
+    "protagonist": [
+      "M2",
+      "M4"
+    ],
+    "decoy": [
+      "G3b",
+      "G3c"
+    ]
+  }
+}
