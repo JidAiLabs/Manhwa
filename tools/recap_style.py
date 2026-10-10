@@ -96,10 +96,10 @@ identifies someone, use their name."""
 
 
 
-# TEMPORARY A/B knob (2026-10-10, docs/plans/2026-10-10-ccip-character-identity.md
-# step 7): image identity confirms only the protagonist and misses him on about
-# half his panels, so "unknown" there is NOT CONFIRMED, not absent. Variant B
-# (STUDIO_FIGURES_UNCONFIRMED=1) says so; the A/B decides, then this knob goes.
+# Image identity (2026-10-10) confirms only the protagonist and misses him on
+# about half his panels, so on that path "unknown" means NOT CONFIRMED, not
+# absent. Shipped after an A/B (20 groups, 5 series): with the rule the writer
+# stopped describing the hero by his looks; no wrong name was introduced.
 UNCONFIRMED_NOT_ABSENT = (
     "An unknown figure is NOT CONFIRMED, not absent: the picture confirms only the "
     "protagonist and misses him on about half the panels he is in. When the story or "
@@ -110,13 +110,17 @@ _UNCONFIRMED_ANCHORS = ("never guess a name for an unknown.",
                         "a wrong name is worse than a plain description.")
 
 
-def apply_unconfirmed_rule(text: str) -> str:
-    if os.environ.get("STUDIO_FIGURES_UNCONFIRMED") != "1":
+def apply_unconfirmed_rule(text: str, identity: Any = None) -> str:
+    """Add the rule when *identity* (manifest.identity.json) came from the
+    picture check; the word-matching path names side characters too, so the
+    rule's claim would be false there."""
+    if not isinstance(identity, dict) or (identity.get("_meta") or {}).get("backend") != "ccip":
         return text
     for a in _UNCONFIRMED_ANCHORS:
         if a in text:
             return text.replace(a, a + " " + UNCONFIRMED_NOT_ABSENT, 1)
     return text
+
 
 _TAG_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")

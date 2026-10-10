@@ -182,15 +182,16 @@ def test_heal_writer_call_carries_the_identity(tmp_path, monkeypatch):
     assert writer[i + 1] == str(ep / "manifest.identity.json")
 
 
-def test_unconfirmed_rule_ab_knob(monkeypatch):
-    """Variant B of the 2026-10-10 writer A/B: 'unknown' means NOT CONFIRMED,
-    not absent — the picture misses the protagonist on ~half his panels."""
+def test_unconfirmed_rule_rides_only_with_picture_identity():
+    """Shipped 2026-10-10 after an A/B (20 groups, 5 series): B better 2, tie 17,
+    no wrong name introduced. On only when the chapter's identity came from the
+    picture check — its claim ("the picture confirms only the protagonist") is
+    false for the word-matching path."""
     import tools.recap_style as rs
     base = "x never guess a name for an unknown. y a wrong name is worse than a plain description. z"
-    monkeypatch.delenv("STUDIO_FIGURES_UNCONFIRMED", raising=False)
-    assert rs.apply_unconfirmed_rule(base) == base
-    monkeypatch.setenv("STUDIO_FIGURES_UNCONFIRMED", "1")
-    out = rs.apply_unconfirmed_rule(base)
+    assert rs.apply_unconfirmed_rule(base, None) == base
+    assert rs.apply_unconfirmed_rule(base, {"panels": {}, "_meta": {"tool": "panel_identity"}}) == base
+    out = rs.apply_unconfirmed_rule(base, {"panels": {}, "_meta": {"backend": "ccip"}})
     assert out.count(rs.UNCONFIRMED_NOT_ABSENT) == 1
     assert "not absent" in rs.UNCONFIRMED_NOT_ABSENT.lower()
 

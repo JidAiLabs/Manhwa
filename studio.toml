@@ -66,7 +66,16 @@ backend = "gemma"
 python = ".identity_venv/bin/python"   # repo-relative; own venv (requirements-identity.lock.txt)
 
 [identity.series]
-# per-series backend while ccip rolls out, e.g. "omniscient-reader" = "ccip"
+# per-series backend while ccip rolls out. ON 2026-10-10: validated by the worker
+# job identity_check (40 candidates each, graded by eye: ~96% of 134 confirmations
+# right) and exemplars picked by eye (cast/<slug>.exemplars.json). Not on: Death
+# Knight, Clan's Failure, Nano Machine (the automatic profile is not the lead),
+# Infinite Evolution (no look-alike group). Remove a line to roll a series back.
+"omniscient-reader" = "ccip"
+"the-tutorial-tower-of-the-advanced-player" = "ccip"
+"full-time-awakening" = "ccip"
+"dragon-devouring-mage" = "ccip"
+"a-wimp-s-strategy-guide-to-conquer-the-tower" = "ccip"
 
 [render]
 # long_hold QA cap: one file shown continuously past this many seconds while
