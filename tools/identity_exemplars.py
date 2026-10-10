@@ -24,7 +24,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -139,14 +139,163 @@ def write_pick(series_dir, props: Dict[str, Dict[str, Any]], mc: List[str],
     return obj
 
 
+# ---------------------------------------------------------------- automatic
+LEAD_PROMPT = (
+    "%s This is a manhwa. Its story so far: %s\n"
+    "Which person is the MAIN CHARACTER — the protagonist the story follows? "
+    "Use the story (age, gender, role) and the faces. Return ONLY JSON: {\"main\": %s}")
+
+
+def _seeds(F: np.ndarray, chap: np.ndarray, seed: int = 0) -> Dict[str, int]:
+    """Three automatic guesses at the lead (indices into F). Measured on 9
+    series 2026-10-10: most-drawn right 6/9, most-chapters 7/9, most-present
+    (chapters with 3+ appearances) 7-8/9, each failing on a different series."""
+    samp = np.random.default_rng(seed).choice(len(F), min(3000, len(F)), replace=False)
+    S = F[samp]
+    D = pic.ccip_diff(S, S)
+    np.fill_diagonal(D, np.inf)
+    dens = (D < 0.20).sum(axis=1)
+    Dall = pic.ccip_diff(S, F)
+    spread = np.zeros(len(samp), int)
+    depth = np.zeros(len(samp), int)
+    for i in range(len(samp)):
+        c = collections.Counter(chap[Dall[i] < 0.15].tolist())
+        spread[i] = len(c)
+        depth[i] = sum(1 for v in c.values() if v >= 3)
+    return {"most_drawn": int(samp[dens.argmax()]),
+            "most_chapters": int(samp[np.lexsort((dens, spread))[-1]]),
+            "most_present": int(samp[np.lexsort((dens, depth))[-1]])}
+
+
+def _closeups(sd: Path, rows, d: np.ndarray, k: int, lo: float = -1.0,
+              hi: float = 9.0) -> List[int]:
+    out, used = [], set()
+    for j in np.argsort(d):
+        if d[j] < lo:
+            continue
+        if d[j] >= hi:
+            break
+        ch, h, one = rows[j]
+        if one and ch not in used and _closeup(sd, ch, h):
+            used.add(ch)
+            out.append(int(j))
+        if len(out) == k:
+            break
+    return out
+
+
+def _synopsis(sd: Path, n: int = 2, cap: int = 700) -> str:
+    text = []
+    for ep in sorted((p for p in sd.iterdir() if (p / "manifest.chapter_story.json").exists()),
+                     key=lambda p: pic.chapter_order(p.name))[:n]:
+        try:
+            text.append(str(json.loads((ep / "manifest.chapter_story.json").read_text())
+                            .get("synopsis") or ""))
+        except (OSError, ValueError):
+            pass
+    return " ".join(text)[:cap]
+
+
+def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
+              load=None) -> Optional[Dict[str, Any]]:
+    """The 2 + 2 exemplars with no person involved; written to *out_path* with
+    seed: exemplars (the profile then grows from these faces). None (nothing
+    written) when the lead cannot be decided."""
+    sd = Path(series_dir)
+    rows, feats = [], []
+    for ix in pic.load_indexes(sd):
+        n = collections.Counter(h["panel"] for h in ix["heads"])
+        for i, h in enumerate(ix["heads"]):
+            rows.append((ix["chapter"], h, n[h["panel"]] == 1))
+            feats.append(ix["feats"][i])
+    if len(rows) < 50:
+        return None
+    F = np.asarray(feats, dtype=np.float32)
+    chap = np.asarray([r[0] for r in rows])
+    seeds = _seeds(F, chap)
+    groups: List[int] = []                       # distinct candidate leads
+    for rule in ("most_present", "most_chapters", "most_drawn"):
+        j = seeds[rule]
+        if all(pic.ccip_diff(F[j:j + 1], F[g:g + 1])[0, 0] >= 0.05 for g in groups):
+            groups.append(j)
+    shots = {g: _closeups(sd, rows, pic.ccip_diff(F, F[g:g + 1])[:, 0], 2) for g in groups}
+    groups = [g for g in groups if len(shots[g]) == 2]
+    if not groups:
+        return None
+    path = lambda j: str(sd / rows[j][0] / "scenes" / rows[j][1]["panel"])
+    answer, lead = None, groups[0]
+    if len(groups) > 1:
+        from panel_identity import _jpeg
+        from ollama_compat import chat as _chat, first_json
+        load = load or _jpeg
+        letters = "ABC"[:len(groups)]
+        shown = " ".join("Images %d and %d show PERSON %s." % (2 * i + 1, 2 * i + 2, L)
+                         for i, L in enumerate(letters))
+        prompt = LEAD_PROMPT % (shown, _synopsis(sd) or "(no synopsis)",
+                                " or ".join('"%s"' % L for L in letters))
+        try:
+            resp = (chat or _chat)(model=model, think=False,
+                                   options={"temperature": 0, "num_ctx": 8192, "num_predict": 40},
+                                   messages=[{"role": "user", "content": prompt,
+                                              "images": [load(path(j)) for g in groups
+                                                         for j in shots[g]]}])
+            answer = str((first_json(str((resp.get("message") or {}).get("content") or ""))
+                          or {}).get("main") or "").strip().upper()
+        except Exception as e:                           # noqa: BLE001
+            print(f"[auto-pick] {sd.name}: lead question failed ({e}) -> abstain")
+            return None
+        if answer not in letters:
+            print(f"[auto-pick] {sd.name}: unusable answer {answer!r} -> abstain")
+            return None
+        lead = groups[letters.index(answer)]
+    prot = shots[lead]
+    dl = pic.ccip_diff(F, F[prot]).min(axis=1)           # distance to the picked lead
+    decoy = []
+    for lo, hi in ((0.20, 0.35), (0.20, 9.0)):           # a look-alike, never the lead
+        for j in _closeups(sd, rows, dl, 40, lo, hi):
+            mate = [k for k in _closeups(sd, rows, pic.ccip_diff(F, F[j:j + 1])[:, 0], 2, hi=0.08)
+                    if k != j and rows[k][0] != rows[j][0] and dl[k] >= 0.20]
+            if mate:
+                decoy = [j, mate[0]]
+                break
+        if decoy:
+            break
+    if len(decoy) != 2:
+        print(f"[auto-pick] {sd.name}: no single-character look-alike with 2 close-ups -> abstain")
+        return None
+    rel = lambda j: (os.path.relpath(path(j), REPO)
+                     if Path(path(j)).resolve().is_relative_to(REPO) else path(j))
+    head = lambda j: {"chapter": rows[j][0], "panel": rows[j][1]["panel"], "box": rows[j][1]["box"]}
+    obj = {"_readme": "Exemplars picked AUTOMATICALLY (tools/identity_exemplars.py --auto): the "
+                      "protagonist's 2 clearest close-ups and 2 of one look-alike. seed: exemplars "
+                      "= the profile grows from these faces, not the most-drawn face.",
+           "series": sd.name, "seed": "exemplars",
+           "protagonist": [rel(j) for j in prot], "decoy": [rel(j) for j in decoy],
+           "heads": {"protagonist": [head(j) for j in prot], "decoy": [head(j) for j in decoy]},
+           "auto": {"candidates": len(groups), "asked_gemma": len(groups) > 1, "answer": answer,
+                    "rules": {r: next((L for L, g in zip("ABC", groups)
+                                       if pic.ccip_diff(F[j:j + 1], F[g:g + 1])[0, 0] < 0.05), None)
+                              for r, j in seeds.items()}}}
+    Path(out_path).write_text(json.dumps(obj, indent=2) + "\n")
+    return obj
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--series", required=True, help="ongoing/<slug>")
     ap.add_argument("--sheet", default="", help="write the proposal sheet here")
     ap.add_argument("--pick", default="", help="M ids of the protagonist, e.g. M1,M4")
     ap.add_argument("--decoy", default="", help="ids from ONE group, e.g. G1a,G1c")
+    ap.add_argument("--auto", default="", metavar="OUT",
+                    help="pick automatically (gemma decides the lead if the rules disagree); "
+                         "write the exemplars to OUT")
     args = ap.parse_args()
     sd = Path(args.series)
+    if args.auto:
+        obj = auto_pick(sd, args.auto)
+        print(f"[auto-pick] {sd.name}: " + (json.dumps(obj["auto"]) + f" -> {args.auto}"
+                                           if obj else "abstained (nothing written)"))
+        return 0
     saved = sd / ".identity" / "exemplar_proposals.json"
     if args.pick and saved.exists():          # the ids on the sheet that was graded
         props = json.loads(saved.read_text())

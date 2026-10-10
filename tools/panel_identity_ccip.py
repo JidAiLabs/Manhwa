@@ -237,8 +237,40 @@ def live_refs(profile: Dict[str, Any], indexes: Sequence[Dict[str, Any]]) -> Lis
             if r.get("pin") or keys.get(r["chapter"]) == r.get("key")]
 
 
+def exemplar_feats(indexes: Sequence[Dict[str, Any]], exemplars: Dict[str, Any],
+                   key: str = "protagonist") -> Optional[np.ndarray]:
+    """Fingerprints of an exemplars file's faces, read from the index cache (no
+    detection): by the recorded head boxes when present, else the panel's
+    single head. None when none is found."""
+    multi = {}
+    for ix in indexes:
+        for i, h in enumerate(ix["heads"]):
+            multi.setdefault((ix["chapter"], h["panel"]), []).append((ix, i))
+    out = []
+    heads = (exemplars.get("heads") or {}).get(key)
+    if heads:
+        for h in heads:
+            for ix, i in multi.get((h["chapter"], h["panel"]), []):
+                if list(ix["heads"][i]["box"]) == list(h["box"]):
+                    out.append(ix["feats"][i])
+    else:
+        for path in exemplars.get(key) or []:
+            parts = Path(str(path)).parts
+            hit = multi.get((parts[-3], parts[-1]), []) if len(parts) >= 3 else []
+            if len(hit) == 1:
+                out.append(hit[0][0]["feats"][hit[0][1]])
+    return _unit(np.asarray(out, dtype=np.float32)) if out else None
+
+
 def build_profile(indexes: Sequence[Dict[str, Any]], *, pins: Optional[np.ndarray] = None,
-                  prior: Optional[Dict[str, Any]] = None, rng_seed: int = 0) -> Dict[str, Any]:
+                  prior: Optional[Dict[str, Any]] = None, rng_seed: int = 0,
+                  seed_feats: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    """The series' protagonist references. Default: the most-drawn face (seed)
+    + its closest heads from distinct chapters. With *seed_feats* (the faces of
+    an exemplars file marked seed: exemplars — picked by eye or by
+    identity_exemplars --auto) the references grow from THOSE faces instead and
+    the most-drawn check is skipped: the most-drawn face was the lead on only 6
+    of 9 series."""
     every = sorted(indexes, key=lambda ix: chapter_order(ix["chapter"]))
     ixs = [ix for ix in every if len(ix["heads"])]
     reasons: List[str] = []
@@ -251,21 +283,36 @@ def build_profile(indexes: Sequence[Dict[str, Any]], *, pins: Optional[np.ndarra
     D = ccip_diff(S, S)
     np.fill_diagonal(D, np.inf)
     dens = (D < SEED_RADIUS).sum(axis=1)
-    s = int(dens.argmax())
+    seeded = seed_feats is not None and len(seed_feats) > 0
+    if seeded:
+        SF = _unit(seed_feats)
+        dist = ccip_diff(S, SF).min(axis=1)       # every sampled head -> the picked lead
+        s = int(dist.argmin())
+        pool = np.argsort(dist)
+        cut_at, keep = REF_TIGHT, MAX_REFS - len(SF)
+    else:
+        s = int(dens.argmax())
+        dist, pool = D[s], np.argsort(D[s])
+        cut_at, keep = REF_TIGHT, MAX_REFS - 1
     best: Dict[int, int] = {}                     # chapter -> its closest head to the seed
-    for j in np.argsort(D[s]):
-        if D[s, j] >= REF_TIGHT:
+    for j in pool:
+        if dist[j] >= cut_at:
             break
         c = samp[j][0]
-        if c != samp[s][0] and c not in best:
+        if (seeded or c != samp[s][0]) and c not in best and (seeded or j != s):
             best[c] = int(j)
     chosen = sorted(best)                         # chapter order: spread over the series
-    if len(chosen) > MAX_REFS - 1:
-        at = np.linspace(0, len(chosen) - 1, MAX_REFS - 1).round().astype(int)
+    if len(chosen) > keep:
+        at = np.linspace(0, len(chosen) - 1, max(1, keep)).round().astype(int)
         chosen = [chosen[i] for i in sorted(set(at))]
-    refs = [_ref(ixs[samp[j][0]], samp[j][1]) for j in [s] + [best[c] for c in chosen]]
+    if seeded:
+        refs = ([{"chapter": "exemplar", "pin": True, "seed": True,
+                  "feat": [round(float(v), 6) for v in f]} for f in SF]
+                + [_ref(ixs[samp[best[c]][0]], samp[best[c]][1]) for c in chosen])
+    else:
+        refs = [_ref(ixs[samp[j][0]], samp[j][1]) for j in [s] + [best[c] for c in chosen]]
     seed = dict(refs[0])
-    if pins is not None and len(pins):
+    if pins is not None and len(pins) and not seeded:
         if ccip_diff(pins, _feats(refs)).min(axis=1).max() >= SAME_CHAR:
             reasons.append("an owner exemplar matches none of the automatic references")
         refs += [{"chapter": "registry", "pin": True,
@@ -286,18 +333,18 @@ def build_profile(indexes: Sequence[Dict[str, Any]], *, pins: Optional[np.ndarra
         reasons.append(f"matched heads {matched} < {MIN_MATCHED}")
     if spread < MIN_SPREAD:
         reasons.append(f"spread {spread:.2f} < {MIN_SPREAD}")
-    if dominance < MIN_DOMINANCE:
+    if dominance < MIN_DOMINANCE and not seeded:     # a picked lead needs no majority
         reasons.append(f"dominance {dominance:.2f} < {MIN_DOMINANCE}")
     prof = {"status": "provisional" if reasons else "active", "reasons": reasons, "alarms": [],
             "version": 1, "model": MODEL_TAG, "cut": CUT, "chapters_indexed": len(every),
-            "seed": seed, "refs": refs,
+            "seed": seed, "refs": refs, "seeded": seeded,
             "stats": {"matched": matched, "spread": round(spread, 3),
                       "dominance": round(dominance, 2), "density": int(dens[s]),
                       "heads": int(sum(len(ix["heads"]) for ix in ixs)), "sampled": len(samp)}}
     if not prior or prior.get("model") != MODEL_TAG:
         return prof
     prof["version"] = int(prior.get("version", 0)) + 1
-    if prior.get("status") != "active":
+    if prior.get("status") != "active" or seeded:   # a picked lead overrides continuity
         return prof
     # continuity: an active profile is only replaced by the same character,
     # judged at SAME_CHAR (a look-alike lead of the same archetype is within 0.178)

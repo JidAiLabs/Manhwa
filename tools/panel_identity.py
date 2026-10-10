@@ -310,7 +310,18 @@ def check_series(series_dir: Any, exemplars: Any, *, n: int = 40, out_dir: Any =
     sd = str(series_dir)
     slug = os.path.basename(os.path.normpath(sd))
     ex = _exemplar_paths(exemplars)
-    prof = pic.load_profile(sd)
+    try:
+        with open(exemplars, encoding="utf-8") as f:
+            ex_obj = json.load(f)
+    except (OSError, ValueError, TypeError):
+        ex_obj = {}
+    if ex_obj.get("seed") == "exemplars":
+        # the profile grows from the file's faces (built in memory: the saved
+        # profile of a series being measured is left alone)
+        idx = pic.load_indexes(sd)
+        prof = pic.build_profile(idx, seed_feats=pic.exemplar_feats(idx, ex_obj))
+    else:
+        prof = pic.load_profile(sd)
     if ex is None or not prof or prof.get("status") != "active":
         raise SystemExit(f"[identity] check {slug}: needs 2+2 exemplars and an active profile")
     R = pic._feats(prof["refs"])
@@ -341,6 +352,7 @@ def check_series(series_dir: Any, exemplars: Any, *, n: int = 40, out_dir: Any =
         c["gemma"] = "A" if "A" in got["names"] else ("B" if "B" in got["names"] else "OTHER")
         results.append(c)
     rep = {"series": slug, "n": len(results), "candidates": len(pool),
+           "seeded": bool(prof.get("seeded")), "exemplars_file": os.path.basename(str(exemplars)),
            "confirmed": sum(1 for r in results if r["gemma"] == "A"), "cut": pic.CUT,
            "exemplars": {k: [os.path.relpath(x, _REPO) for x in v] for k, v in ex.items()},
            "results": results}
@@ -393,9 +405,11 @@ def main() -> int:
                     help="validation: gemma on --n random picture candidates of the "
                          "series (needs --verify-ccip EXEMPLARS); writes dist/identity_check/")
     ap.add_argument("--n", type=int, default=40)
+    ap.add_argument("--out-dir", default="", help="check report dir (default dist/identity_check)")
     args = ap.parse_args()
     if args.check_series:
-        rep = check_series(args.check_series, args.verify_ccip, n=args.n, model=args.model)
+        rep = check_series(args.check_series, args.verify_ccip, n=args.n, model=args.model,
+                           out_dir=args.out_dir)
         print("[ok] identity check %s: %d of %d sampled candidates confirmed (%d candidates)"
               % (rep["series"], rep["confirmed"], rep["n"], rep["candidates"]))
         return 0
