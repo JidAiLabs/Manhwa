@@ -84,13 +84,13 @@
 {% set prop = identity.proposal %}
 {% if prop %}
 <div class="row"><span class="kv"><b>Automatic proposal.</b>
-{% if prop.auto.chosen is not none %}gemma chose <b>person {{ 'ABCD'[prop.auto.chosen] }}</b>{% if prop.auto.asked_gemma %} (asked twice, order reversed: same answer){% else %} (the only candidate){% endif %}.
+{% if prop.auto.chosen is not none %}{% if prop.auto.chosen_by == 'gemma' %}gemma chose <b>person {{ 'ABCD'[prop.auto.chosen] }}</b> (asked twice, order reversed: same answer).{% elif prop.auto.chosen_by == 'rules' %}gemma could not decide (answers {{ prop.auto.answers|join(', ') }}); the picture rule chose <b>person {{ 'ABCD'[prop.auto.chosen] }}</b> — check it.{% else %}<b>person {{ 'ABCD'[prop.auto.chosen] }}</b> is the only candidate.{% endif %}
 {% if prop.check %} Against these panels gemma confirmed <b>{{ prop.check.confirmed }} of {{ prop.check.n }}</b> sampled candidates{% if prop.sheet %} — <a href="/identity/series/{{ sid }}/check_sheet?proposed=1" target="_blank" style="color:var(--acc)">grading sheet ↗</a>{% endif %}.{% endif %}
 {% else %}gemma could not decide who the protagonist is{% if prop.auto.answers %} (answers {{ prop.auto.answers|join(', ') }}){% endif %} — pick the person below.{% endif %}
 Tick 2 protagonist panels and 2 look-alike panels (the first two are ticked), then confirm. Nothing changes until you do.</span></div>
 {% for c in prop.candidates %}
 <details {% if c.chosen or prop.auto.chosen is none %}open{% endif %} style="margin:6px 0">
-<summary class="kv">person {{ c.letter }}{% if c.chosen %} — gemma's choice{% endif %}</summary>
+<summary class="kv">person {{ c.letter }}{% if c.chosen %} — proposed{% endif %}</summary>
 <form method="post" action="/identity/series/{{ sid }}/confirm">
 <input type="hidden" name="cand" value="{{ c.k }}">
 {% for role, label, items in [('prot', 'protagonist', c.protagonist), ('decoy', 'look-alike (one other character)', c.decoy)] %}

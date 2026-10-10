@@ -93,7 +93,7 @@ def test_rules_disagree_and_gemma_decides(tmp_path):
     obj = ie.auto_pick(sd, out, chat=chat, load=lambda p: str(p).encode())
     assert len(chat.seen) == 2                         # asked twice, order reversed
     assert [who[i] for i in chat.seen[0][::2]] == [who[i] for i in chat.seen[1][::2]][::-1]
-    assert obj["seed"] == "exemplars" and obj["auto"]["asked_gemma"]
+    assert obj["seed"] == "exemplars" and obj["auto"]["chosen_by"] == "gemma"
     assert all(who[p] == "mc" for p in obj["protagonist"])
     assert len(obj["protagonist"]) == 2 and len(obj["decoy"]) == 2
     assert len({Path(p).parts[-3] for p in obj["protagonist"]}) == 2   # distinct chapters
@@ -117,13 +117,15 @@ def test_when_the_rules_agree_the_runner_up_is_still_offered(tmp_path):
     assert all(who[p] == "y" for p in obj["protagonist"])
 
 
-def test_an_answer_by_position_gives_no_choice(tmp_path):
+def test_an_answer_by_position_leaves_the_most_present_rules_lead(tmp_path):
     sd, who = _series(tmp_path, PLAN)
     chat = lambda model, think, options, messages: {"message": {"content": '{"main": "A"}'}}
     out = tmp_path / "a.json"
     obj = ie.auto_pick(sd, out, chat=chat, load=lambda p: str(p).encode())
-    assert obj["auto"]["chosen"] is None and obj["auto"]["answers"] == ["A", "A"]
-    assert "protagonist" not in obj and len(obj["candidates"]) >= 2   # a person picks
+    a = obj["auto"]
+    assert a["answers"] == ["A", "A"] and a["chosen_by"] == "rules"
+    assert a["chosen"] == a["rules"]["most_present"]
+    assert all(who[p] == "mc" for p in obj["protagonist"]) and len(obj["candidates"]) >= 2
     assert json.loads(out.read_text())["candidates"] == obj["candidates"]
     for c in obj["candidates"]:                        # each: ONE lead, ONE look-alike
         assert 2 <= len(c["protagonist"]) <= 6 and 2 <= len(c["decoy"]) <= 4

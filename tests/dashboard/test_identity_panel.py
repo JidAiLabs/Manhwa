@@ -100,7 +100,7 @@ def test_the_proposal_is_shown_and_confirming_it_switches_the_series_on(client):
     c, sid, root = client
     d = _proposal(root)
     html = c.get(f"/series/{sid}").text
-    assert "Automatic proposal" in html and "gemma's choice" in html
+    assert "Automatic proposal" in html and "— proposed" in html
     assert f"/identity/series/{sid}/proposed/1/decoy/1" in html
     assert c.get(f"/identity/series/{sid}/proposed/0/protagonist/3").status_code == 200
     assert c.get(f"/identity/series/{sid}/proposed/0/protagonist/4").status_code == 404

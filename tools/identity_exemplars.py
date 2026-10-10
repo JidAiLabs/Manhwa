@@ -9,8 +9,9 @@ when they were right). Candidates are CLOSE-UPS only: the head is >= 6% of the
 panel and the panel is not a tall strip, so the face survives gemma's 640 px.
 
   --auto   the automatic proposal (worker job identity_propose): candidate
-           leads, gemma's choice asked twice; confirmed or swapped with one
-           click on the Series page (nothing switches on before that).
+           leads, the "most present" rule's unless gemma gives one answer in
+           both orders; confirmed or swapped with one click on the Series
+           page (nothing switches on before that).
 
   propose  M1..M12: the protagonist's closest close-ups, distinct chapters.
            G1..G3 a-d: the three densest groups of near-miss look-alikes
@@ -295,11 +296,12 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
               load=None) -> Optional[Dict[str, Any]]:
     """A PROPOSAL for the series' exemplars, written to *out_path*: every
     candidate lead with up to 6 close-ups of him and up to 4 of one recurring
-    look-alike, most typical first, and the candidate gemma chose (asked twice,
-    order reversed) — then the file's protagonist/decoy are that candidate's
-    first 2 + 2 and it works as an exemplars file (seed: exemplars). No choice
-    when the two answers disagree: the Series page shows the candidates and a
-    person picks. None (nothing written) when no candidate has 2 + 2."""
+    look-alike, most typical first, and the chosen candidate — gemma's when it
+    gives the same answer in both orders, else the "most present" rule's
+    (chosen_by says which). The file's protagonist/decoy are the chosen
+    candidate's first 2 + 2, so it works as an exemplars file (seed:
+    exemplars); a person confirms or swaps it on the Series page. None
+    (nothing written) when no candidate has 2 + 2."""
     sd = Path(series_dir)
     rows, feats = [], []
     for ix in pic.load_indexes(sd):
@@ -336,9 +338,14 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
               "look-alike -> nothing proposed")
         return None
     path = lambda j: str(sd / rows[j][0] / "scenes" / rows[j][1]["panel"])
-    chosen, answers = (0, [])
+    # the default lead: "most present" (right on 7-8 of 9 series) else the
+    # first candidate; gemma overrides it only with the SAME answer in both
+    # orders — 2026-10-10 it answered "A" for whoever came first on 3 of 6
+    chosen, by, answers = 0, "only candidate", []
     if len(cands) > 1:
-        chosen, answers = _ask_lead(sd, cands, path, chat, model, load)
+        chosen = next((k for k, c in enumerate(cands) if "most_present" in c["rules"]), 0)
+        said, answers = _ask_lead(sd, cands, path, chat, model, load)
+        chosen, by = (said, "gemma") if said is not None else (chosen, "rules")
     rel = lambda j: (os.path.relpath(path(j), REPO)
                      if Path(path(j)).resolve().is_relative_to(REPO) else path(j))
     head = lambda j: {"path": rel(j), "chapter": rows[j][0], "panel": rows[j][1]["panel"],
@@ -350,7 +357,7 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
                    "a person confirms it on the Series page.",
         "series": sd.name, "seed": "exemplars",
         "auto": {"version": 2, "candidates": len(cands), "asked_gemma": len(cands) > 1,
-                 "answers": answers, "chosen": chosen,
+                 "answers": answers, "chosen": chosen, "chosen_by": by,
                  "rules": {r: next((k for k, c in enumerate(cands) if r in c["rules"]), None)
                            for r in seeds}},
         "candidates": [{"protagonist": [head(j) for j in c["prot"]],
