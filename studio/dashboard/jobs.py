@@ -44,6 +44,8 @@ LANES = {
     "series_claim": "gpu",
     # re-reading a chapter for its facts is one gemma call: same lane
     "refresh_facts": "gpu",
+    # validating a series' picture + gemma identity: a stream of gemma calls
+    "identity_check": "gpu",
     # --- qwen TTS: its own lane, OVERLAPS a gemma prepare ---
     "voiceover": "tts",
     # --- CPU / ffmpeg / remotion: no local model ---

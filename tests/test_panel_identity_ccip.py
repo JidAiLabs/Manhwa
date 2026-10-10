@@ -85,7 +85,7 @@ def test_profile_seed_is_the_densest_head_and_refs_span_distinct_chapters():
 
 @pytest.mark.parametrize("kw,reason", [
     (dict(n_chapters=4), "chapters"),
-    (dict(n_chapters=6, mc_per=20), "matched"),
+    (dict(n_chapters=6, mc_per=15), "matched"),
 ])
 def test_profile_stays_provisional_until_the_evidence_is_there(kw, reason):
     prof = pic.build_profile(_indexes(**kw))
@@ -250,32 +250,35 @@ def _ep_for_identify(tmp_path, cast=True):
 def test_identify_chapter_shape_and_rules(tmp_path):
     ep, index = _ep_for_identify(tmp_path)
     prof = pic.build_profile(_indexes())
+    prof["cut"] = 0.15                     # a stored cut is history: CUT rules
     got = pic.identify_chapter(ep, prof, index)
     P = got["panels"]
-    assert P["solo.jpg"]["names"] == ["Kim Dokja"] and P["solo.jpg"]["mc"]
-    assert P["solo.jpg"]["others"] == 0 and P["solo.jpg"]["heads"] == 1
+    # the picture only PROPOSES: nobody is named until gemma confirms
+    assert P["solo.jpg"] == {"names": [], "others": 1, "mc": False, "cand": True,
+                             "heads": 1, "diff": P["solo.jpg"]["diff"]}
     assert P["solo.jpg"]["diff"] < pic.CUT
-    assert P["other.jpg"] == {"names": [], "others": 1, "mc": False, "heads": 1,
-                              "diff": P["other.jpg"]["diff"]}
+    assert P["other.jpg"] == {"names": [], "others": 1, "mc": False, "cand": False,
+                              "heads": 1, "diff": P["other.jpg"]["diff"]}
     assert P["other.jpg"]["diff"] >= pic.CUT
-    # the MC is never drawn twice in practice: two matches = never named
-    assert P["twice.jpg"]["names"] == [] and not P["twice.jpg"]["mc"]
-    assert P["twice.jpg"]["others"] == 2
+    # the MC is never drawn twice in practice: two matches = never a candidate
+    assert not P["twice.jpg"]["cand"] and P["twice.jpg"]["others"] == 2
     # undetected people still count: 1 head (the MC) + a crowd (>1 person)
-    assert P["crowd.jpg"]["names"] == ["Kim Dokja"] and P["crowd.jpg"]["others"] >= 2
+    assert P["crowd.jpg"]["cand"] and P["crowd.jpg"]["others"] >= 3
     assert "headless.jpg" not in P                 # all-unknown, as today
     on_disk = json.loads((ep / "manifest.identity.json").read_text())
     assert on_disk["panels"] == P
     meta = on_disk["_meta"]
     assert meta["backend"] == "ccip" and meta["profile_version"] == prof["version"]
     assert meta["cut"] == pic.CUT and meta["protagonist"] == "Kim Dokja"
+    assert meta["verified_by"] is None
 
 
-def test_identify_without_a_protagonist_in_the_cast_counts_the_mc_as_other(tmp_path):
+def test_identify_without_a_protagonist_in_the_cast_still_proposes(tmp_path):
     ep, index = _ep_for_identify(tmp_path, cast=False)
     got = pic.identify_chapter(ep, pic.build_profile(_indexes()), index)
     solo = got["panels"]["solo.jpg"]
-    assert solo["names"] == [] and solo["mc"] and solo["others"] == 1
+    assert solo["cand"] and solo["names"] == [] and solo["others"] == 1
+    assert got["_meta"]["protagonist"] is None
 
 
 def test_provisional_profile_writes_nothing(tmp_path):
@@ -309,9 +312,9 @@ def test_real_orv_auto_profile_is_the_owners_protagonist():
     auto = [r for r in prof["refs"] if not r.get("pin")]
     assert len({r["chapter"] for r in auto}) >= 6
     # every owner exemplar (Dokja, Ep6) is one of the automatic references' character
-    assert pic.ccip_diff(exemplars, pic._feats(auto)).min(axis=1).max() < pic.CUT
+    assert pic.ccip_diff(exemplars, pic._feats(auto)).min(axis=1).max() < pic.SAME_CHAR
     assert prof["stats"]["dominance"] >= 3.0
-    assert 330 <= prof["stats"]["matched"] <= 460              # spike: 394 @0.15
+    assert 160 <= prof["stats"]["matched"] <= 210   # 184 @0.10 (131 without the 2 pins)
 
 
 def test_real_tutorial_tower_auto_profile():
@@ -320,7 +323,7 @@ def test_real_tutorial_tower_auto_profile():
     assert prof["status"] == "active", prof["reasons"]
     assert len({r["chapter"] for r in prof["refs"]}) >= 5
     assert prof["stats"]["dominance"] >= 2.0
-    assert 150 <= prof["stats"]["matched"] <= 220              # spike: 183 @0.15
+    assert 100 <= prof["stats"]["matched"] <= 140              # 119 @0.10
 
 
 def test_real_cross_series_control():
@@ -334,8 +337,10 @@ def test_real_cross_series_control():
     Rt = pic._feats(pic.build_profile(t)["refs"])
     Fo = np.concatenate([ix["feats"] for ix in o])
     Ft = np.concatenate([ix["feats"] for ix in t])
-    assert (pic.ccip_diff(Ft, Ro).min(axis=1) < pic.CUT).mean() <= 0.10   # 0.08
-    assert (pic.ccip_diff(Fo, Rt).min(axis=1) < pic.CUT).mean() <= 0.30   # 0.27
+    assert (pic.ccip_diff(Ft, Ro).min(axis=1) < 0.15).mean() <= 0.10   # 0.08
+    assert (pic.ccip_diff(Fo, Rt).min(axis=1) < 0.15).mean() <= 0.30   # 0.27
+    # at the candidate cut the other series' heads almost never qualify
+    assert (pic.ccip_diff(Fo, Rt).min(axis=1) < pic.CUT).mean() <= 0.05
 
 
 def test_real_wrong_exemplars_keep_the_series_provisional():

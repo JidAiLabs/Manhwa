@@ -65,13 +65,18 @@ CCIP_MODEL = "ccip-caformer-24-randaug-pruned"
 MARGIN = 0.25           # grow the head box so hair and outline stay in the crop
 MODEL_TAG = f"{HEAD_MODEL}|{CCIP_MODEL}|m{MARGIN}"   # fingerprints compare only within one tag
 
-CUT = 0.15              # naming cut (see module doc)
+CUT = 0.10              # CANDIDATE cut: below it a head may be the protagonist
+                        # and gemma is asked (graded 2026-10-10: every wrong gemma
+                        # confirmation on ORV had a score >= 0.10; TT < 0.10 ~88%)
+SAME_CHAR = 0.13        # "same character?" (owner exemplars, refresh continuity):
+                        # owner's ORV exemplars sit 0.091/0.102 from the auto refs,
+                        # TT's lead 0.164 — never CCIP's own 0.178
 SEED_RADIUS = 0.20      # look-alike radius for the density that picks the seed
 REF_TIGHT = 0.12        # a reference must be this close to the seed
 MAX_REFS = 8
 SAMPLE_MAX = 3000       # heads in the pairwise density matrix (36 MB float32)
 MIN_CHAPTERS = 5
-MIN_MATCHED = 150       # matched heads over the series
+MIN_MATCHED = 100       # matched heads over the series (at CUT; ~5-6 chapters)
 MIN_SPREAD = 0.60       # share of indexed chapters with the protagonist in them
 MIN_DOMINANCE = 1.5     # seed density vs the densest head of everyone else
 REFRESH_EVERY = 10      # profile rebuild cadence once 10 chapters are indexed
@@ -261,7 +266,7 @@ def build_profile(indexes: Sequence[Dict[str, Any]], *, pins: Optional[np.ndarra
     refs = [_ref(ixs[samp[j][0]], samp[j][1]) for j in [s] + [best[c] for c in chosen]]
     seed = dict(refs[0])
     if pins is not None and len(pins):
-        if ccip_diff(pins, _feats(refs)).min(axis=1).max() >= CUT:
+        if ccip_diff(pins, _feats(refs)).min(axis=1).max() >= SAME_CHAR:
             reasons.append("an owner exemplar matches none of the automatic references")
         refs += [{"chapter": "registry", "pin": True,
                   "feat": [round(float(v), 6) for v in f]} for f in _unit(pins)]
@@ -295,14 +300,14 @@ def build_profile(indexes: Sequence[Dict[str, Any]], *, pins: Optional[np.ndarra
     if prior.get("status") != "active":
         return prof
     # continuity: an active profile is only replaced by the same character,
-    # judged at CUT (a look-alike lead of the same archetype is within 0.178)
+    # judged at SAME_CHAR (a look-alike lead of the same archetype is within 0.178)
     old = live_refs(prior, every)
     if not old:
         prof["alarms"].append("refs_reset: every old reference was re-indexed")
         return prof
     gap = float(ccip_diff(_feats([seed]), _feats(old)).min())
     why = (f"profile_flip: new seed {seed['chapter']}/{seed['panel']} is {gap:.3f} from the old refs"
-           if gap >= CUT else
+           if gap >= SAME_CHAR else
            f"rebuild_provisional: {'; '.join(reasons)}" if reasons else "")
     if why:
         kept = dict(prior)
@@ -389,7 +394,13 @@ def identify_chapter(ep_dir, profile: Optional[Dict[str, Any]],
                      index: Dict[str, Any], write: bool = True) -> Optional[Dict[str, Any]]:
     """manifest.identity.json for one chapter, or None (nothing written) while
     the series profile is provisional: the keyword identity then stands.
-    write=False computes it in memory (the sweep's census)."""
+    write=False computes it in memory (the sweep's census).
+
+    The picture only PROPOSES (owner decision 2026-10-10): a panel is a
+    candidate (`cand`) when exactly one head scores under CUT. Nobody is named
+    here — `names` stays [] and `mc` false until panel_identity.py --verify-ccip
+    has gemma confirm the candidate against the series' exemplar panels. Alone
+    the picture was ~70-85% right on ORV; agreeing with gemma, ~95%."""
     if not profile or profile.get("status") != "active":
         return None
     ep = Path(ep_dir)
@@ -397,7 +408,7 @@ def identify_chapter(ep_dir, profile: Optional[Dict[str, Any]],
     cast_path = ep / "manifest.cast.json"
     panels = people_panels(json.loads(understood.read_text()).get("panels") or [])
     mc_name = _protagonist(cast_path)
-    cut = float(profile.get("cut", CUT))
+    cut = CUT                              # a profile's stored cut is history
     rows = defaultdict(list)
     for i, h in enumerate(index["heads"]):
         rows[h["panel"]].append(i)
@@ -409,19 +420,18 @@ def identify_chapter(ep_dir, profile: Optional[Dict[str, Any]],
         if not r:
             continue                       # no head found: all-unknown, as before
         d = d_all[r]
-        mc = int((d < cut).sum()) == 1     # two matches = a look-alike beside him
-        names = [mc_name] if mc and mc_name else []
+        cand = int((d < cut).sum()) == 1   # two matches = a look-alike beside him
         persons = sum(subject_person_count(str(s)) for s in p.get("subjects") or [])
-        out[fn] = {"names": names,
-                   "others": len(r) - len(names) + max(0, persons - len(r)),
-                   "mc": mc, "heads": len(r), "diff": round(float(d.min()), 3)}
+        out[fn] = {"names": [], "others": len(r) + max(0, persons - len(r)),
+                   "mc": False, "cand": cand, "heads": len(r),
+                   "diff": round(float(d.min()), 3)}
     obj: Dict[str, Any] = {"panels": out}
     if not write:
         return obj
     write_manifest(ep / "manifest.identity.json", obj, inputs=[understood, cast_path],
                    tool="panel_identity_ccip",
                    extra_meta={"backend": "ccip", "profile_version": profile.get("version"),
-                               "cut": cut, "protagonist": mc_name,
+                               "cut": cut, "protagonist": mc_name, "verified_by": None,
                                "refs": [f"{r['chapter']}/{r.get('panel', '')}"
                                         for r in profile["refs"]]})
     return obj

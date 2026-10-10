@@ -11,7 +11,7 @@ Per series (ongoing/<slug>):
   * drift: DRIFT_RUN consecutive chapters where under DRIFT_FRAC of the panels
     with a head are the protagonist (a redesign the references don't follow:
     vague there, not wrong — the owner decides);
-  * census, computed in memory (identity.json is written only at prepare
+  * census (picture candidates, no model calls), computed in memory (identity.json is written only at prepare
     time, so finished chapters never mix authorities): shipped lines that put
     someone ELSE in the subject of a panel the picture shows the protagonist
     alone on — the error class that called ORV's Dokja "Namwoon Kim".
@@ -58,6 +58,13 @@ def chapter_dirs(series_dir) -> List[Path]:
 
 
 def census_chapter(ep: Path, identity: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Lines naming someone else on panels the PICTURE proposes as the
+    protagonist alone (candidates, not gemma-confirmed: the sweep makes no
+    model calls). Each hit is a narration error or a false candidate."""
+    name = pic._protagonist(ep / "manifest.cast.json") or "our protagonist"
+    identity = {"panels": {fn: dict(r, mc=True, names=[name], others=max(0, r["others"] - 1))
+                           if r.get("cand") else r
+                           for fn, r in (identity.get("panels") or {}).items()}}
     understood = _json(ep / "manifest.panels.understood.json").get("panels") or []
     ubf = {str(u.get("scene_file")): u for u in understood if u.get("scene_file")}
     vision = _json(ep / "manifest.vision.json").get("items") or []
@@ -104,7 +111,7 @@ def sweep_series(series_dir, *, series_cast=None, heads_fn=None, embed_fn=None,
         for ep in eps:
             ident = pic.identify_chapter(ep, prof, indexes[ep.name], write=False) or {}
             P = ident.get("panels") or {}
-            frac = sum(1 for v in P.values() if v["mc"]) / len(P) if P else None
+            frac = sum(1 for v in P.values() if v.get("cand")) / len(P) if P else None
             rep["confirmed_by_chapter"][ep.name] = None if frac is None else round(frac, 3)
             if frac is not None and frac < DRIFT_FRAC:
                 run.append(ep.name)

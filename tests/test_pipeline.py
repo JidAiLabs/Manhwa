@@ -568,6 +568,29 @@ class TestBeatedCastWiring:
         assert "--series-cast" not in argv            # no registry beside it
         assert stub.kw["panel_identity_ccip.py"]["python_exe"] == "/id/py"
 
+    def test_ccip_candidates_are_verified_by_gemma_when_exemplars_exist(self, tmp_path,
+                                                                        monkeypatch):
+        """The picture proposes, gemma confirms (owner decision 2026-10-10):
+        the verify pass runs in the pipeline's own interpreter (ollama lives
+        there, not in .identity_venv), after the picture and before the writer."""
+        ex = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.exemplars.json"
+        ex.parent.mkdir(parents=True)
+        ex.write_text('{"protagonist": ["a", "b"], "decoy": ["c", "d"]}')
+        stub, _ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=False,
+                                      cfg=self._ccip_cfg(tmp_path, identity_backend="ccip"))
+        names = [n for n, _ in stub.calls]
+        assert names.index("panel_identity_ccip.py") < names.index("panel_identity.py") \
+            < names.index("gemini_narrative_pass.py")
+        argv = next(a for n, a in stub.calls if n == "panel_identity.py")
+        assert argv[argv.index("--verify-ccip") + 1] == str(ex)
+        assert argv[argv.index("--episode-dir") + 1] == str(ep_dir)
+        assert not stub.kw["panel_identity.py"].get("python_exe")
+
+    def test_no_exemplars_file_means_no_gemma_verify(self, tmp_path, monkeypatch):
+        stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False,
+                                   cfg=self._ccip_cfg(tmp_path, identity_backend="ccip"))
+        assert "panel_identity.py" not in [n for n, _ in stub.calls]
+
     def test_ccip_passes_the_registry_for_exemplar_pins(self, tmp_path, monkeypatch):
         reg = _fake_repo_root(tmp_path) / "cast" / f"{tmp_path.name}.json"
         reg.parent.mkdir(parents=True)

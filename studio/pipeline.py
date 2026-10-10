@@ -443,6 +443,22 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
                 identity.unlink(missing_ok=True)
                 print(f"[beated] image identity FAILED ({e}) -> keyword "
                       "identity stands")
+            # the picture only PROPOSES; gemma confirms each candidate against
+            # the series' exemplar panels (owner decision 2026-10-10: picture
+            # alone ~70-85%, both agreeing ~95%). No exemplars file = nobody is
+            # named. Runs in THIS interpreter (ollama lives here). A failure
+            # keeps the unverified file: it names nobody, which is vague, never
+            # the keyword guesses an unlink would bring back.
+            exemplars = _REPO_ROOT / "cast" / f"{ep_dir.parent.name}.exemplars.json"
+            if exemplars.exists():
+                try:
+                    _run_tool("panel_identity.py",
+                              ["--episode-dir", str(ep_dir),
+                               "--verify-ccip", str(exemplars),
+                               "--model", cfg.beats_model])
+                except Exception as e:
+                    print(f"[beated] gemma verify FAILED ({e}) -> candidates "
+                          "stay unconfirmed")
         elif (backend == "gemma" and series_cast.exists()
               and _identity_exemplars(series_cast)):
             id_stale = (identity.exists()

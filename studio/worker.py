@@ -1906,6 +1906,25 @@ def _h_refresh_facts(con: sqlite3.Connection, job: Dict[str, Any],
         log.write(f"[refresh-facts] prepare queued as job {jid}\n")
 
 
+def _h_identity_check(con: sqlite3.Connection, job: Dict[str, Any],
+                      log: TextIO) -> None:
+    """Validate one series' picture + gemma identity before it is switched on
+    (tools/panel_identity.py --check-series): gemma on n random picture
+    candidates, report + grading sheet in dist/identity_check/. gpu lane: it is
+    a stream of gemma calls, so it queues behind prepares instead of stacking
+    on them (2026-10-10: an out-of-band gemma loop beside the worker coincided
+    with a Metal GPU hang). Touches no chapter."""
+    payload = job["payload"] or {}
+    slug = str(payload["series_slug"])
+    cmd = [PY, str(REPO / "tools" / "panel_identity.py"),
+           "--check-series", str(REPO / "ongoing" / slug),
+           "--verify-ccip", str(REPO / "cast" / f"{slug}.exemplars.json"),
+           "--n", str(int(payload.get("n") or 40))]
+    rc = _stream(cmd, log)
+    if rc != 0:
+        raise RuntimeError(f"identity check exited {rc}")
+
+
 def _h_publish_meta(con: sqlite3.Connection, job: Dict[str, Any],
                     log: TextIO) -> None:
     """BUNDLE (video) metadata: arc title + description + Parts (YouTube-chapter
@@ -2220,6 +2239,7 @@ HANDLERS: Dict[str, Callable[[sqlite3.Connection, Dict[str, Any], TextIO], None]
     "plan_teaser": _h_teaser,
     "refresh": _h_refresh,
     "refresh_facts": _h_refresh_facts,
+    "identity_check": _h_identity_check,
 }
 
 

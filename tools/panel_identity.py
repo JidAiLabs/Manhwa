@@ -225,15 +225,195 @@ def identify_panels(ep_dir: str, registry: Any, *,
     return obj
 
 
+_REPO = os.path.dirname(_TD)
+
+
+def _exemplar_paths(path: Any) -> Optional[Dict[str, List[str]]]:
+    """cast/<slug>.exemplars.json -> {protagonist: [2 paths], decoy: [2 paths]},
+    repo-relative paths resolved; None unless it is exactly 2 + 2 (the
+    measured prompt shows images 1-2 = A, 3-4 = B)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            ex = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+    out = {}
+    for k in ("protagonist", "decoy"):
+        ps = [str(x) for x in (ex.get(k) or []) if str(x).strip()]
+        if len(ps) != 2:
+            return None
+        out[k] = [x if os.path.isabs(x) else os.path.join(_REPO, x) for x in ps]
+    return out
+
+
+def verify_candidates(ep_dir: Any, exemplars: Any, *, chat: Optional[Callable] = None,
+                      model: str = MODEL, load: Callable[[str], bytes] = _jpeg
+                      ) -> Optional[Dict[str, Any]]:
+    """gemma confirms the picture's candidates (2026-10-10, owner decision).
+
+    panel_identity_ccip proposes (`cand`: one head under its 0.10 cut) and names
+    nobody. Here each candidate panel gets the measured forced choice — the
+    series' protagonist (A) against its closest look-alike (B), two exemplar
+    panels each — and only an "A" names the protagonist. Graded on ORV: the
+    picture alone ~70-85% right, picture + gemma ~95%; every wrong gemma
+    confirmation had a picture score >= 0.10, which is why the cut sits there.
+    A failed call or an empty answer confirms nobody (the 2026-10-10 GPU hang
+    answered 200 with empty content). None = skipped: no usable exemplars, not
+    a picture-candidate file, or already verified (no second paid pass)."""
+    ident_path = os.path.join(str(ep_dir), "manifest.identity.json")
+    ex = _exemplar_paths(exemplars)
+    if ex is None:
+        return None
+    try:
+        with open(ident_path, encoding="utf-8") as f:
+            obj = json.load(f)
+    except (OSError, ValueError):
+        return None
+    meta = obj.get("_meta") or {}
+    if meta.get("tool") != "panel_identity_ccip" or meta.get("verified_by"):
+        return None
+    name = meta.get("protagonist")
+    cands = [{"name": "A", "exemplars": ex["protagonist"]},
+             {"name": "B", "exemplars": ex["decoy"]}]
+    imgs = [load(x) for x in ex["protagonist"] + ex["decoy"]]
+    for fn, rec in (obj.get("panels") or {}).items():
+        if not rec.get("cand"):
+            continue
+        got = identify_panel(os.path.join(str(ep_dir), "scenes", fn), cands, chat=chat,
+                             model=model, exemplar_images=imgs, load=load)
+        rec["gemma"] = "A" if "A" in got["names"] else ("B" if "B" in got["names"] else "OTHER")
+        if rec["gemma"] == "A":
+            rec["mc"] = True
+            if name:
+                rec["names"] = [name]
+                rec["others"] = max(0, int(rec.get("others") or 0) - 1)
+    from manifest_io import write_manifest
+    keep = {k: v for k, v in meta.items() if k not in ("schema", "written_at", "tool")}
+    write_manifest(ident_path, obj, tool="panel_identity_ccip",
+                   extra_meta=dict(keep, verified_by="gemma", model=model,
+                                   exemplars=os.path.basename(str(exemplars))))
+    return obj
+
+
+def check_series(series_dir: Any, exemplars: Any, *, n: int = 40, out_dir: Any = "",
+                 chat: Optional[Callable] = None, model: str = MODEL,
+                 load: Callable[[str], bytes] = _jpeg, seed: int = 0) -> Dict[str, Any]:
+    """Validation before a series is switched on (worker job identity_check):
+    n random picture candidates across the series (one head under the CCIP
+    cut, from the sweep's .identity caches), gemma's verdict on each, written to
+    <out_dir>/<slug>.json + a grading sheet <slug>_sheet.jpg (confirmed row
+    first). Exemplar panels are never sampled. Model calls only — no chapter
+    manifest is touched."""
+    import random
+    from collections import defaultdict
+    import panel_identity_ccip as pic
+    sd = str(series_dir)
+    slug = os.path.basename(os.path.normpath(sd))
+    ex = _exemplar_paths(exemplars)
+    prof = pic.load_profile(sd)
+    if ex is None or not prof or prof.get("status") != "active":
+        raise SystemExit(f"[identity] check {slug}: needs 2+2 exemplars and an active profile")
+    R = pic._feats(prof["refs"])
+    skip = {os.path.abspath(x) for x in ex["protagonist"] + ex["decoy"]}
+    pool = []
+    for ix in pic.load_indexes(sd):
+        if not len(ix["heads"]):
+            continue
+        d = pic.ccip_diff(ix["feats"], R).min(axis=1)
+        rows = defaultdict(list)
+        for i, h in enumerate(ix["heads"]):
+            rows[h["panel"]].append(i)
+        for fn, r in rows.items():
+            hit = [i for i in r if d[i] < pic.CUT]
+            path = os.path.join(sd, ix["chapter"], "scenes", fn)
+            if len(hit) == 1 and os.path.abspath(path) not in skip:
+                i = hit[0]
+                pool.append({"chapter": ix["chapter"], "panel": fn, "path": path,
+                             "box": ix["heads"][i]["box"], "d": round(float(d[i]), 3)})
+    random.Random(seed).shuffle(pool)
+    cands = [{"name": "A", "exemplars": ex["protagonist"]},
+             {"name": "B", "exemplars": ex["decoy"]}]
+    imgs = [load(x) for x in ex["protagonist"] + ex["decoy"]]
+    results = []
+    for c in pool[:n]:
+        got = identify_panel(c["path"], cands, chat=chat, model=model,
+                             exemplar_images=imgs, load=load)
+        c["gemma"] = "A" if "A" in got["names"] else ("B" if "B" in got["names"] else "OTHER")
+        results.append(c)
+    rep = {"series": slug, "n": len(results), "candidates": len(pool),
+           "confirmed": sum(1 for r in results if r["gemma"] == "A"), "cut": pic.CUT,
+           "exemplars": {k: [os.path.relpath(x, _REPO) for x in v] for k, v in ex.items()},
+           "results": results}
+    od = str(out_dir or os.path.join(_REPO, "dist", "identity_check"))
+    os.makedirs(od, exist_ok=True)
+    with open(os.path.join(od, f"{slug}.json"), "w", encoding="utf-8") as f:
+        json.dump(rep, f, indent=1)
+    _check_sheet(results, os.path.join(od, f"{slug}_sheet.jpg"), slug)
+    return rep
+
+
+def _check_sheet(results: List[Dict[str, Any]], out: str, slug: str) -> None:
+    """Head crops, confirmed first then rejected, labelled chapter/panel/score —
+    graded by eye before a series is switched on."""
+    from PIL import Image, ImageDraw
+    import panel_identity_ccip as pic
+    size, per_row = 130, 12
+    rows = [[r for r in results if r["gemma"] == "A"], [r for r in results if r["gemma"] != "A"]]
+    lines = [rows[0][i:i + per_row] for i in range(0, len(rows[0]), per_row)] or [[]]
+    lines += [rows[1][i:i + per_row] for i in range(0, len(rows[1]), per_row)] or [[]]
+    sheet = Image.new("RGB", (per_row * (size + 6) + 6, 30 + len(lines) * (size + 22)), "white")
+    draw = ImageDraw.Draw(sheet)
+    draw.text((5, 8), f"{slug}: gemma CONFIRMED rows first, then rejected (B/OTHER) — grade each", fill="blue")
+    for li, line in enumerate(lines):
+        for k, r in enumerate(line):
+            x, y = 5 + k * (size + 6), 30 + li * (size + 22)
+            try:
+                c = pic._crop(pic._open(r["path"]), r["box"])
+                c.thumbnail((size, size))
+                sheet.paste(c, (x, y))
+            except Exception:                              # noqa: BLE001
+                pass
+            draw.text((x, y + size + 3), f"{r['gemma']} {r['chapter'][-6:]} {r['panel'][1:7]} {r['d']}",
+                      fill="black")
+    sheet.save(out, quality=85)
+
+
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--episode-dir", required=True)
-    ap.add_argument("--series-cast", required=True,
+    ap.add_argument("--episode-dir", default="")
+    ap.add_argument("--series-cast", default="",
                     help="cast/<slug>.json — the owner's exemplars live there")
+    ap.add_argument("--verify-ccip", default="", metavar="EXEMPLARS",
+                    help="cast/<slug>.exemplars.json: gemma confirms the picture's "
+                         "candidates in manifest.identity.json (panel_identity_ccip)")
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--out", default="")
+    ap.add_argument("--check-series", default="", metavar="SERIES_DIR",
+                    help="validation: gemma on --n random picture candidates of the "
+                         "series (needs --verify-ccip EXEMPLARS); writes dist/identity_check/")
+    ap.add_argument("--n", type=int, default=40)
     args = ap.parse_args()
+    if args.check_series:
+        rep = check_series(args.check_series, args.verify_ccip, n=args.n, model=args.model)
+        print("[ok] identity check %s: %d of %d sampled candidates confirmed (%d candidates)"
+              % (rep["series"], rep["confirmed"], rep["n"], rep["candidates"]))
+        return 0
+    if not args.episode_dir:
+        ap.error("--episode-dir is required (except with --check-series)")
+    if args.verify_ccip:
+        got = verify_candidates(args.episode_dir, args.verify_ccip, model=args.model)
+        if got is None:
+            print("[identity] verify skipped (no usable exemplars, no picture "
+                  "candidates, or already verified)")
+        else:
+            P = got["panels"]
+            print("[ok] identity verified: %d candidates, %d confirmed the protagonist"
+                  % (sum(1 for v in P.values() if v.get("cand")),
+                     sum(1 for v in P.values() if v.get("mc"))))
+        return 0
+    if not args.series_cast:
+        ap.error("--series-cast is required without --verify-ccip")
     try:
         with open(args.series_cast, encoding="utf-8") as f:
             registry = json.load(f)
