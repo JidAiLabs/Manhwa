@@ -929,6 +929,22 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             lock = json.loads(confirmed.read_text()).get("confirmed") or {}
         except (OSError, ValueError, AttributeError):
             lock = {}
+        # tracking (owner 2026-10-11): how much of the series the pictures reach
+        eps = [Path(ep) for (ep,) in rcon(sid).execute(
+            "SELECT ep_dir FROM chapter WHERE series_id=? AND ep_dir IS NOT NULL", (sid,))]
+        prepared = [ep for ep in eps if (ep / "manifest.beats.json").exists()]
+        redo = [ep for ep in eps if (ep / ".identity_redo").exists()]
+        try:
+            profile = json.loads((REPO / "ongoing" / slug / ".identity" / "profile.json")
+                                 .read_text())
+        except (OSError, ValueError):
+            profile = {}
+        tracking = {"prepared": len(prepared),
+                    "pictures": sum((ep / "manifest.identity.json").exists() for ep in prepared),
+                    "redone": len(redo),
+                    "redo_waiting": sum(not (ep / "manifest.beats.json").exists() for ep in redo),
+                    "profile": profile.get("status"),
+                    "faces_chapters": profile.get("chapters_indexed")}
         prop = _identity_proposal(slug)
         cands = []
         for k, c in enumerate((prop or {}).get("candidates") or []):
@@ -945,6 +961,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                 "source": ("auto" if lock.get("by") == "auto" else "confirmed")
                 if confirmed.exists() else "hand-picked",
                 "locked_chapters": lock.get("chapters"),
+                "tracking": tracking,
                 "check": check(""),
                 "sheet": (REPO / "dist" / "identity_check" / f"{slug}_sheet.jpg").exists(),
                 "proposal": ({"auto": prop.get("auto") or {}, "candidates": cands,

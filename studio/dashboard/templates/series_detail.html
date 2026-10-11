@@ -81,6 +81,10 @@
 <span class="kv">no exemplars — the picture check is not set up for this series; characters are identified the old way (word matching)</span>
 {% endif %}
 </div>
+{% set t = identity.tracking %}
+{% if t.prepared %}
+<div class="row"><span class="kv">tracking: pictures used in <b>{{ t.pictures }} of {{ t.prepared }}</b> prepared chapters{% if t.redone %} · re-narrated after the automatic pick: {{ t.redone - t.redo_waiting }} done{% if t.redo_waiting %}, {{ t.redo_waiting }} waiting{% endif %}{% endif %} · picture check {% if t.profile == 'active' %}ready{% elif t.profile %}still collecting faces ({{ t.faces_chapters }} chapters){% else %}not started{% endif %}</span></div>
+{% endif %}
 {% set prop = identity.proposal %}
 {% if prop %}
 <div class="row"><span class="kv"><b>Automatic proposal.</b>

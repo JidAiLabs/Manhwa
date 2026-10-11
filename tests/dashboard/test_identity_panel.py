@@ -164,3 +164,29 @@ def test_an_automatic_lock_says_so(client):
     html = c.get(f"/series/{sid}").text
     assert "picked automatically" in html and "after 4 chapters" in html
     assert f"/identity/series/{sid}/exemplar/3" in html
+
+
+def test_the_card_tracks_how_the_pictures_are_used(client):
+    # owner 2026-10-11: "ensure we track the results" of the automatic pick
+    c, sid, root = client
+    _setup(root, check=False)
+    con = connect(root / "s.db")
+    for n in range(1, 6):
+        ep = root / "ongoing" / "nano" / f"Chapter_{n}"
+        ep.mkdir(parents=True, exist_ok=True)
+        if n != 5:                                   # 5: rewound, its redo still queued
+            (ep / "manifest.beats.json").write_text("{}")
+        if n in (3, 4, 5):
+            (ep / "manifest.identity.json").write_text("{}") if n != 5 else None
+        if n in (1, 5):
+            (ep / ".identity_redo").write_text("")
+        con.execute("INSERT INTO chapter (series_id, number, label, url, status, ep_dir, "
+                    "updated_at) VALUES (?,?,?,'u','planned',?,'t')", (sid, n, f"Ch {n}", str(ep)))
+    con.commit()
+    prof = root / "ongoing" / "nano" / ".identity" / "profile.json"
+    prof.parent.mkdir(parents=True, exist_ok=True)
+    prof.write_text(json.dumps({"status": "provisional", "chapters_indexed": 4}))
+    html = c.get(f"/series/{sid}").text
+    assert "pictures used in <b>2 of 4</b> prepared chapters" in html
+    assert "re-narrated after the automatic pick: 1 done, 1 waiting" in html
+    assert "still collecting faces (4 chapters)" in html
