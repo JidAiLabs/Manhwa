@@ -162,8 +162,12 @@ def test_profile_due_cadence():
     assert pic.profile_due(None, 1)
     assert pic.profile_due({"chapters_indexed": 3}, 4)        # < 10: every chapter
     assert not pic.profile_due({"chapters_indexed": 4}, 4)
-    assert not pic.profile_due({"chapters_indexed": 12}, 21)  # then every 10
-    assert pic.profile_due({"chapters_indexed": 12}, 22)
+    assert not pic.profile_due({"chapters_indexed": 12, "status": "active"}, 21)  # then every 10
+    assert pic.profile_due({"chapters_indexed": 12, "status": "active"}, 22)
+    # not active yet: every chapter, so a series locked at chapter 5 starts naming
+    # (and re-narrates its first chapters) when it has the faces, not up to 10 later
+    assert pic.profile_due({"chapters_indexed": 12, "status": "provisional"}, 13)
+    assert not pic.profile_due({"chapters_indexed": 13, "status": "provisional"}, 13)
 
 
 def test_profile_round_trips_through_disk(tmp_path):

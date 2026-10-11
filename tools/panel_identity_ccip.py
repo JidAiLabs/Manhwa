@@ -369,7 +369,7 @@ def profile_due(profile: Optional[Dict[str, Any]], n_indexed: int) -> bool:
     if not profile:
         return True
     last = int(profile.get("chapters_indexed") or 0)
-    if n_indexed < REFRESH_EVERY:
+    if n_indexed < REFRESH_EVERY or profile.get("status") != "active":
         return n_indexed != last
     return n_indexed - last >= REFRESH_EVERY
 
