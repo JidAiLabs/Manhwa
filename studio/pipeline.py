@@ -429,6 +429,17 @@ def _stage_beated(ep_dir: Path, cfg: Config) -> None:
         exemplars = identity_exemplars_path(ep_dir.parent, _REPO_ROOT)
         backend = cfg.identity_backend_for(
             ep_dir.parent.name, confirmed=confirmed_exemplars(ep_dir.parent).exists())
+        if exemplars is None and backend == "gemma" and cfg.identity_auto_pick:
+            # no protagonist picked yet: record this chapter's faces — the
+            # worker picks + locks the lead from them after the first
+            # chapters (_auto_identity, 2026-10-11). Names nobody; fail-soft.
+            try:
+                _run_tool("panel_identity_ccip.py",
+                          ["--episode-dir", str(ep_dir), "--index-only"],
+                          python_exe=cfg.identity_python)
+            except Exception as e:
+                print(f"[beated] recording faces FAILED ({e}) -> the automatic "
+                      "protagonist pick waits")
         if backend == "ccip":
             # 2026-10-10: the protagonist recognized from pictures, every series,
             # no exemplars needed (tools/panel_identity_ccip.py). Re-run on

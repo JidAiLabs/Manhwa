@@ -150,3 +150,17 @@ def test_propose_queues_the_gpu_job_once(client):
     rows = con.execute("SELECT type, payload_json FROM job").fetchall()
     assert len(rows) == 1 and rows[0][0] == "identity_propose" and "nano" in rows[0][1]
     assert "automatic proposal queued" in c.get(f"/series/{sid}").text
+
+
+def test_an_automatic_lock_says_so(client):
+    # owner 2026-10-11: the protagonist is picked and locked automatically
+    c, sid, root = client
+    _setup(root, check=False)
+    conf = root / "ongoing" / "nano" / ".identity" / "exemplars.json"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(json.dumps({"seed": "exemplars", "protagonist": PANELS[:2],
+                                "decoy": PANELS[2:],
+                                "confirmed": {"by": "auto", "chapters": 4}}))
+    html = c.get(f"/series/{sid}").text
+    assert "picked automatically" in html and "after 4 chapters" in html
+    assert f"/identity/series/{sid}/exemplar/3" in html

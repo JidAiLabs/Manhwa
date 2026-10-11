@@ -64,6 +64,11 @@ speed = 1.05   # delivery tempo (ffmpeg atempo, pitch-preserved) — 1.05 = 5% s
 # "off"   = keyword identity only. Env STUDIO_IDENTITY_BACKEND overrides everything (rollback lever).
 backend = "gemma"
 python = ".identity_venv/bin/python"   # repo-relative; own venv (requirements-identity.lock.txt)
+# A series with no exemplars: every prepare records its faces, and after each prepare from
+# chapter 3 on the worker re-picks the protagonist; two picks in a row that agree LOCK it
+# (.identity/exemplars.json, by: auto). Measured 2026-10-11 on 9 series: right 9/9, locked at
+# chapter 4-8. The chapters prepared before are then re-narrated once (debut window only).
+auto_pick = true
 
 [identity.series]
 # per-series backend while ccip rolls out. ON 2026-10-10: validated by the worker

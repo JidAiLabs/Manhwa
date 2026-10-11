@@ -576,7 +576,13 @@ def main() -> int:
     ap.add_argument("--exemplars", default="",
                     help="exemplars file; seed: exemplars grows the profile from its lead")
     ap.add_argument("--sheet", default="", help="also write a grading contact sheet here")
+    ap.add_argument("--index-only", action="store_true",
+                    help="only record the chapter's faces (for the automatic protagonist pick)")
     args = ap.parse_args()
+    if args.index_only:
+        ix = index_chapter(args.episode_dir)
+        print(f"[identity] {len(ix['heads'])} faces recorded for the automatic protagonist pick")
+        return 0
     got = run(args.episode_dir, args.series_cast or None, exemplars=args.exemplars or None)
     if got is None:
         print("[identity] ccip profile provisional -> no manifest.identity.json "

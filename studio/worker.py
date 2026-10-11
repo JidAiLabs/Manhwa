@@ -1209,6 +1209,8 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     # once enough chapters are prepared, PROPOSE the channel thumbnail + a
     # debut-arc intro teaser for review (never auto-approved, never blocking)
     _autopropose_publish_if_ready(con, ch["series_id"], log)
+    # and the series' protagonist, from the faces of its first chapters
+    _auto_identity(con, ch, (job.get("payload") or {}).get("auto_to"), log)
 
 
 def _advance_after_prepare(con: sqlite3.Connection, ch: Dict[str, Any],
@@ -1273,6 +1275,82 @@ def _chapters_with_beats(con: sqlite3.Connection, series_id: int) -> List[int]:
         if ep and (Path(ep) / "manifest.beats.json").exists():
             out.append(cid)
     return out
+
+
+_IDENTITY_REDO_WINDOW = 12   # ponytail: the debut window; re-narrating an older
+                             # series' back catalogue is the owner's backfill call
+
+
+def _auto_identity(con: sqlite3.Connection, ch: Dict[str, Any],
+                   auto_to: Optional[str], log: TextIO) -> None:
+    """After a chapter is prepared (owner 2026-10-11: "prep the first chapters,
+    auto-pick the protagonist, review what has been done, then continue"):
+
+      * a series with no exemplars gets its lead re-picked from the faces its
+        prepares recorded; two picks in a row that agree LOCK it
+        (tools/identity_exemplars.py --lock: right 9/9, chapter 4-8) and its
+        gemma check is queued for the Series page;
+      * an automatic lock inside the debut window then re-narrates, once, the
+        chapters prepared without the pictures (_redo_before_lock).
+
+    Never fails the prepare: the keyword identity stands meanwhile."""
+    from studio.config import confirmed_exemplars, identity_exemplars_path
+    try:
+        cfg = _beats_cfg()
+        sd = Path(ch["ep_dir"]).parent
+        confirmed = confirmed_exemplars(sd)
+        if not cfg.identity_auto_pick or cfg.identity_backend_for(
+                sd.name, confirmed=confirmed.exists()) == "off":
+            return
+        if identity_exemplars_path(sd, REPO) is None:
+            for f in (f"{sd.name}.json", f"{sd.name}_sheet.jpg"):  # an older proposal's check
+                (REPO / "dist" / "identity_check" / "proposed" / f).unlink(missing_ok=True)
+            rc = _stream([PY, str(REPO / "tools" / "identity_exemplars.py"),
+                          "--series", str(sd),
+                          "--auto", str(sd / ".identity" / "exemplars.proposed.json"),
+                          "--lock", str(confirmed)], log)
+            if rc != 0 or not confirmed.exists():
+                return
+            log.write(f"[identity] protagonist LOCKED automatically for {sd.name}\n")
+            jobs.enqueue(con, "identity_check", series_id=ch["series_id"],
+                         payload={"series_slug": sd.name}, priority=30)
+        _redo_before_lock(con, ch, sd, confirmed, auto_to, log)
+    except Exception as e:                                    # noqa: BLE001
+        log.write(f"[identity] automatic protagonist skipped ({e})\n")
+
+
+def _redo_before_lock(con: sqlite3.Connection, ch: Dict[str, Any], sd: Path,
+                      confirmed: Path, auto_to: Optional[str], log: TextIO) -> None:
+    """Re-narrate the chapters a series prepared before its AUTOMATIC lock,
+    once its picture profile is active (before that the keyword identity would
+    come back unchanged). A chapter is re-narrated at most once (marker
+    .identity_redo); one with a running job, and the chapter whose own prepare
+    is running now, wait for the next prepare's turn."""
+    from studio.catalog import reset
+    try:
+        conf = json.loads(confirmed.read_text())["confirmed"]
+        prof = json.loads((sd / ".identity" / "profile.json").read_text())
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if conf.get("by") != "auto" or prof.get("status") != "active" \
+            or int(conf.get("chapters") or 10 ** 9) > _IDENTITY_REDO_WINDOW:
+        return
+    for cid in _chapters_with_beats(con, ch["series_id"]):
+        ep = Path(_chapter(con, cid)["ep_dir"])
+        if cid == ch["id"] or (ep / "manifest.identity.json").exists() \
+                or (ep / ".identity_redo").exists() or con.execute(
+                    "SELECT 1 FROM job WHERE chapter_id=? AND state IN "
+                    "('running','cancelling')", (cid,)).fetchone():
+            continue
+        for (jid,) in con.execute("SELECT id FROM job WHERE chapter_id=? AND "
+                                  "state='queued'", (cid,)).fetchall():
+            jobs.cancel(con, jid)
+        reset.rewind_chapter(con, cid, "grouped")
+        jobs.enqueue(con, "prepare", chapter_id=cid, priority=40,
+                     payload={"auto_to": auto_to} if auto_to else None)
+        (ep / ".identity_redo").write_text("re-narrated with the protagonist's pictures\n")
+        log.write(f"[identity] {ep.name}: prepared before the protagonist was known "
+                  "-> re-narrating with the pictures\n")
 
 
 def _autopropose_publish_if_ready(con: sqlite3.Connection, series_id: int,

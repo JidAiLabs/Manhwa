@@ -131,6 +131,11 @@ class Config:
     identity_series: dict[str, str] = field(default_factory=dict)
                                              # [identity.series] slug -> backend;
                                              # env STUDIO_IDENTITY_BACKEND beats it
+    identity_auto_pick: bool = True          # [identity] auto_pick: a series with
+                                             # no exemplars gets its protagonist
+                                             # picked + locked by the worker after
+                                             # its first chapters (2026-10-11);
+                                             # env STUDIO_IDENTITY_AUTO_PICK wins
 
     def identity_backend_for(self, slug: str, confirmed: bool = False) -> str:
         """*confirmed*: the series has exemplars confirmed on the Series page
@@ -302,4 +307,6 @@ def load(path: Path | None = None) -> Config:
             or ident.get("backend", "gemma")),
         identity_series={str(k): str(v) for k, v
                          in (ident.get("series") or {}).items()},
+        identity_auto_pick=_env_bool("STUDIO_IDENTITY_AUTO_PICK",
+                                     bool(ident.get("auto_pick", True))),
     )

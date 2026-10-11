@@ -236,3 +236,46 @@ def test_a_mixed_group_reached_twice_is_one_candidate(tmp_path, monkeypatch):
                        load=lambda p: str(p).encode())
     sets = [tuple(h["path"] for h in c["protagonist"]) for c in obj["candidates"]]
     assert len(sets) == len(set(sets))
+
+
+# ---- the automatic LOCK (owner 2026-10-11: "prep the first chapters, auto-pick
+# the protagonist, review what has been done, then continue"). Measured on the
+# first chapters of 9 series: one 3-chapter pick right on 4, nothing on 4;
+# "lock when two picks in a row agree" right on 9/9 at chapter 4-8.
+def _paths(sd):
+    return sd / ".identity" / "exemplars.proposed.json", sd / ".identity" / "exemplars.json"
+
+
+def test_the_lock_waits_for_a_second_pick_of_the_same_lead(tmp_path):
+    sd, who = _series(tmp_path, PLAN)
+    prop, conf = _paths(sd)
+    kw = dict(chat=_chat_picking(who, "mc"), load=lambda p: str(p).encode())
+    assert ie.lock_if_stable(sd, prop, conf, **kw) is None       # the first pick only proposes
+    assert prop.exists() and not conf.exists()
+    got = ie.lock_if_stable(sd, prop, conf, **kw)
+    assert got and json.loads(conf.read_text()) == got
+    assert got["confirmed"]["by"] == "auto" and got["confirmed"]["chapters"] == len(PLAN)
+    assert got["seed"] == "exemplars" and len(got["protagonist"]) == len(got["decoy"]) == 2
+    assert all(who[p] == "mc" for p in got["protagonist"])
+    assert "mc" not in {who[p] for p in got["decoy"]}
+    assert not prop.exists()                                     # the proposal is spent
+
+
+def test_no_lock_when_the_lead_changed_between_picks(tmp_path):
+    sd, who = _series(tmp_path, PLAN)
+    prop, conf = _paths(sd)
+    load = lambda p: str(p).encode()
+    ie.lock_if_stable(sd, prop, conf, chat=_chat_picking(who, "x"), load=load)
+    assert ie.lock_if_stable(sd, prop, conf, chat=_chat_picking(who, "mc"), load=load) is None
+    assert not conf.exists()
+    assert all(who[p] == "mc" for p in json.loads(prop.read_text())["protagonist"])
+    got = ie.lock_if_stable(sd, prop, conf, chat=_chat_picking(who, "mc"), load=load)
+    assert got and all(who[p] == "mc" for p in got["protagonist"])
+
+
+def test_no_pick_before_three_chapters(tmp_path):
+    sd, who = _series(tmp_path, PLAN[:2])
+    prop, conf = _paths(sd)
+    assert ie.lock_if_stable(sd, prop, conf, chat=_chat_picking(who, "mc"),
+                             load=lambda p: str(p).encode()) is None
+    assert not prop.exists() and not conf.exists()

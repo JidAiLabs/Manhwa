@@ -60,7 +60,7 @@
 <h2>Character identity <small>— gemma is shown the protagonist (blue) and a DIFFERENT character who looks similar (grey, "NOT him"), so it learns to tell them apart</small></h2>
 <div class="row">
 {% if identity.exemplars %}
-<span class="kv">backend: <b>{{ identity.backend }}</b>{% if identity.backend != 'ccip' %} — not switched on yet{% endif %} · exemplars {{ 'confirmed on this page' if identity.source == 'confirmed' else 'hand-picked' }}</span>
+<span class="kv">backend: <b>{{ identity.backend }}</b>{% if identity.backend != 'ccip' %} — not switched on yet{% endif %} · exemplars {% if identity.source == 'auto' %}picked automatically (two picks in a row chose the same person, after {{ identity.locked_chapters }} chapters) — to swap them, Propose again{% elif identity.source == 'confirmed' %}confirmed on this page{% else %}hand-picked{% endif %}</span>
 </div>
 <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-start">
 {% for e in identity.exemplars %}

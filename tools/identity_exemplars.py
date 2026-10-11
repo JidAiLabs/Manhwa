@@ -28,6 +28,7 @@ import collections
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -373,6 +374,57 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
     return obj
 
 
+AUTO_MIN_CHAPTERS = 3   # the first automatic pick; the NEXT one must agree to lock
+
+
+def lock_if_stable(series_dir, out_path, confirmed_path, **kw) -> Optional[Dict[str, Any]]:
+    """The automatic LOCK, run after every prepared chapter of a series with no
+    exemplars (owner 2026-10-11: "prep the first chapters, auto-pick the
+    protagonist, review what has been done, then continue"). Re-picks into
+    *out_path*; when the previous pick there is the same person (median
+    difference of their close-ups < CUT) the pick becomes the series'
+    exemplars at *confirmed_path* (confirmed.by = "auto"). Measured on the
+    first chapters of 9 series: a single 3-chapter pick right on 4 and
+    nothing on 4; two agreeing picks right on 9/9, locked at chapter 4-8.
+    Later re-picks drifted to the wrong person on 2 (Clan's Failure, Tutorial
+    Tower), so a lock is never re-opened here; the Series page can swap it."""
+    sd = Path(series_dir)
+    indexes = pic.load_indexes(sd)
+    if len(indexes) < AUTO_MIN_CHAPTERS:
+        return None
+    try:
+        prev = json.loads(Path(out_path).read_text())
+        prev = prev["candidates"][prev["auto"]["chosen"]]["protagonist"]
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        prev = None
+    obj = auto_pick(sd, out_path, **kw)
+    if not obj or obj["auto"]["chosen"] is None or not prev:
+        return None
+    k = obj["auto"]["chosen"]
+    c = obj["candidates"][k]
+    fa, fb = (pic.exemplar_feats(indexes, {"heads": {"protagonist": h}})
+              for h in (prev, c["protagonist"]))
+    if fa is None or fb is None or float(np.median(pic.ccip_diff(fa, fb))) >= pic.CUT:
+        print(f"[auto-pick] {sd.name}: the lead changed since the last pick -> not locked yet")
+        return None
+    heads = {"protagonist": c["protagonist"][:2], "decoy": c["decoy"][:2]}
+    conf = {"_readme": "Exemplars LOCKED automatically (tools/identity_exemplars.py --lock): "
+                       "two picks in a row chose the same lead. seed: exemplars = the picture "
+                       "profile grows from these faces. Swap them on the Series page.",
+            "series": sd.name, "seed": "exemplars",
+            "protagonist": [h["path"] for h in heads["protagonist"]],
+            "decoy": [h["path"] for h in heads["decoy"]], "heads": heads,
+            "confirmed": {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                          "by": "auto", "chapters": len(indexes), "candidate": k,
+                          "chosen_by": obj["auto"]["chosen_by"], "as_proposed": True}}
+    out = Path(confirmed_path)
+    tmp = out.with_suffix(".tmp")
+    tmp.write_text(json.dumps(conf, indent=2) + "\n")
+    tmp.replace(out)
+    Path(out_path).unlink(missing_ok=True)
+    return conf
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--series", required=True, help="ongoing/<slug>")
@@ -382,8 +434,15 @@ def main() -> int:
     ap.add_argument("--auto", default="", metavar="OUT",
                     help="propose automatically (candidate leads, gemma's choice asked twice); "
                          "write the proposal to OUT")
+    ap.add_argument("--lock", default="", metavar="CONFIRMED",
+                    help="with --auto: lock the pick into CONFIRMED when the previous "
+                         "proposal in OUT chose the same lead")
     args = ap.parse_args()
     sd = Path(args.series)
+    if args.auto and args.lock:
+        got = lock_if_stable(sd, args.auto, args.lock)
+        print(f"[auto-pick] {sd.name}: " + (f"LOCKED -> {args.lock}" if got else "not locked"))
+        return 0
     if args.auto:
         obj = auto_pick(sd, args.auto)
         print(f"[auto-pick] {sd.name}: " + (json.dumps(obj["auto"]) + f" -> {args.auto}"

@@ -925,6 +925,10 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                                   .read_text())
             except (OSError, ValueError):
                 return None
+        try:
+            lock = json.loads(confirmed.read_text()).get("confirmed") or {}
+        except (OSError, ValueError, AttributeError):
+            lock = {}
         prop = _identity_proposal(slug)
         cands = []
         for k, c in enumerate((prop or {}).get("candidates") or []):
@@ -938,7 +942,9 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             "SELECT state FROM job WHERE type='identity_propose' AND series_id=? "
             "AND state IN ('queued','running') ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
         return {"backend": backend, "exemplars": _identity_exemplars(slug),
-                "source": "confirmed" if confirmed.exists() else "hand-picked",
+                "source": ("auto" if lock.get("by") == "auto" else "confirmed")
+                if confirmed.exists() else "hand-picked",
+                "locked_chapters": lock.get("chapters"),
                 "check": check(""),
                 "sheet": (REPO / "dist" / "identity_check" / f"{slug}_sheet.jpg").exists(),
                 "proposal": ({"auto": prop.get("auto") or {}, "candidates": cands,

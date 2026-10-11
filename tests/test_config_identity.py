@@ -7,7 +7,7 @@ from studio.config import REPO_ROOT, identity_exemplars_path, load
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     for k in ("STUDIO_IDENTITY_PYTHON", "STUDIO_IDENTITY_BACKEND",
-              "STUDIO_TTS_PYTHON"):
+              "STUDIO_TTS_PYTHON", "STUDIO_IDENTITY_AUTO_PICK"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -74,3 +74,13 @@ def test_the_confirmed_exemplars_win_over_the_hand_picked_file(tmp_path):
     (sd / ".identity").mkdir(parents=True)
     (sd / ".identity" / "exemplars.json").write_text("{}")
     assert identity_exemplars_path(sd, tmp_path) == sd / ".identity" / "exemplars.json"
+
+
+def test_identity_auto_pick_default_toml_env(tmp_path, monkeypatch):
+    toml = tmp_path / "studio.toml"
+    toml.write_text("")
+    assert load(toml).identity_auto_pick is True
+    toml.write_text("[identity]\nauto_pick = false\n")
+    assert load(toml).identity_auto_pick is False
+    monkeypatch.setenv("STUDIO_IDENTITY_AUTO_PICK", "1")
+    assert load(toml).identity_auto_pick is True

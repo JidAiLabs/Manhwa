@@ -604,6 +604,37 @@ class TestBeatedCastWiring:
         assert pic[pic.index("--exemplars") + 1] == str(ex)
         assert ver[ver.index("--verify-ccip") + 1] == str(ex)
 
+    def test_a_series_without_exemplars_records_its_faces_for_the_automatic_pick(
+            self, tmp_path, monkeypatch):
+        """Owner 2026-10-11: the protagonist is picked automatically after the
+        first chapters (worker _auto_identity); the pick reads the faces every
+        prepare records. Recording names nobody."""
+        stub, _ch, ep_dir = self._run(tmp_path, monkeypatch, pre_cast=False,
+                                      cfg=self._ccip_cfg(tmp_path, identity_backend="gemma"))
+        argv = next(a for n, a in stub.calls if n == "panel_identity_ccip.py")
+        assert "--index-only" in argv and argv[argv.index("--episode-dir") + 1] == str(ep_dir)
+        assert stub.kw["panel_identity_ccip.py"]["python_exe"] == "/id/py"
+        assert "panel_identity.py" not in [n for n, _ in stub.calls]
+
+    def test_recording_faces_never_blocks_the_chapter(self, tmp_path, monkeypatch):
+        ep_dir = tmp_path / "ep"
+        inner = _capturing_stub(ep_dir)
+
+        def stub(script_name, args_list, **kwargs):
+            inner(script_name, args_list, **kwargs)
+            if script_name == "panel_identity_ccip.py":
+                raise RuntimeError("onnxruntime exploded")
+        stub.calls = inner.calls
+        self._run(tmp_path, monkeypatch, pre_cast=False, stub=stub,
+                  cfg=self._ccip_cfg(tmp_path, identity_backend="gemma"))
+        assert "gemini_narrative_pass.py" in [n for n, _ in inner.calls]
+
+    def test_auto_pick_off_records_no_faces(self, tmp_path, monkeypatch):
+        stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False,
+                                   cfg=self._ccip_cfg(tmp_path, identity_backend="gemma",
+                                                      identity_auto_pick=False))
+        assert "panel_identity_ccip.py" not in [n for n, _ in stub.calls]
+
     def test_no_exemplars_file_means_no_gemma_verify(self, tmp_path, monkeypatch):
         stub, _ch, _ep = self._run(tmp_path, monkeypatch, pre_cast=False,
                                    cfg=self._ccip_cfg(tmp_path, identity_backend="ccip"))
