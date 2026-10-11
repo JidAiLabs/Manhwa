@@ -400,28 +400,36 @@ def lock_if_stable(series_dir, out_path, confirmed_path, **kw) -> Optional[Dict[
     obj = auto_pick(sd, out_path, **kw)
     if not obj or obj["auto"]["chosen"] is None or not prev:
         return None
-    k = obj["auto"]["chosen"]
-    c = obj["candidates"][k]
+    c = obj["candidates"][obj["auto"]["chosen"]]
     fa, fb = (pic.exemplar_feats(indexes, {"heads": {"protagonist": h}})
               for h in (prev, c["protagonist"]))
     if fa is None or fb is None or float(np.median(pic.ccip_diff(fa, fb))) >= pic.CUT:
         print(f"[auto-pick] {sd.name}: the lead changed since the last pick -> not locked yet")
         return None
+    conf = write_lock(sd, obj, confirmed_path, len(indexes))
+    Path(out_path).unlink(missing_ok=True)
+    return conf
+
+
+def write_lock(series_dir, obj: Dict[str, Any], confirmed_path, chapters: int) -> Dict[str, Any]:
+    """A proposal's chosen lead (first 2 + 2 close-ups) as the series'
+    exemplars, confirmed.by = "auto"; written atomically."""
+    k = obj["auto"]["chosen"]
+    c = obj["candidates"][k]
     heads = {"protagonist": c["protagonist"][:2], "decoy": c["decoy"][:2]}
     conf = {"_readme": "Exemplars LOCKED automatically (tools/identity_exemplars.py --lock): "
                        "two picks in a row chose the same lead. seed: exemplars = the picture "
                        "profile grows from these faces. Swap them on the Series page.",
-            "series": sd.name, "seed": "exemplars",
+            "series": Path(series_dir).name, "seed": "exemplars",
             "protagonist": [h["path"] for h in heads["protagonist"]],
             "decoy": [h["path"] for h in heads["decoy"]], "heads": heads,
             "confirmed": {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                          "by": "auto", "chapters": len(indexes), "candidate": k,
+                          "by": "auto", "chapters": chapters, "candidate": k,
                           "chosen_by": obj["auto"]["chosen_by"], "as_proposed": True}}
     out = Path(confirmed_path)
     tmp = out.with_suffix(".tmp")
     tmp.write_text(json.dumps(conf, indent=2) + "\n")
     tmp.replace(out)
-    Path(out_path).unlink(missing_ok=True)
     return conf
 
 
