@@ -943,6 +943,7 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
                     "pictures": sum((ep / "manifest.identity.json").exists() for ep in prepared),
                     "redone": len(redo),
                     "redo_waiting": sum(not (ep / "manifest.beats.json").exists() for ep in redo),
+                    "waiting": sum((ep / ".waiting_for_protagonist").exists() for ep in eps),
                     "profile": profile.get("status"),
                     "faces_chapters": profile.get("chapters_indexed")}
         prop = _identity_proposal(slug)

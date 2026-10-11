@@ -190,3 +190,17 @@ def test_the_card_tracks_how_the_pictures_are_used(client):
     assert "pictures used in <b>2 of 4</b> prepared chapters" in html
     assert "re-narrated after the automatic pick: 1 done, 1 waiting" in html
     assert "still collecting faces (4 chapters)" in html
+
+
+def test_the_card_shows_chapters_read_while_waiting_for_the_protagonist(client):
+    c, sid, root = client
+    con = connect(root / "s.db")
+    for n in (1, 2):
+        ep = root / "ongoing" / "nano" / f"Chapter_{n}"
+        ep.mkdir(parents=True)
+        (ep / ".waiting_for_protagonist").write_text("{}")
+        con.execute("INSERT INTO chapter (series_id, number, label, url, status, ep_dir, "
+                    "updated_at) VALUES (?,?,?,'u','grouped',?,'t')", (sid, n, f"Ch {n}", str(ep)))
+    con.commit()
+    html = c.get(f"/series/{sid}").text
+    assert "read, waiting for the protagonist: <b>2</b> chapters" in html

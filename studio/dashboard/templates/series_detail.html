@@ -82,8 +82,8 @@
 {% endif %}
 </div>
 {% set t = identity.tracking %}
-{% if t.prepared %}
-<div class="row"><span class="kv">tracking: pictures used in <b>{{ t.pictures }} of {{ t.prepared }}</b> prepared chapters{% if t.redone %} · re-narrated after the automatic pick: {{ t.redone - t.redo_waiting }} done{% if t.redo_waiting %}, {{ t.redo_waiting }} waiting{% endif %}{% endif %} · picture check {% if t.profile == 'active' %}ready{% elif t.profile %}still collecting faces ({{ t.faces_chapters }} chapters){% else %}not started{% endif %}</span></div>
+{% if t.prepared or t.waiting %}
+<div class="row"><span class="kv">tracking: {% if t.waiting %}read, waiting for the protagonist: <b>{{ t.waiting }}</b> chapters (narrated once it is known) · {% endif %}pictures used in <b>{{ t.pictures }} of {{ t.prepared }}</b> prepared chapters{% if t.redone %} · re-narrated after the automatic pick: {{ t.redone - t.redo_waiting }} done{% if t.redo_waiting %}, {{ t.redo_waiting }} waiting{% endif %}{% endif %} · picture check {% if t.profile == 'active' %}ready{% elif t.profile %}still collecting faces ({{ t.faces_chapters }} chapters){% else %}not started{% endif %}</span></div>
 {% endif %}
 {% set prop = identity.proposal %}
 {% if prop %}

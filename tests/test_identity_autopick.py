@@ -279,3 +279,18 @@ def test_no_pick_before_three_chapters(tmp_path):
     assert ie.lock_if_stable(sd, prop, conf, chat=_chat_picking(who, "mc"),
                              load=lambda p: str(p).encode()) is None
     assert not prop.exists() and not conf.exists()
+
+
+def test_reading_ahead_grows_the_locked_profile_without_naming_anyone(tmp_path):
+    # owner 2026-10-11: no re-runs — chapters are READ until the lead is locked
+    # and its profile active, then narrated once
+    sd, who = _series(tmp_path, PLAN)
+    prop, conf = _paths(sd)
+    kw = dict(chat=_chat_picking(who, "mc"), load=lambda p: str(p).encode())
+    ie.lock_if_stable(sd, prop, conf, **kw)
+    assert ie.lock_if_stable(sd, prop, conf, **kw)
+    ep = sd / "Chapter_6"
+    assert pic.run(ep, exemplars=str(conf), identify=False) is None
+    assert not (ep / "manifest.identity.json").exists()
+    prof = pic.load_profile(sd)
+    assert prof["status"] == "active" and prof["exemplars_key"]

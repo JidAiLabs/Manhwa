@@ -1134,6 +1134,8 @@ def _h_prepare(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> Non
     audio), prep, and the QA scan. The chapter lands as 'QA ready' for the
     story approval."""
     ch = _chapter(con, job["chapter_id"])
+    if _read_first(con, ch, job, log):
+        return              # read only: narrated once the protagonist is known
     with record_stage(con, chapter_id=ch["id"], stage="chain:scripted",
                       series_id=ch["series_id"]):
         rc = _stream([PY, "-m", "studio", "fetch", str(ch["series_id"]),
@@ -1315,8 +1317,110 @@ def _auto_identity(con: sqlite3.Connection, ch: Dict[str, Any],
             jobs.enqueue(con, "identity_check", series_id=ch["series_id"],
                          payload={"series_slug": sd.name}, priority=30)
         _redo_before_lock(con, ch, sd, confirmed, auto_to, log)
+        if _protagonist_ready(sd):
+            _release_waiting(con, ch["series_id"], log)
     except Exception as e:                                    # noqa: BLE001
         log.write(f"[identity] automatic protagonist skipped ({e})\n")
+
+
+_IDENTITY_WAIT_MAX = 12      # chapters READ while waiting for the protagonist; then the old way
+
+
+def _protagonist_ready(sd: Path) -> bool:
+    """A series can be narrated with the pictures: its exemplars were picked
+    by a person, or locked automatically AND its picture profile is active."""
+    from studio.config import identity_exemplars_path
+    ex = identity_exemplars_path(sd, REPO)
+    if ex is None:
+        return False
+    try:
+        by = (json.loads(ex.read_text()).get("confirmed") or {}).get("by")
+    except (OSError, ValueError, AttributeError):
+        by = None
+    if by != "auto":
+        return True
+    try:
+        return json.loads((sd / ".identity" / "profile.json").read_text()).get("status") == "active"
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _read_first(con: sqlite3.Connection, ch: Dict[str, Any], job: Dict[str, Any],
+                log: TextIO) -> bool:
+    """Read a new series before narrating it (owner 2026-10-11: re-running the
+    first chapters once the protagonist is known "sounds like waste of time").
+    While the series has no protagonist ready, a chapter is run only up to its
+    panel reading, its faces are recorded and the lock is tried. True = it
+    waits (.waiting_for_protagonist) and is narrated ONCE when the series is
+    ready. False = narrate it now: the series is ready, or waiting is over —
+    _IDENTITY_WAIT_MAX chapters of faces, or nothing else of the series is
+    queued — then every waiting chapter is released (the old way if not
+    ready). A chapter therefore only waits while another prepare of its
+    series is queued to release it."""
+    from studio.config import confirmed_exemplars, identity_exemplars_path
+    payload = job.get("payload") or {}
+    cfg = _beats_cfg()
+    slug = con.execute("SELECT slug FROM series WHERE id=?", (ch["series_id"],)).fetchone()[0]
+    sd = REPO / "ongoing" / slug
+    if (payload.get("narrate") or not cfg.identity_auto_pick
+            or (ch["ep_dir"] and (Path(ch["ep_dir"]) / "manifest.beats.json").exists())
+            or cfg.identity_backend_for(slug, confirmed=confirmed_exemplars(sd).exists()) == "off"
+            or _protagonist_ready(sd)):
+        return False
+    n = str(int(ch["number"]))
+    with record_stage(con, chapter_id=ch["id"], stage="chain:grouped",
+                      series_id=ch["series_id"]):
+        for args, env in ((["fetch", str(ch["series_id"]), "--chapters", n], None),
+                          (["run", str(ch["series_id"]), "--chapters", n, "--until", "grouped"],
+                           _series_env(con, ch["series_id"]))):
+            rc = _stream([PY, "-m", "studio", *args], log, env=env)
+            if rc != 0:
+                raise RuntimeError(f"studio {args[0]} exited {rc}")
+    ch = _chapter(con, ch["id"])
+    ep = Path(ch["ep_dir"])
+    tool = [cfg.identity_python or PY, str(REPO / "tools" / "panel_identity_ccip.py"),
+            "--episode-dir", str(ep), "--index-only"]
+    _stream(tool, log)                       # fail-soft: no faces = no lock yet
+    auto_to = payload.get("auto_to")
+    _auto_identity(con, ch, auto_to, log)    # the lock attempt
+    ex = identity_exemplars_path(sd, REPO)
+    if ex is not None:                       # locked: grow its profile from the faces read
+        _stream(tool + ["--exemplars", str(ex)], log)
+    faces = len(list((sd / ".identity").glob("*.npz")))
+    others = con.execute(
+        "SELECT 1 FROM job j JOIN chapter c ON c.id=j.chapter_id WHERE c.series_id=? "
+        "AND j.type='prepare' AND j.state='queued' AND j.chapter_id!=?",
+        (ch["series_id"], ch["id"])).fetchone()
+    ready = _protagonist_ready(sd)
+    if ready or faces >= _IDENTITY_WAIT_MAX or not others:
+        log.write(f"[identity] {'protagonist ready' if ready else 'no protagonist yet, waiting over'}"
+                  f" ({faces} chapters of faces) -> narrating{'' if ready else ' the old way'}\n")
+        _release_waiting(con, ch["series_id"], log)
+        return False
+    (ep / ".waiting_for_protagonist").write_text(json.dumps({"auto_to": auto_to}) + "\n")
+    log.write(f"[identity] {ep.name} read; waiting for the protagonist ({faces} chapters of "
+              "faces so far) - narrated once it is known\n")
+    return True
+
+
+def _release_waiting(con: sqlite3.Connection, series_id: int, log: TextIO) -> None:
+    """Queue the narration of every chapter READ while its series waited for
+    the protagonist (priority 40: ahead of the rest of a range). payload
+    narrate=True: it is never held again."""
+    for cid, ep in con.execute("SELECT id, ep_dir FROM chapter WHERE series_id=? AND ep_dir "
+                               "IS NOT NULL ORDER BY number", (series_id,)).fetchall():
+        mark = Path(ep) / ".waiting_for_protagonist"
+        if not mark.exists():
+            continue
+        try:
+            auto_to = json.loads(mark.read_text()).get("auto_to")
+        except (OSError, ValueError, AttributeError):
+            auto_to = None
+        jobs.enqueue(con, "prepare", chapter_id=cid, series_id=series_id, priority=40,
+                     payload={**({"auto_to": auto_to} if auto_to else {}), "narrate": True})
+        mark.unlink()
+        log.write(f"[identity] {Path(ep).name}: narrating now (it was read while the series "
+                  "waited for its protagonist)\n")
 
 
 def _redo_before_lock(con: sqlite3.Connection, ch: Dict[str, Any], sd: Path,

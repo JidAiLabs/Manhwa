@@ -498,10 +498,12 @@ def _seed_exemplars(path) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
 
 
 def run(ep_dir, series_cast=None, *, exemplars=None, heads_fn=None,
-        embed_fn=None) -> Optional[Dict[str, Any]]:
+        embed_fn=None, identify: bool = True) -> Optional[Dict[str, Any]]:
     """index this chapter -> refresh the series profile when due -> identify.
     *exemplars* marked seed: exemplars (confirmed on the Series page) grow the
-    profile from the picked lead instead of the most-drawn face."""
+    profile from the picked lead instead of the most-drawn face. identify=False
+    stops after the profile: a chapter READ while the series waits for its
+    protagonist (worker _read_first) names nobody yet."""
     ep = Path(ep_dir)
     index = index_chapter(ep, heads_fn=heads_fn, embed_fn=embed_fn)
     ex, ex_key = _seed_exemplars(exemplars)
@@ -522,6 +524,8 @@ def run(ep_dir, series_cast=None, *, exemplars=None, heads_fn=None,
             save_profile(ep.parent, prof)
             print(f"[identity] profile v{prof['version']} {prof['status']} "
                   f"{prof.get('reasons') or ''} {prof.get('alarms') or ''} {prof.get('stats')}")
+    if not identify:
+        return None
     got = identify_chapter(ep, prof, index)
     if got is None and (ep / "manifest.identity.json").exists():
         # provisional = the keyword identity stands; a leftover file from an
@@ -579,6 +583,10 @@ def main() -> int:
     ap.add_argument("--index-only", action="store_true",
                     help="only record the chapter's faces (for the automatic protagonist pick)")
     args = ap.parse_args()
+    if args.index_only and args.exemplars:
+        run(args.episode_dir, exemplars=args.exemplars, identify=False)
+        print("[identity] faces recorded; the locked protagonist's profile refreshed")
+        return 0
     if args.index_only:
         ix = index_chapter(args.episode_dir)
         print(f"[identity] {len(ix['heads'])} faces recorded for the automatic protagonist pick")
