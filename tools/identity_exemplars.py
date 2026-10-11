@@ -293,6 +293,19 @@ def _synopsis(sd: Path, n: int = 2, cap: int = 700) -> str:
     return " ".join(text)[:cap]
 
 
+def _rows(sd: Path) -> Tuple[List[Tuple[str, Dict[str, Any], bool]], np.ndarray, np.ndarray]:
+    """Every indexed head of the series: rows (chapter, head, one-head panel),
+    their fingerprints, their chapters."""
+    rows, feats = [], []
+    for ix in pic.load_indexes(sd):
+        n = collections.Counter(h["panel"] for h in ix["heads"])
+        for i, h in enumerate(ix["heads"]):
+            rows.append((ix["chapter"], h, n[h["panel"]] == 1))
+            feats.append(ix["feats"][i])
+    return (rows, np.asarray(feats, dtype=np.float32),
+            np.asarray([r[0] for r in rows]))
+
+
 def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
               load=None) -> Optional[Dict[str, Any]]:
     """A PROPOSAL for the series' exemplars, written to *out_path*: every
@@ -304,16 +317,9 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
     exemplars); a person confirms or swaps it on the Series page. None
     (nothing written) when no candidate has 2 + 2."""
     sd = Path(series_dir)
-    rows, feats = [], []
-    for ix in pic.load_indexes(sd):
-        n = collections.Counter(h["panel"] for h in ix["heads"])
-        for i, h in enumerate(ix["heads"]):
-            rows.append((ix["chapter"], h, n[h["panel"]] == 1))
-            feats.append(ix["feats"][i])
+    rows, F, chap = _rows(sd)
     if len(rows) < 50:
         return None
-    F = np.asarray(feats, dtype=np.float32)
-    chap = np.asarray([r[0] for r in rows])
     seeds = _seeds(F, chap)
     cands: List[Dict[str, Any]] = []
     for rule in ("most_present", "most_chapters", "most_drawn", "runner_up"):
@@ -372,6 +378,110 @@ def auto_pick(series_dir, out_path, *, chat=None, model: str = "gemma4:26b",
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(obj, indent=2) + "\n")
     return obj
+
+
+def _row_of(rows, ex: Dict[str, Any], key: str) -> List[int]:
+    """An exemplars file's faces as row indexes: by the recorded head boxes,
+    else the panel's single head (pic.exemplar_feats' rule)."""
+    heads = (ex.get("heads") or {}).get(key)
+    want = ([(h["chapter"], h["panel"], list(h["box"])) for h in heads] if heads else
+            [(Path(p).parts[-3], Path(p).parts[-1], None) for p in ex.get(key) or []
+             if len(Path(p).parts) >= 3])
+    out = []
+    for ch, panel, box in want:
+        out += [i for i, (c, h, one) in enumerate(rows) if c == ch and h["panel"] == panel
+                and (list(h["box"]) == box if box else one)][:1]
+    return out
+
+
+PAIR_CLOSEUPS = 6
+
+
+def lead_closeups(sd: Path, ex: Dict[str, Any], k: int = PAIR_CLOSEUPS):
+    """(rows, F, close): the exemplars' two lead faces first, then the lead's
+    most typical other close-ups (distinct chapters), up to k row indexes;
+    close is [] when the two faces are not in the index."""
+    rows, F, _ = _rows(Path(sd))
+    own = _row_of(rows, ex, "protagonist")
+    if len(own) < 2:
+        return rows, F, []
+    more, _ = _typical(Path(sd), rows, F, own[0], k, pic.REF_TIGHT)
+    return rows, F, list(dict.fromkeys(own + more))[:k]
+
+
+def pair_search(series_dir, exemplars_path, out_dir, *, n: int = 12, n_lookalike: int = 6,
+                chat=None, model: str = "gemma4:26b", load=None) -> Dict[str, Any]:
+    """Which two close-ups gemma recognizes the lead from best (owner
+    2026-10-12: on Tutorial Tower ~22 of the 25 panels gemma rejected were
+    him). Every pair of up to 6 close-ups (lead_closeups; pair [0, 1] = the
+    exemplars' own) against the file's decoy, asked about the SAME panels:
+    n picture candidates (mostly him) and n_lookalike panels of the decoy's
+    look-alike (never him). Score = "A" on candidates - "A" on look-alikes;
+    a tie keeps the current pair. A better pair is written as a TRIAL
+    exemplars file and gets the usual 40-panel check (a fresh sample) in
+    out_dir, graded by eye. The series' own exemplars are never touched.
+    15 pairs x (n + n_lookalike) gemma calls, ~4 s each."""
+    import itertools
+    import random
+    import panel_identity as pi
+    sd = Path(series_dir)
+    ex = json.loads(Path(exemplars_path).read_text())
+    paths = pi._exemplar_paths(exemplars_path)
+    rows, F, close = lead_closeups(sd, ex)
+    if paths is None or len(close) < 3:
+        raise SystemExit(f"[pairs] {sd.name}: needs 2 + 2 exemplars and 3+ close-ups of the lead")
+    path = lambda j: os.path.abspath(sd / rows[j][0] / "scenes" / rows[j][1]["panel"])
+    rel = lambda p: os.path.relpath(p, REPO) if Path(p).is_relative_to(REPO) else p
+    skip = {path(j) for j in close} | {os.path.abspath(x) for x in paths["decoy"]}
+    pool = [c for c in pi.candidate_pool(sd, exemplars_path)[0]
+            if os.path.abspath(c["path"]) not in skip]
+    random.Random(1).shuffle(pool)                     # seed 0 = the 40-panel check
+    tests = [{"kind": "lead", "path": os.path.abspath(c["path"]), "chapter": c["chapter"],
+              "panel": c["panel"]} for c in pool[:n]]
+    dec = _row_of(rows, ex, "decoy")
+    if dec:
+        dl = pic.ccip_diff(F, F[dec]).min(axis=1)
+        alike = [int(j) for j in np.where(dl < pic.REF_TIGHT)[0]
+                 if rows[j][2] and path(j) not in skip]
+        random.Random(1).shuffle(alike)
+        tests += [{"kind": "lookalike", "path": path(j), "chapter": rows[j][0],
+                   "panel": rows[j][1]["panel"]} for j in alike[:n_lookalike]]
+    load = load or pi._jpeg
+    decoy = [load(x) for x in paths["decoy"]]
+    names = [{"name": "A", "exemplars": []}, {"name": "B", "exemplars": []}]
+    pairs = []
+    for a, b in itertools.combinations(range(len(close)), 2):
+        imgs = [load(path(close[a])), load(path(close[b]))] + decoy
+        got = [pi.identify_panel(t["path"], names, chat=chat, model=model,
+                                 exemplar_images=imgs, load=load)["names"] for t in tests]
+        ans = ["A" if "A" in g else "B" if "B" in g else "OTHER" for g in got]
+        hit = lambda kind: sum(1 for t, x in zip(tests, ans) if t["kind"] == kind and x == "A")
+        pairs.append({"pair": [a, b], "lead": hit("lead"), "lookalike": hit("lookalike"),
+                      "score": hit("lead") - hit("lookalike"), "answers": ans})
+        print(f"[pairs] {sd.name} {a + 1}+{b + 1}: him {hit('lead')}"
+              f"/{sum(t['kind'] == 'lead' for t in tests)}, look-alike {hit('lookalike')}"
+              f"/{sum(t['kind'] == 'lookalike' for t in tests)}", flush=True)
+    best = max(pairs, key=lambda p: p["score"])        # first max = the current pair on a tie
+    head = lambda j: {"path": rel(path(j)), "chapter": rows[j][0], "panel": rows[j][1]["panel"],
+                      "box": rows[j][1]["box"]}
+    od = Path(out_dir)
+    od.mkdir(parents=True, exist_ok=True)
+    rep = {"series": sd.name, "exemplars_file": str(exemplars_path),
+           "closeups": [head(j) for j in close], "tests": tests, "pairs": pairs,
+           "best": best["pair"], "check": None}
+    if best["pair"] != [0, 1]:
+        hs = [head(close[i]) for i in best["pair"]]
+        trial = {"_readme": "TRIAL exemplars from the pair search (identity_exemplars.py "
+                            "--pair-search) - not used by any prepare.",
+                 "series": sd.name, "seed": "exemplars",
+                 "protagonist": [h["path"] for h in hs], "decoy": ex["decoy"],
+                 "heads": dict((ex.get("heads") or {}), protagonist=hs)}
+        tp = od / f"{sd.name}.exemplars.json"
+        tp.write_text(json.dumps(trial, indent=2) + "\n")
+        chk = pi.check_series(sd, tp, n=40, out_dir=od, chat=chat, model=model, load=load)
+        rep["check"] = {k: chk[k] for k in ("n", "confirmed", "candidates")}
+    (od / f"{sd.name}.pairs.json").write_text(json.dumps(rep, indent=1) + "\n")
+    return rep
 
 
 AUTO_MIN_CHAPTERS = 3   # the first automatic pick; the NEXT one must agree to lock
@@ -445,8 +555,19 @@ def main() -> int:
     ap.add_argument("--lock", default="", metavar="CONFIRMED",
                     help="with --auto: lock the pick into CONFIRMED when the previous "
                          "proposal in OUT chose the same lead")
+    ap.add_argument("--pair-search", default="", metavar="EXEMPLARS",
+                    help="gemma on every pair of the lead's close-ups; best pair's check "
+                         "into --out-dir (EXEMPLARS untouched)")
+    ap.add_argument("--out-dir", default=str(REPO / "dist" / "identity_check" / "pairs"))
     args = ap.parse_args()
     sd = Path(args.series)
+    if args.pair_search:
+        rep = pair_search(sd, args.pair_search, args.out_dir)
+        cur = rep["pairs"][0]
+        print(f"[pairs] {sd.name}: current pair him {cur['lead']}, look-alike "
+              f"{cur['lookalike']}; best {[i + 1 for i in rep['best']]}; check "
+              f"{rep['check']}")
+        return 0
     if args.auto and args.lock:
         got = lock_if_stable(sd, args.auto, args.lock)
         print(f"[auto-pick] {sd.name}: " + (f"LOCKED -> {args.lock}" if got else "not locked"))

@@ -2102,6 +2102,15 @@ def _h_identity_check(con: sqlite3.Connection, job: Dict[str, Any],
     ex = identity_exemplars_path(REPO / "ongoing" / slug, REPO)
     if ex is None:
         raise RuntimeError(f"identity check: {slug} has no exemplars")
+    if payload.get("pair_search"):
+        # which 2 of the lead's close-ups gemma knows him from best (owner
+        # 2026-10-12); a trial file + its check in pairs/, exemplars untouched
+        cmd = [PY, str(REPO / "tools" / "identity_exemplars.py"),
+               "--series", str(REPO / "ongoing" / slug), "--pair-search", str(ex),
+               "--out-dir", str(REPO / "dist" / "identity_check" / "pairs")]
+        if _stream(cmd, log) != 0:
+            raise RuntimeError("identity pair search failed")
+        return
     cmd = [PY, str(REPO / "tools" / "panel_identity.py"),
            "--check-series", str(REPO / "ongoing" / slug),
            "--verify-ccip", str(ex),

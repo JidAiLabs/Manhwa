@@ -294,3 +294,49 @@ def test_reading_ahead_grows_the_locked_profile_without_naming_anyone(tmp_path):
     assert not (ep / "manifest.identity.json").exists()
     prof = pic.load_profile(sd)
     assert prof["status"] == "active" and prof["exemplars_key"]
+
+
+def test_pair_search_keeps_the_pair_gemma_knows_him_from(tmp_path):
+    # owner 2026-10-12: Tutorial Tower — ~22 of the 25 panels gemma rejected
+    # were the lead; try every pair of his close-ups on the same panels
+    sd, who = _series(tmp_path, PLAN)
+    ex = tmp_path / "ex.json"
+    ie.auto_pick(sd, ex, chat=_chat_picking(who, "mc"), load=lambda p: str(p).encode())
+    before = ex.read_bytes()
+    rows, _F, close = ie.lead_closeups(sd, json.loads(before))
+    assert len(close) == 6 and all(rows[j][0] for j in close)
+    path = lambda j: str(sd / rows[j][0] / "scenes" / rows[j][1]["panel"])
+    good, greedy = path(close[3]), path(close[4])      # he is recognized from `good`;
+    calls = []                                         # `greedy` makes gemma say A to all
+
+    def chat(model, think, options, messages):
+        imgs = [i.decode() for i in messages[0]["images"]]
+        calls.append(imgs)
+        lead = (good in imgs[:2] and who[imgs[-1]] == "mc") or greedy in imgs[:2]
+        return {"message": {"content": '{"people": ["%s"]}' % ("A" if lead else "OTHER")}}
+    rep = ie.pair_search(sd, ex, tmp_path / "out", n=8, n_lookalike=4, chat=chat,
+                         load=lambda p: str(p).encode())
+    assert len(rep["pairs"]) == 15 and rep["pairs"][0]["pair"] == [0, 1]
+    tests = rep["tests"]
+    assert sum(t["kind"] == "lead" for t in tests) == 8 and \
+        sum(t["kind"] == "lookalike" for t in tests) == 4
+    assert all(who[t["path"]] != "mc" for t in tests if t["kind"] == "lookalike")
+    assert 3 in rep["best"] and 4 not in rep["best"]
+    assert rep["check"]["n"] > 0                       # the 40-panel check of the winner
+    assert (tmp_path / "out" / "s.json").exists() and (tmp_path / "out" / "s.pairs.json").exists()
+    trial = json.loads((tmp_path / "out" / "s.exemplars.json").read_text())
+    assert good in [str(ROOT / p) if not Path(p).is_absolute() else p
+                    for p in trial["protagonist"]]
+    assert ex.read_bytes() == before                   # the series' exemplars untouched
+    assert len(calls) == 15 * 12 + rep["check"]["n"]
+
+
+def test_pair_search_keeps_the_current_pair_on_a_tie(tmp_path):
+    sd, who = _series(tmp_path, PLAN)
+    ex = tmp_path / "ex.json"
+    ie.auto_pick(sd, ex, chat=_chat_picking(who, "mc"), load=lambda p: str(p).encode())
+    rep = ie.pair_search(sd, ex, tmp_path / "out", n=4, n_lookalike=2,
+                         chat=lambda **k: {"message": {"content": '{"people": ["A"]}'}},
+                         load=lambda p: str(p).encode())
+    assert rep["best"] == [0, 1] and rep["check"] is None
+    assert not (tmp_path / "out" / "s.exemplars.json").exists()

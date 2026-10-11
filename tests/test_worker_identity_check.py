@@ -93,3 +93,18 @@ def test_propose_without_a_choice_runs_no_check(monkeypatch, tmp_path):
     w._h_identity_propose(sqlite3.connect(":memory:"), {"payload": {"series_slug": "clan"}},
                           io.StringIO())
     assert len(calls) == 1
+
+
+def test_a_pair_search_runs_the_pair_tool_into_its_own_dir(monkeypatch, tmp_path):
+    # owner 2026-10-12: which two close-ups gemma recognizes the lead from best
+    ex = tmp_path / "ongoing" / "tt" / ".identity" / "exemplars.json"
+    ex.parent.mkdir(parents=True)
+    ex.write_text("{}")
+    monkeypatch.setattr(w, "REPO", tmp_path)
+    seen = []
+    monkeypatch.setattr(w, "_stream", lambda args, log, **kw: seen.extend(args) or 0)
+    w._h_identity_check(sqlite3.connect(":memory:"),
+                        {"payload": {"series_slug": "tt", "pair_search": True}}, io.StringIO())
+    assert seen[1].endswith("tools/identity_exemplars.py")
+    assert seen[seen.index("--pair-search") + 1] == str(ex)
+    assert seen[seen.index("--out-dir") + 1] == str(tmp_path / "dist" / "identity_check" / "pairs")

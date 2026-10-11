@@ -40,7 +40,7 @@ import json
 import os
 import re
 import sys
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
@@ -295,16 +295,10 @@ def verify_candidates(ep_dir: Any, exemplars: Any, *, chat: Optional[Callable] =
     return obj
 
 
-def check_series(series_dir: Any, exemplars: Any, *, n: int = 40, out_dir: Any = "",
-                 chat: Optional[Callable] = None, model: str = MODEL,
-                 load: Callable[[str], bytes] = _jpeg, seed: int = 0) -> Dict[str, Any]:
-    """Validation before a series is switched on (worker job identity_check):
-    n random picture candidates across the series (one head under the CCIP
-    cut, from the sweep's .identity caches), gemma's verdict on each, written to
-    <out_dir>/<slug>.json + a grading sheet <slug>_sheet.jpg (confirmed row
-    first). Exemplar panels are never sampled. Model calls only — no chapter
-    manifest is touched."""
-    import random
+def candidate_pool(series_dir: Any, exemplars: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """(pool, profile): every picture candidate of the series (one head under the CCIP cut of
+    the exemplars' profile, from the .identity caches), exemplar panels
+    excluded. SystemExit without 2 + 2 exemplars or an active profile."""
     from collections import defaultdict
     import panel_identity_ccip as pic
     sd = str(series_dir)
@@ -341,6 +335,23 @@ def check_series(series_dir: Any, exemplars: Any, *, n: int = 40, out_dir: Any =
                 i = hit[0]
                 pool.append({"chapter": ix["chapter"], "panel": fn, "path": path,
                              "box": ix["heads"][i]["box"], "d": round(float(d[i]), 3)})
+    return pool, prof
+
+
+def check_series(series_dir: Any, exemplars: Any, *, n: int = 40, out_dir: Any = "",
+                 chat: Optional[Callable] = None, model: str = MODEL,
+                 load: Callable[[str], bytes] = _jpeg, seed: int = 0) -> Dict[str, Any]:
+    """Validation before a series is switched on (worker job identity_check):
+    n random picture candidates across the series (candidate_pool), gemma's
+    verdict on each, written to <out_dir>/<slug>.json + a grading sheet
+    <slug>_sheet.jpg (confirmed row first). Model calls only — no chapter
+    manifest is touched."""
+    import random
+    import panel_identity_ccip as pic
+    sd = str(series_dir)
+    slug = os.path.basename(os.path.normpath(sd))
+    ex = _exemplar_paths(exemplars)
+    pool, prof = candidate_pool(sd, exemplars)
     random.Random(seed).shuffle(pool)
     cands = [{"name": "A", "exemplars": ex["protagonist"]},
              {"name": "B", "exemplars": ex["decoy"]}]
