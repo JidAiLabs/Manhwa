@@ -34,3 +34,10 @@ _AMBIENT_CRED_KEYS = (
 def _no_ambient_llm_credentials(monkeypatch):
     for key in _AMBIENT_CRED_KEYS:
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_video_archive(monkeypatch):
+    # studio.toml points the archive at the Mini's T9 drive; a test that writes
+    # a fake video must never move it there (tests opt in with their own dir)
+    monkeypatch.setenv("STUDIO_VIDEO_ARCHIVE", "")

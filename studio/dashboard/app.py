@@ -484,7 +484,9 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
             _dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             continue        # read-only checkout: skip rather than fail boot
-        app.mount(_url, StaticFiles(directory=str(_dir)),
+        # follow_symlink: finished videos are links to the archive drive
+        # (studio/archive.py); '..' is still refused (abspath containment)
+        app.mount(_url, StaticFiles(directory=str(_dir), follow_symlink=True),
                   name=_url.lstrip("/"))
 
     def con() -> sqlite3.Connection:

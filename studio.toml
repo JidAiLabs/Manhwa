@@ -99,6 +99,11 @@ max_same_image_hold_sec = 10.0
 row_min_fit = 0.52
 # at least this many ordinary items between two rows (back-to-back rows read dizzy)
 row_min_gap_items = 3
+# Finished videos (chapter segments, bundles) MOVE here once rendered and leave a
+# link at their old path (studio/archive.py; owner 2026-10-12: the Mini's Samsung
+# T9). The folder missing = drive not mounted = videos stay local until
+# `python -m studio.archive --apply`. "" = off. Env STUDIO_VIDEO_ARCHIVE wins.
+video_archive = "/Volumes/T9/Manhwa"
 # Shown-frame policy for story panels (render_prep --bubble-shown-mode):
 #   keep     — bubbles ship as drawn; bubble-dominated EDGE bands trimmed (owner 2026-07-16)
 #   art_only — frame = the detector's ART box: gutter/edge dialogue framed out on all

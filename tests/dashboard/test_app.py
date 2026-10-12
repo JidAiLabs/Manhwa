@@ -1,5 +1,6 @@
 """Dashboard routes: every page renders; actions only insert rows."""
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -1935,3 +1936,22 @@ def test_approving_a_waiting_teaser_promotes_it_and_declining_discards_it(
     assert (base / "teaser.mp4").read_bytes() == b"NEW"
     assert (base / "teaser" / "manifest.teaser.json").exists()
     assert not (base / "teaser_next.mp4").exists()
+
+
+def test_media_serves_a_video_archived_behind_a_link(tmp_path, monkeypatch):
+    # owner 2026-10-12: the chapter's segment_both.mp4 is a link to the T9 drive
+    from studio.dashboard import app as appmod
+    from studio.catalog.db import connect as _c
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(appmod, "REPO", tmp_path)
+    db = tmp_path / "t.db"
+    _c(db)
+    (tmp_path / "T9").mkdir()
+    (tmp_path / "T9" / "ch1.mp4").write_bytes(b"video")
+    (tmp_path / "ongoing" / "s" / "Chapter_1" / "render").mkdir(parents=True)
+    os.symlink(tmp_path / "T9" / "ch1.mp4",
+               tmp_path / "ongoing" / "s" / "Chapter_1" / "render" / "segment_both.mp4")
+    c = TestClient(appmod.create_app(db_path=str(db)))
+    r = c.get("/media/s/Chapter_1/render/segment_both.mp4")
+    assert r.status_code == 200 and r.content == b"video"
+    assert c.get("/media/../t.db").status_code == 404

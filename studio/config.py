@@ -110,6 +110,9 @@ class Config:
                                              # 0.52 after signing off a chapter
     row_min_gap_items: int = 3              # [render] ordinary items between
                                              # two rows (back-to-back = dizzy)
+    video_archive: str = ""                 # [render] video_archive: finished
+                                             # videos move here (studio/archive.py);
+                                             # env STUDIO_VIDEO_ARCHIVE ("" = off)
     narration_sanitize: bool = True         # advertiser-safety pass over the
                                              # FINAL narration before TTS: the
                                              # scripted stage runs
@@ -286,6 +289,8 @@ def load(path: Path | None = None) -> Config:
         # rows: OFF (0.0) unless the toml says otherwise — no `or default` here
         row_min_fit=float(r.get("row_min_fit", 0.0)),
         row_min_gap_items=int(r.get("row_min_gap_items", 3)),
+        video_archive=os.environ.get("STUDIO_VIDEO_ARCHIVE",
+                                     r.get("video_archive", "")),
         narration_sanitize=_env_bool("STUDIO_NARRATION_SANITIZE",
                                      bool(m.get("narration_sanitize", True))),
         teaser_enabled=_env_bool("STUDIO_TEASER_ENABLED",

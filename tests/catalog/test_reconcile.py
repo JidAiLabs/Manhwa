@@ -388,3 +388,17 @@ def test_skips_chapter_with_cancelling_job(tmp_path):
     assert out["status_to"] is None                        # busy — skip
     assert con.execute("SELECT status FROM chapter WHERE id=310"
                        ).fetchone()[0] == "rendered"
+
+
+def test_an_archived_video_on_an_unplugged_drive_changes_nothing(tmp_path):
+    # owner 2026-10-12: finished videos live on the T9; the chapter keeps a link.
+    # Drive unplugged = the link dangles = "can't tell", never "video deleted".
+    con, ep = _mk_chapter(tmp_path, status="rendered")
+    seg = ep / "render" / "segment_both.mp4"
+    seg.unlink()
+    os.symlink(tmp_path / "T9" / "Manhwa" / "s" / "ep.mp4", seg)
+    out = reconcile.reconcile_chapter(con, _ch(con))
+    assert out["status_to"] is None
+    assert con.execute("SELECT status FROM chapter WHERE id=310").fetchone()[0] == "rendered"
+    assert "render_segment" in _stages(con)
+    assert _n_approvals(con, "render") == 1

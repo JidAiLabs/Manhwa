@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TextIO
 
-from studio import paths
+from studio import archive, paths
 from studio.dashboard import bundles, gates, jobs
 
 REPO = Path(__file__).resolve().parent.parent
@@ -1826,6 +1826,8 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
                 raise RuntimeError(f"render_prep exited {rc}")
         out = ep / "render" / f"segment_{branding}.mp4"
         out.parent.mkdir(parents=True, exist_ok=True)
+        if out.is_symlink():        # the last video, archived: render fresh, locally
+            out.unlink()
         rc = _stream(["npx", "remotion", "render", "src/index.ts",
                       "RecapVideo", str(out),
                       f"--props={ep / 'render.plan.clean.json'}",
@@ -1836,6 +1838,9 @@ def _h_render_segment(con: sqlite3.Connection, job: Dict[str, Any],
         con.execute("UPDATE chapter SET status='rendered' WHERE id=?",
                     (ch["id"],))
         con.commit()
+    moved = archive.archive_segment(ep)
+    if moved:
+        log.write(f"[render] video moved to the archive drive: {moved}\n")
 
 
 def _h_teaser(con: sqlite3.Connection, job: Dict[str, Any],
@@ -2035,6 +2040,8 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
     out_dir = REPO / "dist" / f"bundle_{bid}"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "bundle.mp4"
+    if out.is_symlink():            # the last bundle, archived: concat fresh, locally
+        out.unlink()
     argv, listfile = bundles.concat_cmd(segs, str(out))
     lf = out_dir / "concat.txt"
     lf.write_text(listfile)
@@ -2046,6 +2053,9 @@ def _h_concat(con: sqlite3.Connection, job: Dict[str, Any], log: TextIO) -> None
     con.execute("UPDATE bundle SET state='concatenated', output_path=? "
                 "WHERE id=?", (str(out), bid))
     con.commit()
+    moved = archive.archive_bundle(out)
+    if moved:
+        log.write(f"[concat] video moved to the archive drive: {moved}\n")
 
 
 def _h_discovery_scan(con: sqlite3.Connection, job: Dict[str, Any],

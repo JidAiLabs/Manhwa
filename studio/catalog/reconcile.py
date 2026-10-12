@@ -205,6 +205,11 @@ def reconcile_chapter(con: sqlite3.Connection,
         return out
     if _has_active_job(con, cid):
         return out
+    # the video is archived on a drive that is not mounted (a dangling link,
+    # studio/archive.py): the files can't tell us anything -> leave it alone
+    seg = os.path.join(ep, paths.SEGMENT_MP4)
+    if os.path.islink(seg) and not os.path.exists(seg):
+        return out
 
     changed = False
     # 1. status: repair to what the artifacts actually say

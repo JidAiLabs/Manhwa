@@ -3019,3 +3019,38 @@ def test_a_reprepare_of_a_rendered_chapter_rebuilds_its_script(tmp_path, monkeyp
     jobs.enqueue(con, "prepare", chapter_id=5)
     worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
     assert status_at_run["v"] == "beated"      # the scripted stage really runs
+
+
+def test_a_rendered_video_moves_to_the_archive_drive(tmp_path, monkeypatch):
+    # owner 2026-10-12: finished videos live on the T9; the render itself never
+    # writes through an old link (an unplugged drive must not fail a render)
+    import os
+    con = _con(tmp_path)
+    ep = _seed_chapter(con, tmp_path, status="voiced")
+    con.execute("INSERT INTO stage_run (chapter_id, stage, duration_sec, ok) "
+                "VALUES (5,'qa_scan',1.0,1)")
+    from studio.dashboard import gates as g
+    g.approve(con, "render", chapter_id=5)
+    con.commit()
+    monkeypatch.setattr(worker, "REPO", tmp_path)
+    seg = ep / "render" / "segment_both.mp4"
+    seg.parent.mkdir()
+    os.symlink(tmp_path / "unplugged" / "old.mp4", seg)
+    t9 = tmp_path / "T9"
+    t9.mkdir()
+    monkeypatch.setenv("STUDIO_VIDEO_ARCHIVE", str(t9))
+
+    def fake_stream(cmd, log, **kw):
+        if "remotion" in cmd:
+            assert not os.path.lexists(cmd[cmd.index("RecapVideo") + 1])
+            open(cmd[cmd.index("RecapVideo") + 1], "wb").write(b"new video")
+        return 0
+    monkeypatch.setattr(worker, "_stream", fake_stream)
+    jobs.enqueue(con, "render_segment", chapter_id=5, payload={})
+    worker.run_once(con, handlers=worker.HANDLERS, log_dir=str(tmp_path / "l"))
+    state, err = con.execute(
+        "SELECT state, error FROM job WHERE type='render_segment'").fetchone()
+    assert state == "done", err
+    dest = t9 / ep.parent.name / "ep.mp4"
+    assert seg.is_symlink() and os.readlink(seg) == str(dest)
+    assert dest.read_bytes() == b"new video"
