@@ -8,6 +8,27 @@ A **manhwa/webtoon → narrated video** pipeline for the YouTube channel **Origi
 
 > **USE `studio/` — don't run `tools/` by hand.** There's a working CLI + SQLite catalog. See "studio/ — the front-end" below. Git repo on `main`. Tests: `.eval_venv/bin/python -m pytest -q` (~2519 passing). Use the existing venv `.eval_venv/` (Python 3.12 + torch/ultralytics/cv2/openai/gallery-dl; `google-genai` is installed for `tools/thumbnail_gen.py` ONLY).
 
+### QA rulebook — read before changing narration, grouping, QA or render (owner, 2026-10-13)
+
+- **`docs/qa/RULES.md` is THE checklist of what a finished chapter must satisfy.** Each rule names
+  the one place that decides it, its QA code, its regression tests and its corpus sweep check.
+  `tests/test_qa_rules_doc.py` fails the suite when a rule's test disappears, its blocking
+  status drifts from `worker._CRITICAL_QA_CODES`, or a blocking code has no row.
+- **The contract** (owner: "never break a fixed issue … no band-aid, root cause, whole impact"):
+  1. Run `python tools/qa_rules_sweep.py` before and after a deploy. The after-run on new
+     chapters must be clean.
+  2. Fix where the rule is decided, and fix every sibling of the defect.
+  3. Measure a rule that drops, renames or rewrites over the whole corpus, by eye, before deploy.
+  4. A new defect gets an `OPEN` row first.
+  5. Say plainly that a fix reaches new chapters only unless the sweep repairs the old ones.
+- **Publication text** (scanlation sites, watermarks, release plugs, recruitment cards, credits,
+  To-Be-Continued cards) has ONE vocabulary: `tools/scene_chrome.py` (`scrub_stamps`,
+  `furniture_reason`, `voiced_furniture`, `watermark_names`).
+  - `vision_extract` scrubs stamps out of `ocr_clean` at the source and records them in
+    `item["watermarks"]`.
+  - A stamp ON a story panel never drops the panel; a panel that IS the message is chrome,
+    above the model's label.
+
 ### Dependency model (2026-07-06 refactor — the single invalidation authority)
 
 - **`studio/deps.py` is THE artifact dependency table** (artifact → producer stage → inputs, `sha_only`/optional flags). Freshness (`tools/manifest_freshness.py`), rewind delete-lists (`studio/catalog/reset.py`), reconcile marker validation, and `studio/pipeline.py` skip-iff-fresh guards all DERIVE from it — never hand-edit those lists; change the table.
