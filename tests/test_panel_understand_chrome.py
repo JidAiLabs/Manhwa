@@ -295,3 +295,29 @@ def test_rescue_never_promotes_windowed_chrome_strip():
         log=lambda _m: None)
     assert n == 0
     assert panels[0]["panel_kind"] == "chrome"
+
+
+# --- publication furniture outranks every label (2026-10-13) ----------------
+
+def test_publication_furniture_becomes_chrome_after_every_override():
+    # TT ch177: the model called the Asura ad 'system' and the end card 'story';
+    # both were voiced. The furniture override runs LAST and wins over any kind.
+    panels = [{"scene_file": "ad.jpg", "panel_kind": "system"},
+              {"scene_file": "end.jpg", "panel_kind": "story"},
+              {"scene_file": "stamped.jpg", "panel_kind": "story"},
+              {"scene_file": "quest.jpg", "panel_kind": "system"}]
+    items = [{"scene_file": "ad.jpg",
+              "ocr_clean": "READ AT ASURASCANS.COM FOR THE FASTEST RELEASES"},
+             {"scene_file": "end.jpg",
+              "ocr_clean": "To Be Continue 원작 방구석 김씨 · 그림 블루 각색 콘티 채색"},
+             {"scene_file": "stamped.jpg", "ocr_clean": "KIM SHI HYUN! ASURASCANS.COM"},
+             {"scene_file": "quest.jpg", "ocr_clean": "[QUEST: DEFEAT THE SAND GOLEMS]"}]
+    logs = []
+    n = pu.apply_furniture_overrides(panels, items, log=logs.append)
+    kinds = {p["scene_file"]: p["panel_kind"] for p in panels}
+    assert n == 2
+    assert kinds == {"ad.jpg": "chrome", "end.jpg": "chrome",
+                     "stamped.jpg": "story", "quest.jpg": "system"}
+    assert panels[0]["chrome_reason"] == "release_plug"
+    assert panels[1]["chrome_reason"] == "credits"
+    assert any("ad.jpg" in m for m in logs)

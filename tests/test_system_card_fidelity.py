@@ -76,3 +76,17 @@ def test_the_heal_turns_an_unvoiced_card_into_a_correction():
     notes = narration_heal.corrections_from_qa(report)
     assert list(notes) == [17]
     assert "READ THE CARD" in notes[17]
+
+
+def test_a_publication_stamp_is_never_spoken_as_card_text(monkeypatch, tmp_path):
+    # owner 2026-10-13: the writer's card override voiced "[V/N] ASURASCANS.COM" and
+    # whole ads labelled 'system' ("Read at. Asurascans.com for the fastest releases.")
+    _no_dictionary(monkeypatch, tmp_path)
+    out = gnp.system_card_line(
+        "p1.jpg", _u("WILL YOU USE THE ORIGIN OF AK CHEON ON THE CHEONMA BLADE? [V/N] "
+                     "ASURASCANS.COM"), "A window flashes.")
+    assert "asura" not in out.lower() and "cheonma blade" in out.lower()
+    line = "A glowing purple card fills the frame."
+    ad = gnp.system_card_line("p1.jpg", _u("READ AT ASURASCANS.COM FOR THE FASTEST RELEASES"),
+                              line)
+    assert "asura" not in ad.lower() and "fastest" not in ad.lower()

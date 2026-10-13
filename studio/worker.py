@@ -316,6 +316,14 @@ _CRITICAL_QA_CODES = {
     # excludes it at grouping; this only fires on a stale path (keep-base groups,
     # hand-run tools) and the remedy is a re-group, never a heal (2026-10-05).
     "licensed_title_shown",
+    # publication furniture (an ad, a recruitment card, a credits roster, a
+    # To-Be-Continued card) on screen, or its text read aloud — the owner found
+    # both in TT ch177 (2026-10-13). shown: a re-group is the remedy (story_group
+    # drops furniture whatever its label); voiced: heal-then-block.
+    "publication_shown", "publication_voiced",
+    # a spoken name the pages print only in a watermark (BN's "Asura"): the remedy
+    # is a cast rebuild (`detected` redo), never a heal with the same cast.
+    "watermark_name",
     # an in-world system/status panel (a story beat) dropped before render. Now
     # that the story_group rescue keeps mislabeled-chrome system cards, a genuine
     # drop is rare — but it MUST block (a missing plot beat), not ship green.

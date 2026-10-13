@@ -116,3 +116,14 @@ def test_real_words_survive_ocr_words():
     ])
     toks = [w["t"] for w in ve.extract_ocr_words(resp, 200, 50)]
     assert toks == ["Cheon", "Mu"]
+
+
+def test_publication_stamps_leave_ocr_clean_and_are_recorded_beside_it():
+    # owner 2026-10-13: the watermark became a hero's name ("Asura") and plugs were
+    # read aloud; the stamp is scrubbed where the page text is first written
+    cfg = ve.VisionConfig()
+    clean, marks = ve.clean_ocr_fields("KIM SHI HYUN!\nASURASCANS.COM", cfg)
+    assert clean == "KIM SHI HYUN!"
+    assert [m["kind"] for m in marks] == ["aggregator"]
+    clean, marks = ve.clean_ocr_fields("I'LL USE THE ASURA NULLIFYING FIST'S PRINCIPLE", cfg)
+    assert clean == "I'LL USE THE ASURA NULLIFYING FIST'S PRINCIPLE" and marks == []

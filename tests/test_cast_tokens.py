@@ -221,3 +221,35 @@ def test_sane_text_region_rules():
     assert not av.sane_text_region(-0.088, 0.3457, 0.6515, 1.0587)  # off-image glyph
     assert not av.sane_text_region(0.0, 0.0, 0.6, 0.6)          # 36% of the panel
     assert not av.sane_text_region(0.4, 0.1, 0.5, 0.9)          # 80% tall sliver
+
+
+def test_a_watermark_never_backs_a_name():
+    # owner 2026-10-13: Boundless Necromancer's hero was named "Asura" — the only
+    # "Asura" on its pages is the aggregator stamp (ASURA.GG, ASURA 6G, ASURASCANS.COM;
+    # 268 OCR hits). A stamp is not page text; a chrome panel is not page text.
+    def word(t, x):
+        return {"t": t, "bbox": [x, 0.80, x + 0.15, 0.84]}
+    items = [
+        {"scene_file": "p1.jpg", "panel_kind": "story", "ocr_clean": "STOP IT...! ASURA.GG",
+         "vision": {"ocr_words": [word("STOP", 0.1), word("IT...!", 0.3), word("ASURA.GG", 0.6)]}},
+        {"scene_file": "p2.jpg", "panel_kind": "story", "ocr_clean": "GET READY. ASURA 6G",
+         "vision": {"ocr_words": [word("GET", 0.1), word("READY.", 0.3), word("ASURA", 0.5),
+                                  word("6G", 0.7)]}},
+        {"scene_file": "p3.jpg", "panel_kind": "chrome", "ocr_clean": "TL ASURA BRAHIM",
+         "vision": {"ocr_words": [word("TL", 0.1), word("ASURA", 0.3), word("BRAHIM", 0.5)]}},
+    ]
+    words = _cb._page_words(items)
+    cast = {"cast": [{"id": "hero", "canonical_name": "Asura", "role": "protagonist",
+                      "spoken_name": "our protagonist", "aliases": ["Asura"],
+                      "is_protagonist": False}]}
+    out, fixes = _cb.sanitize_cast_names(cast, words)
+    assert out["cast"][0]["canonical_name"] == "our protagonist" and len(fixes) == 1
+    assert out["cast"][0]["aliases"] == []
+    # TT's in-world 'Venerable Asura' is a real name and stays
+    items[0]["vision"]["ocr_words"] = [word("VENERABLE", 0.1), word("ASURA", 0.3),
+                                      word("IS", 0.5), word("OMNISCIENT", 0.7)]
+    fresh = {"cast": [{"id": "elder", "canonical_name": "Asura", "role": "mentor",
+                       "spoken_name": "the elder", "aliases": [], "is_protagonist": False}]}
+    out, fixes = _cb.sanitize_cast_names(fresh, _cb._page_words(items))
+    assert out["cast"][0]["canonical_name"] == "Asura" and fixes == []
+    assert all("asura" not in line.lower() for line in _cb._all_ocr(items[1:]))

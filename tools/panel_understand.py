@@ -1123,6 +1123,32 @@ def _iou_xyxy(a, b) -> float:
     return inter / ua if ua > 0 else 0.0
 
 
+def apply_furniture_overrides(panels: List[Dict[str, Any]],
+                              items: List[Dict[str, Any]],
+                              log: Callable[[str], None] = print) -> int:
+    """The LAST override: a panel that IS publication furniture
+    (scene_chrome.furniture_reason — an ad, a recruitment card, a credits roster,
+    a To-Be-Continued card) becomes 'chrome' whatever the model and the earlier
+    overrides called it. The model labelled the Asura ad 'system' and the end card
+    'story' (TT ch177, voiced 2026-10-02); a 'system' stamp makes the writer read
+    the card aloud and QA demand it be shown. A stamp ON a story panel never makes
+    it furniture. Returns the count changed."""
+    from scene_chrome import furniture_reason, item_midtone
+    by_file = {it.get("scene_file"): it for it in items or []}
+    n = 0
+    for p in panels:
+        it = by_file.get(p.get("scene_file"))
+        if not it or str(p.get("panel_kind") or "") == "chrome":
+            continue
+        why = furniture_reason(it, midtone_frac=item_midtone(it))
+        if why:
+            log(f"[furniture] {p.get('scene_file')}: {p.get('panel_kind')} -> chrome ({why})")
+            p["panel_kind"] = "chrome"
+            p["chrome_reason"] = why
+            n += 1
+    return n
+
+
 def apply_card_class_overrides(
         panels: List[Dict[str, Any]],
         scenes: List[Dict[str, Any]],
@@ -1247,6 +1273,10 @@ def main() -> int:
                     print(f"[ok] card-class override: {cardn} -> system")
     except Exception as _e:                                          # fail-soft
         print(f"[card-class] skipped ({_e})", flush=True)
+    # Publication furniture LAST: no earlier override may turn an ad back into a card.
+    furn = apply_furniture_overrides(panels, items, log=lambda m: print(m, flush=True))
+    if furn:
+        print(f"[ok] furniture override: {furn} -> chrome")
     # Centralize the chrome/story verdict: stamp panel_kind back onto the vision
     # manifest so the SINGLE chrome chokepoint (scene_chrome.is_chrome_scene —
     # used by story_group, render_prep AND prep_qa) defers to the understanding

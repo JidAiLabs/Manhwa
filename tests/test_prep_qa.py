@@ -401,6 +401,58 @@ def test_vision_flags_licensed_title_shown_blocks_even_for_a_system_kind():
     assert "licensed_title_shown" in _CRITICAL_QA_CODES
 
 
+def test_publication_furniture_shown_blocks_whatever_its_label():
+    # owner 2026-10-13 (TT ch177): the Asura ad stamped 'system' and the To-Be-
+    # Continued credits card stamped 'story' were on screen and voiced
+    from studio.worker import _CRITICAL_QA_CODES
+    ad = {"panel_kind": "system", "ocr_clean": "READ AT ASURASCANS.COM FOR THE FASTEST RELEASES"}
+    end = {"panel_kind": "story", "ocr_clean": "To Be Continue 원작 방구석 김씨 · 그림 블루 각색"}
+    stamped = {"panel_kind": "story", "ocr_clean": "KIM SHI HYUN! ASURASCANS.COM"}
+    for vitem in (ad, end):
+        codes = {f["code"] for f in pq.vision_flags("p1.jpg", vitem, dims_entry={},
+                                                   series_title=None)}
+        assert "publication_shown" in codes and "chrome_leak" not in codes
+    assert not pq.vision_flags("p2.jpg", stamped, dims_entry={}, series_title=None)
+    assert "publication_shown" in _CRITICAL_QA_CODES
+
+
+def test_publication_text_voiced_is_a_healable_blocking_error():
+    from studio.worker import _CRITICAL_QA_CODES
+    import narration_heal as nh
+    for line in ("Read at. Asurascans.com for the fastest releases.",
+                 "The story will continue.",
+                 "The team is now recruiting Korean translators, so join the Discord "
+                 "at Asura.gg/discord to apply!"):
+        fl = pq.narration_flags("g0032_p02", line, [])
+        assert any(f["code"] == "publication_voiced" and f["severity"] == "ERROR"
+                   for f in fl), line
+    # in-world look-alikes stay quiet — TT's 'Venerable Asura' is a character
+    for line in ("Venerable Asura is omniscient, the old man insists.",
+                 "The Architect of Discord takes note of him."):
+        assert not pq.narration_flags("g0001_p00", line, [])
+    assert "publication_voiced" in _CRITICAL_QA_CODES and "publication_voiced" in nh.HEALABLE
+    assert "publication" in nh._note_for("publication_voiced", "").lower()
+
+
+def test_a_name_printed_only_in_a_watermark_blocks():
+    # Boundless Necromancer ch2: the hero narrated as "Asura" — its pages print
+    # "Asura" only in the ASURA.GG stamp
+    from studio.worker import _CRITICAL_QA_CODES
+    vitems = {"p1.jpg": {"panel_kind": "story", "ocr_clean": "STOP IT...!",
+                         "watermarks": [{"kind": "aggregator", "text": "ASURA.GG"}]},
+              "p2.jpg": {"panel_kind": "story", "ocr_clean": "DAMN IT... ASURA 6G"}}
+    cast = {"cast": [{"canonical_name": "Asura", "aliases": []},
+                     {"canonical_name": "our protagonist", "aliases": []}]}
+    plan = {"timeline": [
+        {"segment_id": "g0001_p00", "tts_text": "Asura scrambles away from the golem."},
+        {"segment_id": "g0002_p00", "tts_text": "Our protagonist survives."}]}
+    fl = pq.watermark_name_flags(plan, cast, vitems)
+    assert [(f["code"], f["segment_id"]) for f in fl] == [("watermark_name", "g0001_p00")]
+    assert "watermark_name" in _CRITICAL_QA_CODES
+    vitems["p3.jpg"] = {"panel_kind": "story", "ocr_clean": "VENERABLE ASURA IS OMNISCIENT"}
+    assert pq.watermark_name_flags(plan, cast, vitems) == []
+
+
 def test_vision_flags_empty_bubble_shown_errors():
     vitem = {"panel_kind": "empty", "subjects": ["speech bubble"],
              "ocr_clean": "DAMN IT,", "text_coverage": 0.0299}

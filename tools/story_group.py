@@ -1169,17 +1169,8 @@ def annotate_intensity(shots: List[Dict[str, Any]],
 
 
 def _midtone(item: Dict[str, Any]) -> Optional[float]:
-    from scene_chrome import needs_image_stats
-    if (not needs_image_stats(str(item.get("ocr_clean") or ""))
-            or not item.get("scene_path")):
-        return None
-    try:
-        from PIL import Image
-        import numpy as np
-        im = np.asarray(Image.open(item["scene_path"]).convert("L"))
-        return float(((im > 60) & (im < 200)).mean())
-    except Exception:
-        return None
+    from scene_chrome import item_midtone
+    return item_midtone(item)
 
 
 def chrome_files(vision_items: List[Dict[str, Any]], series_title: str) -> set:
@@ -1394,11 +1385,19 @@ def main() -> int:
         cards = title_card_files(list(vmap.values()))
         # …except the LICENSED title/logo: a hard rule that outranks every rescue above.
         licensed = licensed_title_files(list(vmap.values()), series_title)
+        # …and publication furniture (an ad, a recruitment card, a credits roster, a
+        # To-Be-Continued card), whatever the model called it (2026-10-13: the Asura
+        # ad as 'system', the end card as 'story' — both voiced).
+        from scene_chrome import furniture_files
+        furniture = furniture_files(list(vmap.values()))
         excluded = ((understood_nonstory | ocr_chrome | effect_only | glyph_cards)
-                    - cards) | licensed
+                    - cards) | licensed | furniture
         if licensed:
             print(f"[licensed] dropped {len(licensed)} series title/logo panel(s) "
                   f"(hard rule, title={series_title!r}): {sorted(licensed)}")
+        if furniture:
+            print(f"[furniture] dropped {len(furniture)} publication panel(s) "
+                  f"(ads/credits/end cards): {sorted(furniture)}")
         if understood_nonstory:
             print(f"[nonstory] understanding dropped {len(understood_nonstory)}: "
                   f"{sorted(understood_nonstory)}")

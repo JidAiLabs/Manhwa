@@ -52,7 +52,8 @@ for _p in (_TOOLS_DIR, _REPO_ROOT):
 import render_prep as rp                      # art/bubble metrics, detector
 from beats_segments import beat_segments
 from render_prep import multi_scale_contained
-from scene_chrome import is_chrome_scene, is_licensed_title_scene, needs_image_stats
+from scene_chrome import (is_chrome_scene, is_licensed_title_scene, needs_image_stats,
+                          furniture_reason, voiced_furniture, watermark_names)
 from studio.qa_flags import longest_common_run
 from narration_consistency import (audio_consistency, is_nullish_line,
                                    is_unvoiceable_line,
@@ -87,11 +88,14 @@ ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 _SEV_RANK = {ERROR: 0, WARN: 1, INFO: 2}
 
 # narration that mentions publication chrome is narrating a cover/credits/
-# counter panel — the beats prompt forbids it, this is the independent check
+# counter panel — the beats prompt forbids it, this is the independent check.
+# Bare 'discord' and bare 'asura' are in-world names (ORV's 'Architect of Discord',
+# TT's 'Venerable Asura'); scanlation sites and invites are publication_voiced's
+# (scene_chrome.voiced_furniture), 2026-10-13.
 _CHROME_NARR_RE = re.compile(
-    r"\b(redice|asura\s*(?:scans?|toon)?|elftoon|webtoons?|naver|kakao|"
+    r"\b(redice|asura\s*(?:scans?|toon|comic)|elftoon|webtoons?|naver|kakao|"
     r"tapas|tappytoon|scanlat\w*|translat(?:or|ion|ed\s+by)\w*|proofread\w*|"
-    r"typeset\w*|raw\s+provider|presented\s+by|patreon|discord|subscribe\w*|"
+    r"typeset\w*|raw\s+provider|presented\s+by|patreon|subscribe\w*|"
     r"views?\s*[:=]|likes?\s*[:=]|view\s+count\w*|"
     r"(?:chapter|episode)\s+\d+)\b",
     re.IGNORECASE)
@@ -698,6 +702,15 @@ def vision_flags(parent: str, vitem: Dict[str, Any], *,
                            f"the licensed series title/logo is SHOWN — "
                            f"ocr={str(vitem.get('ocr_clean'))[:80]!r}",
                            scene=parent, segment_id=segment_id))
+    elif furniture_reason(vitem, midtone_frac=midtone_frac):
+        # an ad / recruitment card / credits roster / To-Be-Continued card on screen
+        # (owner 2026-10-13). BLOCKING: story_group excludes furniture at grouping,
+        # so this fires only on a stale path; the remedy is a re-group, never a heal.
+        flags.append(_flag("publication_shown", ERROR,
+                           f"publication furniture "
+                           f"({furniture_reason(vitem, midtone_frac=midtone_frac)}) is SHOWN — "
+                           f"ocr={str(vitem.get('ocr_clean'))[:80]!r}",
+                           scene=parent, segment_id=segment_id))
     elif is_chrome_scene(vitem, series_title=series_title,
                          midtone_frac=midtone_frac):
         flags.append(_flag("chrome_leak", ERROR,
@@ -729,6 +742,29 @@ def vision_flags(parent: str, vitem: Dict[str, Any], *,
     return flags
 
 
+def watermark_name_flags(plan: Dict[str, Any], cast_obj: Any,
+                         vitems: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """A spoken cast name the chapter prints ONLY in publication stamps — Boundless
+    Necromancer's hero narrated as "Asura", its ASURA.GG watermark (owner
+    2026-10-13). BLOCKING; the remedy is a cast rebuild (a `detected` redo), the
+    cast builder no longer takes a stamp for a name."""
+    names: List[str] = []
+    for m in ((cast_obj or {}).get("cast") or []) if isinstance(cast_obj, dict) else []:
+        names += [str(m.get("canonical_name") or "")] + [str(a) for a in m.get("aliases") or []]
+    bad = sorted(watermark_names([n for n in names if n], list(vitems.values())))
+    flags: List[Dict[str, Any]] = []
+    for item in (plan.get("timeline") or []) if bad else []:
+        text = str(item.get("tts_text") or "")
+        hit = next((n for n in bad
+                    if re.search(r"\b" + re.escape(n) + r"\b", text, re.I)), None)
+        if hit:
+            flags.append(_flag("watermark_name", ERROR,
+                               f"narration names {hit!r}, which the pages print only "
+                               f"in a watermark: {text[:80]!r}",
+                               segment_id=str(item.get("segment_id") or "")))
+    return flags
+
+
 def narration_flags(segment_id: str, narration: str,
                     panels: Sequence[Any]) -> List[Dict[str, Any]]:
     """*panels*: dicts {"ocr", "visible"} (bare strings mean visible=True).
@@ -743,6 +779,14 @@ def narration_flags(segment_id: str, narration: str,
             f"narration ENDS on a dangling quoted stub ({dm.group(1)!r}) — "
             "the thought must flow into the next line, not hang",
             segment_id=segment_id))
+    why = voiced_furniture(text)
+    if why:
+        # a site, a release plug, a recruitment notice, a credit or an end-card
+        # filler read aloud (owner 2026-10-13). Heal-then-block: the re-roll is told
+        # never to voice it; a survivor blocks.
+        flags.append(_flag("publication_voiced", ERROR,
+                           f"narration voices publication text ({why}): {text[:90]!r}",
+                           segment_id=segment_id))
     m = _CHROME_NARR_RE.search(text)
     if m:
         flags.append(_flag("chrome_narration", WARN,
@@ -3346,6 +3390,9 @@ def main() -> int:
                     # carry the understanding so is_chrome_scene defers to it (no
                     # false chrome_leak on a 'story' panel whose OCR is just '1')
                     "panel_kind": it.get("panel_kind"),
+                    # the publication stamps vision_extract scrubbed out of ocr_clean:
+                    # a scrubbed ad card's ocr_clean is empty, its stamps say what it is
+                    "watermarks": it.get("watermarks"),
                 }
     reconciled_files: set = set()
     sp_ = os.path.join(ep, "manifest.scenes.json")
@@ -3664,6 +3711,7 @@ def main() -> int:
                   for f in (item.get("scene_files") or [])]
         flags.extend(narration_flags(str(item.get("segment_id") or ""),
                                      str(item.get("tts_text") or ""), panels))
+    flags.extend(watermark_name_flags(plan, cast_obj, vitems))
 
     # segment-level flags (no scene) still deserve a picture: the first cut
     # their segment actually shows

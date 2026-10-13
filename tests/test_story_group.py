@@ -1538,3 +1538,48 @@ def test_licensed_title_panel_is_excluded_even_when_understood_as_system():
     assert sg.series_title_fallback(
         "/x/ongoing/the-tutorial-tower-of-the-advanced-player/Chapter 151/manifest.vision.json"
     ) == "the tutorial tower of the advanced player"
+
+
+def test_publication_furniture_never_reaches_the_writer_whatever_its_label(
+        tmp_path, monkeypatch):
+    # owner 2026-10-13 (TT ch177): the Asura ad understood as 'system' and the
+    # To-Be-Continued card as 'story' were voiced. keep_by_understanding shielded
+    # both; furniture is OR-ed in after every rescue, like the licensed title.
+    import json
+    import sys as _sys
+    panels = [
+        {"scene_file": "p0.jpg", "panel_kind": "story", "description": "a man runs",
+         "action": "runs", "subjects": ["a man"], "intensity": "calm"},
+        {"scene_file": "p1.jpg", "panel_kind": "system", "description": "a purple card",
+         "action": "", "subjects": [], "intensity": "calm"},
+        {"scene_file": "p2.jpg", "panel_kind": "story", "description": "a black screen",
+         "action": "", "subjects": [], "intensity": "calm"},
+        {"scene_file": "p3.jpg", "panel_kind": "story", "description": "he shouts",
+         "action": "shouts", "subjects": ["a man"], "intensity": "calm"},
+    ]
+    vision = {"items": [
+        {"scene_file": "p0.jpg", "ocr_clean": ""},
+        {"scene_file": "p1.jpg", "ocr_clean": "READ AT ASURASCANS.COM FOR THE FASTEST RELEASES"},
+        {"scene_file": "p2.jpg", "ocr_clean": "To Be Continue 원작 방구석 김씨 · 그림 블루 각색"},
+        {"scene_file": "p3.jpg", "ocr_clean": "KIM SHI HYUN! ASURASCANS.COM"},
+    ]}
+    up = tmp_path / "manifest.panels.understood.json"
+    up.write_text(json.dumps({"panels": panels}))
+    vp = tmp_path / "manifest.vision.json"
+    vp.write_text(json.dumps(vision))
+    out = tmp_path / "manifest.groups.json"
+    seen = []
+
+    def fake_call(**kw):
+        files = [p["scene_file"] for p in kw["user_payload"]["panels"]]
+        seen.extend(files)
+        return ({"chapter": {"logline": "x", "premise": "y"},
+                 "beats": [{"from_index": 0, "to_index": len(files) - 1}]}, "OK", {})
+
+    monkeypatch.setattr(sg, "_call_model_with_backoff", fake_call)
+    monkeypatch.setattr(_sys, "argv", ["story_group.py", "--understood", str(up),
+                                       "--vision-manifest", str(vp), "--out", str(out)])
+    assert sg.main() == 0
+    assert set(seen) == {"p0.jpg", "p3.jpg"}          # the stamped story panel stays
+    shown = {f for s in json.loads(out.read_text())["shots"] for f in s["scene_files"]}
+    assert shown == {"p0.jpg", "p3.jpg"}

@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Tuple
 from PIL import Image, ImageFile
 
 from ocr_chrome import strip_ui_chrome
+from scene_chrome import scrub_stamps
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -187,6 +188,15 @@ def clean_ocr_text(raw: str, cfg: VisionConfig) -> str:
     # episode nav, etc.) conservatively — preserves narrative text.
     text = strip_ui_chrome(text)
     return text
+
+
+def clean_ocr_fields(raw: str, cfg: VisionConfig) -> Tuple[str, List[Dict[str, str]]]:
+    """(ocr_clean, watermarks): the page text with publication stamps removed —
+    aggregator watermarks, release plugs, recruitment notices, credit lines, a
+    'To Be Continued' (scene_chrome.scrub_stamps) — and the stamps themselves.
+    Every downstream reader (understanding, story pass, cast names, the writer)
+    sees only the story text; furniture_reason reads the stamps (2026-10-13)."""
+    return scrub_stamps(clean_ocr_text(raw, cfg))
 
 
 def keywords_from_text(text: str, cfg: VisionConfig) -> List[str]:
@@ -479,7 +489,7 @@ def main() -> int:
                 objects = av.objects(p)
                 faces = av.faces(p, max_faces=cfg.max_faces)
                 text_cov = _coverage_from_boxes(word_boxes)
-                ocr_clean = clean_ocr_text(full_text, cfg)
+                ocr_clean, watermarks = clean_ocr_fields(full_text, cfg)
                 keywords = keywords_from_text(ocr_clean, cfg)
                 text_only = classify_text_only(
                     ocr_clean, float(text_cov),
@@ -493,7 +503,7 @@ def main() -> int:
                 items.append({
                     "scene_id": scene_id, "scene_file": scene_file,
                     "scene_path": os.path.abspath(p), "width": w, "height": h,
-                    "ocr_clean": ocr_clean,
+                    "ocr_clean": ocr_clean, "watermarks": watermarks,
                     "text_coverage": round(float(text_cov), 4),
                     "text_only": bool(text_only), "keywords": keywords,
                     "targets": targets,

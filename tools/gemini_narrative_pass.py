@@ -32,6 +32,7 @@ from scene_selection import normalize_scene_selection  # noqa: E402
 from usage_cost import UsageAccumulator  # noqa: E402
 from manifest_io import write_manifest  # noqa: E402
 from narration_consistency import is_unvoiceable_line  # noqa: E402
+from scene_chrome import scrub_stamps  # noqa: E402
 from narration_safe_rules import SAFE_NARRATION_RULES  # noqa: E402
 from niche_modules import register_block  # noqa: E402
 from recap_style import (  # noqa: E402
@@ -295,12 +296,16 @@ def merge_vision_ocr(u_by_file: Dict[str, Any],
         if str(u.get("ocr_clean") or "").strip():
             continue
         v = (vision_by_file or {}).get(f) or {}
-        ocr = str(v.get("ocr_clean") or "").strip()
+        # publication stamps never reach the writer (vision_extract scrubs them at the
+        # source since 2026-10-13; manifests made before carry them, and the printed
+        # lines come from the raw words)
+        ocr = scrub_stamps(str(v.get("ocr_clean") or ""))[0]
         if ocr:
             u["ocr_clean"] = ocr
         # the card's PRINTED lines, kept alongside the flat text: _speak_card
         # turns each into its own sentence (see ocr_lines_from_words)
-        lines = ocr_lines_from_words(((v.get("vision") or {}).get("ocr_words")))
+        lines = [c for c in (scrub_stamps(ln)[0] for ln in ocr_lines_from_words(
+            ((v.get("vision") or {}).get("ocr_words")))) if c]
         if lines and not u.get("ocr_layout"):
             u["ocr_layout"] = "\n".join(lines)
     return u_by_file
@@ -1473,6 +1478,9 @@ def clean_card_text(text: str) -> str:
     the writer's line instead of voicing an empty string.
     """
     t = _CARD_STAMP_RE.sub("", str(text or ""))
+    # a publication stamp is never card text: "[V/N] ASURASCANS.COM" read aloud the
+    # site, and an ad labelled 'system' had its whole plug voiced (2026-10-13)
+    t = scrub_stamps(t)[0]
     t = _CARD_MARKUP_RE.sub(" ", t)
     # a LONE paren is a misread window bracket: ORV Ep311 printed
     # '(FABLE "KING OF TWELVE SUNS" IS RADIATING LIGHT' and "(fable" was voiced

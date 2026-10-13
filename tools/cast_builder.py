@@ -30,6 +30,7 @@ _TD = os.path.dirname(os.path.abspath(__file__))
 if _TD not in sys.path:
     sys.path.insert(0, _TD)
 from manifest_io import write_manifest                                # noqa: E402
+from scene_chrome import scrub_stamps                                 # noqa: E402
 
 
 def _load(path: str) -> Dict[str, Any]:
@@ -66,28 +67,34 @@ def _sample_images(items: List[Dict[str, Any]], cap: int) -> List[str]:
 def _page_words(items: List[Dict[str, Any]]) -> str:
     """Text that is really ON the page for name validation: per-word OCR with
     sane geometry (word boxes inside the image, not glyph-sized) when the
-    vision manifest carries ocr_words; else the cleaned line text."""
+    vision manifest carries ocr_words; else the cleaned line text. Publication
+    stamps are not page text, and neither is a chrome panel: Boundless
+    Necromancer's hero became "Asura" from the ASURA.GG watermark (2026-10-13)."""
     try:
         from apple_vision import sane_text_region  # sibling tool
     except Exception:  # pragma: no cover
         sane_text_region = None
     out: List[str] = []
     for it in items:
+        if str(it.get("panel_kind") or "") == "chrome":
+            continue
         words = (it.get("vision") or {}).get("ocr_words") or []
         if words and sane_text_region is not None:
-            for wd in words:
-                bb = wd.get("bbox") or []
-                if len(bb) == 4 and sane_text_region(*[float(v) for v in bb]):
-                    out.append(str(wd.get("t") or ""))
+            kept = [str(wd.get("t") or "") for wd in words
+                    if len(wd.get("bbox") or []) == 4
+                    and sane_text_region(*[float(v) for v in wd["bbox"]])]
+            out.append(scrub_stamps(" ".join(kept))[0])
         else:
-            out.append(str(it.get("ocr_clean") or ""))
+            out.append(scrub_stamps(str(it.get("ocr_clean") or ""))[0])
     return "\n".join(out)
 
 
 def _all_ocr(items: List[Dict[str, Any]]) -> List[str]:
     out: List[str] = []
     for it in items:
-        o = (it.get("ocr_clean") or "").strip()
+        if str(it.get("panel_kind") or "") == "chrome":
+            continue
+        o = scrub_stamps((it.get("ocr_clean") or "").strip())[0]
         if o:
             out.append(f"{it.get('scene_file')}: {o[:200]}")
     return out

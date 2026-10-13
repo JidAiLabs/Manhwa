@@ -27,6 +27,9 @@ from typing import Any, Dict, List
 # burns to its cap (the 2.6h-chapter non-convergence). The worker handles
 # staleness by re-running the scripted stage, not by re-narrating.
 HEALABLE = {
+    # a site / plug / recruitment / credit / "the story will continue" read aloud
+    # (owner 2026-10-13) — the re-roll is told never to voice it; also blocking
+    "publication_voiced",
     "caption_unvoiced", "chrome_narration", "fragment_dangle",
     "filler_narration", "beats_incomplete",
     # the line is a stringified null ("None.") rather than narration — the
@@ -119,6 +122,12 @@ def _note_for(code: str, detail: str) -> str:
                 "almost no readers'). NEVER use interface words — 'view count', "
                 "'comments', 'tap', 'swipe', 'next episode', 'displays statistics', "
                 "'the screen/chapter shows'.")
+    if code == "publication_voiced":
+        return ("This line reads PUBLICATION text aloud — a scanlation site or "
+                "watermark, a 'read at …' plug, a recruitment notice, a credit, or "
+                "'to be continued'. None of that is story. Narrate only what happens "
+                "in the panel; never say a site, a team, a credit or 'the story will "
+                "continue'.")
     if code == "system_card_unvoiced":
         return ("This panel is an in-world SYSTEM CARD and the line barely "
                 "voices it. READ THE CARD aloud: say its printed words "
