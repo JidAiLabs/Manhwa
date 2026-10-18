@@ -83,6 +83,8 @@ fails the suite.
 | R24 | shows the 2–3 panels one line covers side by side where they fit | `render_prep.assign_rows` (`[render] row_min_fit`) | row_file_unknown | no | tests/test_prep_qa.py::test_plan_flags_row_files_must_be_cuts_with_dims, tests/test_qa_rules_sweep.py::test_rows_backfill_is_only_queued_when_asked | rows_missing | FEATURE |
 | R25 | never has a dead character act | ledger | dead_actor | no | tests/test_story_ledger.py::test_dead_actor_is_report_only | — | REPORTED |
 | R26 | names the right person | picture identity (`panel_identity_ccip` + gemma check) | actor_mismatch | no | tests/test_cast_identity.py::test_actor_mismatch_is_report_only | — | REPORTED |
+| R27 | never shows a different picture in place of the narrated panel | `render_prep.twin_verdict` over `_dhash8_bgr` (shared by the shown-twin invariant, the cross-segment near-identical pass and `dup_shown`) | panel_substituted | no | tests/test_render_prep.py::test_canonicalize_still_folds_true_raw_twins, tests/test_prep_qa.py::test_story_flags_substituted_panel_mismatch | — | OPEN |
+| R28 | never shows the licensed title/logo in another script | `scene_chrome.is_licensed_title_scene` | licensed_title_shown | yes | tests/test_scene_chrome.py::test_licensed_title_logo_outranks_the_understanding_verdict | licensed_title_shown | OPEN |
 
 ## Notes per rule
 
@@ -118,5 +120,23 @@ fails the suite.
     the test batch.
   - The sweep's `rows_missing` re-runs `assign_rows` on the shipped plan to know a
     video would gain rows.
+- **R27** (found 2026-10-19 on BN ch40, prepare 4166, parked by dup_shown):
+  - The final shown-twin fold rewrote p000049 (dark sky, light beam) to p000060 (two
+    hands reaching, 11 panels later) at masked ham 5. That made a new pair with
+    p000051 (explosion, ham 8), which the one-pass fold never re-checks; dup_shown
+    caught it. All three are different pictures.
+  - The 11 folds in the chapters' latest logs, graded by eye: right 2 (ORV Ep217
+    lineup, Nano ch1 eye), borderline 1 (ORV Ep33, same room with new expressions),
+    WRONG 8 (ORV Ep1, Ep32, Ep277; Wimp ch34, ch37; Clan ch10; DDM ch62 two different
+    men saying "Is this... mana?"; BN ch40). A wrong fold ships silently unless it
+    happens to create a second twin. Sheet: Mini /tmp/claude_qa/folds_sheet.jpg.
+  - Cause: an 8x8 dhash of a whole panel cannot separate distinct art with the same
+    light layout (bright centre, dark edges) at ham <= 8; the true twins also sit
+    at ham 8, so moving the threshold alone does not fix it.
+  - `panel_substituted` is an ERROR that does not block (Clan ch10 shipped it).
+- **R28** (found 2026-10-19): Clan ch10 p000001 is the Japanese logo
+  (一族の落ちこぼれは元大陸最強者 第10話). OCR reads "# 10 m", so the English title
+  match never sees it. It shipped twice: as the first shot (blank_crop ERROR, not
+  blocking) and swapped in by an R27 fold.
 - **R25, R26:** promoted only when a graded sample clears
   `tools/qa_gate_blast_radius.py`: precision ≥ 0.80 over ≥ 20 flags across ≥ 2 titles.
