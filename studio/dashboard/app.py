@@ -1753,6 +1753,16 @@ def create_app(db_path: str = "studio.db") -> FastAPI:
         jobs.bump(con(), job_id)
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/worker/pause")
+    def post_pause():
+        jobs.pause_gemma(True)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/worker/resume")
+    def post_resume():
+        jobs.pause_gemma(False)
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/approve")
     def post_approve(gate: str = Form(...),
                      chapter_id: Optional[int] = Form(None),

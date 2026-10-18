@@ -30,3 +30,17 @@ def test_a_lane_list_pauses_only_those_lanes(monkeypatch, tmp_path):
     assert _claims(monkeypatch, tmp_path, "gpu, tts\n", "gpu") == []
     assert _claims(monkeypatch, tmp_path, "gpu, tts\n", "tts") == []
     assert _claims(monkeypatch, tmp_path, "gpu, tts\n", "cpu") == ["cpu"]
+
+
+def test_the_dashboard_button_pauses_only_gemma(monkeypatch, tmp_path):
+    from studio.dashboard import jobs
+    assert jobs.PAUSE_FILE == w.REPO / ".worker_pause"     # the file the worker reads
+    monkeypatch.setattr(jobs, "PAUSE_FILE", tmp_path / ".worker_pause")
+    jobs.pause_gemma(True)
+    assert jobs.paused_lanes() == ["gpu"]
+    assert _claims(monkeypatch, tmp_path, None, "gpu") == []
+    assert _claims(monkeypatch, tmp_path, None, "tts") == ["tts"]
+    assert _claims(monkeypatch, tmp_path, None, "cpu") == ["cpu"]
+    jobs.pause_gemma(False)
+    assert jobs.paused_lanes() is None
+    assert _claims(monkeypatch, tmp_path, None, "gpu") == ["gpu"]

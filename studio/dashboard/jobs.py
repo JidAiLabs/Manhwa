@@ -10,9 +10,31 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from studio.dashboard import eta
+
+# The lane switch studio/worker.py::_paused reads before every claim: running
+# jobs finish, the listed lanes stop claiming ("" = every lane). The Queue
+# page's button pauses only the gemma lane — voice and render keep going.
+PAUSE_FILE = Path(__file__).resolve().parents[2] / ".worker_pause"
+
+
+def paused_lanes() -> Optional[List[str]]:
+    """None = not paused; [] = every lane; else the paused lanes."""
+    try:
+        text = PAUSE_FILE.read_text()
+    except OSError:
+        return None
+    return sorted({x.strip() for x in text.replace("\n", ",").split(",") if x.strip()})
+
+
+def pause_gemma(on: bool) -> None:
+    if on:
+        PAUSE_FILE.write_text("gpu\n")
+    else:
+        PAUSE_FILE.unlink(missing_ok=True)
 
 _COLS = ("id, type, series_id, chapter_id, bundle_id, payload_json, state, "
          "priority, created_at, started_at, finished_at, log_path, error")
@@ -543,6 +565,7 @@ def health(con: sqlite3.Connection, *, stale_after_sec: int = 300,
         "stale": stale,
         "overdue": overdue,
         "lanes": lanes,
+        "paused": paused_lanes(),
         "queued": int(queued[0] or 0),
         "queued_oldest_sec": int(queued[1] or 0) if queued[0] else 0,
         "failed_recent": int(failed),

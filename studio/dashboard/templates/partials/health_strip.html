@@ -20,6 +20,24 @@
   </div>
 
   <div class="hitem">
+    <span class="k">gemma</span>
+    {% if health.paused is not none %}
+      {% if health.paused and 'gpu' not in health.paused %}
+        <span class="b warn">PAUSED {{ health.paused|join(', ') }}</span>
+      {% elif health.lanes.gpu and health.lanes.gpu.busy %}
+        <span class="b warn">PAUSING</span>
+        <span class="kv">finishing {{ health.lanes.gpu.busy }} running job{{ 's' if health.lanes.gpu.busy > 1 }}</span>
+      {% else %}
+        <span class="b ok">PAUSED</span>
+        <span class="kv">{{ 'every lane' if not health.paused else ('GPU free · voice + render continue' if health.paused == ['gpu'] else 'GPU free · ' ~ health.paused|join(', ') ~ ' paused') }}</span>
+      {% endif %}
+      <form class="inline" method="post" action="/worker/resume"><button class="green">resume</button></form>
+    {% else %}
+      <form class="inline" method="post" action="/worker/pause" onsubmit="return confirm('Pause gemma? Running gemma jobs finish first; voice and render keep going.')"><button class="ghost">pause gemma</button></form>
+    {% endif %}
+  </div>
+
+  <div class="hitem">
     <span class="k">queue</span>
     {% if health.queued %}
       <span class="kv"><b>{{ health.queued }}</b> waiting · oldest {{ fmt_eta(health.queued_oldest_sec) }}</span>
